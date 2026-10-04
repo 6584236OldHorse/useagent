@@ -79,4 +79,36 @@ export const BOT_SUGGESTIONS: readonly BotSuggestion[] = [
     icon: "compass",
     tone: "slate",
   },
+  {
+    name: "Standup digest",
+    title: "Summarizes the last day so the team starts with the signal",
+    rules:
+      "Every weekday morning, summarize what changed overnight: merged pull requests, open issues, and anything that needs a person today. Lead with decisions or risk. Keep the summary under 150 words and include a source or link for each item.",
+    icon: "support",
+    tone: "cyan",
+  },
+  {
+    name: "Release notes writer",
+    title: "Drafts release notes from the work that shipped",
+    rules:
+      "Read the commits and merged pull requests since the last tag, then draft release notes for users. Group changes by what people notice: fixes, improvements, and new capabilities. Keep the wording plain and link each item to the relevant source. A person reviews the final copy before publishing.",
+    icon: "pen",
+    tone: "fuchsia",
+  },
+  {
+    name: "Dependency watcher",
+    title: "Flags outdated or risky dependencies before they drift",
+    rules:
+      "Check dependencies weekly for upgrades, known vulnerabilities, and compatibility changes. Summarize the most important updates with why they matter and whether they are safe to do next. Nothing changes without a person approving the update.",
+    icon: "chart",
+    tone: "emerald",
+  },
+  {
+    name: "Docs checker",
+    title: "Finds docs that drifted away from the product",
+    rules:
+      "Review docs and compare them to the current product behavior. Flag pages that are stale, misleading, or missing key steps, and explain what changed. Keep the findings practical and actionable. A person decides whether to update the docs.",
+    icon: "research",
+    tone: "violet",
+  },
 ];

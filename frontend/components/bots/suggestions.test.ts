@@ -3,8 +3,22 @@ import { BOT_SUGGESTIONS } from "./suggestions";
 import { BOT_AVATAR_ICONS, BOT_AVATAR_TONES } from "./types";
 
 describe("bot suggestions", () => {
-  test("cover eight distinct jobs with distinct names and marks", () => {
-    expect(BOT_SUGGESTIONS.length).toBe(8);
+  test("cover twelve distinct jobs with distinct names and marks", () => {
+    expect(BOT_SUGGESTIONS.length).toBe(12);
+    expect(BOT_SUGGESTIONS.map((s) => s.name)).toEqual([
+      "Night triage",
+      "Reviewer",
+      "Scout",
+      "Support desk",
+      "Outbound",
+      "Ledger",
+      "Release notes",
+      "Chief of staff",
+      "Standup digest",
+      "Dependency watcher",
+      "Docs checker",
+      "Release notes writer",
+    ]);
     const names = BOT_SUGGESTIONS.map((s) => s.name.toLowerCase());
     expect(new Set(names).size).toBe(names.length);
     const marks = BOT_SUGGESTIONS.map((s) => `${s.tone}/${s.icon}`);
