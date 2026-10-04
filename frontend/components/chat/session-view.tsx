@@ -35,7 +35,6 @@ import {
   useRailWidth,
   useSplitTooNarrow,
 } from "@/components/chat/rail-resizer";
-import { RunFeedback } from "@/components/chat/run-feedback";
 import { SessionRailTabs } from "@/components/chat/session-rail-tabs";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
@@ -50,6 +49,7 @@ import type { TimelineArtifact } from "@/components/chat/timeline";
 import { ComposerPrefillProvider } from "@/components/chat/composer-prefill-context";
 import { SessionLatestRunProvider } from "@/components/chat/session-run-context";
 import { SessionThreadBreadcrumb } from "@/components/chat/session-thread-breadcrumb";
+import { SessionThreadActions } from "@/components/chat/session-thread-actions";
 import { useWorkpieceAutoOpen } from "@/components/chat/use-workpiece-auto-open";
 import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/chat/workpiece-auto-open";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
@@ -669,24 +669,13 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
               <OriginLink connector={snapshot.byId.get(root.id)?.run.connector ?? root.connector} />
               <RunLocation run={newest} />
             </div>
-            <div className="flex items-center gap-2 sm:gap-3">
-              {/* Status pill + New session removed (user 2026-08-23): run state lives in the composer/timeline, New thread in the sidebar, Stop in the composer. */}
-              <RunFeedback key={newest.id} runId={newest.id} />
-              {/* In sheet mode (below md, or a too-narrow md+ split) this is
-                  the rail's opener (the reopen strip covers side-by-side). */}
-              {hasRuntimeSurfaces && !sheetSurfacesOpen && (
-                <Button
-                  variant="ghost"
-                  size="small"
-                  iconOnly
-                  leadingIcon={RiLayoutRightLine}
-                  onClick={openSurfacesSheet}
-                  title="Open surfaces panel"
-                  aria-label="Open surfaces panel"
-                  className={cx(RAIL_ICON_BUTTON, !splitTooNarrow && "md:hidden")}
-                />
-              )}
-            </div>
+            <SessionThreadActions
+              runId={newest.id}
+              exportData={{ threadId: rootId, turns, snapshot }}
+              showSurfaceOpener={hasRuntimeSurfaces && !sheetSurfacesOpen}
+              splitTooNarrow={splitTooNarrow}
+              onOpenSurfaces={openSurfacesSheet}
+            />
           </div>
 
           {/* Fan-out subagents in this thread that aren't on the main reply line —
