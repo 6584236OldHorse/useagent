@@ -1,46 +1,83 @@
 <h1 align="center">
-  <img src="docs-site/public/useagent-mark.svg" alt="" width="48" valign="middle"> useAgent
+  <img src="docs-site/public/useagent-mark.svg" alt="" width="48" valign="middle"> UseAgent
 </h1>
 
 <p align="center">
   <strong>The open-source AI coworker for your team.</strong><br>
-  Your agents. Their own computer. Finished work you can use.
+  Agents with their own computer, on your server, with every run on the record.
 </p>
 
 <p align="center">
   <a href="https://github.com/useagenthq/useagent/releases"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: alpha"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-purple.svg" alt="License: AGPL-3.0"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-bun-black.svg" alt="Runtime: bun"></a>
+  <a href="https://github.com/useagenthq/useagent/stargazers"><img src="https://img.shields.io/github/stars/useagenthq/useagent?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/useagenthq/useagent/issues?q=is%3Aopen+label%3Ahacktoberfest"><img src="https://img.shields.io/badge/Hacktoberfest-2026-ff8ae2.svg" alt="Hacktoberfest 2026"></a>
   <a href="https://useagent.org/docs/"><img src="https://img.shields.io/badge/docs-useagent.org-blue.svg" alt="Documentation"></a>
 </p>
 
 <p align="center">
+  <a href="https://app.useagent.org"><b>Try the hosted app</b></a> ·
+  <a href="#self-hosting"><b>Self-host</b></a> ·
   <a href="https://useagent.org/#demo"><b>Watch the demo</b></a> ·
-  <a href="#quick-start"><b>Quick Start</b></a> ·
-  <a href="#self-hosting"><b>Self-hosting</b></a> ·
-  <a href="https://useagent.org/docs/"><b>Documentation</b></a> ·
-  <a href="#architecture"><b>Architecture</b></a>
+  <a href="https://useagent.org/docs/"><b>Docs</b></a> ·
+  <a href="#hacktoberfest-2026"><b>Contribute</b></a>
 </p>
 
-useAgent gives Claude Code, Codex, OpenCode, and Pi a shared workspace with
-repositories, a terminal, a browser, and your team's tools and context. Ask for
-research, a website, a spreadsheet, or a code change. Follow the work in the
-thread, step in when needed, and open the files it produces.
+UseAgent gives Claude Code, Codex, OpenCode and Pi a shared workspace with
+repositories, a terminal, a browser and your team's tools. Ask for research, a
+website, a spreadsheet or a code change from the web app, Slack or the API.
+Follow the work live, step in when you need to, and keep the files it makes.
 
 <p align="center">
   <a href="https://useagent.org/#demo">
-    <img src="docs/media/app-session.png" alt="Watch useAgent in action: an agent session with a live timeline, terminal, and workspace panes" width="960">
+    <img src="docs/media/app-session.png" alt="An agent session in UseAgent: a live timeline, terminal and workspace panes" width="960">
   </a>
 </p>
 
 <p align="center">
   <a href="https://useagent.org/#demo"><b>Watch the 63-second product tour →</b></a><br>
-  <sub>Real product footage. No sign-in required. The recorded UI may differ from your release.</sub>
+  <sub>Real product footage. No sign-in required.</sub>
 </p>
 
-> **Alpha software.** useAgent is under active development: expect rough edges,
-> and APIs/schemas may change between releases. It already runs real daily
-> workloads, but pin a tag if you need stability.
+## Why teams pick UseAgent
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**It runs on your server.** Self-host the whole thing on any Linux box. Your
+code, prompts and files stay where you put them, which is what compliance
+teams ask for first.
+
+</td>
+<td width="50%" valign="top">
+
+**Every run is on the record.** Postgres stores each step, tool call and
+approval as an append-only log. Replay any run, see who approved what, and
+survive a restart mid-task.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Use the accounts you already pay for.** Run Codex on your ChatGPT plan, or
+bring API keys for any engine. Keys live on your server and never enter the
+agent's sandbox.
+
+</td>
+<td width="50%" valign="top">
+
+**Swap the agent, keep everything else.** Claude Code, Codex, OpenCode and Pi
+share one event format, so threads, files and memory carry over when you
+change engines.
+
+</td>
+</tr>
+</table>
+
+> **Alpha software.** UseAgent runs real daily workloads, but APIs and schemas
+> can change between releases. Pin a tag if you need stability.
 
 ## Features
 
@@ -129,47 +166,42 @@ recalled facts, correct them, and keep personal and organization memory separate
 - **[Durable sessions](https://useagent.org/docs/concepts/events-and-streaming/)** -
   Postgres stores the event timeline; recovery re-probes live sessions after a restart.
 
+
 ## Supported agents
 
 <p>
   <kbd>Claude Code</kbd> &nbsp; <kbd>Codex</kbd> &nbsp; <kbd>OpenCode</kbd> &nbsp; <kbd>Pi</kbd>
 </p>
 
-One session UI and event contract across engines. Connect a supported provider
-account or API key; available models, login methods, and tools depend on the
-adapter and your self-hosted configuration. See the [engine guide](https://useagent.org/docs/concepts/engines-and-adapters/).
+One session UI and event format across engines. Connect a provider account or
+API key; the models, login methods and tools you get depend on the engine and
+your configuration. See the [engine guide](https://useagent.org/docs/concepts/engines-and-adapters/).
 
 ## Integrations
 
-Work arrives from anywhere and tools stay behind the gateway:
-
 | Surface | What's connected |
 |---|---|
-| **Channels in** | Web app, Slack, REST API, schedules - every channel enters through the same run door |
+| **Where work starts** | Web app, Slack, email, REST API, CLI and MCP, schedules. Every channel enters through the same run door |
 | **Native** | Slack (mentions, threads, delivery), GitHub (App auth, clones, PRs) |
-| **Via connectors** | Gmail, Linear, Notion, HubSpot - OAuth handled by the broker, tokens sealed server-side |
-| **Workspace surfaces** | Knowledge base, team memory, skills and playbooks, scheduled automations |
+| **Via connectors** | Gmail, Linear, Notion, HubSpot. OAuth runs through the broker and tokens stay sealed on the server |
+| **Workspace** | Knowledge base, team memory, skills and playbooks, scheduled automations |
+| **Open for contributors** | [Discord, Telegram, Microsoft Teams, webhooks, a GitHub Action](https://github.com/useagenthq/useagent/issues?q=is%3Aopen+label%3Ahacktoberfest) |
 
-## Quick Start
+## Get started
 
-Clone the public repository:
+**Hosted.** The fastest way to try it: sign up at
+[app.useagent.org](https://app.useagent.org) and start a thread.
 
-```bash
-git clone https://github.com/useagenthq/useagent.git
-cd useagent
-```
-
-Requires [bun](https://bun.sh) and Postgres 16+ with the
-[pgvector](https://github.com/pgvector/pgvector) extension (stock Postgres
-images do not include it). No Postgres handy? One container does it:
+**From source.** You need [bun](https://bun.sh) and Postgres 16+ with
+[pgvector](https://github.com/pgvector/pgvector). No Postgres handy? One container does it:
 
 ```bash
+git clone https://github.com/useagenthq/useagent.git && cd useagent
+
 docker run -d --name useagent-pg -p 127.0.0.1:5432:5432 \
   -e POSTGRES_HOST_AUTH_METHOD=trust pgvector/pgvector:pg16
 export DATABASE_URL=postgres://postgres@localhost:5432/postgres
-```
 
-```bash
 for workspace in \
   packages/agent-harness packages/artifact-workspace \
   packages/agent-client packages/artifact-formats packages/sandbox-contract \
@@ -178,85 +210,100 @@ for workspace in \
   (cd "$workspace" && bun install --frozen-lockfile)
 done
 
-bun run dev:backend    # API + orchestration on :3201
+bun run dev:backend    # API and orchestration on :3201
 bun run dev:frontend   # UI on :3400 (proxies /api/* to the backend)
 ```
 
-`bun run typecheck` covers every package.
-
-The database example is for local development. See the
-[setup guide](https://useagent.org/docs/getting-started/quickstart/) for provider
-credentials and sandbox configuration before running a real agent task.
+Running a real agent task also needs a sandbox provider key and a model key.
+The [setup guide](https://useagent.org/docs/getting-started/quickstart/) walks
+through both. `bun run typecheck` covers every package.
 
 ## Self-hosting
 
-useAgent runs on **any Linux host** - AWS, Google Cloud, Azure, or
-bare metal. See [`infra/self-host/`](infra/self-host/README.md) for the full
-guide, including the one-command reference host (Terraform) and the
-provider-agnostic [`deploy-app.sh`](infra/self-host/deploy-app.sh):
+UseAgent runs on **any Linux host**: AWS, Google Cloud, Azure or bare metal.
+[`infra/self-host/`](infra/self-host/README.md) has the full guide, a
+one-command reference host (Terraform) and the provider-agnostic
+[`deploy-app.sh`](infra/self-host/deploy-app.sh):
 
 ```bash
 SERVER_IP=<host-ip> PG_PASSWORD=... OPENROUTER_API_KEY=... \
   infra/self-host/deploy-app.sh /path/to/this/repo
 ```
 
-Sandboxes are pluggable: **Daytona** (managed service - pairs with a host on
-any cloud, easiest start) or **CubeSandbox** (self-hosted runtime on your own
-hardware - full data locality). Production deploy lanes are documented in
-[`infra/self-host/`](infra/self-host/); the provisioning is provider-agnostic
-and addresses the host over SSH.
+Sandboxes are plugins: **Daytona** (managed, the easiest start),
+**CubeSandbox** (runs on your own hardware for full data locality) or **Box**.
+Docker Compose for a single machine is in
+[`docs/operations/compose-releases.md`](docs/operations/compose-releases.md).
 
 ## Architecture
 
 <p align="center">
-  <img src="docs/media/architecture.svg" alt="useAgent architecture: entry channels feed a self-hosted control plane (Run API, Postgres event log, engine adapters, session UI); adapters spawn an isolated cloud sandbox per thread; every integration crosses the trusted gateway; finished work comes back as editable artifacts" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/architecture-dark.svg">
+    <img src="docs/media/architecture.svg" alt="UseAgent architecture: channels enter one run API on a self-hosted control plane with a Postgres event log and engine adapters for Claude Code, Codex, OpenCode and Pi; each thread gets an isolated sandbox with the agent and its own computer; every tool call crosses a trusted gateway that keeps credentials on your server; finished work comes back as pull requests, websites, documents and reports" width="100%">
+  </picture>
 </p>
 
 Three properties do the heavy lifting:
 
-1. **The engine is a plug.** Claude Code, Codex, OpenCode, and Pi all speak one
-   canonical event contract through the engine adapters - swap engines and your
-   threads, artifacts, and memory stay.
+1. **The engine is a plug.** Every engine speaks one event format through its
+   adapter, so you can swap engines and keep your threads, files and memory.
 2. **Every run is an event log.** Postgres is the source of truth: runs survive
-   backend restarts, replay exactly, and stay inspectable after the fact.
-3. **Credentials never enter the sandbox.** The agent's computer is isolated;
-   every integration call crosses the trusted gateway as a typed tool, and the
-   keys live only on your control plane.
+   backend restarts, replay exactly and stay inspectable afterwards.
+3. **Credentials never enter the sandbox.** The agent's computer is isolated.
+   Every integration call crosses the trusted gateway as a typed tool, and the
+   keys stay on your control plane.
 
 | Path | What it owns |
 |---|---|
 | [`frontend/`](frontend/README.md) | Product UI: chat, sessions, skills, playbooks, wiki, artifacts, automations, settings |
 | [`backend/`](backend/README.md) | Control plane: auth, runs, sandboxes, engines, knowledge, memory, artifacts, connectors |
-| [`packages/`](packages/) | Shared contracts: thread events, canonical engine events, workpieces, renderers |
+| [`packages/`](packages/) | Shared contracts: thread events, engine events, sandbox providers, the CLI |
 | [`docs-site/`](docs-site/README.md) | Documentation site: concepts, architecture, API, operations |
 | [`infra/self-host/`](infra/self-host/README.md) | Self-hosting on any provider, with a reference Terraform host |
 | [`memory/`](memory/README.md) | Optional team-memory service |
 
-Deeper reading: the [documentation site](https://useagent.org/docs/) and the interactive
+More in the [documentation](https://useagent.org/docs/) and the interactive
 [request-flow diagram](docs/architecture/request-flow.html).
 
-The additive immutable-container release lane is documented in
-[`docs/operations/immutable-releases.md`](docs/operations/immutable-releases.md).
+## Hacktoberfest 2026
 
-## Community and contributing
+UseAgent is in [Hacktoberfest](https://hacktoberfest.com). Pick an issue with
+the [`hacktoberfest`](https://github.com/useagenthq/useagent/issues?q=is%3Aopen+label%3Ahacktoberfest)
+label, comment that you're taking it, and open a pull request.
 
-- [Report a bug or request a feature](https://github.com/useagenthq/useagent/issues).
-- [Read the release notes](https://github.com/useagenthq/useagent/releases).
-- Start with the [repository map](https://useagent.org/docs/getting-started/repository-map/)
-  and the frontend or backend README when contributing.
+- **New here?** Start with [`good first issue`](https://github.com/useagenthq/useagent/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
+- **Want something bigger?** The channel issues (Discord, Telegram, Microsoft Teams)
+  build on the existing connector framework, with the email connector as a worked example.
+- **How it counts:** merged, approved or `hacktoberfest-accepted` pull requests count.
+  Low-effort pull requests get the `spam` label.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before your first pull request.
+
+## Community
+
+- [Report a bug or request a feature](https://github.com/useagenthq/useagent/issues)
+- [Read the release notes](https://github.com/useagenthq/useagent/releases)
+- Our sister project [threads](https://github.com/useagenthq/threads) is an agent framework
+  for TypeScript and Python built on the same idea: every run is a log you can replay.
+
+<a href="https://github.com/useagenthq/useagent/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=useagenthq/useagent" alt="Contributors">
+</a>
+
+[![Star history](https://api.star-history.com/svg?repos=useagenthq/useagent&type=Date)](https://star-history.com/#useagenthq/useagent&Date)
 
 ## License
 
-useAgent is free and open-source software under the
-[GNU AGPL v3.0](LICENSE) (AGPL-3.0-only). You may use, modify, and
-self-host useAgent under the AGPL.
+UseAgent is free and open-source software under the
+[GNU AGPL v3.0](LICENSE) (AGPL-3.0-only). You may use, modify and self-host it
+under the AGPL.
 
-If you want to embed useAgent into proprietary software, distribute it
-without AGPL obligations, build an OEM or white-label product, or obtain
-different terms, a [commercial license](COMMERCIAL-LICENSE.md) is
-available.
+To embed UseAgent in proprietary software, distribute it without AGPL
+obligations, or build an OEM or white-label product, a
+[commercial license](COMMERCIAL-LICENSE.md) is available.
 
-Contributions are accepted under the [CLA](CLA.md). The useAgent name and
-logo are covered by the [trademark policy](TRADEMARKS.md), not the code
-license. Third-party components are listed in [NOTICE](NOTICE); vendored
-and ported files carry per-file attribution headers.
+Contributions are accepted under the [CLA](CLA.md). The UseAgent name and logo
+are covered by the [trademark policy](TRADEMARKS.md), not the code license.
+Third-party components are listed in [NOTICE](NOTICE); vendored and ported
+files carry per-file attribution headers.
