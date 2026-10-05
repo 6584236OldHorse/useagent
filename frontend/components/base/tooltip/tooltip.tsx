@@ -89,8 +89,11 @@ export function Tooltip({ children, className, size = "sm", showArrow = true, of
           // `data-exiting` is set so the same transition plays in reverse. The
           // `transition` utility covers scale, filter (blur) and opacity.
           "transition duration-200 ease-out",
-          "data-[entering]:scale-90 data-[entering]:opacity-0 data-[entering]:blur-[4px]",
-          "data-[exiting]:scale-90 data-[exiting]:opacity-0 data-[exiting]:blur-[4px]",
+          "data-[entering]:scale-95 data-[entering]:opacity-0 data-[entering]:blur-[4px]",
+          "data-[exiting]:scale-95 data-[exiting]:opacity-0 data-[exiting]:blur-[4px]",
+          // Scale from the trigger's side, not the centre.
+          "data-[placement=top]:origin-bottom data-[placement=bottom]:origin-top",
+          "data-[placement=left]:origin-right data-[placement=right]:origin-left",
           typeof className === "function" ? className(state) : className,
         )
       }
@@ -123,6 +126,9 @@ export function Tooltip({ children, className, size = "sm", showArrow = true, of
 
 export type TooltipTriggerProps = ComponentProps<typeof AriaTooltipTrigger>;
 
-export function TooltipTrigger({ delay = 0, closeDelay = 0, ...props }: TooltipTriggerProps) {
+/** A first hover waits; react-aria then opens neighbouring tooltips at once while one is showing. */
+export const TOOLTIP_DELAY_MS = 500;
+
+export function TooltipTrigger({ delay = TOOLTIP_DELAY_MS, closeDelay = 0, ...props }: TooltipTriggerProps) {
   return <AriaTooltipTrigger delay={delay} closeDelay={closeDelay} {...props} />;
 }

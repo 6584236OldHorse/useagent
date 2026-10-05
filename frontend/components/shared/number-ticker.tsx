@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { motion, MotionConfig, useAnimationControls, useReducedMotion } from "motion/react";
 import { cx } from "@/utils/cx";
+import { EASE_OUT } from "@/lib/motion";
 
 /**
  * NumberTicker — a lean inline rolling-digits value for dashboard stats
@@ -63,7 +64,7 @@ export function NumberTicker({
   );
 }
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+const EASE = EASE_OUT;
 const REEL_FIGURES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 // One odometer column. Two 0-9 cycles stacked (20 figures); the strip rests on

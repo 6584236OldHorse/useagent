@@ -4001,7 +4001,7 @@ html {
 
 
 /* ---------------------------------------------------------------------------
- * aurora-blob - the dashboard mesh-aurora (aurora-backdrop.tsx): heavily
+ * aurora-blob - the auth screen mesh-aurora (auth-screen.tsx): heavily
  * blurred radial blobs drifting on decade-long-feeling loops. Opacity carries
  * the whole subtlety budget; the drift distances are small so the glow
  * breathes rather than travels. Reduced motion freezes the blobs in place.
@@ -4180,7 +4180,7 @@ html {
   animation: useagent-orbit-spin 4.8s linear infinite;
 }
 .animate-ai-fade-up {
-  animation: ai-fade-up 350ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  animation: ai-fade-up 220ms var(--ease-out) both;
 }
 
 /* Streaming narration: each freshly-arrived word fades in over ~250ms so live
@@ -4732,11 +4732,11 @@ input[type='search']::-webkit-search-cancel-button {
   background-color: var(--color-background-secondary-default);
   border-top: 1px solid var(--color-separator-border);
   border-bottom: 1px solid var(--color-separator-border);
-  transition: padding 200ms ease, font-size 200ms ease;
+  transition: padding 200ms ease;
 }
 .bui-table td {
   @apply px-3 py-2.5 align-middle text-body-medium text-text-primary outline-none;
-  transition: padding 200ms ease, font-size 200ms ease;
+  transition: padding 200ms ease;
 }
 .bui-table tbody tr {
   @apply transition-colors duration-150;
