@@ -14,8 +14,10 @@ interface NativeRuntimeManifest {
   readonly dependencyLockSha256: string;
 }
 
-const RELEASE_TAG = "v0.0.4";
-const RELEASE_REPOSITORY = "useagenthq/useagent-pro";
+// The runtime is published on the public repository so every checkout, public or
+// private, stages the same bytes without a credential; one release per source commit.
+const RELEASE_REPOSITORY = "useagenthq/useagent";
+const releaseTagFor = (manifest: NativeRuntimeManifest): string => `native-runtime-${manifest.sourceCommit.slice(0, 12)}`;
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const manifestPath = join(repoRoot, "backend/runtime-assets/manifest.json");
 const dependencyPackagePath = join(repoRoot, "backend/runtime-assets/dependencies/package.json");
@@ -121,12 +123,12 @@ async function verifyDependencyLock(manifest: NativeRuntimeManifest): Promise<vo
   }
 }
 
-async function downloadArchive(directory: string, archiveName: string): Promise<string> {
+async function downloadArchive(directory: string, archiveName: string, tag: string): Promise<string> {
   const process = Bun.spawn([
     "gh",
     "release",
     "download",
-    RELEASE_TAG,
+    tag,
     "--repo",
     RELEASE_REPOSITORY,
     "--pattern",
@@ -136,7 +138,7 @@ async function downloadArchive(directory: string, archiveName: string): Promise<
   ], { cwd: repoRoot, stdout: "inherit", stderr: "inherit" });
   const exitCode = await process.exited;
   if (exitCode !== 0) {
-    throw new Error(`failed to download ${archiveName} from ${RELEASE_REPOSITORY} ${RELEASE_TAG}`);
+    throw new Error(`failed to download ${archiveName} from ${RELEASE_REPOSITORY} ${tag}`);
   }
   return join(directory, archiveName);
 }
@@ -155,7 +157,7 @@ async function main(): Promise<void> {
   try {
     const source = inputs[0]
       ? resolve(process.cwd(), inputs[0])
-      : await downloadArchive(temporaryDirectory, manifest.archiveName);
+      : await downloadArchive(temporaryDirectory, manifest.archiveName, releaseTagFor(manifest));
     await verifyArchive(source, manifest);
 
     const destination = join(repoRoot, "backend/runtime-assets", manifest.archiveName);
