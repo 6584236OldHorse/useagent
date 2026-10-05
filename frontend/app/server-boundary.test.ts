@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -36,17 +37,42 @@ function resolveRelative(from: string, specifier: string): string | null {
   return null;
 }
 
-/** Named imports from sibling client modules that the server module invokes as functions. */
+/** The names a module hands out that are client references: every export of a
+ *  client module, and, one level deep, what a plain module re-exports from one
+ *  ("export { x } from" or "export * from"), so an intervening plain module
+ *  cannot hide a client helper. */
+function clientReferenceNames(target: string): { all: boolean; names: Set<string> } {
+  const source = readFileSync(target, "utf8");
+  if (isClientModule(source)) return { all: true, names: new Set() };
+  const names = new Set<string>();
+  let all = false;
+  for (const match of source.matchAll(/export\s*(\*|\{[^}]*\})\s*from\s*["'](\.[^"']*)["']/g)) {
+    const via = resolveRelative(target, match[2] ?? "");
+    if (!via || !isClientModule(readFileSync(via, "utf8"))) continue;
+    if (match[1] === "*") all = true;
+    else for (const raw of match[1]!.slice(1, -1).split(",")) {
+      const name = raw.split(/\s+as\s+/).pop()?.trim();
+      if (name) names.add(name);
+    }
+  }
+  return { all, names };
+}
+
+/** Named imports that are client references (directly or through one plain
+ *  re-export) which the server module invokes as functions. */
 export function serverCallsIntoClientModules(source: string, file: string): string[] {
   if (isClientModule(source)) return [];
   const offences: string[] = [];
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'](\.[^"']*)["']/g)) {
     const target = resolveRelative(file, match[2] ?? "");
-    if (!target || !isClientModule(readFileSync(target, "utf8"))) continue;
+    if (!target) continue;
+    const client = clientReferenceNames(target);
     for (const raw of (match[1] ?? "").split(",")) {
-      const name = raw.replace(/^type\s+/, "").split(/\s+as\s+/).pop()?.trim();
-      if (!name || raw.trim().startsWith("type ")) continue;
-      if (new RegExp(`(?<![\\w.<])${name}\\s*\\(`).test(source)) offences.push(`${name} from ${match[2]}`);
+      if (raw.trim().startsWith("type ")) continue;
+      const imported = raw.split(/\s+as\s+/)[0]?.trim();
+      const local = raw.split(/\s+as\s+/).pop()?.trim();
+      if (!imported || !local || !(client.all || client.names.has(imported))) continue;
+      if (new RegExp(`(?<![\\w.<])${local}\\s*\\(`).test(source)) offences.push(`${local} from ${match[2]}`);
     }
   }
   return offences;
@@ -65,4 +91,22 @@ test("the rule catches the shape that crashed the composer page", () => {
   expect(serverCallsIntoClientModules(source, page)).toEqual(["FirstRunGate from ./first-run-gate"]);
   const fine = 'import { FirstRunGate } from "./first-run-gate";\nimport { taskPrefilled } from "./task-prefill";\nexport default function Page() { return <FirstRunGate prefilled={taskPrefilled({ repo: null, prompt: "" })} />; }\n';
   expect(serverCallsIntoClientModules(fine, page)).toEqual([]);
+});
+
+test("one plain re-export cannot hide a client helper from the rule", () => {
+  const dir = mkdtempSync(join(tmpdir(), "server-boundary-"));
+  try {
+    writeFileSync(join(dir, "client.tsx"), '"use client";\nexport function helper() { return 1; }\nexport function other() { return 2; }\n');
+    writeFileSync(join(dir, "plain.ts"), 'export { helper } from "./client";\nexport function honest() { return 3; }\n');
+    writeFileSync(join(dir, "star.ts"), 'export * from "./client";\n');
+    const page = join(dir, "page.tsx");
+    const viaNamed = 'import { helper, honest } from "./plain";\nexport default function Page() { return <p>{helper()}{honest()}</p>; }\n';
+    expect(serverCallsIntoClientModules(viaNamed, page)).toEqual(["helper from ./plain"]);
+    const viaStar = 'import { other as renamed } from "./star";\nexport default function Page() { return <p>{renamed()}</p>; }\n';
+    expect(serverCallsIntoClientModules(viaStar, page)).toEqual(["renamed from ./star"]);
+    const asElement = 'import { helper } from "./plain";\nexport default function Page() { return <helper />; }\n';
+    expect(serverCallsIntoClientModules(asElement, page)).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

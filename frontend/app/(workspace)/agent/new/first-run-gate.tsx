@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { listWorkspaces, useSession } from "@/lib/auth";
 import { type LandingDecision, settleLanding, watchLanding } from "@/lib/first-run";
 
@@ -30,6 +30,8 @@ export function FirstRunGate({
   const router = useRouter();
   const { session, loading } = useSession();
   const [decision, setDecision] = useState<LandingDecision>(initialDecision ?? (prefilled ? "stay" : "pending"));
+  /** A navigation was requested from this page while the check was pending. */
+  const leaving = useRef(false);
 
   // A task can arrive while the check is pending (a project's "New thread"
   // changes only the query, and state survives that): settle on the composer
@@ -38,16 +40,38 @@ export function FirstRunGate({
     if (prefilled) setDecision((current) => settleLanding(current, "stay"));
   }, [prefilled]);
 
+  // Any activation on the page while the check is pending (a click, Enter or
+  // Space on a link, a menu item, a button) may be a navigation whose page has
+  // not rendered yet; it is recorded here, in the capture phase, before the
+  // handler that asks the router, so the check's answer can no longer open
+  // the first-run page over it.
+  useEffect(() => {
+    if (decision !== "pending") return;
+    const mark = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Enter" && event.key !== " ") return;
+      leaving.current = true;
+      setDecision((current) => settleLanding(current, "stay"));
+    };
+    document.addEventListener("click", mark, true);
+    document.addEventListener("keydown", mark, true);
+    return () => {
+      document.removeEventListener("click", mark, true);
+      document.removeEventListener("keydown", mark, true);
+    };
+  }, [decision]);
+
   useEffect(() => {
     if (decision !== "pending" || loading) return;
     if (!session) {
       setDecision("stay");
       return;
     }
+    const startedAt = window.location.pathname + window.location.search;
     return watchLanding({
       userId: session.user.id,
       listWorkspaces,
       settle: (outcome) => setDecision((current) => settleLanding(current, outcome)),
+      stillHere: () => !leaving.current && window.location.pathname + window.location.search === startedAt,
     });
   }, [decision, loading, session]);
 

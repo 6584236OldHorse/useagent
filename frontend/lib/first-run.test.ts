@@ -59,6 +59,7 @@ function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], 
         fail = () => reject(new Error("workspaces 503"));
       }),
     settle: (outcome) => outcomes.push(outcome),
+    stillHere: () => true,
   });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {

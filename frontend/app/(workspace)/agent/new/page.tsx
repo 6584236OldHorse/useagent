@@ -78,7 +78,7 @@ function RecentTasks({ runs }: { runs: RecentRun[] }) {
 export default async function NewTaskPage({
   searchParams,
 }: {
-  searchParams: Promise<{ repo?: string | string[]; prompt?: string | string[] }>;
+  searchParams: Promise<{ repo?: string | string[]; prompt?: string | string[]; skill?: string | string[] }>;
 }) {
   const params = await searchParams;
   const requestedRepo = params.repo;
@@ -86,6 +86,8 @@ export default async function NewTaskPage({
   // Deep-link prefill: surfaces like "Discuss PR" open the composer with the
   // prompt already drafted (e.g. the repo + PR number the agent should read).
   const initialPrompt = typeof params.prompt === "string" ? params.prompt : "";
+  // The composer reads ?skill= itself; the gate only needs to know it is there.
+  const requestedSkill = typeof params.skill === "string" && params.skill ? params.skill : null;
   const [skills, recentRuns] = await Promise.all([fetchSkills(), fetchRecentRuns()]);
 
   return (
@@ -97,7 +99,7 @@ export default async function NewTaskPage({
           </div>
 
           <div className="mt-8">
-            <FirstRunGate prefilled={taskPrefilled({ repo: initialRepository, prompt: initialPrompt })}>
+            <FirstRunGate prefilled={taskPrefilled({ repo: initialRepository, prompt: initialPrompt, skill: requestedSkill })}>
               <NewTaskComposer
                 skills={skills}
                 initialRepository={initialRepository}

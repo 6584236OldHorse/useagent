@@ -55,6 +55,11 @@ export function watchLanding(deps: {
   readonly userId: string;
   readonly listWorkspaces: () => Promise<Workspace[]>;
   readonly settle: (outcome: "stay" | "open") => void;
+  /** Asked when the answer arrives: is the page this check was started for
+   *  still the one in front of the person, with no navigation requested from
+   *  it meanwhile? A pending navigation has nothing rendered yet, so this is
+   *  what keeps the first-run page from superseding it. */
+  readonly stillHere: () => boolean;
 }): () => void {
   let cancelled = false;
   if (firstRunSkipped(deps.userId)) {
@@ -65,7 +70,7 @@ export function watchLanding(deps: {
     .listWorkspaces()
     .then((workspaces) => {
       if (cancelled) return;
-      deps.settle(firstRunApplies(workspaces.find((workspace) => workspace.active)) ? "open" : "stay");
+      deps.settle(deps.stillHere() && firstRunApplies(workspaces.find((workspace) => workspace.active)) ? "open" : "stay");
     })
     .catch(() => {
       if (!cancelled) deps.settle("stay");
