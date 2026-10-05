@@ -31,7 +31,6 @@ import {
 import { type AssistantIdentity, Conversation } from "@/components/chat/conversation";
 import { DesktopPane } from "@/components/chat/desktop-pane";
 import { DiffPane } from "@/components/chat/diff-pane";
-import { EditorPane } from "@/components/chat/editor-pane";
 import { decodeRunAccepted, type HandoffReceipt, handoffNotice } from "@/components/chat/handoff-receipts";
 import { useGatewayApprovals } from "@/components/chat/use-gateway-approvals";
 import { OrbBootIndicator } from "@/components/chat/orb-boot-indicator";
@@ -49,7 +48,6 @@ import {
   SurfaceChooser,
 } from "@/components/chat/surface-chooser";
 import { useAgentsRailDeepLink } from "@/components/chat/use-agents-rail-deep-link";
-import { TerminalPane } from "@/components/chat/terminal-pane";
 import { terminalRunIdForThread } from "@/components/chat/terminal-run-state";
 import type { TimelineArtifact } from "@/components/chat/timeline";
 import { ComposerPrefillProvider } from "@/components/chat/composer-prefill-context";
@@ -60,7 +58,7 @@ import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/ch
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
 
-import { WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
 import {
   type ApiRun,
   type EngineId,

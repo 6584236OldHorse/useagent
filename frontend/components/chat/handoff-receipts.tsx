@@ -126,9 +126,9 @@ export function isHandoffSuccess(receipt: HandoffReceipt): boolean {
 export function mergeHandoffReceipts(
   optimistic: readonly HandoffReceipt[] | undefined,
   durable: readonly HandoffReceipt[] | undefined,
-): HandoffReceipt[] | undefined {
-  if (!optimistic?.length) return durable ? [...durable] : undefined;
-  if (!durable?.length) return [...optimistic];
+): readonly HandoffReceipt[] | undefined {
+  if (!optimistic?.length) return durable;
+  if (!durable?.length) return optimistic;
   const durableByBot = new Map(durable.map((receipt) => [receipt.botId, receipt]));
   const merged = optimistic.map((receipt) => {
     const persisted = durableByBot.get(receipt.botId);

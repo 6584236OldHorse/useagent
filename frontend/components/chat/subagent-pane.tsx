@@ -1,24 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import dynamic from "next/dynamic";
 import { RiCloseLine, RiEyeLine, RiRobot2Line } from "@remixicon/react";
-import { decodeApiRun } from "@useagent/agent-client";
-import { backendFetch } from "@/lib/backend-fetch";
-import { createRun } from "@/lib/create-run";
 import { cx as cn } from "@/utils/cx";
-import { Composer } from "@/components/chat/composer";
-import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { LoadingState } from "@/components/ai/loading-state";
-import { useRunStream } from "@/components/chat/use-run-stream";
-import {
-  engineLabel,
-  isLiveStatus,
-  type ApiRun,
-  type EngineId,
-  type RunStatus,
-} from "@/components/chat/types";
-import { deriveSubagents } from "@/components/chat/subagents";
+import type { ApiRun, RunStatus } from "@/components/chat/types";
 
 /**
  * Subagent viewing pane — the Omni pattern ported to the web. A subagent (any
@@ -32,6 +20,10 @@ import { deriveSubagents } from "@/components/chat/subagents";
  * Active-runs list, or a future fan-out UI — can pop it open with a bare
  * `openSubagentPane(runId)` call and no prop-drilling. Mount `<SubagentPane />`
  * exactly once (globally, in the provider stack).
+ *
+ * This module is what every route mounts, so it stays light: the loaded pane
+ * (run fetch, run stream, step rows, pass-down composer) lives in
+ * subagent-pane-body.tsx and is code-split behind the first open.
  */
 
 /* ------------------------------------------------------------------ store -- */
@@ -74,7 +66,7 @@ function useOpenRunId(): string | null {
 
 /* ------------------------------------------------------------- primitives -- */
 
-function statusTone(status: RunStatus): { pill: string; dot: string; pulse: boolean } {
+export function statusTone(status: RunStatus): { pill: string; dot: string; pulse: boolean } {
   switch (status) {
     case "queued":
     case "running":
@@ -86,24 +78,7 @@ function statusTone(status: RunStatus): { pill: string; dot: string; pulse: bool
   }
 }
 
-function StatusPill({ status }: { status: RunStatus }) {
-  const tone = statusTone(status);
-  return (
-    <span
-      className={cn(
-        "ml-auto flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-caption-1-medium capitalize",
-        tone.pill,
-      )}
-    >
-      {isLiveStatus(status) && (
-        <span className={cn("ai-loading-pixel size-1.5 rounded-full", tone.dot)} />
-      )}
-      {status}
-    </span>
-  );
-}
-
-function CloseButton() {
+export function CloseButton() {
   return (
     <button
       type="button"
@@ -116,107 +91,8 @@ function CloseButton() {
   );
 }
 
-/* -------------------------------------------------------------- pane body -- */
-
-/**
- * The live inner pane once the child run is loaded. Owns the SSE subscription
- * (via `useRunStream`) so the trace streams in real time, and the pass-down
- * composer that spawns a further child and follows it in-place.
- */
-function SubagentPaneBody({ initialRun }: { initialRun: ApiRun }) {
-  const { steps, status, summary, live } = useRunStream(initialRun);
-  const [sending, setSending] = useState(false);
-  const activity = steps.filter((s) => s.kind !== "done");
-  // Prefer native child-session grouping where available: when this run fanned
-  // out, indent each nested step under the subagent whose native child session
-  // it ran in (falls back to the "↳ " label indent for pre-native-stamp runs).
-  const { ownerByStep } = deriveSubagents(steps);
-
-  const passDown = useCallback(
-    async (text: string, engine: EngineId, _model: string, idempotencyKey: string) => {
-      setSending(true);
-      try {
-        const res = await createRun(
-          {
-            prompt: text,
-            engine,
-            parent_run_id: initialRun.id,
-          },
-          idempotencyKey,
-        );
-        if (!res.ok) throw new Error(`backend ${res.status}`);
-        const { id } = (await res.json()) as { id: string };
-        // Follow the freshly-spawned child in-pane (remounts this body).
-        openSubagentPane(id);
-      } catch {
-        setSending(false);
-      }
-    },
-    [initialRun.id],
-  );
-
-  return (
-    <>
-      <header className="border-border-button-default flex shrink-0 items-start gap-2.5 border-b px-4 py-3">
-        <span className="bg-background-secondary-default text-foreground-icon-secondary mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg">
-          <RiRobot2Line className="size-3.5" aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="text-mono-label text-text-tertiary">Subagent</span>
-            <span className="text-text-tertiary">·</span>
-            <span className="text-mono-label text-text-tertiary">
-              {engineLabel(initialRun.engine)}
-            </span>
-            <StatusPill status={status} />
-          </div>
-          <p className="text-body-2-medium text-text-primary mt-1 line-clamp-2">
-            {initialRun.prompt}
-          </p>
-        </div>
-        <CloseButton />
-      </header>
-
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {summary && (
-          <p className="text-body-2-regular text-text-secondary border-border-button-default border-b pb-3">
-            {summary}
-          </p>
-        )}
-
-        {activity.length === 0 ? (
-          <p className="text-body-2-regular text-text-tertiary py-6 text-center">
-            {live ? "Waiting for the first step…" : "No activity recorded."}
-          </p>
-        ) : (
-          <div className="space-y-2.5">
-            {activity.map((step, i) => (
-              <ToolStepRow
-                key={step.id}
-                step={step}
-                state={live && i === activity.length - 1 ? "running" : "done"}
-                nested={ownerByStep.has(step.id) ? true : undefined}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="border-border-button-default shrink-0 border-t p-3">
-        <Composer
-          variant="compact"
-          placeholder="Pass instructions down…"
-          defaultEngine={initialRun.engine}
-          pending={sending}
-          onSubmit={passDown}
-        />
-      </div>
-    </>
-  );
-}
-
 /** Header shell reused for the loading / error states (no run loaded yet). */
-function PaneStub({ children }: { children: React.ReactNode }) {
+export function PaneStub({ children }: { children: React.ReactNode }) {
   return (
     <>
       <header className="border-border-button-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
@@ -231,6 +107,15 @@ function PaneStub({ children }: { children: React.ReactNode }) {
 
 /* ------------------------------------------------------------- pane shell -- */
 
+const SubagentPaneBody = dynamic(() => import("@/components/chat/subagent-pane-body"), {
+  ssr: false,
+  loading: () => (
+    <PaneStub>
+      <LoadingState label="Loading run" />
+    </PaneStub>
+  ),
+});
+
 /**
  * The global, single-instance pane. Renders a fixed right-hand slide-over via a
  * portal, off-screen (`translate-x-full`) and inert until a run id is set. No
@@ -239,32 +124,8 @@ function PaneStub({ children }: { children: React.ReactNode }) {
 export function SubagentPane() {
   const runId = useOpenRunId();
   const [mounted, setMounted] = useState(false);
-  const [run, setRun] = useState<ApiRun | null>(null);
-  const [errored, setErrored] = useState(false);
 
   useEffect(() => setMounted(true), []);
-
-  // Fetch the run to view whenever the target id changes.
-  useEffect(() => {
-    if (!runId) return;
-    let cancelled = false;
-    setRun(null);
-    setErrored(false);
-    (async () => {
-      try {
-        const res = await backendFetch(`/api/runs/${runId}`);
-        if (!res.ok) throw new Error(`backend ${res.status}`);
-        const data = decodeApiRun(await res.json());
-        if (!data) throw new Error("invalid run response");
-        if (!cancelled) setRun(data);
-      } catch {
-        if (!cancelled) setErrored(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId]);
 
   // Esc closes the pane (parent session regains focus).
   useEffect(() => {
@@ -289,20 +150,7 @@ export function SubagentPane() {
         open ? "translate-x-0" : "pointer-events-none translate-x-full",
       )}
     >
-      {open &&
-        (run ? (
-          <SubagentPaneBody key={run.id} initialRun={run} />
-        ) : errored ? (
-          <PaneStub>
-            <p className="text-body-2-regular text-text-secondary text-center">
-              Couldn&apos;t load this run.
-            </p>
-          </PaneStub>
-        ) : (
-          <PaneStub>
-            <LoadingState label="Loading run" />
-          </PaneStub>
-        ))}
+      {runId !== null && <SubagentPaneBody key={runId} runId={runId} />}
     </aside>,
     document.body,
   );

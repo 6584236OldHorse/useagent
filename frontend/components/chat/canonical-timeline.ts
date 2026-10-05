@@ -245,6 +245,9 @@ export function collectToolLifecycles(
   events: readonly CanonicalEventLike[],
 ): ReadonlyMap<string, ToolLifecycle> {
   const mutable = new Map<string, ToolLifecycle>();
+  // One id list per call, appended in place: a tool with many progress events
+  // must not copy its whole history on every event.
+  const nativeIds = new Map<string, string[]>();
   for (const event of events) {
     if (
       (event.kind !== "tool.started" &&
@@ -256,13 +259,17 @@ export function collectToolLifecycles(
     }
     const previous = mutable.get(event.toolCallId);
     const nativeEventId = event.identity?.nativeEventId;
+    let nativeEventIds = nativeIds.get(event.toolCallId);
+    if (!nativeEventIds) {
+      nativeEventIds = [];
+      nativeIds.set(event.toolCallId, nativeEventIds);
+    }
+    if (nativeEventId) nativeEventIds.push(nativeEventId);
     mutable.set(event.toolCallId, {
       toolCallId: event.toolCallId,
       firstSeq: previous?.firstSeq ?? event.seq,
       lastSeq: event.seq,
-      nativeEventIds: nativeEventId
-        ? [...(previous?.nativeEventIds ?? []), nativeEventId]
-        : (previous?.nativeEventIds ?? []),
+      nativeEventIds,
       name: event.name ?? previous?.name ?? "tool",
       title: event.title ?? previous?.title ?? event.name ?? "Tool",
       input: event.input ?? previous?.input,

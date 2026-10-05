@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProductThreadStatus, ThreadRelationship } from "@useagent/agent-client";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import type { OrgChange } from "@/lib/org-changes";
@@ -132,10 +132,17 @@ export function useThreadFamily(
     return () => clearInterval(id);
   }, [childActive, load]);
 
+  // Stable across renders while the family is unchanged, so consumers keyed on
+  // it (turn blocks, child groupings) keep their memoized identity.
+  const descendants = useMemo(
+    () => descendantThreadRelationships(state.children, threadId),
+    [state.children, threadId],
+  );
+
   return {
     ...state,
     ready: !state.loading && state.error === null && state.relationship !== null,
     isProductChild: Boolean(state.relationship?.parentThreadId),
-    descendants: descendantThreadRelationships(state.children, threadId),
+    descendants,
   };
 }
