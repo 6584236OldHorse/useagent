@@ -480,7 +480,7 @@ export function ModelPicker({
                         <RiCheckLine className="size-4" aria-hidden />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="text-body-2-medium text-text-primary block">
+                        <span className="text-body-2-regular text-text-primary block">
                           {e.label}
                         </span>
                         {e.description ? (

@@ -43,6 +43,8 @@ import {
 } from "@/components/chat/rail-resizer";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
+  RAIL_ICON_BUTTON,
+  RAIL_TAB_LABEL_COLLAPSE,
   railTabLabelFor,
   type SurfaceChoice,
   SurfaceChooser,
@@ -83,12 +85,6 @@ import type { InitialThreadRelationshipHint } from "@/lib/thread-relationship-hi
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun, createThreadMessage, runCreateFailureMessage } from "@/lib/create-run";
 import { cx } from "@/utils/cx";
-// The rail is a resizable sub-viewport panel (viewport breakpoints can't
-// describe it), so a container query on the switcher header collapses each
-// surface pill to icon-only (label -> sr-only keeps the accessible name) once
-// the strip is too narrow for up to 7 labels; scroll is the final fallback.
-const RAIL_TAB_LABEL_COLLAPSE = "@max-[40rem]:sr-only";
-
 /**
  * The coding-session surface: a threaded conversation column beside a vertical
  * editor|terminal split. The whole thread renders as one conversation, driven by
@@ -699,7 +695,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                   onClick={openSurfacesSheet}
                   title="Open surfaces panel"
                   aria-label="Open surfaces panel"
-                  className={splitTooNarrow ? undefined : "md:hidden"}
+                  className={cx(RAIL_ICON_BUTTON, !splitTooNarrow && "md:hidden")}
                 />
               )}
             </div>
@@ -957,7 +953,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 }
                 aria-pressed={railExpanded}
                 aria-keyshortcuts={railExpanded ? "Escape" : undefined}
-                className={cx("hidden shrink-0", !splitTooNarrow && "md:flex")}
+                className={cx(RAIL_ICON_BUTTON, "hidden shrink-0", !splitTooNarrow && "md:flex")}
               />
               <Button
                 variant="ghost"
@@ -970,14 +966,14 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 }}
                 title="Collapse panel"
                 aria-label="Collapse side panel"
-                className={cx("hidden shrink-0", !splitTooNarrow && "md:flex")}
+                className={cx(RAIL_ICON_BUTTON, "hidden shrink-0", !splitTooNarrow && "md:flex")}
               />
               {/* On the sheet a single Close X replaces Expand/Collapse. */}
               <CloseButton
                 size="md"
                 aria-label="Close surfaces panel"
                 onClick={() => setRailOverride(false)}
-                className={splitTooNarrow ? undefined : "md:hidden"}
+                className={cx(RAIL_ICON_BUTTON, !splitTooNarrow && "md:hidden")}
               />
             </div>
             <div className="relative min-h-0 flex-1">

@@ -23,7 +23,7 @@ import { cx } from "@/utils/cx";
 
 /** Full-width row styling for a control inside the "+" add-context menu. */
 export const ADD_MENU_ROW =
-  "flex w-full cursor-pointer items-center gap-2.5 rounded-2lg px-2.5 py-1 text-left text-body-2-medium text-text-primary transition-colors hover:bg-background-primary-hover";
+  "flex w-full cursor-pointer items-center gap-2.5 rounded-2lg px-2.5 py-1 text-left text-body-2-regular text-text-primary transition-colors hover:bg-background-primary-hover";
 
 /** "Create" actions: the colored BoardUI plugin icons (public/plugin-icons) that
  *  seed the prompt with a real artifact-creation task the agent can execute (it
@@ -48,7 +48,7 @@ function RowText({
 }) {
   return (
     <span className={cx("flex min-w-0 flex-1", inline ? "flex-row items-center gap-2" : "flex-col")}>
-      <span className="shrink-0 text-body-2-medium text-text-primary">{title}</span>
+      <span className="shrink-0 text-body-2-regular text-text-primary">{title}</span>
       <span
         className={cx(
           "truncate text-text-tertiary",

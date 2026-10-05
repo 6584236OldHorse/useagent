@@ -11,7 +11,27 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ai/code-block";
 import { type OpenWorkpiece, useOpenWorkpiece } from "@/components/chat/workspace-open-context";
 import { backendFetch } from "@/lib/backend-fetch";
+import { getFaviconUrl } from "@/lib/favicon";
 import { cx } from "@/utils/cx";
+
+/** The site favicon ahead of an external link, so a source reads at a glance;
+ *  nothing when the site has none (the link text stands alone). */
+function LinkFavicon({ url }: { url: string }) {
+  const favicon = getFaviconUrl(url);
+  const [failed, setFailed] = useState(false);
+  if (!favicon || failed) return null;
+  return (
+    <img
+      src={favicon}
+      alt=""
+      width={16}
+      height={16}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className="mr-1 inline-block size-3.5 rounded-sm object-contain align-[-2px]"
+    />
+  );
+}
 
 export type MarkdownProps = {
   children: string;
@@ -270,6 +290,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     }
     return (
       <a href={url} target="_blank" rel="noreferrer">
+        <LinkFavicon url={url} />
         {children}
       </a>
     );

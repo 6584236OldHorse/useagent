@@ -17,6 +17,8 @@
 //   TooltipTrigger can attach hover/focus behavior). The size/variant props
 //   are dropped - one fixed size serves this surface.
 // - Upstream's aria-label "Copy link" is a misnomer; ours says "Copy message".
+// - The outline border is dropped: a bare icon with a neutral hover, the way
+//   their current message footer draws it beside the timestamp.
 
 import { RiCheckLine, RiFileCopyLine } from "@remixicon/react";
 import { memo, useEffect, useRef, useState } from "react";
@@ -65,12 +67,12 @@ export const MessageCopyButton = memo(function MessageCopyButton({
           aria-label={label}
           disabled={copied}
           onClick={() => void copy()}
-          className="flex size-6 items-center justify-center rounded-md border border-border-button-default text-text-secondary outline-none transition-colors hover:bg-background-primary-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+          className="flex size-6 items-center justify-center rounded-md text-text-tertiary outline-none transition-colors hover:bg-background-secondary-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-focus-ring"
         >
           {copied ? (
-            <RiCheckLine className="size-3 text-lime-600" />
+            <RiCheckLine className="size-3.5 text-lime-600" />
           ) : (
-            <RiFileCopyLine className="size-3" />
+            <RiFileCopyLine className="size-3.5" />
           )}
         </button>
       </Focusable>
