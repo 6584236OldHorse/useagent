@@ -61,22 +61,28 @@ async function runsWhere(orgId: string, where: ReturnType<typeof and>): Promise<
 
 const live = (run: RunRow): boolean => (LIVE_STATUSES as readonly string[]).includes(run.status);
 
-/** Record the cancel, then abort a live actor or settle a crash zombie. The thread is pumped by the caller once every run it holds is cancelled. */
-async function cancelRun(input: StopInput, run: RunRow): Promise<CancelResult> {
+/** Record the cancel. What the run was when the cancel was recorded, not when it was listed: a queued run was failed inside the cancel transaction; a running one still has to be signalled. */
+async function recordCancel(input: StopInput, run: RunRow): Promise<CancelResult & { readonly status?: string }> {
   const outcome = await acceptRunCancel({ ...input, runId: run.id });
   if (outcome.status === "not_found") return { kind: "terminal", runStatus: run.status };
   if (outcome.status === "terminal") return { kind: "terminal", runStatus: outcome.runStatus };
   const kind = outcome.status === "already" ? "replay" : "cancelled";
-  // What the run was when the cancel was recorded, not when it was listed: a
-  // queued run was failed inside the cancel transaction; a running one is
-  // aborted in process, and with no live actor it is a crash zombie, settled
-  // now rather than left to recovery, on a repeated Stop as well.
   const status = outcome.status === "accepted" ? outcome.runStatusWas : (await runRow(input.orgId, run.id))?.status;
-  if (status === "running" && !signalCancel(run.id, CANCEL_SUMMARY)) {
-    const settledAs = await settleZombieCancel(run.id);
-    if (settledAs) return { kind, settledAs };
-  }
-  return { kind };
+  return { kind, status };
+}
+
+/** Abort a live actor, or settle a crash zombie now rather than leave it to recovery, on a repeated Stop as well. Returns the status another party settled the run with meanwhile. */
+async function signalRun(run: RunRow): Promise<string | undefined> {
+  if (signalCancel(run.id, CANCEL_SUMMARY)) return undefined;
+  return (await settleZombieCancel(run.id)) ?? undefined;
+}
+
+/** Record and signal in one step; the reader's own run takes this path. */
+async function cancelRun(input: StopInput, run: RunRow): Promise<CancelResult> {
+  const recorded = await recordCancel(input, run);
+  if (recorded.kind === "terminal" || recorded.status !== "running") return recorded;
+  const settledAs = await signalRun(run);
+  return settledAs ? { kind: recorded.kind, settledAs } : { kind: recorded.kind };
 }
 
 function chunks<T>(items: readonly T[]): T[][] {
@@ -191,11 +197,11 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
   const rootResult = await cancelRun(input, root);
   if (rootResult.kind === "terminal") return { status: "settled", runStatus: rootResult.runStatus };
 
-  // Every delegated run is cancelled before any thread is pumped, so a pump
-  // cannot start a queued follow-up that is about to be cancelled. A queued
-  // run whose cancel failed keeps its thread's running actors unsignalled
-  // (their teardown would pump it) and its thread unpumped; it is tried
-  // again on the next pass. Passes continue until one finds nothing new.
+  // Every cancel in a pass is recorded before any actor in it is signalled:
+  // a signalled actor's teardown pumps its thread, and whatever it would
+  // dispatch is already settled by then. A run whose cancel failed keeps its
+  // thread's actors unsignalled and its thread unpumped, and is tried again
+  // on the next pass. Passes continue until one finds nothing new.
   const touched = new Set([root.threadId]);
   const handled = new Set<string>();
   const failed = new Map<string, string>();
@@ -208,21 +214,26 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
     const fresh = (await liveDelegatedRuns(input.orgId, root)).filter((run) => !handled.has(run.id));
     if (fresh.length === 0) break;
     const blocked = new Set<string>();
+    const toSignal: RunRow[] = [];
     let progressed = false;
     for (const run of fresh) {
-      if (run.status === "running" && blocked.has(run.threadId)) continue;
       try {
-        const result = await cancelRun(input, run);
+        const recorded = await recordCancel(input, run);
         handled.add(run.id);
         failed.delete(run.id);
         touched.add(run.threadId);
         progressed = true;
-        if (result.kind === "cancelled") children += 1;
+        if (recorded.kind === "cancelled") children += 1;
+        if (recorded.kind !== "terminal" && recorded.status === "running") toSignal.push(run);
       } catch (error) {
         failed.set(run.id, run.threadId);
-        if (run.status === "queued") blocked.add(run.threadId);
+        blocked.add(run.threadId);
         console.warn(`[stop] delegated run ${run.id} was not cancelled with ${input.runId}:`, error);
       }
+    }
+    for (const run of toSignal) {
+      if (blocked.has(run.threadId)) continue;
+      await signalRun(run).catch((error) => console.warn(`[stop] delegated run ${run.id} could not be signalled:`, error));
     }
     if (!progressed) break;
   }

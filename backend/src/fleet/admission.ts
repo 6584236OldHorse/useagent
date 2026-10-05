@@ -86,7 +86,11 @@ export async function admitClaimedRun(runId: string): Promise<AdmitResult> {
         },
         tx,
       );
-      await markAdmissionLeased(runId, leaseId, tx);
+      if (!(await markAdmissionLeased(runId, leaseId, tx))) {
+        // A Stop settled the run between the read above and this grant.
+        await releaseLeaseForRun(runId, tx);
+        return { admit: false, leaseId: null, decision: "reject_invalid_request" };
+      }
       return { admit: true, leaseId, decision: "admit" };
     }
 
