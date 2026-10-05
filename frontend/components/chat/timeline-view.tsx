@@ -360,7 +360,13 @@ export function Timeline({
   // Durable file.changed receipts live in the closing tail, while edit/write
   // tool calls live in work. Aggregate the complete turn so either source feeds
   // the same compact changed-files strip.
-  const files = useMemo(() => changedFilesFromTimeline(nodes), [nodes]);
+  // A subagent's edits belong to its row too, never to the parent's own count.
+  const files = useMemo(() => {
+    const own = trace.childSteps
+      ? nodes.filter((node) => !(node.kind === "tool" && trace.childSteps?.has(node.step.id)))
+      : nodes;
+    return changedFilesFromTimeline(own);
+  }, [nodes, trace.childSteps]);
   const header = useMemo(
     () =>
       traceHeader({

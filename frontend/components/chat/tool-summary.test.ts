@@ -396,6 +396,11 @@ describe("listingEntryCount", () => {
   });
 
   test("a flat listing counts every non-empty line; no output is no count", () => {
+    // A flat listing whose first entry is a directory keeps that entry.
+    expect(
+      listingEntryCount(step({ code: { tool: "list", input: { path: "." }, output: "src/\nREADME.md" } })),
+    ).toBe(2);
+    expect(listingEntryCount(step({ code: { tool: "list", input: { path: "." }, output: "src/" } }))).toBe(1);
     expect(
       listingEntryCount(step({ code: { tool: "list", input: { path: "." }, output: "a\nb\n\n" } })),
     ).toBe(2);

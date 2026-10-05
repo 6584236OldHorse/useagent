@@ -387,6 +387,8 @@ export function listingEntryCount(step: ApiStep): number | null {
   const text = unwrapToolOutput(deriveTrace(step).detail);
   if (!text) return null;
   const lines = text.split("\n").filter((line) => line.trim());
-  const root = lines[0]?.trimEnd().endsWith("/") ? 1 : 0;
+  // A tree listing opens with its root ("src/") over indented entries; a flat
+  // listing whose first entry happens to be a directory keeps that entry.
+  const root = lines[0]?.trimEnd().endsWith("/") && /^\s/.test(lines[1] ?? "") ? 1 : 0;
   return lines.length - root;
 }

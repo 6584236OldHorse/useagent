@@ -318,6 +318,20 @@ describe("turn trace", () => {
     expect(html).toContain(">· called 1 tool · 3m 12.0s<");
   });
 
+  test("a subagent's file edit never counts as the parent's edited file", () => {
+    const edit = toolNode("s7", {
+      tool: "edit",
+      input: { file_path: "src/child.ts", old_string: "a", new_string: "a\nb" },
+      output: "Edited src/child.ts",
+    });
+    const html = renderToStaticMarkup(
+      <Timeline nodes={[edit, ANSWER]} live={false} trace={{ ...PLAIN, childSteps: new Set(["s7"]) }} />,
+    );
+    expect(html).not.toContain("edited 1 file");
+    expect(html).not.toContain('data-testid="trace-changed-files"');
+    expect(html).not.toContain('data-testid="turn-trace"');
+  });
+
   test("a turn without work or reasoning renders no header at all", () => {
     const html = renderToStaticMarkup(<Timeline nodes={[ANSWER]} live={false} trace={PLAIN} />);
     expect(html).not.toContain('data-testid="turn-trace"');

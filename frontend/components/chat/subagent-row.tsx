@@ -39,7 +39,7 @@ const SUMMARY_FOLD_CHARS = 240;
 function SummaryCard({ text }: { text: string }) {
   const [more, setMore] = useState(false);
   // ponytail: a length heuristic stands in for measuring three rendered lines.
-  const long = text.length > SUMMARY_FOLD_CHARS || text.split("\n").length > 3;
+  const long = text.length >= SUMMARY_FOLD_CHARS || text.split("\n").length > 3;
   return (
     <div
       data-testid="subagent-summary"
@@ -105,7 +105,7 @@ export function SubagentRow({
     fidelity?.usage ? `${formatSubagentTokenCount(fidelity.usage.totalTokens)} tok` : null,
   ].filter((value): value is string => value !== null);
   const statusLabel = childStatusLabel(status, fidelity?.resumable ?? null);
-  const progress = active ? (fidelity?.progress ?? card.status) : null;
+  const progress = active ? (fidelity?.progress ?? card.status ?? "Working") : null;
 
   return (
     <li data-testid="subagent-fold-row" data-status={status}>
