@@ -6,7 +6,7 @@ In the no-sandbox Chat surface, upload a synthetic screenshot of a counter and a
 
 The captured live run also returns the generic message `chat request failed`. A later scoped read-only OpenRouter key-status check confirmed HTTP 401 with an expiry error for the unchanged selected credential. This is separate from missing-image forwarding. After the user replaced the key, the status check returned 200 and the same Chat thread completed a text reply successfully; image forwarding remains absent in the deployed worker.
 
-Screenshot: `live-chat-image-failure.png`. It shows the synthetic image attached to the user message beside the generic failure. It is before-fix evidence, not a deployed-success screenshot.
+The before-fix screenshot (the synthetic image attached to the user message beside the generic failure) is posted on pull request #346, not kept in the repository.
 
 ## Fix contract
 
