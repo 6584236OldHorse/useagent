@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import type { SandboxExecuteResult, SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import { prefetchSandboxResult, takePrefetchedSandboxResult } from "../sandboxes/command-prefetch";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import {
   previewLinkBase,
@@ -141,7 +142,7 @@ export async function prepareCodexSubscription(input: {
     authEpoch: runtime.authEpoch,
     sandboxId: sandbox.id,
     sandboxGeneration: RUNTIME_GENERATION,
-    environmentId: codexExecutionEnvironmentId(productThreadId, sandbox.id),
+    environmentId: codexExecutionEnvironmentId(sandbox.id),
     cwd: workdir,
   };
   const environmentId = scope.environmentId;
@@ -157,15 +158,10 @@ export async function prepareCodexSubscription(input: {
   // ask who holds each service port. A retained sandbox keeps the services an
   // earlier turn started (the detached processes outlive their sessions), so
   // only a missing one is launched.
-  const owners = [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
-  const codeModeBearer = randomBytes(32).toString("hex");
-  const probe = await sandbox.process.executeCommand(
-    `${buildCodexCodeModeTokenCommand(createHash("sha256").update(codeModeBearer).digest("hex"), layout)} && ` +
-      buildSandboxListenerProbeCommand(owners, 0),
-    undefined,
-    undefined,
-    10,
-  ).catch(() => null);
+  const owners = codexServiceOwners(layout);
+  const { codeModeBearer, probe } = await (
+    takePrefetchedSandboxResult<CodexServicesProbe>(sandbox, CODEX_SERVICES_PROBE) ?? probeCodexServices(sandbox)
+  );
   const verdicts = assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners));
   const servicesUp = owners.every(({ port }) => verdicts[port] === LISTENER_OURS);
 
@@ -193,54 +189,11 @@ export async function prepareCodexSubscription(input: {
   // Restarted services or a stale session: whatever this host kept is unusable.
   evictCodexThreadSession(sessionKey, servicesUp ? "stale" : "sandbox services restarted");
 
-  const execServerListening = verdicts[CODEX_EXEC_SERVER_PORT] === LISTENER_OURS;
-  const startCodeMode = {
-    host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
-    forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
-  };
   let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
   let codeModeBridge: ReturnType<typeof openCodexCodeModeBridge> | undefined;
   let relay: CodexRelaySession | undefined;
-  if (!execServerListening) {
-    await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
-  }
   try {
-    if (!execServerListening) {
-      await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
-      const launch = await sandbox.process.executeSessionCommand(
-        CODEX_EXEC_SERVER_SESSION,
-        {
-          command: buildCodexExecServerCommand(environmentId, layout),
-          runAsync: true,
-          suppressInputEcho: true,
-        },
-        30,
-      );
-      if ((launch.exitCode ?? 0) !== 0) {
-        throw new Error("Codex exec-server failed to start");
-      }
-    }
-    if (startCodeMode.host || startCodeMode.forwarder) {
-      await sandbox.process.createSession(CODEX_CODE_MODE_SESSION);
-      const launch = await sandbox.process.executeSessionCommand(
-        CODEX_CODE_MODE_SESSION,
-        { command: buildCodexCodeModeLaunchCommand(layout, startCodeMode), runAsync: true, suppressInputEcho: true },
-        30,
-      );
-      if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
-    }
-    if (!servicesUp) {
-      const readiness = await sandbox.process.executeCommand(
-        buildSandboxListenerProbeCommand(owners, 15_000),
-        undefined,
-        undefined,
-        20,
-      ).catch(() => null);
-      const ready = assertNoForeignListener(readListenerVerdicts(readiness?.result ?? "", owners));
-      if (owners.some(({ port }) => ready[port] !== LISTENER_OURS)) {
-        throw new Error("Codex sandbox services failed readiness");
-      }
-    }
+    await launchMissingCodexServices(sandbox, layout, verdicts);
 
     const sandboxKind = sandbox.providerKind ?? sandboxProviderKind();
     const [execPreview, codeModePreview] = await Promise.all([
@@ -330,6 +283,101 @@ export async function prepareCodexSubscription(input: {
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
   };
+}
+
+/** Start whichever Codex services the probe found missing, then wait until our
+ * own processes hold all three ports. */
+async function launchMissingCodexServices(
+  sandbox: SandboxHandle,
+  layout: SandboxRuntimeLayout,
+  verdicts: NonNullable<ReturnType<typeof readListenerVerdicts>>,
+): Promise<void> {
+  const owners = codexServiceOwners(layout);
+  if (owners.every(({ port }) => verdicts[port] === LISTENER_OURS)) return;
+  if (verdicts[CODEX_EXEC_SERVER_PORT] !== LISTENER_OURS) {
+    await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
+    await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
+    const launch = await sandbox.process.executeSessionCommand(
+      CODEX_EXEC_SERVER_SESSION,
+      {
+        command: buildCodexExecServerCommand(codexExecutionEnvironmentId(sandbox.id), layout),
+        runAsync: true,
+        suppressInputEcho: true,
+      },
+      30,
+    );
+    if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex exec-server failed to start");
+  }
+  const startCodeMode = {
+    host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
+    forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
+  };
+  if (startCodeMode.host || startCodeMode.forwarder) {
+    await sandbox.process.createSession(CODEX_CODE_MODE_SESSION);
+    const launch = await sandbox.process.executeSessionCommand(
+      CODEX_CODE_MODE_SESSION,
+      { command: buildCodexCodeModeLaunchCommand(layout, startCodeMode), runAsync: true, suppressInputEcho: true },
+      30,
+    );
+    if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
+  }
+  const readiness = await sandbox.process.executeCommand(
+    buildSandboxListenerProbeCommand(owners, 15_000),
+    undefined,
+    undefined,
+    20,
+  ).catch(() => null);
+  const ready = assertNoForeignListener(readListenerVerdicts(readiness?.result ?? "", owners));
+  if (owners.some(({ port }) => ready[port] !== LISTENER_OURS)) {
+    throw new Error("Codex sandbox services failed readiness");
+  }
+}
+
+/** A warm-pool sandbox starts the Codex services before any run claims it, so
+ * a new thread's first Codex turn finds them up. No bearer digest is written:
+ * the forwarder refuses every connection until a run admits its own. */
+export async function prewarmCodexServices(sandbox: SandboxHandle): Promise<void> {
+  const layout = codexRuntimeLayout(sandbox);
+  const owners = codexServiceOwners(layout);
+  const probe = await sandbox.process.executeCommand(
+    buildSandboxListenerProbeCommand(owners, 0),
+    undefined,
+    undefined,
+    10,
+  ).catch(() => null);
+  await launchMissingCodexServices(sandbox, layout, assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners)));
+}
+
+const CODEX_SERVICES_PROBE = "codex-services-probe";
+
+interface CodexServicesProbe {
+  readonly codeModeBearer: string;
+  readonly probe: SandboxExecuteResult | null;
+}
+
+function codexServiceOwners(layout: SandboxRuntimeLayout) {
+  return [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
+}
+
+/** One round trip with a fresh code-mode bearer: admit only it from now on, and
+ * report who holds each service port. */
+async function probeCodexServices(sandbox: SandboxHandle): Promise<CodexServicesProbe> {
+  const layout = codexRuntimeLayout(sandbox);
+  const codeModeBearer = randomBytes(32).toString("hex");
+  const probe = await sandbox.process.executeCommand(
+    `${buildCodexCodeModeTokenCommand(createHash("sha256").update(codeModeBearer).digest("hex"), layout)} && ` +
+      buildSandboxListenerProbeCommand(codexServiceOwners(layout), 0),
+    undefined,
+    undefined,
+    10,
+  ).catch(() => null);
+  return { codeModeBearer, probe };
+}
+
+/** Start a warm turn's services probe alongside sandbox acquisition; the
+ * turn's subscription preparation takes it, bearer and all. */
+export function prefetchCodexServicesProbe(sandbox: SandboxHandle): void {
+  prefetchSandboxResult(sandbox, CODEX_SERVICES_PROBE, () => probeCodexServices(sandbox));
 }
 
 /** The run is done: its kept session serves no run, so the relay refuses
@@ -526,9 +574,10 @@ function assertTrustedPreviewHost(
 }
 
 
-/** The remote environment a thread's runs share on one sandbox. */
-function codexExecutionEnvironmentId(threadId: string, sandboxId: string): string {
-  const suffix = `${sandboxId}-${threadId}`
+/** The remote environment of a sandbox's one exec-server, which every run on
+ * the sandbox shares and a warm pool can start before any thread claims it. */
+function codexExecutionEnvironmentId(sandboxId: string): string {
+  const suffix = sandboxId
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")

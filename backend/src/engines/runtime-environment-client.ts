@@ -18,6 +18,7 @@ import {
   nativeRuntimeExecutable,
 } from "./native-runtime-artifact";
 import { ORCHESTRATION_PROTOCOL_HEADER, ORCHESTRATION_PROTOCOL_VERSION } from "./runtime-v2-wire";
+import { recordRuntimeArtifactVerified, runtimeArtifactVerified } from "./runtime-artifact-verifications";
 
 const RUNTIME_AUTH_DIRECTORY = `${RUNTIME_ENVIRONMENT_HOME}/skynet-auth`;
 export const RUNTIME_COOKIE_JAR = `${RUNTIME_AUTH_DIRECTORY}/session.cookies`;
@@ -81,6 +82,15 @@ export interface RuntimeEnvironmentRequest {
 const authenticationOperations = new Map<string | object, Promise<void>>();
 const validatedAccess = new Set<string>();
 const accessOperations = new Map<string, Promise<void>>();
+
+// The artifact probe is a corruption check, run once per sandbox and runtime
+// generation; the record lets a restarted backend skip it as this process would.
+const defaultArtifactVerifications = { verified: runtimeArtifactVerified, record: recordRuntimeArtifactVerified };
+let artifactVerifications = defaultArtifactVerifications;
+
+export function setRuntimeArtifactVerificationsForTest(store: typeof defaultArtifactVerifications | null): void {
+  artifactVerifications = store ?? defaultArtifactVerifications;
+}
 
 type RuntimeLoopbackPath =
   | RuntimeEnvironmentHttpPath
@@ -222,10 +232,11 @@ export function buildRuntimeEnvironmentFirstAccessCommand(
     workdir: RUNTIME_ENVIRONMENT_WORKDIR,
     runsAsRoot: true,
   },
+  artifactVerified = false,
 ): string {
   return [
     "set -eu",
-    buildNativeRuntimeArtifactProbe(layout),
+    ...(artifactVerified ? [] : [buildNativeRuntimeArtifactProbe(layout)]),
     buildRuntimeEnvironmentReadinessCommand(),
     buildRuntimeEnvironmentProtocolProbeCommand(),
     buildRuntimeEnvironmentSessionProbeCommand(),
@@ -374,27 +385,35 @@ async function executeRuntimeEnvironmentFirstAccess(
           workdir: RUNTIME_ENVIRONMENT_WORKDIR,
           runsAsRoot: true,
         };
+    const artifactVerified = sandbox.id
+      ? await artifactVerifications.verified(sandbox.id, RUNTIME_GENERATION).catch(() => false)
+      : false;
     try {
       result = await sandbox.process.executeCommand(
-        buildRuntimeEnvironmentFirstAccessCommand(request, layout),
+        buildRuntimeEnvironmentFirstAccessCommand(request, layout, artifactVerified),
         undefined,
         undefined,
         (request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS) + 2,
       );
       const response = parseRuntimeEnvironmentResponse(result);
-      if (!runtimeEnvironmentRequestFailed(result, response)) {
+      if (
+        !runtimeEnvironmentRequestFailed(result, response) ||
+        isRuntimeEnvironmentMissingSessionError(runtimeEnvironmentRequestError(request, response))
+      ) {
         validatedAccess.add(key);
-      } else {
-        const error = runtimeEnvironmentRequestError(request, response);
-        if (isRuntimeEnvironmentMissingSessionError(error)) {
-          validatedAccess.add(key);
-          return;
-        }
       }
     } catch {
       // A transport failure takes the same fail-closed repair path as a probe failure.
     }
-    if (validatedAccess.has(key)) return;
+    if (validatedAccess.has(key)) {
+      // The command reached the runtime, so the probe it starts with passed.
+      if (!artifactVerified && sandbox.id) {
+        await artifactVerifications.record(sandbox.id, RUNTIME_GENERATION).catch((error: unknown) => {
+          console.warn("[runtime-environment] the artifact verification was not recorded", { sandboxId: sandbox.id, error });
+        });
+      }
+      return;
+    }
     result = null;
     await establishRuntimeEnvironmentAccess(sandbox, signal);
     validatedAccess.add(key);

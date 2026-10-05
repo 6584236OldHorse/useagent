@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
   buildRuntimeEnvironmentFirstAccessCommand,
@@ -14,8 +14,9 @@ import {
   requestRuntimeEnvironment,
   runtimeEnvironmentAccessValidated,
   RuntimeEnvironmentRequestError,
+  setRuntimeArtifactVerificationsForTest,
 } from "./runtime-environment-client";
-import { buildRuntimeEnvironmentReadinessCommand } from "./runtime-environment";
+import { buildRuntimeEnvironmentReadinessCommand, RUNTIME_GENERATION } from "./runtime-environment";
 import { buildNativeRuntimeArtifactProbe } from "./native-runtime-artifact";
 
 const ROOT_LAYOUT = {
@@ -30,7 +31,60 @@ const BOX_LAYOUT = {
   bunExecutable: "/usr/local/bin/bun",
 } as const;
 
+// Artifact verifications this process "persisted", per test: a fresh backend
+// knows none, so first accesses run the artifact probe unless a test says so.
+let verifiedArtifacts = new Set<string>();
+beforeEach(() => {
+  verifiedArtifacts = new Set();
+  setRuntimeArtifactVerificationsForTest({
+    verified: async (sandboxId, generation) => verifiedArtifacts.has(`${sandboxId}:${generation}`),
+    record: async (sandboxId, generation) => void verifiedArtifacts.add(`${sandboxId}:${generation}`),
+  });
+});
+afterEach(() => setRuntimeArtifactVerificationsForTest(null));
+
 describe("T3 environment client", () => {
+  test("a sandbox an earlier backend process verified skips the artifact probe on first access", async () => {
+    const request = { method: "GET", path: "/api/orchestration/shell" } as const;
+    const harness = (id: string) => {
+      const commands: string[] = [];
+      const sandbox = {
+        id,
+        process: {
+          executeCommand: async (command: string) => {
+            commands.push(command);
+            return { exitCode: 0, result: '{"projects":[],"threads":[]}\n__USEAGENT_T3_HTTP_STATUS__:200' };
+          },
+        },
+      } as unknown as SandboxHandle;
+      return { sandbox, commands };
+    };
+
+    // First time: the probe runs in the first-access command and its pass is recorded.
+    const fresh = harness("cube-t3-artifact-fresh");
+    await requestRuntimeEnvironment(fresh.sandbox, request, new AbortController().signal);
+    expect(fresh.commands[0]).toBe(buildRuntimeEnvironmentFirstAccessCommand(request, ROOT_LAYOUT));
+    expect(fresh.commands[0]).toContain("# native-runtime-verified");
+    expect(verifiedArtifacts.has(`cube-t3-artifact-fresh:${RUNTIME_GENERATION}`)).toBe(true);
+
+    // After a backend restart (no access cached), a recorded sandbox skips only the probe.
+    verifiedArtifacts.add(`cube-t3-artifact-known:${RUNTIME_GENERATION}`);
+    const known = harness("cube-t3-artifact-known");
+    await requestRuntimeEnvironment(known.sandbox, request, new AbortController().signal);
+    expect(known.commands).toHaveLength(1);
+    expect(known.commands[0]).toBe(buildRuntimeEnvironmentFirstAccessCommand(request, ROOT_LAYOUT, true));
+    expect(known.commands[0]).not.toContain("# native-runtime-verified");
+    expect(known.commands[0]).toContain(buildRuntimeEnvironmentReadinessCommand());
+    expect(known.commands[0]).toContain(buildRuntimeEnvironmentSessionProbeCommand());
+    expect(runtimeEnvironmentAccessValidated(known.sandbox)).toBe(true);
+
+    // A record for another generation proves nothing about this one.
+    verifiedArtifacts.add("cube-t3-artifact-old:useagent-runtime-v0");
+    const old = harness("cube-t3-artifact-old");
+    await requestRuntimeEnvironment(old.sandbox, request, new AbortController().signal);
+    expect(old.commands[0]).toContain("# native-runtime-verified");
+  });
+
   test("decodes the bounded HTTP status marker for runtime and canary callers", () => {
     expect(decodeRuntimeEnvironmentCommandOutput([
       '{"projects":[],"threads":[]}',

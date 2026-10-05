@@ -91,6 +91,8 @@ import {
 import { prewarmRuntimeEnvironmentAccess } from "./engines/runtime-environment-client";
 import { operatorEnv } from "./engines/runtime-env";
 import { prewarmRuntimeProviderBridge } from "./engines/runtime-provider-bridge";
+import { prewarmCodexServices } from "./engines/codex-subscription-runtime";
+import { engineAuthMode } from "./runs/engine-auth-mode";
 import { providerConnectionsRoutes } from "./provider-connections/routes";
 import { integrationRoutes } from "./integrations/routes";
 import { codexSubscriptionRelayRoutes } from "./provider-connections/codex-subscription-relay";
@@ -667,6 +669,13 @@ if (sandboxProviderKind() === "cube" && cubeRuntimePoolTarget && cubeRuntimeTemp
       const runtimePrewarmEnv = { ...process.env, RUNTIME_ENVIRONMENT_ENABLED: "true" };
       await prewarmRuntimeProviderBridge(sandbox, runtimePrewarmEnv);
       await prewarmRuntimeEnvironmentAccess(sandbox, signal);
+      // A new thread's first subscription Codex turn finds its services up; a
+      // failure here only leaves them to that turn, as without the pool.
+      if (engineAuthMode("codex") !== "provider_gateway") {
+        await prewarmCodexServices(sandbox).catch((error: unknown) => {
+          console.warn(`[cube-warm-pool:${RUNTIME_CUBE_WARM_POOL_NAME}] Codex services not pre-warmed`, error);
+        });
+      }
     },
   });
   console.log(

@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - main
+      - v2
     paths-ignore:
       - "docs-site/**"
   pull_request:

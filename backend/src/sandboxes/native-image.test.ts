@@ -13,6 +13,7 @@ import {
   type NativeImageInputs,
   type NativeImageStep,
 } from "./native-image";
+import { NATIVE_RUNTIME_ARTIFACT } from "../engines/native-runtime-artifact";
 import { SANDBOX_PROVIDER_KINDS } from "./plugins";
 import { sandboxRuntimeLayout, type SandboxRuntimeLayout } from "./provider";
 
@@ -84,6 +85,28 @@ describe("native image name", () => {
 });
 
 describe("native image steps", () => {
+  test("the runtime step keeps only the pinned runtime, whichever way it ends", async () => {
+    const home = await mkdtemp(join(tmpdir(), "useagent-runtime-prune-"));
+    try {
+      const command = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "native-runtime")!.command;
+      const prune = command.split("\n").at(-1)!;
+      expect(prune).toContain(`! -name '${NATIVE_RUNTIME_ARTIFACT.sourceCommit}'`);
+      // The early exit (runtime already in the base image) prunes too.
+      expect(command.split("\n").find((line) => line.startsWith("if "))).toContain(`${prune}; exit 0; fi`);
+      const parent = join(home, ".local/share/useagent/native-runtime");
+      for (const dir of [NATIVE_RUNTIME_ARTIFACT.sourceCommit, "524d46b26f5ac85c82cd41e20f6c709d9f08db9b", "90dc3ebbb74b0e85f41c4cb3105a9f8994ce0bfa", ".stage-old"]) {
+        await Bun.write(join(parent, dir, "bin/t3"), "#!/bin/sh\n");
+      }
+      // Run against a scratch copy of the layout's runtime parent.
+      expect(Bun.spawnSync(["sh", "-c", prune.replace("/root/.local/share/useagent/native-runtime", parent)]).exitCode).toBe(0);
+      expect(await Array.fromAsync(new Bun.Glob("*").scan({ cwd: parent, onlyFiles: false, dot: true }))).toEqual([
+        NATIVE_RUNTIME_ARTIFACT.sourceCommit,
+      ]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test("the desktop step's configuration survives the shell round trip", async () => {
     const root = await mkdtemp(join(tmpdir(), "useagent-desktop-"));
     const home = join(root, "home");

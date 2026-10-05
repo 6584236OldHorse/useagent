@@ -149,6 +149,36 @@ describe("shared thread sandbox lease", () => {
     expect(files.get("draft.txt")).toBe("unpublished work");
   });
 
+  test("a started retained sandbox's warm checks start alongside its credential check, a paused one's never", async () => {
+    const events: string[] = [];
+    const credentials = Promise.withResolvers<boolean>();
+    const started = { id: "warm-started", state: "started" } as unknown as SandboxHandle;
+    const paused = { id: "warm-paused", state: "paused", start: async () => { events.push("resumed"); } } as unknown as SandboxHandle;
+    const reviveOne = (sandbox: SandboxHandle, credentialsCurrent: () => Promise<boolean>) => {
+      const binding = { kind: "cube", provider: { get: async () => sandbox } } as unknown as SandboxBinding;
+      return reviveRetainedSandbox(
+        { threadId: `thread-${sandbox.id}`, orgId: "org", emit: async () => undefined } as unknown as EngineRunContext,
+        sandbox.id,
+        { chip: "runtime:codex", onStarted: (warm, warmBinding) => events.push(`warm:${warm.id}:${warmBinding.kind}`) },
+        { threadBinding: async () => binding, sandboxBinding: async () => binding, credentialsCurrent },
+      );
+    };
+
+    const revived = reviveOne(started, () => {
+      events.push("credentials");
+      return credentials.promise;
+    });
+    await Bun.sleep(0);
+    // The warm checks are issued before the credential check has decided.
+    expect(events).toEqual(["warm:warm-started:cube", "credentials"]);
+    credentials.resolve(true);
+    expect((await revived).sandbox).toBe(started);
+
+    events.length = 0;
+    await reviveOne(paused, async () => true);
+    expect(events).toEqual(["resumed"]);
+  });
+
   test("preserves retained mappings for revoked credentials, auth failures, and unknown errors", async () => {
     for (const error of [
       new PersonalSandboxConnectionUnavailableError("the personal connection was revoked"),

@@ -114,7 +114,10 @@ async function snapshotComponents(paths: readonly string[]): Promise<Map<string,
   for (const path of paths) {
     const stat = await lstat(path, { bigint: true });
     if (stat.isSymbolicLink()) fail("output_symlink_not_allowed");
-    snapshot.set(path, { dev: stat.dev, ino: stat.ino, nlink: stat.nlink });
+    // A directory's link count moves whenever a subdirectory comes or goes in
+    // it (another thread's outputs, any temp directory), so only a file's count
+    // is compared; device and inode still catch every swap.
+    snapshot.set(path, { dev: stat.dev, ino: stat.ino, nlink: stat.isDirectory() ? 0n : stat.nlink });
   }
   return snapshot;
 }

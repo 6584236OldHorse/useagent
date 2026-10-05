@@ -39,6 +39,11 @@ corruption/reproducibility checks, not remote attestation against tenant code
 with full access to a sandbox's tools and process environment. Credential
 isolation remains the separate responsibility of the trusted control plane.
 
+The first access to a sandbox's runtime runs the artifact probe once per
+sandbox and runtime generation. A pass is recorded in Postgres
+(`runtime_artifact_verifications`), so a restarted backend skips the probe for
+that sandbox, as the process that ran it does.
+
 ## Staging
 
 ```sh

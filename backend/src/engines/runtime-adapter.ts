@@ -3,6 +3,7 @@ import { composeRunTurnPrompt } from "./types";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   awaitRuntimeProviderReady,
+  prefetchRuntimeProviderBridge,
   prepareRuntimeProviderBridge,
   prepareStableRuntimeProvider,
   type RuntimeProviderReadiness,
@@ -222,6 +223,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           );
         },
         closeProvider: (state) => state.close(),
+        prefetchProvider: (sandbox) => prefetchRuntimeProviderBridge(sandbox, engine),
       });
       const { sandbox, workdir, redact } = prepared;
       const providerBridgeLease: RuntimeProviderBridgeLease = prepared.providerState;

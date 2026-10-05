@@ -129,6 +129,25 @@ describe("readTrustedImageOutput", () => {
     }, 1024)).rejects.toThrow(/output_(path_changed|path_outside_root)/);
   });
 
+  test("accepts a sibling directory coming or going beside the output while it is read", async () => {
+    const { root } = await fixture();
+    const path = join(root, "image.png");
+    const sibling = join(root, "another-thread");
+    await writeFile(path, PNG);
+    // Another thread's output directory, or any temp directory in an ancestor,
+    // changes a directory's link count; that is not a swap of this path.
+    setTrustedOutputReadHookForTest(async (stage) => {
+      if (stage === "before_read") await mkdir(sibling);
+    });
+    await expect(readTrustedImageOutput({ kind: "isolated_host_output", root, path }, 1024))
+      .resolves.toMatchObject({ contentType: "image/png" });
+    setTrustedOutputReadHookForTest(async (stage) => {
+      if (stage === "before_read") await rm(sibling, { recursive: true });
+    });
+    await expect(readTrustedImageOutput({ kind: "isolated_host_output", root, path }, 1024))
+      .resolves.toMatchObject({ contentType: "image/png" });
+  });
+
   test("rejects directories, oversized output, and extension-only images", async () => {
     const { root } = await fixture();
     const directory = join(root, "folder.png");

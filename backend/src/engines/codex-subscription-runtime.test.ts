@@ -21,7 +21,9 @@ import {
   buildCodexProviderInstanceCommand,
   buildCodexProviderReadyProbeCommand,
   codexExecServerOwner,
+  prefetchCodexServicesProbe,
   prepareCodexSubscription,
+  prewarmCodexServices,
   previewWebSocketUrl,
 } from "./codex-subscription-runtime";
 
@@ -132,7 +134,7 @@ describe("T3 Codex subscription lease", () => {
         authEpoch: "credential-generation-123",
         sandboxId: "sandbox-1",
         sandboxGeneration: "useagent-runtime-v9",
-        environmentId: "skynet-sandbox-1-thread-1",
+        environmentId: "skynet-sandbox-1",
         cwd: "/root/work",
       },
       runtime: runtime(),
@@ -218,6 +220,32 @@ describe("T3 Codex subscription lease", () => {
     await second.close();
     expect(relays.opened[0]!.serving).toBeNull();
     expect(liveCodexThreadSessions()).toBe(1);
+  });
+
+  test("a warm turn takes the services probe issued during acquisition, bearer and all", async () => {
+    const bearers: string[] = [];
+    const dependencies = {
+      loadThreadBinding: async () => "provider-thread-1",
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+      openCodeModeBridge: codeModeBridges([], bearers),
+      openRelaySession: relaySessions().open,
+    };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    await first.close();
+
+    const warm = fakeSandbox({ execServerListening: true, codeModeListening: true });
+    prefetchCodexServicesProbe(warm.sandbox);
+    expect(warm.commands).toHaveLength(1);
+    const second = await prepareCodexSubscription({
+      sandbox: warm.sandbox, ctx: { ...context(), runId: "run-2" }, workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    expect(second.sessionReused).toBe(true);
+    // No second probe: the prefetched one admitted the bearer the bridge now uses.
+    expect(warm.commands).toHaveLength(1);
+    expect(warm.commands[0]?.command).toContain(createHash("sha256").update(bearers[1]!).digest("hex"));
+    await second.close();
   });
 
   test("a kept session serves only runs given its gateway bearer; a re-minted bearer starts a fresh one", async () => {
@@ -327,6 +355,36 @@ describe("T3 Codex subscription lease", () => {
     expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
     expect(harness.commands.at(-1)?.command).toContain("delete current.providerInstances.codex");
     expect(harness.deletedSessions).toEqual(["skynet-codex-exec-server", "skynet-codex-exec-server"]);
+  });
+
+  test("a warm pool starts the services under the sandbox's environment id and admits no bearer", async () => {
+    const pooled = fakeSandbox();
+    await prewarmCodexServices(pooled.sandbox);
+    expect(pooled.createdSessions).toEqual(["skynet-codex-exec-server", "skynet-codex-code-mode"]);
+    expect(pooled.sessionCommands[0]?.command).toContain("--environment-id skynet-sandbox-1");
+    // No run's digest: the forwarder refuses everyone until a run admits its bearer.
+    expect(pooled.commands.some(({ command }) => command.includes("code-mode-forwarder.sha256.tmp"))).toBe(false);
+    expect(pooled.previewPorts).toEqual([]);
+
+    // Services already up: nothing to start.
+    const up = fakeSandbox({ execServerListening: true, codeModeListening: true });
+    await prewarmCodexServices(up.sandbox);
+    expect(up.createdSessions).toEqual([]);
+
+    // The thread that later claims the sandbox binds the exec-server's own id and starts nothing.
+    const relays = relaySessions();
+    const lease = await prepareCodexSubscription({
+      sandbox: up.sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(),
+      dependencies: {
+        loadThreadBinding: async () => null,
+        openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+        openCodeModeBridge: codeModeBridges(),
+        openRelaySession: relays.open,
+      },
+    });
+    expect(relays.opened[0]!.input.scope.environmentId).toBe("skynet-sandbox-1");
+    expect(up.createdSessions).toEqual([]);
+    await lease.close();
   });
 
   test("reuses the exec server an earlier turn left listening", async () => {
