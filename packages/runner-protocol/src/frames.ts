@@ -83,11 +83,15 @@ export interface StreamOpenFrame {
   readonly t: "stream.open";
   readonly id: number;
   readonly target: unknown;
+  /** Bytes the opener will accept in flight from the acceptor. */
+  readonly window?: number;
 }
 
 export interface StreamOpenedFrame {
   readonly t: "stream.opened";
   readonly id: number;
+  /** Bytes the acceptor will accept in flight from the opener. */
+  readonly window?: number;
 }
 
 export interface StreamRefusedFrame {

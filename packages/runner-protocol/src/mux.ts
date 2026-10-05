@@ -81,6 +81,8 @@ export interface MuxOptions {
 }
 
 const DEFAULT_WINDOW = 256 * 1024;
+/** What a peer that does not advertise a window (protocol 1 without the field) accepts. */
+const ASSUMED_PEER_WINDOW = 256 * 1024;
 const MAX_CHUNK = 64 * 1024;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const DEFAULT_STREAM_OPEN_TIMEOUT_MS = 15_000;
@@ -103,6 +105,8 @@ interface StreamState {
   inbound: Uint8Array[];
   inboundWaiter: (() => void) | null;
   sendCredit: number;
+  /** The peer's receive window, from its open or opened frame. */
+  peerWindow: number;
   /** Bytes received and not yet credited back; a peer past the window is reset. */
   recvOutstanding: number;
   creditWaiters: Array<() => void>;
@@ -190,7 +194,7 @@ export class Mux {
     while (this.streams.has(id)) id += 2;
     let encoded: string;
     try {
-      encoded = encodeControlFrame({ t: "stream.open", id, target });
+      encoded = encodeControlFrame({ t: "stream.open", id, target, window: this.window });
     } catch (error) {
       return Promise.reject(new StreamRefusedError("invalid_params", `target cannot be serialised: ${error instanceof Error ? error.message : String(error)}`));
     }
@@ -275,7 +279,7 @@ export class Mux {
         if (!pending) return;
         this.rpcs.delete(frame.id);
         clearTimeout(pending.timer);
-        pending.resolve(frame.result);
+        pending.resolve(frame.result ?? null);
         return;
       }
       case "rpc.error": {
@@ -287,7 +291,7 @@ export class Mux {
         return;
       }
       case "stream.open":
-        void this.acceptStream(frame.id, frame.target);
+        void this.acceptStream(frame.id, frame.target, frame.window ?? ASSUMED_PEER_WINDOW);
         return;
       case "stream.opened": {
         const pending = this.opening.get(frame.id);
@@ -295,6 +299,7 @@ export class Mux {
         if (!pending || !state) return;
         this.opening.delete(frame.id);
         clearTimeout(pending.timer);
+        this.grantPeerWindow(state, frame.window ?? ASSUMED_PEER_WINDOW);
         pending.resolve(state.stream);
         return;
       }
@@ -312,7 +317,7 @@ export class Mux {
         const state = this.streams.get(frame.id);
         if (!state) return;
         // Credit only ever returns what was sent; a peer cannot mint a bigger window.
-        state.sendCredit = Math.min(this.window, state.sendCredit + frame.bytes);
+        state.sendCredit = Math.min(state.peerWindow, state.sendCredit + frame.bytes);
         const waiters = state.creditWaiters;
         state.creditWaiters = [];
         for (const wake of waiters) wake();
@@ -348,8 +353,9 @@ export class Mux {
     }
     let encoded: string;
     try {
-      const result = await this.handlers.onRpc(method, params);
-      encoded = encodeControlFrame({ t: "rpc.result", id, result: result ?? null });
+      const result = (await this.handlers.onRpc(method, params)) ?? null;
+      if (JSON.stringify(result) === undefined) throw new RpcError("internal", "result cannot be serialised");
+      encoded = encodeControlFrame({ t: "rpc.result", id, result });
     } catch (error) {
       const code = error instanceof RpcError ? error.code : "internal";
       const message = error instanceof Error ? error.message : String(error);
@@ -359,7 +365,16 @@ export class Mux {
     this.sendRaw(encoded);
   }
 
-  private async acceptStream(id: number, target: unknown): Promise<void> {
+  /** The peer told us how much it accepts in flight; writes may start. */
+  private grantPeerWindow(state: StreamState, window: number): void {
+    state.peerWindow = Math.max(1, Math.floor(window));
+    state.sendCredit = state.peerWindow;
+    const waiters = state.creditWaiters;
+    state.creditWaiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  private async acceptStream(id: number, target: unknown, peerWindow: number): Promise<void> {
     // The peer's ids have the other parity; anything else is a protocol error, not a stream.
     if (this.streams.has(id) || id % 2 === (this.role === "plane" ? 0 : 1)) {
       this.send({ t: "stream.refused", id, code: "invalid_params", message: "stream id in use or not the peer's to open" });
@@ -370,6 +385,7 @@ export class Mux {
       return;
     }
     const state = this.createStream(id);
+    this.grantPeerWindow(state, peerWindow);
     try {
       await this.handlers.onStreamOpen(target, state.stream);
     } catch (error) {
@@ -379,7 +395,7 @@ export class Mux {
       this.send({ t: "stream.refused", id, code, message });
       return;
     }
-    if (!state.finished) this.send({ t: "stream.opened", id });
+    if (!state.finished) this.send({ t: "stream.opened", id, window: this.window });
   }
 
   private createStream(id: number): StreamState {
@@ -391,7 +407,8 @@ export class Mux {
       controller: null,
       inbound: [],
       inboundWaiter: null,
-      sendCredit: this.window,
+      sendCredit: 0,
+      peerWindow: 0,
       recvOutstanding: 0,
       creditWaiters: [],
       localClosed: false,
@@ -496,6 +513,12 @@ export class Mux {
 
   private finishStream(state: StreamState, error: Error, notifyPeer = true): void {
     if (state.finished) return;
+    const opening = this.opening.get(state.id);
+    if (opening) {
+      this.opening.delete(state.id);
+      clearTimeout(opening.timer);
+      opening.reject(error instanceof StreamRefusedError ? error : new StreamRefusedError("failed", error.message));
+    }
     state.finished = true;
     state.error = error;
     state.failure = error;

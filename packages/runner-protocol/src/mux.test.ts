@@ -332,12 +332,71 @@ describe("review findings", () => {
 
   test("empty data frames are ignored, not queued", async () => {
     const sent: string[] = [];
-    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, { onStreamOpen: () => {} }, { window: 8 });
+    let accepted!: MuxStream;
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, {
+      onStreamOpen: (_target, stream) => {
+        accepted = stream;
+      },
+    }, { window: 8 });
     plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {} }));
     await settled();
     for (let i = 0; i < 1000; i += 1) plane.receive(new Uint8Array([1, 0, 0, 0, 1]));
-    expect(plane.openStreams).toBe(1);
+    plane.receive(JSON.stringify({ t: "stream.close", id: 1 }));
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of accepted.readable) chunks.push(chunk);
+    expect(chunks).toEqual([]);
     expect(sent.some((m) => m.includes('"stream.reset"'))).toBe(false);
+  });
+
+  test("each side sends against the window the other advertised", async () => {
+    let accepted!: MuxStream;
+    const { plane, runner } = connectPair({}, {
+      onStreamOpen: (_target, stream) => {
+        accepted = stream;
+      },
+    });
+    // Different windows per peer: the plane accepts 8, the runner accepts 2.
+    (plane as unknown as { window: number }).window = 8;
+    (runner as unknown as { window: number }).window = 2;
+    const stream = await plane.openStream({});
+    let sent = 0;
+    const write = stream.write(new Uint8Array(8)).then(() => { sent = 8; });
+    await settled();
+    // Only the runner's two bytes are in flight; nothing was reset.
+    expect(sent).toBe(0);
+    expect(plane.openStreams).toBe(1);
+    const chunks: number[] = [];
+    const reading = (async () => {
+      for await (const chunk of accepted.readable) chunks.push(chunk.byteLength);
+    })();
+    await write;
+    stream.end();
+    accepted.end();
+    await reading;
+    expect(chunks.reduce((a, b) => a + b, 0)).toBe(8);
+    expect(runner.openStreams).toBe(0);
+  });
+
+  test("a stream that fails before it is accepted rejects the opener at once", async () => {
+    let runner!: Mux;
+    const frames: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") frames.push(m); queueMicrotask(() => runner.receive(m)); } }, {}, { window: 1 });
+    runner = new Mux("runner", { send: () => {} }, { onStreamOpen: () => new Promise(() => {}) });
+    const opening = plane.openStream({}, { timeoutMs: 5000 }).then(() => "resolved", (e: unknown) => e);
+    await settled();
+    // Two bytes into a window of one, before stream.opened: the stream is reset.
+    plane.receive(new Uint8Array([1, 0, 0, 0, 2, 9, 9]));
+    const error = await opening;
+    expect(error).toBeInstanceOf(StreamRefusedError);
+    expect((error as StreamRefusedError).message).toMatch(/window/);
+    expect(plane.openStreams).toBe(0);
+  });
+
+  test("a result that serialises to nothing is an error", async () => {
+    const { plane } = connectPair({}, { onRpc: async () => Symbol("bad") });
+    const error = await plane.rpc("x", {}).catch((e: unknown) => e);
+    expect((error as RpcError).code).toBe("internal");
+    expect((error as RpcError).message).toMatch(/serialised/);
   });
 
   test("an unserialisable rpc result answers that call with an error and keeps the link", async () => {
