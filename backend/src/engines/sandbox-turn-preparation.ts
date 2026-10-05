@@ -201,7 +201,13 @@ export async function prepareSandboxTurn<T>(
       providerPrepared = true;
       return state;
     });
+    const recordOutputBaseline = async () => {
+      if (ctx.prepareOutputCapture) {
+        await stage("output_baseline", () => ctx.prepareOutputCapture!(sandbox, workdir));
+      }
+    };
     let resolvedProviderState: T;
+    let outputBaselineRecorded = false;
     if (
       options.providerAfterResources ||
       (!lease.reused && options.prepareStableProvider)
@@ -210,19 +216,22 @@ export async function prepareSandboxTurn<T>(
       ctx.signal.throwIfAborted();
       resolvedProviderState = await prepareProvider();
     } else {
+      // A provider that overlaps resources writes nothing under the workspace,
+      // so the output baseline follows the resources, not the provider.
       const providerOperation = prepareProvider();
-      const resourcesOperation = prepareResources();
+      const resourcesOperation = prepareResources().then(recordOutputBaseline);
       try {
         [resolvedProviderState] = await Promise.all([providerOperation, resourcesOperation]);
       } catch (error) {
         await Promise.allSettled([providerOperation, resourcesOperation]);
         throw error;
       }
+      outputBaselineRecorded = true;
     }
     await stage("secrets_marker", () => recordSecretsInjected(ctx, secretInjection));
-    if (ctx.prepareOutputCapture) {
-      await stage("output_baseline", () => ctx.prepareOutputCapture!(sandbox, workdir));
-    }
+    // Resources-first providers may re-own the workspace (a recursive chown
+    // touches every file), so their baseline is taken after them.
+    if (!outputBaselineRecorded) await recordOutputBaseline();
     return {
       sandbox,
       workdir,

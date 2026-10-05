@@ -316,6 +316,70 @@ describe("sandbox turn provider cleanup", () => {
     expect(stableProviderPrepared).toBe(false);
   });
 
+  test("takes the output baseline after resources without waiting for the provider", async () => {
+    const order: string[] = [];
+    const baselineTaken = Promise.withResolvers<void>();
+    const retained = sandboxFixture({
+      onCommand(command) {
+        if (command.includes("echo state:absent") && !command.includes("git clone")) order.push("repo:identity");
+      },
+    });
+    const ctx = {
+      ...context(["useagenthq/useagent"]),
+      async prepareOutputCapture() {
+        order.push("baseline");
+        baselineTaken.resolve();
+      },
+    } as EngineRunContext;
+
+    await prepareSandboxTurn(
+      ctx,
+      {
+        snapshot: "runtime",
+        chip: "runtime:codex",
+        timingPrefix: "runtime",
+        async prepareProvider() {
+          order.push("provider:start");
+          await Promise.race([baselineTaken.promise, Bun.sleep(200)]);
+          order.push("provider:end");
+          return {};
+        },
+      },
+      { acquireThreadSandbox: async () => retainedLease(retained.sandbox) },
+    );
+
+    expect(order).toEqual(["provider:start", "repo:identity", "baseline", "provider:end"]);
+  });
+
+  test("a resources-first provider still precedes the output baseline", async () => {
+    const order: string[] = [];
+    const ctx = {
+      ...context(),
+      async prepareOutputCapture() {
+        order.push("baseline");
+      },
+    } as EngineRunContext;
+
+    await prepareSandboxTurn(
+      ctx,
+      {
+        snapshot: "runtime",
+        chip: "pi",
+        timingPrefix: "pi",
+        providerAfterResources: true,
+        async prepareProvider() {
+          order.push("provider:start");
+          await Bun.sleep(20);
+          order.push("provider:end");
+          return {};
+        },
+      },
+      { acquireThreadSandbox: async () => retainedLease(sandboxFixture().sandbox) },
+    );
+
+    expect(order).toEqual(["provider:start", "provider:end", "baseline"]);
+  });
+
   test("explicit resources-first providers keep their ordering on a fresh sandbox", async () => {
     const order: string[] = [];
     const fresh = sandboxFixture({
