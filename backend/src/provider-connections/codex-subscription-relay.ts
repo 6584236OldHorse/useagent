@@ -24,9 +24,12 @@ import { prepareCodexServerFrame } from "./codex-native-output";
 import { importCodexNativeOutput } from "./codex-native-output-import";
 
 const DEFAULT_CAPABILITY_TTL_MS = 2 * 60_000;
-// One run may start its turn and the plane's one continuation of it; anything
-// more is not the plane speaking.
+// One run may start its turn and the plane's one continuation of it (a
+// compaction counts as one); anything more is not the plane speaking. Steering
+// adds to a turn that is already running, so it only needs the run.
 const MAX_TURN_STARTS_PER_RUN = 2;
+const RUN_BOUND_METHODS = new Set(["turn/start", "turn/steer", "thread/compact/start"]);
+const TURN_STARTING_METHODS = new Set(["turn/start", "thread/compact/start"]);
 const MAX_REMEMBERED_TURNS = 64;
 const RELAY_PATH_PREFIX = "/api/internal/codex-relay/";
 const CODEX_PLAN_TOOL_OVERRIDE = "tools.update_plan.enabled=true";
@@ -450,6 +453,11 @@ codexSubscriptionRelayRoutes.get(
           if (!protocol || !environmentBootstrap) {
             throw new Error("Codex relay protocol is unavailable");
           }
+          const local = await protocol.answerLocally(frame);
+          if (local) {
+            socket.send(local);
+            return;
+          }
           admitTurnStart(session, frame);
           // The protocol may rewrite the frame (bound-thread `thread/start`
           // becomes `thread/resume`); everything downstream sees the outbound.
@@ -478,8 +486,10 @@ codexSubscriptionRelayRoutes.get(
 /** Fail closed between runs: a turn starts only while a run is active, and a run
  * starts at most its turn and one continuation. */
 function admitTurnStart(session: RelaySessionState, raw: string): void {
-  if (parseCodexSubscriptionFrame(raw, "client").method !== "turn/start") return;
+  const method = parseCodexSubscriptionFrame(raw, "client").method;
+  if (!method || !RUN_BOUND_METHODS.has(method)) return;
   if (!session.run) throw new Error("no run is active on this relay session");
+  if (!TURN_STARTING_METHODS.has(method)) return;
   if (session.run.turnStarts >= MAX_TURN_STARTS_PER_RUN) {
     throw new Error("turn start limit for this run reached");
   }
