@@ -495,12 +495,14 @@ describe("T3 run adapter gate", () => {
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     const sessionStartedIdx = source.indexOf("await recordProviderSessionStarted(ctx, session, {");
     const catalogIdx = source.indexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const revalidateIdx = source.indexOf("await runtimeCommandDispatchRejection({");
     const steerIdx = source.indexOf("const steerResult = await driver.steer({");
     const settledIdx = source.lastIndexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
     const closeIdx = source.indexOf("await prepared.close().catch(() => {});");
     expect(sessionStartedIdx).toBeGreaterThan(-1);
     expect(catalogIdx).toBeGreaterThan(sessionStartedIdx);
-    expect(steerIdx).toBeGreaterThan(catalogIdx);
+    expect(revalidateIdx).toBeGreaterThan(catalogIdx);
+    expect(steerIdx).toBeGreaterThan(revalidateIdx);
     expect(settledIdx).toBeGreaterThan(steerIdx);
     expect(closeIdx).toBeGreaterThan(settledIdx);
   });
@@ -736,7 +738,9 @@ describe("T3 run adapter gate", () => {
     ]);
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     expect(source).toContain("skipQueuedCancel = recovery.stuckStartConfirmed");
-    expect(source).toContain("if (ctx.signal.aborted && !skipQueuedCancel)");
+    expect(source).toContain(
+      'if (ctx.signal.aborted && !skipQueuedCancel && ctx.commandName !== "compact")',
+    );
   });
 
   test("does not restart for ordinary waits or when the native turn advanced", async () => {

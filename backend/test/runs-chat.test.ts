@@ -10,6 +10,15 @@ import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
 
 const realFetch = globalThis.fetch;
 
+/** Mock only the chat provider. Other suites leave durable outboxes retrying
+ *  in the background (Slack deliveries, memory capture), and those reach the
+ *  global fetch during this file's tests; they must pass through untouched
+ *  and never count as provider calls. */
+function mockProvider(handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>): void {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes("/chat/completions") ? handler(input, init) : realFetch(input, init)) as typeof fetch;
+}
+
 function openRouterStream(...deltas: string[]): Response {
   const encoder = new TextEncoder();
   return new Response(
@@ -93,10 +102,10 @@ describe("durable chat runs", () => {
 
   test("a member without an OpenRouter key is told to connect one, before any model call", async () => {
     const calls: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    mockProvider(async (input: RequestInfo | URL) => {
       calls.push(String(input));
       return openRouterStream("never");
-    }) as typeof fetch;
+    });
 
     const created = await json<{ id: string }>("/api/runs", {
       method: "POST",
@@ -117,7 +126,7 @@ describe("durable chat runs", () => {
   test("streams direct chat through the durable run/thread/event model without a sandbox", async () => {
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     const calls: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    mockProvider(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push(String(input));
       const body = JSON.parse(String(init?.body)) as {
         model: string;
@@ -131,7 +140,7 @@ describe("durable chat runs", () => {
       expect(body.messages[0]?.content).toContain("<resource_access_snapshot>");
       expect(body.messages[0]?.content).toContain('"exactInventoryTool":null');
       return openRouterStream("Hello ", "durable chat");
-    }) as typeof fetch;
+    });
 
     const created = await json<{ id: string }>("/api/runs", {
       method: "POST",
@@ -171,13 +180,13 @@ describe("durable chat runs", () => {
 
   test("chat replies inherit their durable thread", async () => {
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    mockProvider(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
         messages: Array<{ role: string; content: string }>;
       };
       const latest = body.messages.at(-1)?.content ?? "";
       return openRouterStream(latest === "second" ? "reply answer" : "root answer");
-    }) as typeof fetch;
+    });
 
     const root = await json<{ id: string }>("/api/runs", {
       method: "POST",
@@ -215,10 +224,10 @@ describe("durable chat runs", () => {
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     setArtifactStorageForTest(new InMemoryArtifactStorage());
     const requests: Array<{ messages: Array<{ content: unknown }> }> = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    mockProvider(async (_input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(JSON.parse(String(init?.body)));
       return openRouterStream("ok");
-    }) as typeof fetch;
+    });
 
     const firstImage = await upload("first.png");
     const root = await json<{ id: string }>("/api/runs", {
@@ -271,10 +280,10 @@ describe("durable chat runs", () => {
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     setArtifactStorageForTest(new InMemoryArtifactStorage());
     let providerCalls = 0;
-    globalThis.fetch = (async () => {
+    mockProvider(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       providerCalls += 1;
       return openRouterStream("ok");
-    }) as typeof fetch;
+    });
 
     const uploadId = await upload("legacy.png");
     const root = await json<{ id: string }>("/api/runs", {
@@ -484,10 +493,10 @@ describe("durable chat runs", () => {
     setArtifactStorageForTest(storage);
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     let providerRequests = 0;
-    globalThis.fetch = (async () => {
+    mockProvider(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       providerRequests += 1;
       return openRouterStream("unexpected");
-    }) as typeof fetch;
+    });
     const uploadId = await upload("hang.txt", new TextEncoder().encode("hang"));
     const created = await json<{ id: string }>("/api/runs", {
       method: "POST",
@@ -513,13 +522,13 @@ describe("durable chat runs", () => {
   test("applies a pinned skill to durable chat without leaking it into the user prompt", async () => {
     process.env.OPENROUTER_API_KEY = "test-openrouter-key";
     let systemPrompt = "";
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    mockProvider(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
         messages: Array<{ role: string; content: string }>;
       };
       systemPrompt = body.messages[0]?.content ?? "";
       return openRouterStream("skill applied");
-    }) as typeof fetch;
+    });
 
     const skill = await json<{ id: string; current_version: number }>("/api/skills", {
       method: "POST",

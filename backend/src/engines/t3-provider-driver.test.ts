@@ -416,6 +416,137 @@ describe("T3 provider drivers", () => {
     });
   });
 
+  test("restart recovery completes compact from its exact request without a new latest turn", async () => {
+    const compactActivity = {
+      id: "compact-completed",
+      tone: "info" as const,
+      kind: "context-compaction",
+      summary: "Context compacted",
+      payload: { state: "compacted", requestId: "skynet-message-run-compact" },
+      turnId: null,
+    };
+    const snapshot: RuntimeThreadSnapshot = {
+      snapshotSequence: 9,
+      thread: {
+        id: "skynet-thread-thread-1",
+        latestTurn: {
+          turnId: "prior-turn",
+          state: "completed",
+          assistantMessageId: "prior-answer",
+        },
+        messages: [],
+        activities: [compactActivity],
+        session: { status: "ready", lastError: null },
+      },
+    };
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+      requestEnvironment: async <T>() => snapshot as T,
+    });
+
+    await expect(driver.reconcile?.({
+      session: sessionFor(driver),
+      checkpoint: {
+        eventContext: {
+          runId: "run-compact",
+          threadId: "thread-1",
+          nativeCommand: {
+            name: "compact",
+            provider: "codex",
+            sessionId: "skynet-thread-thread-1",
+            catalogRevision: 4,
+          },
+          redact: createSecretRedactor([]),
+        },
+      },
+    })).resolves.toMatchObject({
+      status: "completed",
+      summary: "Compacted",
+      events: [{
+        id: "pe_run-compact_t3_compact-completed",
+        eventType: "t3.activity.context-compaction",
+        sessionId: "skynet-thread-thread-1",
+      }],
+    });
+  });
+
+  test("restart recovery ignores unrelated compact completion", async () => {
+    const snapshot: RuntimeThreadSnapshot = {
+      snapshotSequence: 9,
+      thread: {
+        id: "skynet-thread-thread-1",
+        latestTurn: null,
+        messages: [],
+        activities: [{
+          id: "other-compact",
+          tone: "info",
+          kind: "context-compaction",
+          summary: "Context compacted",
+          payload: { state: "compacted", requestId: "skynet-message-other-run" },
+          turnId: null,
+        }],
+        session: { status: "starting", lastError: null },
+      },
+    };
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+      requestEnvironment: async <T>() => snapshot as T,
+    });
+
+    await expect(driver.reconcile?.({
+      session: sessionFor(driver),
+      checkpoint: {
+        eventContext: {
+          runId: "run-compact",
+          threadId: "thread-1",
+          nativeCommand: {
+            name: "compact",
+            provider: "codex",
+            sessionId: "skynet-thread-thread-1",
+            catalogRevision: 4,
+          },
+          redact: createSecretRedactor([]),
+        },
+      },
+    })).resolves.toEqual({ status: "in_progress" });
+  });
+
+  test("restart compact recovery fails closed on stale durable command identity", async () => {
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+      requestEnvironment: async <T>() => ({
+        snapshotSequence: 1,
+        thread: {
+          id: "skynet-thread-thread-1",
+          latestTurn: null,
+          messages: [],
+          activities: [],
+          session: { status: "starting", lastError: null },
+        },
+      }) as T,
+    });
+
+    await expect(driver.reconcile?.({
+      session: sessionFor(driver),
+      checkpoint: {
+        eventContext: {
+          runId: "run-compact",
+          threadId: "thread-1",
+          nativeCommand: {
+            name: "compact",
+            provider: "codex",
+            sessionId: "replaced-session",
+            catalogRevision: 4,
+          },
+          redact: createSecretRedactor([]),
+        },
+      },
+    })).resolves.toEqual({
+      status: "failed",
+      summary: "The accepted native command identity is stale",
+    });
+  });
+
   test("a continuation with no turn id on its message is matched by its request time", async () => {
     const thread = (latestTurn: { turnId: string; requestedAt: string }, continuationStarted: boolean): RuntimeThreadSnapshot => ({
       snapshotSequence: 3,
