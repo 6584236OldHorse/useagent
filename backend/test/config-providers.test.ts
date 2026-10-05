@@ -22,12 +22,17 @@ test("deploymentProvidedProviders names each provider the server keys serve, nev
 
 test("GET /api/config reports the deployment-provided providers and follows the env", async () => {
   process.env.OPENAI_API_KEY = "sk-test-deployment";
-  const served = await json<{ providers: Record<string, boolean> }>("/api/config");
+  const served = await json<{ providers: Record<string, boolean>; runner: unknown; sandbox: unknown }>("/api/config");
   expect(served.status).toBe(200);
   expect(served.body.providers.openai).toBe(true);
   // What a runner must speak and boot; no image is configured in the test environment.
   expect(served.body.runner).toEqual({ enabled: true, minProtocol: 2, image: null });
   expect(JSON.stringify(served.body)).not.toContain("sk-test-deployment");
+  // The sandbox block names the provider a person reads, following where the deployment points.
+  const sandbox = served.body.sandbox as { provider: string; label: string };
+  expect(typeof sandbox.provider).toBe("string");
+  expect(sandbox.label).toBe(sandbox.provider === "cube" ? (process.env.CUBE_API_URL?.includes("e2b.app") ? "E2B" : "Cube") : sandbox.label);
+  expect(sandbox.label.length).toBeGreaterThan(0);
   delete process.env.OPENAI_API_KEY;
   const unserved = await json<{ providers: Record<string, boolean> }>("/api/config");
   expect(unserved.body.providers.openai).toBe(false);

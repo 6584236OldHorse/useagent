@@ -1,4 +1,4 @@
-import type { SandboxCreateOptions, SandboxHandle } from "../sandboxes/provider";
+import { type SandboxCreateOptions, type SandboxHandle, sandboxProviderLabel } from "../sandboxes/provider";
 import type { SandboxBinding } from "../sandboxes/binding";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import type { SandboxResourceTarget } from "./daytona-resources";
@@ -59,7 +59,7 @@ export async function provisionSandbox(input: SandboxProvisionInput): Promise<Pr
     try {
       return { sandbox: await binding.provider.create({ ...create, snapshot }), fromTemplate: true };
     } catch (error) {
-      problem = `${plugin.label} could not create a sandbox from snapshot ${snapshot}: ${errorMessage(error)}`;
+      problem = `${sandboxProviderLabel(binding.kind)} could not create a sandbox from snapshot ${snapshot}: ${errorMessage(error)}`;
     }
   }
 
