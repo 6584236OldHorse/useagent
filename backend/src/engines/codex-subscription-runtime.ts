@@ -93,30 +93,40 @@ export async function prepareCodexSubscription(input: {
   let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
   let relay: ReturnType<typeof issueCodexSubscriptionRelayCapability> | undefined;
 
-  await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
+  // A retained sandbox keeps the exec-server an earlier turn started: the
+  // detached process outlives its session, so a relaunch only loses the port.
+  // The run-bound environment id lives in the relay and T3 settings, not here.
+  const execServerListening = await sandbox.process
+    .executeCommand(buildCodexExecServerReadinessCommand(0), undefined, undefined, 10)
+    .then((probe) => probe.exitCode === 0, () => false);
+  if (!execServerListening) {
+    await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
+  }
   try {
-    await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
-    const launch = await sandbox.process.executeSessionCommand(
-      CODEX_EXEC_SERVER_SESSION,
-      {
-        command: buildCodexExecServerCommand(environmentId, layout),
-        runAsync: true,
-        suppressInputEcho: true,
-      },
-      30,
-    );
-    if ((launch.exitCode ?? 0) !== 0) {
-      throw new Error("Codex exec-server failed to start");
-    }
+    if (!execServerListening) {
+      await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
+      const launch = await sandbox.process.executeSessionCommand(
+        CODEX_EXEC_SERVER_SESSION,
+        {
+          command: buildCodexExecServerCommand(environmentId, layout),
+          runAsync: true,
+          suppressInputEcho: true,
+        },
+        30,
+      );
+      if ((launch.exitCode ?? 0) !== 0) {
+        throw new Error("Codex exec-server failed to start");
+      }
 
-    const readiness = await sandbox.process.executeCommand(
-      buildCodexExecServerReadinessCommand(),
-      undefined,
-      undefined,
-      20,
-    );
-    if ((readiness.exitCode ?? 1) !== 0) {
-      throw new Error("Codex exec-server failed readiness");
+      const readiness = await sandbox.process.executeCommand(
+        buildCodexExecServerReadinessCommand(),
+        undefined,
+        undefined,
+        20,
+      );
+      if ((readiness.exitCode ?? 1) !== 0) {
+        throw new Error("Codex exec-server failed readiness");
+      }
     }
 
     const preview = await sandbox.getPreviewLink(CODEX_EXEC_SERVER_PORT);
@@ -146,16 +156,18 @@ export async function prepareCodexSubscription(input: {
       execServerUrl: execBridge.url,
       toolGateway: codexToolGatewayDescriptor(ctx),
     });
-    await patchCodexProviderInstance(sandbox, {
-      relayUrl: relay.url,
-      environmentId,
-      workdir,
-    }, layout);
     // Retained-sandbox validation requires both the immutable control-plane
     // generation label and this on-disk marker. Subscription-backed Codex does
-    // not materialize the provider-gateway model config, so it must stamp the
-    // shared marker explicitly after its relay-backed configuration succeeds.
-    await markProviderGatewaySandboxCurrent(sandbox);
+    // not materialize the provider-gateway model config, so it stamps the
+    // shared marker itself; a failed relay configuration still fails the turn.
+    await Promise.all([
+      patchCodexProviderInstance(sandbox, {
+        relayUrl: relay.url,
+        environmentId,
+        workdir,
+      }, layout),
+      markProviderGatewaySandboxCurrent(sandbox),
+    ]);
   } catch (error) {
     relay?.close();
     execBridge?.close();
@@ -189,10 +201,10 @@ export function buildCodexExecServerCommand(
   ].join("\n");
 }
 
-export function buildCodexExecServerReadinessCommand(): string {
+export function buildCodexExecServerReadinessCommand(deadlineMs = 15_000): string {
   const script = [
     'const net=require("node:net")',
-    "const deadline=Date.now()+15000",
+    `const deadline=Date.now()+${deadlineMs}`,
     "const probe=()=>{",
     `const socket=net.createConnection({host:"127.0.0.1",port:${CODEX_EXEC_SERVER_PORT}})`,
     "socket.once(\"connect\",()=>{socket.end();process.exit(0)})",

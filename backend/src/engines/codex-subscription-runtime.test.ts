@@ -123,6 +123,39 @@ describe("T3 Codex subscription lease", () => {
     );
   });
 
+  test("reuses the exec server an earlier turn left listening", async () => {
+    const harness = fakeSandbox({ execServerListening: true });
+    let relayExecServerUrl: string | undefined;
+
+    const lease = await prepareCodexSubscription({
+      sandbox: harness.sandbox,
+      ctx: context(),
+      workdir: "/root/work",
+      runtime: runtime(),
+      dependencies: {
+        loadThreadBinding: async () => null,
+        openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+        issueRelay: (input) => {
+          relayExecServerUrl = input.execServerUrl;
+          return { url: "wss://useagent.example.test/api/internal/codex-relay/opaque", close() {} };
+        },
+      },
+    });
+
+    expect(harness.deletedSessions).toEqual([]);
+    expect(harness.createdSessions).toEqual([]);
+    expect(harness.sessionCommands).toEqual([]);
+    expect(harness.previewPorts).toEqual([37_734]);
+    expect(relayExecServerUrl).toBe("ws://127.0.0.1:43111/grant");
+    expect(harness.commands[0]?.command).toBe(buildCodexExecServerReadinessCommand(0));
+    expect(harness.commands.some(({ command }) => command.includes("CODEX_INSTANCE_B64"))).toBe(true);
+    expect(
+      harness.commands.some(({ command }) => command.includes("provider-gateway-generation")),
+    ).toBe(true);
+
+    await lease.close();
+  });
+
   test("launches Box Codex through the installed absolute binary", async () => {
     const harness = fakeSandbox({ providerKind: "box" });
     const lease = await prepareCodexSubscription({
@@ -385,6 +418,7 @@ function runtime(): CodexSubscriptionRuntimeSelection {
 }
 
 function fakeSandbox(options: {
+  execServerListening?: boolean;
   failProviderPatch?: boolean;
   launchExit?: number;
   providerKind?: "box" | "cube" | "daytona";
@@ -402,7 +436,10 @@ function fakeSandbox(options: {
     process: {
       async executeCommand(command: string) {
         const providerPatch = command.includes("CODEX_INSTANCE_B64");
-        const result = { exitCode: providerPatch && options.failProviderPatch ? 1 : 0 };
+        const listeningProbe = command === buildCodexExecServerReadinessCommand(0);
+        const result = {
+          exitCode: (providerPatch && options.failProviderPatch) || (listeningProbe && !options.execServerListening) ? 1 : 0,
+        };
         commands.push({ command, result });
         return result;
       },
