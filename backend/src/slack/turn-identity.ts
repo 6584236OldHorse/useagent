@@ -9,11 +9,11 @@
  * lock wait, the lookup row is deleted in the same transaction, and the thread
  * stream is woken so an open session shows the sender within the same second.
  * A crash or a lock wait that ran out leaves the lookup row; the boot sweep
- * finishes it. Idempotent: a replayed delivery finds the stamp and cleans up.
+ * finishes it, however old the row is. Idempotent: a replayed delivery finds the stamp and cleans up.
  * A lookup failure never fails the accepted run.
  */
 import type { RunConnector } from "@useagent/agent-client/wire";
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNull, notExists, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { isLockTimeout } from "../db/pg-errors";
 import { runs, slackIdentityLookups } from "../db/schema";
@@ -29,8 +29,6 @@ const DEFAULT_LOOKUP_MS = 5_000;
 /** The stamp's wait for the run row, which finalization can hold for update;
  *  past it the lookup row stays and the boot sweep finishes the stamp. */
 const STAMP_LOCK_TIMEOUT = "30s";
-/** A lookup nobody could finish in a week is abandoned; the sweep is bounded. */
-const LOOKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_LIMIT = 200;
 
 /** How long both Slack lookups may take together; a response that never
@@ -143,12 +141,19 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
 }
 
 /** Boot sweep: finish the stamps whose lookup row is still owed, oldest first,
- *  a page at a time, after dropping lookups older than a week. Returns how many
+ *  a page at a time. Only a row nothing can finish is dropped first: its run is
+ *  gone or already carries a connector. An owed row for an unstamped run is
+ *  never expired, however old; it waits its turn across boots. Returns how many
  *  stamps landed. */
 export async function recoverSlackTurnIdentities(): Promise<number> {
   await db
     .delete(slackIdentityLookups)
-    .where(lt(slackIdentityLookups.createdAt, new Date(Date.now() - LOOKUP_MAX_AGE_MS)));
+    .where(notExists(
+      db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(and(eq(runs.id, slackIdentityLookups.runId), isNull(runs.connector))),
+    ));
   const owed = await db
     .select({ runId: slackIdentityLookups.runId })
     .from(slackIdentityLookups)

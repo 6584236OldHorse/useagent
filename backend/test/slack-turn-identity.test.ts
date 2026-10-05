@@ -443,6 +443,51 @@ describe("stampSlackTurnIdentity", () => {
     }
   });
 
+  test("an owed lookup is never expired while its run is unstamped; only finished or orphaned rows go", async () => {
+    const aged = uid("aged");
+    await createRun({
+      id: aged,
+      prompt: "from slack, long ago",
+      model: "claude-opus-5",
+      engine: "mock",
+      orgId: org.orgId,
+      userId,
+      parentRunId: null,
+      threadId: aged,
+      repos: [],
+      memoryScope: "org",
+    });
+    const intent = { teamId: TEAM, channel: "C0SWEEP", messageTs: "1700000002.000100", slackUserId: SUNDAR };
+    expect(await recordSlackTurnIdentityIntent({ runId: aged, ...intent })).toBe("recorded");
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await db.update(slackIdentityLookups).set({ createdAt: eightDaysAgo }).where(eq(slackIdentityLookups.runId, aged));
+    // Rows nothing can finish: a run that is gone, and a run already stamped.
+    const orphan = uid("orphan");
+    await db.insert(slackIdentityLookups).values({ runId: orphan, ...intent, createdAt: eightDaysAgo });
+    const done = uid("done");
+    await createRun({
+      id: done,
+      prompt: "already stamped",
+      model: "claude-opus-5",
+      engine: "mock",
+      orgId: org.orgId,
+      userId,
+      parentRunId: null,
+      threadId: done,
+      repos: [],
+      memoryScope: "org",
+    });
+    await db.update(runs).set({ connector: { source: "slack", sender_name: "Done", sender_avatar_url: null, permalink: null } }).where(eq(runs.id, done));
+    await db.insert(slackIdentityLookups).values({ runId: done, ...intent });
+
+    expect(await recoverSlackTurnIdentities()).toBeGreaterThanOrEqual(1);
+    expect((await runRow(aged)).connector?.sender_name).toBe("Sundar");
+    expect(await owedLookup(aged)).toBeNull();
+    expect(await owedLookup(orphan)).toBeNull();
+    expect(await owedLookup(done)).toBeNull();
+    expect((await runRow(done)).connector?.sender_name).toBe("Done");
+  });
+
   test("a run that does not exist or owes nothing is reported, never invented", async () => {
     expect(await stampSlackTurnIdentity(uid("missing"))).toBe("unavailable");
     const id = uid("owes-nothing");
