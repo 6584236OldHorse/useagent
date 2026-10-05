@@ -71,8 +71,9 @@ export async function findSlackUser(
 export async function findActiveSlackUser(
   teamId: string,
   slackUserId: string,
+  exec: Executor = db,
 ): Promise<SlackSenderIdentity | null> {
-  const [row] = await db
+  const [row] = await exec
     .select({ orgId: slackUsers.orgId, userId: slackUsers.userId })
     .from(slackUsers)
     .innerJoin(member, and(eq(member.userId, slackUsers.userId), eq(member.organizationId, slackUsers.orgId)))

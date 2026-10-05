@@ -14,18 +14,25 @@ import { INVITATION_MAIL_TIMEOUT_MS, headerSafe, invitationMailConfig } from "..
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
 import { member, organization, user } from "../db/auth-schema";
-import { slackAccessRequests, slackUsers } from "../db/schema";
-import { env, googleAuthEnabled, selfSignupEnabled } from "../env";
+import { slackAccessRequests, slackUsers, slackWorkspaces } from "../db/schema";
+import { env, googleAuthEnabled } from "../env";
 import type { SlackClient } from "./client";
 import { kickSlackOutbox } from "./outbox/delivery";
 import { enqueuePostMessageTx } from "./outbox";
-import { findSlackWorkspace, upsertSlackUser } from "./workspaces";
+import { findActiveSlackUser, upsertSlackUser } from "./workspaces";
 
-export type AccessRequestVerdict = "asked" | "waiting" | "denied";
+export type AccessRequestVerdict = "asked" | "waiting" | "denied" | "already_in";
 
 const roles = (value: string | null | undefined) => (value ?? "").split(",").map((role) => role.trim());
 const manages = (role: string | null | undefined) => roles(role).some((r) => r === "owner" || r === "admin");
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** One rule for every address source: no whitespace or control characters, bounded, one @ with a dot after it. */
+export function validEmail(value: string | null | undefined): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 254 &&
+    /^[^\s@\u0000-\u001f\u007f]+@[^\s@\u0000-\u001f\u007f]+\.[^\s@\u0000-\u001f\u007f]+$/.test(value)
+  );
+}
 
 /** Record the request once and tell the admins who are reachable on Slack. The
  *  row and the notices commit together, so a failed notice is never lost behind
@@ -53,7 +60,7 @@ export async function requestSlackAccess(input: {
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
   const name = profile?.name ?? input.slackUserId;
-  const email = profile?.email && EMAIL.test(profile.email) ? profile.email : null;
+  const email = validEmail(profile?.email) ? profile.email : null;
   const admins = await db
     .select({ slackUserId: slackUsers.slackUserId, role: member.role })
     .from(slackUsers)
@@ -61,10 +68,18 @@ export async function requestSlackAccess(input: {
     .where(and(eq(slackUsers.teamId, input.teamId), eq(slackUsers.orgId, input.orgId)));
   const who = email ? `${name} (${email})` : name;
   const id = existing?.id ?? crypto.randomUUID();
-  await db.transaction(async (tx) => {
-    if (existing) {
-      // Allowed once, but the membership is gone: ask again.
-      await tx.update(slackAccessRequests).set({ status: "pending", name, email, image: profile?.image ?? null, decidedBy: null, decidedAt: null }).where(eq(slackAccessRequests.id, existing.id));
+  const verdict = await db.transaction(async (tx): Promise<AccessRequestVerdict> => {
+    const [locked] = existing
+      ? await tx.select({ status: slackAccessRequests.status }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
+      : [];
+    if (locked?.status === "denied") return "denied";
+    if (locked?.status === "pending") return "waiting";
+    if (locked) {
+      // Allowed once. A stale event from before the decision must not reopen a
+      // live membership; only a membership that is gone asks again.
+      const active = await findActiveSlackUser(input.teamId, input.slackUserId, tx);
+      if (active?.orgId === input.orgId) return "already_in";
+      await tx.update(slackAccessRequests).set({ status: "pending", name, email, image: profile?.image ?? null, decidedBy: null, decidedAt: null }).where(eq(slackAccessRequests.id, existing!.id));
     } else {
       await tx.insert(slackAccessRequests).values({ id, teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, name, email, image: profile?.image ?? null });
     }
@@ -78,9 +93,10 @@ export async function requestSlackAccess(input: {
         text: `${who} asked to use useAgent from Slack. Let them in or not: ${env.FRONTEND_ORIGIN}/settings#team`,
       });
     }
+    return "asked";
   });
-  kickSlackOutbox();
-  return "asked";
+  if (verdict === "asked") kickSlackOutbox();
+  return verdict;
 }
 
 export interface AccessRequestRow {
@@ -120,24 +136,35 @@ export async function decideAccessRequest(input: {
   email?: string | null;
 }): Promise<AccessDecision> {
   const typed = (input.email ?? "").trim().toLowerCase();
-  if (typed && (typed.length > 254 || !EMAIL.test(typed))) return "email_invalid";
+  if (typed && !validEmail(typed)) return "email_invalid";
   const outcome = await db.transaction(async (tx): Promise<AccessDecision> => {
+    const [pending] = await tx
+      .select({ teamId: slackAccessRequests.teamId })
+      .from(slackAccessRequests)
+      .where(and(eq(slackAccessRequests.id, input.id), eq(slackAccessRequests.orgId, input.orgId), eq(slackAccessRequests.status, "pending")))
+      .limit(1);
+    if (!pending) return "not_found";
+    // Workspace first, then the request: a rebinding to another org waits for
+    // this decision, and a workspace already rebound keeps nothing from here.
+    const [workspace] = await tx
+      .select({ orgId: slackWorkspaces.orgId })
+      .from(slackWorkspaces)
+      .where(eq(slackWorkspaces.teamId, pending.teamId))
+      .for("update");
+    if (workspace?.orgId !== input.orgId) return "not_found";
     const [row] = await tx
       .select()
       .from(slackAccessRequests)
       .where(and(eq(slackAccessRequests.id, input.id), eq(slackAccessRequests.orgId, input.orgId), eq(slackAccessRequests.status, "pending")))
       .for("update");
     if (!row) return "not_found";
-    // A workspace since rebound to another org keeps nothing from this one.
-    const workspace = await findSlackWorkspace(row.teamId, tx);
-    if (workspace?.orgId !== input.orgId) return "not_found";
     const decided = { decidedBy: input.decidedBy, decidedAt: new Date() };
     if (!input.allow) {
       await tx.update(slackAccessRequests).set({ status: "denied", ...decided }).where(eq(slackAccessRequests.id, row.id));
       return "denied";
     }
     const userId = await identityFor(tx, row, typed);
-    if (userId === "email_required" || userId === "account_exists") return userId;
+    if (userId === "email_required" || userId === "email_invalid" || userId === "account_exists") return userId;
     const [membership] = await tx
       .select({ id: member.id })
       .from(member)
@@ -167,7 +194,7 @@ export async function decideAccessRequest(input: {
 type Request = typeof slackAccessRequests.$inferSelect;
 
 /** Which account the sender is. Returns the user id, or why none can be chosen. */
-async function identityFor(tx: Executor, row: Request, typed: string): Promise<string | "email_required" | "account_exists"> {
+async function identityFor(tx: Executor, row: Request, typed: string): Promise<string | "email_required" | "email_invalid" | "account_exists"> {
   const [bound] = await tx
     .select({ userId: slackUsers.userId })
     .from(slackUsers)
@@ -176,6 +203,7 @@ async function identityFor(tx: Executor, row: Request, typed: string): Promise<s
   if (bound) return bound.userId; // the account this sender already owns here
   const email = row.email ?? typed; // Slack's word about the sender beats the admin's typing
   if (!email) return "email_required";
+  if (!validEmail(email)) return "email_invalid";
   const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, email)).limit(1);
   if (known) {
     if (!row.email) return "account_exists"; // typed by an admin: no proof this sender is that person
@@ -186,11 +214,12 @@ async function identityFor(tx: Executor, row: Request, typed: string): Promise<s
   return id;
 }
 
-/** Best effort, and only when the web has a way for them in: the person can
- *  already work from Slack. */
+/** Best effort, and only when the web has a way for them in: a Google sign-in
+ *  with this address links the account. Self sign-up cannot, the address is
+ *  taken. The person can already work from Slack either way. */
 async function welcome(orgId: string, requestId: string): Promise<void> {
   const config = invitationMailConfig();
-  if (!config || (!googleAuthEnabled() && !selfSignupEnabled())) return;
+  if (!config || !googleAuthEnabled()) return;
   const [row] = await db
     .select({ email: slackAccessRequests.email, userId: slackUsers.userId })
     .from(slackAccessRequests)

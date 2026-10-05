@@ -44,7 +44,8 @@ import { buildRunCard } from "../src/slack/card";
 import { markdownChunksFor, openingStreamChunks, taskUpdateChunk } from "../src/slack/streaming";
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
-import { setSlackClientForTest } from "../src/slack";
+import { setSlackClientForTest, type SlackClient } from "../src/slack";
+import { requestSlackAccess } from "../src/slack/access-requests";
 import { handleSlackEvent, resetSlackDeduperForTest, type SlackEnvelope } from "../src/slack/events";
 import { setInboundFileDownloaderForTest } from "../src/slack/inbound-files";
 import {
@@ -2723,6 +2724,25 @@ describe("slack workspace identity (fail closed)", () => {
     // The decision is final: a second answer finds nothing open.
     const again = await json(`/api/team/access-requests/${request.id}/deny`, { method: "POST", body: {} });
     expect(again.status).toBe(404);
+  });
+
+  test("a stale event never reopens a live membership, and a bad Slack-reported address is dropped", async () => {
+    const slackUserId = `U-${uid("stale")}`;
+    const client = {
+      userInfo: async () => ({ name: "Stale Sender", email: "stale\u0001@example.test", image: null }),
+    } as unknown as SlackClient;
+    const ask = () => requestSlackAccess({ teamId: TEAM, slackUserId, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client });
+    expect(await ask()).toBe("asked");
+    const listed = await json<{ requests: Array<{ id: string; name: string; email: string | null }> }>("/api/team/access-requests");
+    const request = listed.body.requests.find((r) => r.name === "Stale Sender")!;
+    expect(request.email).toBeNull(); // the control character disqualified Slack's address
+    expect(await ask()).toBe("waiting");
+    const allowed = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: `${uid("stale")}@example.test` } });
+    expect(allowed.body.status).toBe("allowed");
+    // The event that was in flight before the decision lands now: nothing reopens.
+    expect(await ask()).toBe("already_in");
+    const [row] = await db.execute(sql`select status from slack_access_requests where id = ${request.id}`);
+    expect((row as { status: string }).status).toBe("allowed");
   });
 
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
