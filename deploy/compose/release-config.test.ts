@@ -265,6 +265,12 @@ describe("release configuration", () => {
 		expect(migrated.indexOf("@useagent_gateway path /api/mcp/* /api/provider/*"))
 			.toBeLessThan(migrated.indexOf("@useagent_api path /api/*"));
 		expect(migrated).toContain("reverse_proxy 127.0.0.1:3212");
+		// The registry proxy runners pull through joins the backend route once,
+		// and a config that already carries it is left alone.
+		expect(migrated).toContain("  @useagent_api path /api/* /v2/*\n");
+		expect(
+			rewriteCaddyUpstreams(migrated, { backend: "127.0.0.1:3211", gateway: "127.0.0.1:3212", frontend: "127.0.0.1:3410" }),
+		).toBe(migrated);
 		expect(() =>
 			rewriteCaddyUpstreams(
 				source.replace("# useagent-release: gateway\n", ""),
