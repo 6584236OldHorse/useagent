@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { desktopContentPolicy, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
+import { desktopContentPolicy, desktopLoadErrorMessage, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
 
 describe("desktop security boundaries", () => {
   test("accepts secure planes and loopback development only", () => {
@@ -21,9 +21,46 @@ describe("desktop security boundaries", () => {
     expect(trustedNavigation("https://attacker.example", "https://plane.example")).toBe(false);
   });
 
-  test("keeps framing protection on the app while preserving backend iframe policy", () => {
-    expect(desktopContentPolicy("mainFrame")).toContain("frame-ancestors 'none'");
-    expect(desktopContentPolicy("subFrame")).toBe("object-src 'none'; base-uri 'self'");
+  test("enforces the server script nonce only on HTML app frames", () => {
+    const nonce = "aBcDeFgHiJkLmNoPqRsTuVwX";
+    const headers = {
+      "Content-Type": ["text/html; charset=utf-8"],
+      "Content-Security-Policy": [`default-src 'self'; script-src 'nonce-${nonce}' 'strict-dynamic'`],
+    };
+    const production = desktopContentPolicy("mainFrame", 200, headers, true);
+    expect(production).toEqual({
+      policy: `object-src 'none'; base-uri 'self'; frame-ancestors 'none'; script-src 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'`,
+      block: false,
+    });
+    expect(production.policy.split(/\s+|;/)).not.toContain("'unsafe-eval'");
+    expect(desktopContentPolicy("mainFrame", 200, {
+      "content-type": ["text/html"],
+      "content-security-policy": ["style-src 'nonce-not-a-script-nonce'"],
+    }, true).block).toBe(true);
+    expect(desktopContentPolicy("mainFrame", 200, {
+      "content-type": ["text/html"],
+      "content-security-policy": ["script-src 'nonce-short'"],
+    }, true).block).toBe(true);
+    expect(desktopContentPolicy("mainFrame", 200, {
+      "content-type": ["application/xhtml+xml"],
+    }, true).block).toBe(true);
+    expect(desktopContentPolicy("mainFrame", 200, {
+      "content-type": ["image/svg+xml"],
+    }, true).policy).toContain("script-src 'none'");
+    expect(desktopContentPolicy("subFrame", 200, {}, true)).toEqual({
+      policy: "object-src 'none'; base-uri 'self'",
+      block: false,
+    });
+    expect(desktopContentPolicy("mainFrame", 302, {}, true).block).toBe(false);
+    expect(desktopContentPolicy("mainFrame", 200, headers, false).policy).toContain(" 'unsafe-eval'");
+  });
+
+  test("turns only the canceled security load into an actionable startup error", () => {
+    expect(desktopLoadErrorMessage(new Error("ERR_BLOCKED_BY_CLIENT (-20) loading https://plane.example")))
+      .toBe("This server is missing the required script policy. Update the server and try again.");
+    expect(desktopLoadErrorMessage(Object.assign(new Error("request blocked"), { code: "ERR_BLOCKED_BY_CLIENT" })))
+      .toBe("This server is missing the required script policy. Update the server and try again.");
+    expect(desktopLoadErrorMessage(new Error("ERR_CONNECTION_REFUSED"))).toBe("ERR_CONNECTION_REFUSED");
   });
 
   test("validates runner tokens and external URLs", () => {

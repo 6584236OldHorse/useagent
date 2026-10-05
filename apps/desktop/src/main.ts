@@ -16,7 +16,7 @@ import { autoUpdater } from "electron-updater";
 import { join } from "node:path";
 import { desktopChannels } from "./desktop-api";
 import { createRunnerController, stopRunnerBeforeQuit, type RunnerStatus } from "./runner";
-import { externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender } from "./security";
+import { desktopLoadErrorMessage, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender } from "./security";
 import { createTokenStore } from "./token-store";
 import { createDesktopWindow } from "./window";
 import { createDesktopSignIn, desktopOrganizationLabel, type DesktopOrganization } from "./sign-in";
@@ -192,8 +192,7 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow?.focus();
   });
   app.whenReady().then(startDesktop).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "The desktop could not start.";
-    dialog.showErrorBox("useAgent could not start", message);
+    dialog.showErrorBox("useAgent could not start", desktopLoadErrorMessage(error));
     app.quit();
   });
 }

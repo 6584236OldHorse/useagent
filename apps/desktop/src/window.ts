@@ -17,7 +17,12 @@ export function createDesktopWindow(plane: URL): BrowserWindow {
   browserSession.webRequest.onHeadersReceived({ urls: [`${plane.origin}/*`] }, (details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     const name = Object.keys(responseHeaders).find(key => key.toLowerCase() === "content-security-policy") ?? "Content-Security-Policy";
-    responseHeaders[name] = [...(responseHeaders[name] ?? []), desktopContentPolicy(details.resourceType)];
+    const contentPolicy = desktopContentPolicy(details.resourceType, details.statusCode, responseHeaders, app.isPackaged);
+    if (contentPolicy.block) {
+      callback({ cancel: true });
+      return;
+    }
+    responseHeaders[name] = [...(responseHeaders[name] ?? []), contentPolicy.policy];
     callback({ responseHeaders });
   });
   const window = new BrowserWindow({
