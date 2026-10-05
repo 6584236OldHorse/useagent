@@ -2,6 +2,7 @@ import {
   previewLinkBase,
   type SandboxHandle,
 } from "../sandboxes/provider";
+import { DESKTOP_CDP_LOCAL_PORT } from "./desktop-cdp-relay";
 import {
   desktopCdpRelayToken,
   DESKTOP_CDP_RELAY_PORT,
@@ -248,7 +249,7 @@ const BROWSER_MCP_GUARD_FILE = "$HOME/.skynet/browser-mcp-guard.session";
 function browserArgs(workdir: string): string[] {
   return [
     "--cdp-endpoint",
-    BROWSER_CDP_ENDPOINT,
+    `http://127.0.0.1:${DESKTOP_CDP_LOCAL_PORT}`,
     "--caps",
     "vision",
     "--image-responses",
