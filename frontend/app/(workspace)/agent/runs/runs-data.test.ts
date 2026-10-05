@@ -16,6 +16,7 @@ function summary(id: string, status = "running") {
     repo: null,
     repos: [],
     repo_specs: [],
+    connector: null,
     created_at: "2026-08-24T00:00:00.000Z",
     updated_at: "2026-08-24T00:00:00.000Z",
     latest_run_id: id,
