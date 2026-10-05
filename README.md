@@ -304,10 +304,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before your first pull request.
 - Our sister project [threads](https://github.com/useagenthq/threads) is an agent framework
   for TypeScript and Python built on the same idea: every run is a log you can replay.
 
-<a href="https://github.com/useagenthq/useagent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=useagenthq/useagent" alt="Contributors">
-</a>
-
 [![Star history](https://api.star-history.com/svg?repos=useagenthq/useagent&type=Date)](https://star-history.com/#useagenthq/useagent&Date)
 
 ## License
