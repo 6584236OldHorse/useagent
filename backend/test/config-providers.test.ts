@@ -26,7 +26,7 @@ test("GET /api/config reports the deployment-provided providers and follows the 
   expect(served.status).toBe(200);
   expect(served.body.providers.openai).toBe(true);
   // What a runner must speak and boot; no image is configured in the test environment.
-  expect(served.body.runner).toEqual({ enabled: true, minProtocol: 1, image: null });
+  expect(served.body.runner).toEqual({ enabled: true, minProtocol: 2, image: null });
   expect(JSON.stringify(served.body)).not.toContain("sk-test-deployment");
   delete process.env.OPENAI_API_KEY;
   const unserved = await json<{ providers: Record<string, boolean> }>("/api/config");
