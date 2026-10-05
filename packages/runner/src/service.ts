@@ -271,14 +271,22 @@ export class RunnerService {
     });
     if (info.state !== "running") throw new StreamRefusedError("refused", `sandbox ${id} is not running`);
     const backend = this.options.backend;
-    this.openStreams.set(id, (this.openStreams.get(id) ?? 0) + 1);
-    void stream.done.then(
-      () => {},
-      () => {},
-    ).then(() => {
-      this.openStreams.set(id, Math.max(0, (this.openStreams.get(id) ?? 1) - 1));
+    const release = () => {
+      this.openStreams.set(id, Math.max(0, (this.openStreams.get(id) ?? 0) - 1));
       this.lastActivity.set(id, this.now());
-    });
+    };
+    this.openStreams.set(id, (this.openStreams.get(id) ?? 0) + 1);
+    try {
+      await this.open(t, id, stream, backend);
+    } catch (error) {
+      // Refused before it opened: it never counted as in use.
+      release();
+      throw error;
+    }
+    void stream.done.then(release, release);
+  }
+
+  private async open(t: StreamTarget, id: string, stream: MuxStream, backend: LocalBackend): Promise<void> {
     switch (t.kind) {
       case "port": {
         if (!Number.isInteger(t.port) || t.port < 1 || t.port > 65_535) throw new StreamRefusedError("invalid_params", "port out of range");

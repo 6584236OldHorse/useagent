@@ -223,6 +223,17 @@ describe("idle stop", () => {
     expect(await svc.stopIdle()).toEqual([]);
     now += 11 * 60_000;
     expect(await svc.stopIdle()).toEqual(["served"]);
+    // A stream refused before it opened never counted as use.
+    await svc.rpc("sandbox.start", { sandboxId: "served" });
+    for (const target of [
+      { kind: "port", sandboxId: "served", port: 0 },
+      { kind: "logs.follow", sandboxId: "served", sessionId: "../x", commandId: "c" },
+      { kind: "nope", sandboxId: "served" },
+    ]) {
+      await expect(plane.openStream(target)).rejects.toBeInstanceOf(StreamRefusedError);
+    }
+    now += 11 * 60_000;
+    expect(await svc.stopIdle()).toEqual(["served"]);
   });
 });
 
