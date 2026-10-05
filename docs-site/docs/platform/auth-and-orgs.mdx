@@ -35,9 +35,12 @@ sign-in, and without mail the switch stays inert with a warning at boot,
 because an invite code proves possession of the code, not of the address. An
 address that was claimed but never confirmed is released to the next sign-up
 for it, and the earlier link stops working. Sign-up attempts are limited per
-address and per client. Every newly created user, however provisioned, receives
-a personal organization, an open sign-up once its address is confirmed, so they
-land in their own tenant.
+address and per client. While the switch is on, an existing account whose
+address was never confirmed is asked to confirm it at its next password sign-in
+(the link is mailed then), and a Google identity links only to a confirmed local
+account. Every newly created user, however provisioned, receives a personal
+organization, an open sign-up once its address is confirmed, so they land in
+their own tenant.
 
 ## Organization scoping
 
