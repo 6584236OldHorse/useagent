@@ -14,7 +14,7 @@ import {
   findSlackThreadForProductThread,
   slackThreadCardBase,
 } from "../slack/repo";
-import { composeSlackReplyText } from "../slack/reply";
+import { toSlackMrkdwn } from "../slack/mrkdwn";
 import { buildRunCard, cardStatusFor } from "../slack/card";
 import {
   composeAutomationDeliveryText,
@@ -93,50 +93,72 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   if (!slack) return false;
   if (!run.orgId) return false;
 
-  // The thread card settles with this turn's outcome; the answer itself is
-  // the turn's own message (its streamed body, or a plain reply when nothing
-  // streamed) and never repeats inside the card.
-  const card = buildRunCard({ ...(await slackThreadCardBase(run, tx)), status: cardStatusFor(status) });
-  const replyText = composeSlackReplyText(status, summary);
+  // The thread card settles with this turn's outcome, rendered from the ROOT
+  // of the Slack thread (a child thread finishing never replaces the parent
+  // card's identity); the answer itself is the turn's own message and never
+  // repeats inside the card.
+  const cardRoot = thread?.rootRunId ?? run.threadId;
+  const base = await slackThreadCardBase(cardRoot, run.orgId, tx);
 
-  // Narration the live watcher streamed into the message body (process-local
-  // buffer; empty after a restart). The stop delivery appends exactly the tail
-  // the stream has not accepted yet, then the closing markdown.
-  const narration = (turnStream.snapshot(run.id) ?? "").slice(0, STREAM_NARRATION_CAP);
-  const closingMarkdown = composeStreamClosing({
+  // The COMPLETE reply as markdown: the narration the live watcher streamed
+  // into the message body (process-local buffer; empty after a restart) plus
+  // whatever of the reply that body lacks. The streamed message holds the
+  // first STREAM_NARRATION_CAP chars (the stop appends exactly the part the
+  // stream has not accepted yet); everything past that follows as plain
+  // messages of its own, so no answer is ever cut.
+  const narration = turnStream.snapshot(run.id) ?? "";
+  const body = narration + composeStreamClosing({
     status: status === "failed" ? "failed" : "completed",
     summary,
     narration,
   });
+  const head = body.slice(0, STREAM_NARRATION_CAP);
+  const replyKey = `slack-reply:${slack.teamId}:${run.id}`;
 
   kickSlack = (await enqueueStopStreamTx(tx, {
-    idempotencyKey: `slack-reply:${slack.teamId}:${run.id}`,
+    idempotencyKey: replyKey,
     orgId: run.orgId,
     teamId: slack.teamId,
     channel: slack.channel,
     threadTs: slack.threadTs,
     runId: run.id,
     chunks: [],
-    narrationText: narration,
-    closingMarkdown,
-    text: replyText,
-    fallbackText: replyText,
+    narrationText: head,
+    fallbackText: toSlackMrkdwn(head),
     ...(userMirror.status === "ready"
       ? { waitForIdempotencyKey: userMirror.idempotencyKey }
       : {}),
   })) || kickSlack;
-  const cardSettled = await enqueueUpdateCardTx(tx, {
-    idempotencyKey: `slack-card:final:${slack.teamId}:${run.id}`,
-    orgId: run.orgId,
-    teamId: slack.teamId,
-    channel: slack.channel,
-    threadTs: slack.threadTs,
-    rootRunId: thread?.rootRunId ?? run.threadId,
-    runId: run.id,
-    blocks: card.blocks,
-    text: card.text,
-  });
-  kickSlack = kickSlack || cardSettled;
+  for (let part = 0, at = STREAM_NARRATION_CAP; at < body.length; part += 1, at += STREAM_NARRATION_CAP) {
+    const tailCreated = await enqueuePostMessageTx(tx, {
+      idempotencyKey: `slack-reply-tail:${slack.teamId}:${run.id}:${part}`,
+      orgId: run.orgId,
+      teamId: slack.teamId,
+      channel: slack.channel,
+      threadTs: slack.threadTs,
+      runId: run.id,
+      text: toSlackMrkdwn(body.slice(at, at + STREAM_NARRATION_CAP)),
+      messageRole: "reply_tail",
+      part,
+      waitForIdempotencyKey: replyKey,
+    });
+    kickSlack = kickSlack || tailCreated;
+  }
+  if (base) {
+    const card = buildRunCard({ ...base, status: cardStatusFor(status) });
+    const cardSettled = await enqueueUpdateCardTx(tx, {
+      idempotencyKey: `slack-card:final:${slack.teamId}:${run.id}`,
+      orgId: run.orgId,
+      teamId: slack.teamId,
+      channel: slack.channel,
+      threadTs: slack.threadTs,
+      rootRunId: cardRoot,
+      runId: run.id,
+      blocks: card.blocks,
+      text: card.text,
+    });
+    kickSlack = kickSlack || cardSettled;
+  }
   // Clear the free-text working shimmer durably (the in-process watcher also
   // clears it, but only this survives a restart).
   const shimmerCleared = await enqueueThreadStatusTx(tx, {

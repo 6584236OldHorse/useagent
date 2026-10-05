@@ -18,7 +18,7 @@ import { bus, channel as runChannel, type BusEvent } from "../worker";
 import { turnStream } from "../runs/turn-stream";
 import { buildRunCard, type RunCardInput } from "./card";
 import { toSlackMrkdwn } from "./mrkdwn";
-import { slackThreadCardBase } from "./repo";
+import { findSlackRunResponse, slackThreadCardBase } from "./repo";
 import { enqueueAppendStream, enqueueStartStream, enqueueThreadStatus, enqueueUpdateCard } from "./outbox";
 import { createNarrationBuffer, markdownChunksFor, toolTaskChunk, WORKING_PHRASES } from "./streaming";
 
@@ -29,8 +29,9 @@ export const CARD_FLUSH_MS = 3_000;
 /** Narration flush cadence - coalesces deltas into bounded appends. */
 const NARRATION_FLUSH_MS = 2_500;
 /** The free-text shimmer expires two minutes after it was set (Slack docs);
- *  re-sent on this cadence while the turn has streamed nothing yet. */
-const SHIMMER_KEEPALIVE_MS = 90_000;
+ *  re-sent on this cadence until Slack holds the answer's opening. Overridable
+ *  so tests go fast. */
+const shimmerKeepaliveMs = (): number => Number(process.env.SLACK_SHIMMER_KEEPALIVE_MS ?? 90_000);
 
 export function watchSlackRun(opts: {
   runId: string;
@@ -52,7 +53,7 @@ export function watchSlackRun(opts: {
   /** The card chrome (title/model/repos/url) resolved once per watcher. */
   let cardBase: Promise<Omit<RunCardInput, "status" | "output"> | null> | null = null;
   const loadCardBase = (): Promise<Omit<RunCardInput, "status" | "output"> | null> => {
-    cardBase ??= getRun(runId).then((run) => (run ? slackThreadCardBase(run) : null));
+    cardBase ??= slackThreadCardBase(rootRunId, orgId);
     return cardBase;
   };
 
@@ -142,22 +143,28 @@ export function watchSlackRun(opts: {
   const narrationTimer = setInterval(flushNarration, NARRATION_FLUSH_MS);
   narrationTimer.unref?.();
 
-  // ── the shimmer: kept alive until the answer starts streaming ──
+  // ── the shimmer: kept alive until Slack holds the answer's opening ──
   let keepalive = 0;
   const shimmerTimer = setInterval(() => {
-    if (streamStarted) return;
-    keepalive += 1;
-    void enqueueThreadStatus({
-      idempotencyKey: `slack-thread-status:keep:${teamId}:${runId}:${keepalive}`,
-      orgId,
-      teamId,
-      channel,
-      threadTs,
-      runId,
-      status: WORKING_PHRASES[0],
-      loadingMessages: WORKING_PHRASES,
-    }).catch(() => {});
-  }, SHIMMER_KEEPALIVE_MS);
+    void (async () => {
+      // Only a CONFIRMED opening (the native stream, or its plain fallback)
+      // ends the refreshes: an enqueued start that Slack is still holding off
+      // (a long Retry-After) leaves nothing on screen, so the shimmer stays.
+      const opening = streamStarted ? await findSlackRunResponse(runId) : null;
+      if (opening?.nativeStreamTs || opening?.fallbackMessageTs) return;
+      keepalive += 1;
+      await enqueueThreadStatus({
+        idempotencyKey: `slack-thread-status:keep:${teamId}:${runId}:${keepalive}`,
+        orgId,
+        teamId,
+        channel,
+        threadTs,
+        runId,
+        status: WORKING_PHRASES[0],
+        loadingMessages: WORKING_PHRASES,
+      });
+    })().catch(() => {});
+  }, shimmerKeepaliveMs());
   shimmerTimer.unref?.();
 
   const finish = (): void => {

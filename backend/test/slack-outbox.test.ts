@@ -9,6 +9,8 @@ import { enqueue } from "../src/slack/outbox/repo";
 import { createRun, setRunStatus } from "../src/runs/repo";
 import { createSlackRunResponse, findSlackRunResponse, linkSlackThread } from "../src/slack/repo";
 import { markdownChunksFor } from "../src/slack/streaming";
+import { getSlackCardTsByRoot } from "../src/slack/repo";
+import { slackOutbox } from "../src/db/schema";
 import {
   enqueuePostMessage,
   backfillSlackOutboxOrgScope,
@@ -985,5 +987,111 @@ describe("native slack streaming outbox", () => {
     expect(rec.statuses).toHaveLength(0);
     expect(rec.streams).toHaveLength(0);
     expect(rec.threadStatuses).toEqual([{ channel: "D1", threadTs, status: "" }]);
+  });
+
+  test("a stop with nothing to close but a long answer fits the outbox: the fallback chunks shed, nothing throws", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const key = uid("stop-long-fallback");
+    const fallbackChunks = Array.from({ length: 15 }, (_, i) => `${i}`.padEnd(3_900, "x"));
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: key,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", text: "head", fallbackChunks },
+    });
+    const row = await getSlackOutbox(key);
+    expect(row).not.toBeNull();
+    expect(row!.payload.length).toBeLessThanOrEqual(48_000);
+    const stored = JSON.parse(row!.payload) as { fallbackChunks: string[] };
+    expect(stored.fallbackChunks.length).toBeGreaterThan(0);
+    expect(stored.fallbackChunks.length).toBeLessThan(15);
+    expect(stored.fallbackChunks.at(-1)).toContain("truncated");
+  });
+
+  test("a replayed opening neither starts a second stream nor counts its text twice", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const key = uid("stream-replay");
+    await enqueue({
+      kind: "start_stream",
+      idempotencyKey: key,
+      payload: { orgId: ORG, channel, teamId, threadTs, runId, taskDisplayMode: "timeline", chunks: markdownChunksFor("Hello "), fallbackText: "Hello " },
+    });
+    const rec = recorder(() => ({ ok: true }));
+    await processDue(rec.client);
+    expect(rec.streams.filter((s) => s.op === "start")).toHaveLength(1);
+    expect((await findSlackRunResponse(runId))?.streamedChars).toBe(6);
+    // A crash between Slack accepting the opening and the row being marked
+    // delivered replays the row.
+    await db.update(slackOutbox).set({ state: "pending", nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, key));
+    await processDue(rec.client);
+    expect((await getSlackOutbox(key))?.state).toBe("delivered");
+    expect(rec.streams.filter((s) => s.op === "start")).toHaveLength(1);
+    const response = await findSlackRunResponse(runId);
+    expect(response?.nativeStreamTs).toBe("stream.1");
+    expect(response?.streamedChars).toBe(6);
+  });
+
+  test("card revisions apply only when newer, except a turn's own terminal revision settling its late live one", async () => {
+    process.env.SLACK_CARD_PACE_MS = "0";
+    try {
+      const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+      const card = (status: string, output?: string) => ({
+        blocks: [{ type: "task_card", task_id: "thread", title: "t", status, ...(output ? { output } : {}) }],
+        text: "t",
+      });
+      const base = { orgId: ORG, teamId, channel, threadTs, rootRunId: runId };
+      await enqueue({ kind: "post_card", idempotencyKey: uid("card-post"), payload: { ...base, ...card("in_progress") } });
+      const rec = recorder(() => ({ ok: true }));
+      await processDue(rec.client);
+      // Turn B's live revision lands first.
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-live"), payload: { ...base, runId: "turn-b", revision: 20, live: true, ...card("in_progress", "Ran a command") } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(1);
+      // Turn A's delayed terminal revision is older: the shared card keeps B's state.
+      const aFinal = uid("card-a-final");
+      await enqueue({ kind: "update_card", idempotencyKey: aFinal, payload: { ...base, runId: "turn-a", revision: 10, ...card("complete") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(aFinal))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(1);
+      expect((await getSlackCardTsByRoot(runId))?.cardRevision).toBe(20);
+      // B's own terminal revision, enqueued before its late live one, still settles the card.
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-final"), payload: { ...base, runId: "turn-b", revision: 15, ...card("complete") } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(2);
+      const thread = await getSlackCardTsByRoot(runId);
+      expect(thread?.cardRevision).toBe(20); // the ledger only moves forward
+      expect(thread?.cardRevisionRunId).toBe("turn-b");
+    } finally {
+      delete process.env.SLACK_CARD_PACE_MS;
+    }
+  });
+
+  test("card revisions are paced: one within the window waits its turn without spending an attempt", async () => {
+    process.env.SLACK_CARD_PACE_MS = "400";
+    try {
+      const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+      const blocks = [{ type: "task_card", task_id: "thread", title: "t", status: "in_progress" }];
+      const base = { orgId: ORG, teamId, channel, threadTs, rootRunId: runId, blocks, text: "t" };
+      await enqueue({ kind: "post_card", idempotencyKey: uid("card-post"), payload: base });
+      const rec = recorder(() => ({ ok: true }));
+      await processDue(rec.client);
+      await new Promise((r) => setTimeout(r, 450));
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-r1"), payload: { ...base, runId, revision: 1, live: true } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(1);
+      const second = uid("card-r2");
+      await enqueue({ kind: "update_card", idempotencyKey: second, payload: { ...base, runId, revision: 2, live: true } });
+      await processDue(rec.client);
+      const paced = await getSlackOutbox(second);
+      expect(paced?.state).toBe("pending");
+      expect(paced?.attemptCount).toBe(0);
+      expect(paced?.lastError).toBe("card_paced");
+      expect(rec.updates).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 450));
+      await processDue(rec.client);
+      expect((await getSlackOutbox(second))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(2);
+    } finally {
+      delete process.env.SLACK_CARD_PACE_MS;
+    }
   });
 });

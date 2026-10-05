@@ -233,17 +233,30 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       if (!teamId || !channel || !threadTs || !rootRunId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
+      const runId = string("runId") ?? rootRunId;
+      const revision = typeof p.revision === "number" ? p.revision : null;
+      const card = await getSlackCardTsByRoot(rootRunId);
+      // Revisions are ordered thread-wide: one older than the card's (a
+      // retried row, a delayed terminal revision of a turn a newer turn has
+      // since moved past) is done without touching Slack. A turn's own
+      // terminal revision is the exception: it settles whatever live
+      // revision of that turn landed after it was enqueued.
+      if (card && revision !== null && revision <= card.cardRevision) {
+        const ownTurn = p.live !== true && card.cardRevisionRunId === runId;
+        if (!ownTurn) return { ok: true };
+      }
+      const applied = revision === null ? undefined : { revision, runId };
       // Advance the thread card in place; a transient/rate-limited failure
       // retries the whole row.
-      const cardTs = (await getSlackCardTsByRoot(rootRunId))?.cardTs;
-      if (cardTs) {
-        const res = await client.updateMessage({ channel, ts: cardTs, text, blocks });
+      if (card?.cardTs) {
+        const res = await client.updateMessage({ channel, ts: card.cardTs, text, blocks });
+        if (res.ok) await setSlackCardTs(rootRunId, card.cardTs, applied);
         if (res.ok || res.class !== "permanent") return res;
       }
       // No card yet (the post never landed) or the card is gone: post it fresh
       // so the thread always has its one card, and remember the new ts.
       const posted = await client.postMessage({ channel, text, threadTs, blocks });
-      if (posted.ok && posted.ts) await setSlackCardTs(rootRunId, posted.ts);
+      if (posted.ok && posted.ts) await setSlackCardTs(rootRunId, posted.ts, applied);
       return posted;
     }
     case "set_session_status": {
@@ -283,6 +296,11 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
       await createSlackRunResponse({ runId, teamId, channel, threadTs });
+      // A replay of an opening Slack already holds (a crash between the
+      // opening and marking this row delivered) must neither open a second
+      // stream nor count the opening twice.
+      const opened = await findSlackRunResponse(runId);
+      if (opened?.nativeStreamTs || opened?.fallbackMessageTs) return { ok: true };
       const stream = await client.startStream({
         channel,
         threadTs,
@@ -292,11 +310,13 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         recipientUserId: string("recipientUserId"),
       });
       if (stream.ok && stream.ts) {
-        await setSlackNativeStream(runId, stream.ts, mode);
-        // The opening markdown is narration too: count it so the appends'
-        // offset fence and the stop's tail arithmetic start after it.
-        await addSlackStreamedChars(
+        // The opening markdown is narration too: the ts and its char count
+        // land in one write, so the appends' offset fence and the stop's tail
+        // arithmetic start after it whatever happens next.
+        await setSlackNativeStream(
           runId,
+          stream.ts,
+          mode,
           chunks.reduce((n, c) => (c.type === "markdown_text" ? n + c.text.length : n), 0),
         );
         return stream;
@@ -414,8 +434,15 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         if (stopped.ok || stopped.class === "rate_limited") return stopped;
         await disableSlackNativeStream(runId);
       }
-      if (response?.fallbackMessageTs) {
-        const updated = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text, blocks: cardBlocks });
+      // The plain fallback message takes the answer in place only when it fits
+      // one message; a longer answer posts as fresh chunks so no part is lost.
+      if (response?.fallbackMessageTs && fallbackChunks.length <= 1) {
+        const updated = await client.updateMessage({
+          channel,
+          ts: response.fallbackMessageTs,
+          text: fallbackChunks[0] ?? text,
+          blocks: cardBlocks,
+        });
         if (updated.ok || updated.class !== "permanent") return updated;
       }
       return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks);
@@ -423,6 +450,25 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
     default:
       return assertNever(row.kind, "unhandled slack outbox kind");
   }
+}
+
+/** Card revisions are paced to Slack's chat.update guidance (one every few
+ *  seconds): how long a revision must still wait after the card's last update.
+ *  Zero for a thread without a card yet or for a revision already superseded. */
+async function cardPaceWaitMs(row: ClaimedRow): Promise<number> {
+  let payload: { rootRunId?: unknown; runId?: unknown; revision?: unknown };
+  try {
+    payload = JSON.parse(row.payload) as typeof payload;
+  } catch {
+    return 0;
+  }
+  const rootRunId = typeof payload.rootRunId === "string" ? payload.rootRunId : typeof payload.runId === "string" ? payload.runId : null;
+  if (!rootRunId) return 0;
+  const card = await getSlackCardTsByRoot(rootRunId);
+  if (!card?.cardUpdatedAt) return 0;
+  if (typeof payload.revision === "number" && payload.revision <= card.cardRevision) return 0;
+  const paceMs = Number(process.env.SLACK_CARD_PACE_MS ?? 3000);
+  return Math.max(0, paceMs - (Date.now() - card.cardUpdatedAt.getTime()));
 }
 
 /** Deliver one claimed row and transition its state. */
@@ -565,10 +611,10 @@ async function deliverOne(
         messageRole?: unknown;
       };
       validDependency =
-        dependency.kind === "post_message" &&
-        payload.messageRole === "user_mirror" &&
         typeof payload.runId === "string" &&
-        payload.runId === dependencyRunId;
+        payload.runId === dependencyRunId &&
+        ((dependency.kind === "post_message" && payload.messageRole === "user_mirror") ||
+          dependency.kind === "stop_stream");
     } catch {
       validDependency = false;
     }
@@ -582,6 +628,14 @@ async function deliverOne(
     if (dependency.state === "pending" || dependency.state === "delivering") {
       const nextAttemptAt = new Date(Date.now() + 250);
       await deferForDependency(row.id, nextAttemptAt);
+      return { status: "retry", errorClass: "transient", nextAttemptAt };
+    }
+  }
+  if (row.kind === "update_card") {
+    const wait = await cardPaceWaitMs(row);
+    if (wait > 0) {
+      const nextAttemptAt = new Date(Date.now() + wait);
+      await deferForDependency(row.id, nextAttemptAt, "card_paced");
       return { status: "retry", errorClass: "transient", nextAttemptAt };
     }
   }

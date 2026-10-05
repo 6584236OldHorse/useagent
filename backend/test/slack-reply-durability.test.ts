@@ -71,10 +71,11 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(payload.threadTs).toBe(ts);
     expect(payload.runId).toBe(runId);
     expect(payload.fallbackChunks).toEqual(["here is the result"]); // completed → the summary
-    const status = await getSlackOutbox(`slack-status:final:${TEAM}:${runId}`);
+    // The working shimmer clears durably with the reply (the one status family a thread uses).
+    const status = await getSlackOutbox(`slack-thread-status:final:${TEAM}:${runId}`);
     expect(status).not.toBeNull();
-    expect(status!.kind).toBe("set_session_status");
-    expect((JSON.parse(status!.payload) as { status: string }).status).toBe("active");
+    expect(status!.kind).toBe("set_thread_status");
+    expect((JSON.parse(status!.payload) as { status: string }).status).toBe("");
   });
 
   test("a FAILED Slack run replies with a warning notice", async () => {
@@ -82,7 +83,7 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     await finalizeRun(runId, "failed", "boom", 0);
     const row = await getSlackOutbox(`slack-reply:${TEAM}:${runId}`);
     expect(row).not.toBeNull();
-    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual([":warning: Run failed: boom"]);
+    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual(["*Run failed*: boom"]);
   });
 
   test("a non-Slack run enqueues NO reply", async () => {
@@ -318,8 +319,15 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(payload.channel).toBe(root.channel);
     expect(payload.threadTs).toBe(root.ts);
     expect(payload.fallbackChunks).toEqual(["Interaction design finished"]);
-    expect(JSON.stringify(payload.blocks)).toContain(`/session/${childId}`);
-    expect(JSON.stringify(payload.blocks)).toContain("Calendar interaction design");
+    // The thread card settles from the family ROOT, never from the child: the
+    // parent's title, session link and identity stay on the shared card.
+    const cardRow = await getSlackOutbox(`slack-card:final:${TEAM}:${childId}`);
+    const card = JSON.parse(cardRow?.payload ?? "{}") as { rootRunId?: string; blocks?: any[] };
+    expect(card.rootRunId).toBe(root.runId);
+    expect(card.blocks?.[0]).toMatchObject({ type: "task_card", title: "Coordinate children", status: "complete" });
+    expect(card.blocks?.[1]?.elements?.[0]?.url).toContain(`/session/${root.runId}`);
+    expect(JSON.stringify(card.blocks)).not.toContain(childId);
+    expect(JSON.stringify(card.blocks)).not.toContain("Calendar interaction design");
   });
 
   test("reply enqueue is idempotent across re-finalization (crash-retry safe)", async () => {

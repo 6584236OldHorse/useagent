@@ -179,6 +179,12 @@ describe("composeStreamClosing (answer never lost, never grossly duplicated)", (
     ).toBe("\n\nThe answer.");
   });
 
+  test("a long reply is never cut: the caller splits what one message cannot hold", () => {
+    const summary = "x".repeat(15_000) + "Z";
+    expect(composeStreamClosing({ status: "completed", summary, narration: "" })).toBe(summary);
+    expect(composeStreamClosing({ status: "failed", summary, narration: "" })).toBe(`**Run failed**: ${summary}`);
+  });
+
   test("a failed run always appends the failure line", () => {
     expect(composeStreamClosing({ status: "failed", summary: "boom", narration: "" })).toBe("**Run failed**: boom");
     expect(composeStreamClosing({ status: "failed", summary: "boom", narration: "some text" })).toBe(

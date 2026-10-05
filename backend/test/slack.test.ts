@@ -31,7 +31,10 @@ import {
   findSlackRunResponse,
   getSlackCardTsByRoot,
   linkSlackThread,
+  slackThreadCardBase,
 } from "../src/slack/repo";
+import { ensureRootThreadRelationship } from "../src/runs/thread-relationship-repo";
+import { toSlackMrkdwn } from "../src/slack/mrkdwn";
 import {
   enqueueAddReaction,
   enqueueAppendStream,
@@ -109,6 +112,8 @@ const SLACK_ENV_OVERRIDES: Record<string, string | undefined> = {
   SLACK_DEFAULT_USER_ID: undefined,
   SLACK_DEFAULT_ENGINE: undefined,
   SLACK_DEFAULT_MODEL: undefined,
+  // Card pacing is covered by the outbox suite; here revisions land at once.
+  SLACK_CARD_PACE_MS: "0",
 };
 const savedSlackEnv: Record<string, string | undefined> = {};
 
@@ -1037,6 +1042,26 @@ describe("slack event → run", () => {
     expect(title).not.toContain("<@");
   });
 
+  test("replaying an event whose mention lookup turned out differently still heals instead of conflicting", async () => {
+    const marker = uid("replaymention");
+    const channel = `C${uid("ch")}`;
+    const ts = `${uid("ts")}.1`;
+    const envelope = eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> ask <@U-LATER-${marker}> ${marker}`, ts });
+    // Slack could not name the person the first time: the token is dropped.
+    await postSlack(envelope);
+    const run = await waitFor(async () => findRunByPrompt(`ask ${marker}`));
+    await waitFor(async () => finalAnswerFor(channel, ts));
+    // A crash before the Slack thread was linked, then a replay once Slack
+    // does name them: the same event must heal the link, never conflict.
+    await db.delete(slackThreads).where(eq(slackThreads.rootRunId, run.id));
+    profiles.set(`U-LATER-${marker}`, { name: "Named Later", email: null, image: null });
+    resetSlackDeduperForTest();
+    expect((await postSlack(envelope)).status).toBe(200);
+    await waitFor(async () => (await getSlackCardTsByRoot(run.id)) ?? null);
+    const { body } = await json<{ runs: any[] }>("/api/runs?all=1");
+    expect(body.runs.filter((r) => typeof r.prompt === "string" && r.prompt.includes(marker))).toHaveLength(1);
+  });
+
   test("mention lookups are bounded per message and cached across messages", async () => {
     const marker = uid("mentioncap");
     const channel = `C${uid("ch")}`;
@@ -1228,6 +1253,18 @@ describe("slack native stream and Block Kit fallback", () => {
     rec.updates.filter((u) => u.channel === channel && u.ts === cardTs).map((u) => (u.blocks as any[])[0]);
   const verbOf = (task: any): string | undefined => task?.output?.elements?.[0]?.elements?.[0]?.text;
 
+  test("a stored thread title is shortened and stripped of markup like a prompt", async () => {
+    const t = await rootThread("root prompt here");
+    await ensureRootThreadRelationship({
+      orgId: DEV_ORG_ID,
+      threadId: t.runId,
+      title: "<@U123> Add a dark mode toggle to settings. Ask me if the palette is unclear.",
+    });
+    const base = await slackThreadCardBase(t.runId, DEV_ORG_ID);
+    expect(base?.title).toBe("Add a dark mode toggle to settings");
+    expect(base?.webUrl).toContain(`/session/${t.runId}`);
+  });
+
   test("post_card posts the thread card once and stores its ts on the thread", async () => {
     const t = await rootThread("card post");
     const cardTs = await postThreadCard(t, "card post");
@@ -1391,6 +1428,24 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(stopped.blocks).toBeUndefined();
   });
 
+  test("an answer longer than its streamed message holds arrives complete: the rest follows as its own message", async () => {
+    const t = await rootThread("long answer");
+    const answer = `${"A".repeat(12_499)}Z`;
+    // The watcher streamed the first 12,000 chars live; the buffer holds it all.
+    await startNativeStream(t, answer.slice(0, 12_000));
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 12_000 ? true : null));
+    turnStream.publish(t.runId, answer);
+    await finalizeRun(t.runId, "completed", answer, 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    // The streamed message already holds everything it can: a bare stop.
+    expect(stopped.chunks).toEqual([]);
+    const tail = await waitFor(async () =>
+      rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks && m.text.endsWith("Z")) ?? null,
+    );
+    expect(tail.text).toBe(toSlackMrkdwn(answer.slice(12_000)));
+    expect(rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks)).toHaveLength(1);
+  });
+
   test("an append API error disables the native stream without stray posts", async () => {
     const t = await rootThread("append dies");
     await startNativeStream(t, "append dies");
@@ -1490,6 +1545,38 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(stopped.blocks).toBeUndefined();
     // The card never carried a task row: no card revision named the stream.
     expect(t.cards().every((c) => c.type === "task_card")).toBe(true);
+  });
+
+  test("the shimmer keeps refreshing until Slack holds the answer's opening, then stops", async () => {
+    process.env.SLACK_SHIMMER_KEEPALIVE_MS = "150";
+    startStreamResult = { ok: false, class: "rate_limited", retryAfterMs: 60_000, message: "http_429" };
+    try {
+      const t = await watchedThread("held opening");
+      const keeps = () => rec.threadStatuses.filter((s) => s.channel === t.channel && s.status === "Working on it").length;
+      turnStream.publish(t.runId, "Hello ");
+      // The opening is enqueued and Slack holds it off: the shimmer must go on.
+      const startKey = `slack-stream:start:${TEAM}:${t.runId}`;
+      await waitFor(async () => {
+        const row = await getSlackOutbox(startKey);
+        return row && row.attemptCount > 0 ? row : null;
+      }, { timeoutMs: 8_000 });
+      const held = keeps();
+      await new Promise((r) => setTimeout(r, 500));
+      expect(keeps()).toBeGreaterThan(held);
+      // Slack accepts the opening: the refreshes stop.
+      startStreamResult = null;
+      await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, startKey));
+      kickSlackOutbox();
+      await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
+      await new Promise((r) => setTimeout(r, 200));
+      const confirmed = keeps();
+      await new Promise((r) => setTimeout(r, 500));
+      expect(keeps()).toBe(confirmed);
+      t.end();
+    } finally {
+      delete process.env.SLACK_SHIMMER_KEEPALIVE_MS;
+      startStreamResult = null;
+    }
   });
 
   test("card revisions land at most every three seconds, the latest verb winning", async () => {

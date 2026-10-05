@@ -58,7 +58,9 @@ export async function enqueuePostMessageTx(
     text: string;
     threadTs?: string;
     runId?: string;
-    messageRole?: "user_mirror";
+    messageRole?: "user_mirror" | "reply_tail";
+    part?: number;
+    waitForIdempotencyKey?: string;
   },
 ): Promise<boolean> {
   return enqueue(
@@ -73,10 +75,22 @@ export async function enqueuePostMessageTx(
         threadTs: entry.threadTs,
         ...(entry.runId ? { runId: entry.runId } : {}),
         ...(entry.messageRole ? { messageRole: entry.messageRole } : {}),
+        ...(entry.part !== undefined ? { part: entry.part } : {}),
+        ...(entry.waitForIdempotencyKey ? { waitForIdempotencyKey: entry.waitForIdempotencyKey } : {}),
       },
     },
     exec,
   );
+}
+
+/** Strictly increasing card revision numbers (a millisecond clock nudged past
+ *  the last one handed out), so delivery tells a retried older revision from
+ *  a newer one whatever order the rows arrive in. Process-local, like the
+ *  single-backend deployment this control plane requires. */
+let lastCardRevision = 0;
+export function nextCardRevision(): number {
+  lastCardRevision = Math.max(lastCardRevision + 1, Date.now());
+  return lastCardRevision;
 }
 
 /** The thread card's settled revision INSIDE a caller's transaction (run
@@ -112,6 +126,7 @@ export async function enqueueUpdateCardTx(
         runId: entry.runId,
         blocks: entry.blocks,
         text: entry.text,
+        revision: nextCardRevision(),
         ...(entry.live ? { live: true } : {}),
       },
     },
@@ -166,12 +181,14 @@ export async function enqueueStopStreamTx(
     narrationText?: string;
     closingMarkdown?: string;
     blocks?: readonly unknown[];
-    text: string;
     fallbackBlocks?: readonly unknown[];
+    /** The plain-text answer (mrkdwn) for the paths without a native stream;
+     *  chunked here, its first chunk doubling as the notification text. */
     fallbackText: string;
     waitForIdempotencyKey?: string;
   },
 ): Promise<boolean> {
+  const fallbackChunks = chunkSlackText(entry.fallbackText);
   return enqueue(
     {
       kind: "stop_stream",
@@ -186,9 +203,9 @@ export async function enqueueStopStreamTx(
         ...(entry.narrationText ? { narrationText: entry.narrationText } : {}),
         ...(entry.closingMarkdown ? { closingMarkdown: entry.closingMarkdown } : {}),
         ...(entry.blocks ? { blocks: entry.blocks } : {}),
-        text: entry.text,
+        text: fallbackChunks[0] ?? entry.fallbackText,
         ...(entry.fallbackBlocks ? { fallbackBlocks: entry.fallbackBlocks } : {}),
-        fallbackChunks: chunkSlackText(entry.fallbackText),
+        fallbackChunks,
         ...(entry.waitForIdempotencyKey
           ? { waitForIdempotencyKey: entry.waitForIdempotencyKey }
           : {}),
@@ -387,6 +404,7 @@ export async function enqueueUpdateCard(entry: {
       runId: entry.runId,
       blocks: entry.blocks,
       text: entry.text,
+      revision: nextCardRevision(),
       live: true,
     },
   });

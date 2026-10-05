@@ -98,15 +98,16 @@ async function healSlackRunDelivery(input: {
       // The thread's ONE card: its first turn posts it (a later turn that
       // finds no card posts it too), and a follow-up turn sets it spinning
       // again. Every turn's answer is its own message under the card.
-      const card = buildRunCard({ ...(await slackThreadCardBase(run, tx)), status: "in_progress" });
+      const base = await slackThreadCardBase(run.threadId, run.orgId, tx);
+      const card = base ? buildRunCard({ ...base, status: "in_progress" }) : null;
       const target = { orgId: run.orgId, teamId: input.teamId, channel: input.channel, threadTs: input.threadTs, rootRunId: run.threadId };
-      const cardPosted = await enqueuePostCardTx(tx, {
+      const cardPosted = card !== null && await enqueuePostCardTx(tx, {
         idempotencyKey: `slack-card:${input.teamId}:${run.threadId}`,
         ...target,
         blocks: card.blocks,
         text: card.text,
       });
-      const cardSpinning = run.id !== run.threadId && (await enqueueUpdateCardTx(tx, {
+      const cardSpinning = card !== null && run.id !== run.threadId && (await enqueueUpdateCardTx(tx, {
         idempotencyKey: `slack-card:turn:${input.teamId}:${input.runId}`,
         ...target,
         runId: input.runId,
@@ -192,16 +193,24 @@ async function mentionName(client: SlackClient, teamId: string, userId: string):
   return name;
 }
 
-/** Strip the bot's own mention, name the people mentioned (`<@U…>` becomes
- *  `@Display Name`, so neither the model nor a reader sees a raw id), render
- *  the rest of the mention markup, and collapse whitespace. Bounded and
- *  fail-soft: an unnamed mention keeps its label or disappears. */
+/** The message without the bot's own mention, whitespace collapsed: the
+ *  STABLE ingress text. Replays of one event fingerprint this, never the
+ *  resolved prompt, so a name lookup that fails or changes between deliveries
+ *  can never turn an identical event into a payload mismatch. */
+function ingressText(text: string, botUserId: string): string {
+  const t = botUserId ? text.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ") : text;
+  return t.replace(/\s+/g, " ").trim();
+}
+
+/** Name the people mentioned (`<@U…>` becomes `@Display Name`, so neither the
+ *  model nor a reader sees a raw id), render the rest of the mention markup,
+ *  and collapse whitespace. Bounded and fail-soft: an unnamed mention keeps
+ *  its label or disappears. */
 async function cleanPrompt(
   text: string,
-  botUserId: string,
   name: (userId: string) => Promise<string | null>,
 ): Promise<string> {
-  let t = botUserId ? text.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ") : text;
+  let t = text;
   const ids = [...new Set([...t.matchAll(/<@([^>|]+)>/g)].map((m) => m[1]!))].slice(0, MENTION_LOOKUPS);
   const names = new Map(await Promise.all(ids.map(async (id) => [id, await name(id).catch(() => null)] as const)));
   t = t.replace(/<@([^>|]+)>/g, (token, id: string) => {
@@ -386,7 +395,8 @@ export async function handleSlackEvent(
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;
   const files = Array.isArray(event.files) ? event.files : [];
 
-  let prompt = await cleanPrompt(rawText, botUserId, (id) => mentionName(client, teamId, id));
+  const stablePrompt = ingressText(rawText, botUserId);
+  let prompt = await cleanPrompt(stablePrompt, (id) => mentionName(client, teamId, id));
   if (!prompt) {
     // A files-only message still runs (the attachments ARE the request); an
     // empty message with no attached files stays a no-op.
@@ -500,7 +510,9 @@ export async function handleSlackEvent(
     ]),
   );
   const intent: RunCommandIntent = {
-    prompt,
+    // The intent carries the stable ingress text: identical events must
+    // fingerprint identically whatever users.info answers on a replay.
+    prompt: stablePrompt,
     model,
     engine,
     parentRunId,

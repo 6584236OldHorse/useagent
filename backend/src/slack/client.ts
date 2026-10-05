@@ -128,6 +128,8 @@ const PERMANENT_ERRORS = new Set([
   "not_authed",
   "restricted_action",
   "invalid_arguments",
+  // The message is gone (a deleted card): only a fresh post can recover.
+  "message_not_found",
   // AI-app surfaces: these signal the feature/surface is unavailable or the
   // stream can no longer be written - a retry will never succeed.
   "feature_disabled",
@@ -215,12 +217,17 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          user?: { real_name?: string; name?: string; profile?: { email?: string; image_192?: string; image_72?: string } };
+          user?: {
+            real_name?: string;
+            name?: string;
+            profile?: { display_name?: string; email?: string; image_192?: string; image_72?: string };
+          };
         };
         if (!data.ok || !data.user) return null;
         const profile = data.user.profile ?? {};
+        // The name a member chose to be shown as, then the full name, then the handle.
         return {
-          name: data.user.real_name?.trim() || data.user.name?.trim() || user,
+          name: profile.display_name?.trim() || data.user.real_name?.trim() || data.user.name?.trim() || user,
           email: profile.email?.trim().toLowerCase() || null,
           image: profile.image_192 ?? profile.image_72 ?? null,
         };

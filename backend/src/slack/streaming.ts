@@ -312,24 +312,25 @@ function unwrapUrl(raw: string): string {
   }
 }
 
-/** The markdown appended AFTER the narration tail at stopStream. Empty when the
- *  streamed narration already CONTAINS the reply (the common live case) -
- *  correctness first: when in doubt the reply is re-stated, never dropped. */
+/** The markdown the reply needs AFTER the narration: empty when the narration
+ *  already CONTAINS the reply (the common live case), the whole reply when
+ *  nothing streamed - correctness first: when in doubt the reply is re-stated,
+ *  never dropped, and never cut (the caller splits what one message cannot
+ *  hold into messages of its own). */
 export function composeStreamClosing(input: {
   readonly status: "completed" | "failed";
   readonly summary: string;
-  /** The narration the stream body will contain (already capped). */
+  /** The complete narration the turn streamed. */
   readonly narration: string;
 }): string {
   const summary = input.summary.trim();
-  const summaryCapped = truncate(summary, MARKDOWN_CHUNK_CAP);
   if (input.status === "failed") {
     const prefix = input.narration ? "\n\n" : "";
-    return `${prefix}**Run failed**${summaryCapped ? `: ${summaryCapped}` : ""}`;
+    return `${prefix}**Run failed**${summary ? `: ${summary}` : ""}`;
   }
-  if (!input.narration) return summaryCapped || "Done.";
+  if (!input.narration) return summary || "Done.";
   if (!summary || input.narration.includes(summary)) return "";
-  return `\n\n${summaryCapped}`;
+  return `\n\n${summary}`;
 }
 
 /** Ordered narration accumulator for the watcher: deltas buffer in, `take()`

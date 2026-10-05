@@ -19,7 +19,14 @@ export type PostMessagePayload = {
   readonly text?: string;
   readonly threadTs?: string;
   readonly runId?: string;
-  readonly messageRole?: "user_mirror";
+  /** `user_mirror`: the web author's turn mirrored ahead of the bot's result.
+   *  `reply_tail`: the part of an answer past what its streamed message holds,
+   *  posted after that message closed (`part` orders the tails). */
+  readonly messageRole?: "user_mirror" | "reply_tail";
+  readonly part?: number;
+  /** A row that must reach a terminal outbox state first (the same run's user
+   *  mirror before its result, the closed stream before its answer's tail). */
+  readonly waitForIdempotencyKey?: string;
 };
 
 export type AddReactionPayload = {
@@ -82,6 +89,10 @@ export type UpdateCardPayload = {
   readonly blocks: readonly unknown[];
   readonly text: string;
   readonly live?: boolean;
+  /** Thread-wide ordering of card revisions (strictly increasing at enqueue):
+   *  delivery applies a revision only if it is newer than the card's, except
+   *  that a turn's terminal revision always settles its own live one. */
+  readonly revision?: number;
 };
 
 export type SetSessionStatusPayload = {

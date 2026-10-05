@@ -129,4 +129,30 @@ describe("Slack streaming wire contract", () => {
     expect(requests[0]!.body).toEqual({ channel: "C123", thread_ts: "1.1", ts: "1.2" });
     expect("blocks" in requests[1]!.body).toBe(false);
   });
+
+  test("a deleted message is a permanent failure, so a card revision posts fresh instead of retrying", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ ok: false, error: "message_not_found" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    expect(await client.updateMessage({ channel: "C123", ts: "1.1", text: "t" })).toEqual({
+      ok: false,
+      class: "permanent",
+      message: "message_not_found",
+    });
+  });
+
+  test("a member is named by the display name they chose, then the full name, then the handle", async () => {
+    let user: Record<string, unknown> = { real_name: "Alex Legal", name: "alegal", profile: { display_name: "Lex" } };
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ ok: true, user }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("Lex");
+    user = { real_name: "Alex Legal", name: "alegal", profile: { display_name: "  " } };
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("Alex Legal");
+    user = { name: "alegal", profile: {} };
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("alegal");
+  });
 });
