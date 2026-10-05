@@ -729,7 +729,9 @@ export async function auditExecutionGraphAtSeal(
       const source = providerInputFromRow(row);
       const observation = graphObservation(source.input);
       if (observation) {
-        await writeExecutionGraph(source.input, source.seq, exec);
+        // The strict core, not the fail-open wrapper: an audit must surface a
+        // reconstruction failure so the seal can fail closed on it.
+        await applyExecutionGraphWrite(source.input, source.seq, exec);
         continue;
       }
       const pointer = await executionGraphPendingObservationBySource({

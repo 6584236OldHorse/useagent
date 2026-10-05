@@ -439,6 +439,17 @@ describe("execution graph terminal seal", () => {
     });
   });
 
+  test("an audit reconstruction failure fails the seal closed instead of being swallowed", async () => {
+    const runId = await freshRun();
+    await t3Event({ runId, seq: 1, id: `${runId}:root`, eventType: "session.started", nativeSessionId: "root" });
+    await prepareExecutionGraphSeal(runId, async () => {}); // reconstructs the root execution
+    // The stored execution's identity drifts from what the provider events say; the audit
+    // must surface the conflict through the strict core, never through the fail-open writer.
+    await db.update(agentExecutions).set({ provider: "opencode" }).where(eq(agentExecutions.runId, runId));
+    await expect(prepareExecutionGraphSeal(runId, async () => {}))
+      .rejects.toThrow("execution_source_key_identity_conflict");
+  });
+
   test("a seal failure rolls the finalization back", async () => {
     const readRun = await freshRun();
     const readPrompt = (await getRun(readRun))!.prompt;

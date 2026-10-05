@@ -328,81 +328,99 @@ describe("durable command lane", () => {
   });
 
   test("a child session inherits its parent's exact trusted internal origin", async () => {
-    const parentId = crypto.randomUUID();
-    await acceptInternalRunCommand({
-      ...commandForTest(
-        parentId,
-        `internal-parent:${crypto.randomUUID()}`,
-        runIntentForTest("internal parent"),
-      ),
-      origin: "internal:release-parity",
-    });
-    const child = await createChildSession({
-      orgId: ORG,
-      actorId: null,
-      parentRunId: parentId,
-      threadId: parentId,
-      prompt: "internal child",
-      engine: "mock",
-      model: "claude-opus-5",
-      repos: [],
-      memoryScope: "org",
-      idempotencyKey: crypto.randomUUID(),
-    });
-    expect(child.status).toBe("created");
-    if (child.status === "conflict") throw new Error("unexpected conflict");
-    const [row] = await db
-      .select({ origin: runs.origin })
-      .from(runs)
-      .where(eq(runs.id, child.child.id))
-      .limit(1);
-    expect(row?.origin).toBe("internal:release-parity");
-    await retire(parentId);
-    await retire(child.child.id);
+    // These assertions describe legacy gateway child sessions; product child threads
+    // (on by default) give a child its own thread and need an eligible public root.
+    const priorChildren = process.env.PRODUCT_CHILD_THREADS;
+    process.env.PRODUCT_CHILD_THREADS = "off";
+    try {
+      const parentId = crypto.randomUUID();
+      await acceptInternalRunCommand({
+        ...commandForTest(
+          parentId,
+          `internal-parent:${crypto.randomUUID()}`,
+          runIntentForTest("internal parent"),
+        ),
+        origin: "internal:release-parity",
+      });
+      const child = await createChildSession({
+        orgId: ORG,
+        actorId: null,
+        parentRunId: parentId,
+        threadId: parentId,
+        prompt: "internal child",
+        engine: "mock",
+        model: "claude-opus-5",
+        repos: [],
+        memoryScope: "org",
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(child.status).toBe("created");
+      if (child.status === "conflict") throw new Error("unexpected conflict");
+      const [row] = await db
+        .select({ origin: runs.origin })
+        .from(runs)
+        .where(eq(runs.id, child.child.id))
+        .limit(1);
+      expect(row?.origin).toBe("internal:release-parity");
+      await retire(parentId);
+      await retire(child.child.id);
+    } finally {
+      if (priorChildren === undefined) delete process.env.PRODUCT_CHILD_THREADS;
+      else process.env.PRODUCT_CHILD_THREADS = priorChildren;
+    }
   });
 
   test("the thread projection marks gateway child sessions, and only them", async () => {
-    const parentId = crypto.randomUUID();
-    await acceptRunCommand(
-      commandForTest(parentId, `parent:${crypto.randomUUID()}`, runIntentForTest("root turn")),
-    );
-    const child = await createChildSession({
-      orgId: ORG,
-      actorId: null,
-      parentRunId: parentId,
-      threadId: parentId,
-      prompt: "delegated audit",
-      engine: "mock",
-      model: "claude-opus-5",
-      repos: [],
-      memoryScope: "org",
-      idempotencyKey: crypto.randomUUID(),
-    });
-    expect(child.status).toBe("created");
-    if (child.status === "conflict") throw new Error("unexpected conflict");
-    // An ordinary REPLY also carries parent_run_id - it must NOT be marked.
-    const replyId = crypto.randomUUID();
-    const replyInput = commandForTest(replyId, `reply:${crypto.randomUUID()}`, {
-      ...runIntentForTest("plain reply"),
-      parentRunId: parentId,
-    });
-    await acceptRunCommand({
-      ...replyInput,
-      run: { ...replyInput.run, threadId: parentId },
-    });
+    // These assertions describe legacy gateway child sessions; product child threads
+    // (on by default) give a child its own thread and need an eligible public root.
+    const priorChildren = process.env.PRODUCT_CHILD_THREADS;
+    process.env.PRODUCT_CHILD_THREADS = "off";
+    try {
+      const parentId = crypto.randomUUID();
+      await acceptRunCommand(
+        commandForTest(parentId, `parent:${crypto.randomUUID()}`, runIntentForTest("root turn")),
+      );
+      const child = await createChildSession({
+        orgId: ORG,
+        actorId: null,
+        parentRunId: parentId,
+        threadId: parentId,
+        prompt: "delegated audit",
+        engine: "mock",
+        model: "claude-opus-5",
+        repos: [],
+        memoryScope: "org",
+        idempotencyKey: crypto.randomUUID(),
+      });
+      expect(child.status).toBe("created");
+      if (child.status === "conflict") throw new Error("unexpected conflict");
+      // An ordinary REPLY also carries parent_run_id - it must NOT be marked.
+      const replyId = crypto.randomUUID();
+      const replyInput = commandForTest(replyId, `reply:${crypto.randomUUID()}`, {
+        ...runIntentForTest("plain reply"),
+        parentRunId: parentId,
+      });
+      await acceptRunCommand({
+        ...replyInput,
+        run: { ...replyInput.run, threadId: parentId },
+      });
 
-    const thread = await getThreadForRun(ORG, parentId);
-    expect(thread).not.toBeNull();
-    const byId = new Map(thread!.map((r) => [r.id, r]));
-    expect(byId.get(parentId)?.child_session).toBe(false);
-    expect(byId.get(child.child.id)?.child_session).toBe(true);
-    expect(byId.get(replyId)?.child_session).toBe(false);
-    // The single-run projection (the thread SSE `run` frame) carries the same mark.
-    expect((await getRunWithSteps(ORG, child.child.id))?.child_session).toBe(true);
+      const thread = await getThreadForRun(ORG, parentId);
+      expect(thread).not.toBeNull();
+      const byId = new Map(thread!.map((r) => [r.id, r]));
+      expect(byId.get(parentId)?.child_session).toBe(false);
+      expect(byId.get(child.child.id)?.child_session).toBe(true);
+      expect(byId.get(replyId)?.child_session).toBe(false);
+      // The single-run projection (the thread SSE `run` frame) carries the same mark.
+      expect((await getRunWithSteps(ORG, child.child.id))?.child_session).toBe(true);
 
-    await retire(parentId);
-    await retire(child.child.id);
-    await retire(replyId);
+      await retire(parentId);
+      await retire(child.child.id);
+      await retire(replyId);
+    } finally {
+      if (priorChildren === undefined) delete process.env.PRODUCT_CHILD_THREADS;
+      else process.env.PRODUCT_CHILD_THREADS = priorChildren;
+    }
   });
 
   test("replays an accepted key even after provider readiness changes", async () => {
