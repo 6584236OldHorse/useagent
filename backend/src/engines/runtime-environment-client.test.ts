@@ -287,7 +287,7 @@ describe("T3 environment client", () => {
     expect(commands[1]).toBe(buildNativeRuntimeArtifactProbe(BOX_LAYOUT));
   });
 
-  test("prewarms private access without making an orchestration request", async () => {
+  test("prewarms private access and makes one shell request so a claimed sandbox skips it", async () => {
     const commands: string[] = [];
     const sandbox = {
       id: "cube-t3-private-access",
@@ -306,6 +306,9 @@ describe("T3 environment client", () => {
           if (command === buildRuntimeEnvironmentAuthenticationCommand()) {
             return { exitCode: 0, result: "" };
           }
+          if (command.includes("/api/orchestration/shell")) {
+            return { exitCode: 0, result: '{"projects":[],"threads":[]}' };
+          }
           throw new Error("unexpected orchestration request");
         },
       },
@@ -314,11 +317,13 @@ describe("T3 environment client", () => {
     await expect(
       prewarmRuntimeEnvironmentAccess(sandbox, new AbortController().signal),
     ).resolves.toBeUndefined();
+    // Access first, then exactly one shell request to build the runtime's state ahead of a run.
     expect(commands).toEqual([
       buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentAuthenticationCommand(),
+      expect.stringContaining("/api/orchestration/shell"),
     ]);
   });
 
