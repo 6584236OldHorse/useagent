@@ -5,6 +5,7 @@ import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
 import { and, eq } from "drizzle-orm";
 import { ensurePersonalOrgForUser, hasCredential, unverifiedClaim } from "./auth-hooks";
+import { organizationLimitReached } from "./auth/organization-limit";
 import {
   INVITATION_EXPIRES_IN_SECONDS,
   confirmationLinks,
@@ -98,6 +99,8 @@ export function createAuthServer() {
         // up to this many rows in one page (the Team card reads it unpaged);
         // paginate there before a workspace nears it.
         membershipLimit: 10_000,
+        // Each person creates at most ORG_CREATE_LIMIT_PER_USER organisations.
+        organizationLimit: organizationLimitReached,
         sendInvitationEmail: async (data) => {
           // The invitation exists whatever the mail does, and the request that
           // created it holds the organisation's turn: delivery runs on its own.

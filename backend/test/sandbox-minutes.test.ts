@@ -1,14 +1,15 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { and, eq, like, sql } from "drizzle-orm";
+import { and, eq, like, ne, sql } from "drizzle-orm";
 import type { SandboxProvider } from "@useagent/sandbox-contract";
 import { db } from "../src/db/client";
-import { member, runs, sandboxMinutesEntries } from "../src/db/schema";
+import { member, providerConnections, runs, sandboxMinutesEntries } from "../src/db/schema";
 import { createLease } from "../src/fleet/lease-repo";
 import { finalizeRun } from "../src/runs/finalize";
 import { acceptRunCancel } from "../src/commands/cancel";
 import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
 import {
   accrueRunSandboxMinutes,
+  assertSandboxMinutes,
   SandboxMinutesExceededError,
   sandboxMinutesPerUser,
 } from "../src/runs/sandbox-minutes";
@@ -19,9 +20,10 @@ import { createOrgSession, json, uid, type OrgSession } from "./helpers";
 // Sandbox minutes: accrual at settlement from the capacity leases a run held
 // (a run that moved to a second sandbox is charged both), the per-run
 // double-count guard, the cap at every acceptance (runs, thread replies, fleet
-// batches, child batches) with keyed replays and the kill switch, GET
-// /api/sandbox-minutes, and the member's preferred provider among the enabled
-// ones with the deployment default as the fallback.
+// batches, child batches) with keyed replays and the kill switch, one figure
+// per person across organisations, only the deployment's sandboxes charged or
+// refused, GET /api/sandbox-minutes, and the member's preferred provider among
+// the enabled ones with the deployment default as the fallback.
 
 let session: OrgSession;
 let userId: string;
@@ -109,7 +111,9 @@ describe("sandbox minutes", () => {
 
     // A second finalize is a no-op and a repeated accrual inserts nothing.
     expect((await finalizeRun(id, "completed", "again", 10)).applied).toBe(false);
-    expect(await accrueRunSandboxMinutes({ id, orgId: session.orgId, userId, sandboxId: "sb-second" }, db)).toBe(false);
+    expect(await accrueRunSandboxMinutes(
+      { id, orgId: session.orgId, userId, sandboxId: "sb-second", sandboxCredential: null, runLocation: null }, db,
+    )).toBe(false);
     expect(await db.select().from(sandboxMinutesEntries).where(eq(sandboxMinutesEntries.chargeKey, id))).toHaveLength(1);
   });
 
@@ -201,13 +205,92 @@ describe("sandbox minutes", () => {
     const mine = await json<{ used: number; cap: number | null }>("/api/sandbox-minutes", { cookies: capped.cookies });
     expect(mine.body).toMatchObject({ used: 10, cap: 10 });
 
-    // The ledger is per organisation: the same person's first org is untouched.
-    expect((await json<{ used: number }>("/api/sandbox-minutes", { cookies: session.cookies })).body.used).toBeLessThan(10);
-
     // Kill switch: no cap, and the snapshot says so.
     process.env.SANDBOX_MINUTES_PER_USER = "0";
     expect((await post({ prompt: "cap is off", engine: "mock" }, {}, capped.cookies)).status).toBe(201);
     expect((await json<{ cap: number | null }>("/api/sandbox-minutes", { cookies: capped.cookies })).body.cap).toBeNull();
+  });
+
+  test("the cap counts a person's minutes in every organisation; an operator is exempt", async () => {
+    process.env.SANDBOX_MINUTES_PER_USER = "10";
+    const person = await createOrgSession("minutes-orgs");
+    const personUser = await memberOf(person.orgId);
+    // Sign-up gave them a personal organisation as well; minutes there count here.
+    const [personal] = await db.select({ orgId: member.organizationId }).from(member)
+      .where(and(eq(member.userId, personUser), ne(member.organizationId, person.orgId)));
+    await seedUsed(personal!.orgId, personUser, 6);
+    await seedUsed(person.orgId, personUser, 4);
+    const mine = await json<{ used: number; runs: number }>("/api/sandbox-minutes", { cookies: person.cookies });
+    expect(mine.body).toMatchObject({ used: 10, runs: 2 });
+    const refused = await post({ prompt: "a new organisation is no new allowance", engine: "mock" }, {}, person.cookies);
+    expect(refused.status).toBe(402);
+    expect(refused.body).toMatchObject({ used: 10, cap: 10 });
+
+    const previous = process.env.OPERATOR_ACCOUNTS;
+    process.env.OPERATOR_ACCOUNTS = ` ${person.email.toUpperCase()} `;
+    try {
+      expect((await post({ prompt: "the operator runs the deployment", engine: "mock" }, {}, person.cookies)).status).toBe(201);
+    } finally {
+      if (previous === undefined) delete process.env.OPERATOR_ACCOUNTS;
+      else process.env.OPERATOR_ACCOUNTS = previous;
+    }
+  });
+
+  test("a run on the person's own machine or own Daytona or Box account is neither charged nor refused", async () => {
+    process.env.SANDBOX_MINUTES_PER_USER = "10";
+    const person = await createOrgSession("minutes-own");
+    const personUser = await memberOf(person.orgId);
+    const settled = async (sandboxCredential: "env" | "user" | null, runLocation: "local" | "cloud" | null) => {
+      const id = `minutes_${uid()}`;
+      await db.insert(runs).values({
+        id, orgId: person.orgId, userId: personUser, prompt: "hold a sandbox", model: "mock-model",
+        engine: "mock", status: "running", threadId: id, sandboxId: `sb-${id}`, sandboxCredential, runLocation,
+      });
+      await createLease({
+        runId: id, threadId: id, orgId: person.orgId, provider: "daytona", tier: "standard",
+        cpuMillicores: 2_000, memoryMib: 8_192, leaseTtlMs: 60_000, sandboxId: `sb-${id}`,
+      });
+      expect((await finalizeRun(id, "completed", "done", 10)).applied).toBe(true);
+      return entry(id);
+    };
+    expect(await settled("user", "cloud")).toBeNull();
+    expect(await settled("user", "local")).toBeNull();
+    expect(await settled(null, "local")).toBeNull();
+    expect(await settled("env", "cloud")).toMatchObject({ sandboxes: 1 });
+    // Rows from before the record ran on the deployment's provider.
+    expect(await settled(null, null)).toMatchObject({ sandboxes: 1 });
+
+    const own = await post({ prompt: "on my own account", engine: "mock" }, {}, person.cookies);
+    const ours = await post({ prompt: "on the deployment", engine: "mock" }, {}, person.cookies);
+    expect([own.status, ours.status]).toEqual([201, 201]);
+    await seedUsed(person.orgId, personUser, 10);
+    await db.update(runs).set({ sandboxId: "sb-own", sandboxCredential: "user" }).where(eq(runs.id, own.body.id!));
+    await db.update(runs).set({ sandboxId: "sb-ours", sandboxCredential: "env" }).where(eq(runs.id, ours.body.id!));
+    const reply = (threadId: string) => json<{ error?: string }>(`/api/threads/${threadId}/messages`, {
+      method: "POST", body: { text: "and again" }, headers: { "Idempotency-Key": uid("minutes-reply") }, cookies: person.cookies,
+    });
+    // A reply reuses its thread's retained sandbox, whoever's account it is on.
+    expect((await reply(own.body.id!)).status).toBe(201);
+    expect((await reply(ours.body.id!)).body.error).toBe("sandbox_minutes_exceeded");
+    // A thread on the person's machine stays there.
+    expect(await assertSandboxMinutes(person.orgId, personUser, db, { runLocation: "local" })).toBeUndefined();
+    await expect(assertSandboxMinutes(person.orgId, personUser, db, { runLocation: "cloud" }))
+      .rejects.toBeInstanceOf(SandboxMinutesExceededError);
+
+    // With USER_COMPUTERS on, a connected Daytona or Box key takes new sandboxes.
+    const previous = process.env.USER_COMPUTERS;
+    process.env.USER_COMPUTERS = "1";
+    try {
+      expect((await post({ prompt: "no key connected yet", engine: "mock" }, {}, person.cookies)).status).toBe(402);
+      await db.insert(providerConnections).values({
+        orgId: person.orgId, userId: personUser, provider: "box", authMethod: "api_key", status: "connected",
+        credentialCiphertext: "sealed", iv: "iv", tag: "tag",
+      });
+      expect((await post({ prompt: "on my own key", engine: "mock" }, {}, person.cookies)).status).toBe(201);
+    } finally {
+      if (previous === undefined) delete process.env.USER_COMPUTERS;
+      else process.env.USER_COMPUTERS = previous;
+    }
   });
 
   test("fleet batches and delegated child batches refuse a capped member inside their own acceptance", async () => {
