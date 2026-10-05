@@ -25,8 +25,6 @@ import {
   selectSessionCapabilities,
 } from "@/components/chat/canonical-timeline";
 import { type AssistantIdentity, Conversation } from "@/components/chat/conversation";
-import { DesktopPane } from "@/components/chat/desktop-pane";
-import { DiffPane } from "@/components/chat/diff-pane";
 import { decodeRunAccepted, type HandoffReceipt, handoffNotice } from "@/components/chat/handoff-receipts";
 import { useGatewayApprovals } from "@/components/chat/use-gateway-approvals";
 import { OrbBootIndicator } from "@/components/chat/orb-boot-indicator";
@@ -38,7 +36,6 @@ import {
   useSplitTooNarrow,
 } from "@/components/chat/rail-resizer";
 import { RunFeedback } from "@/components/chat/run-feedback";
-import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { SessionRailTabs } from "@/components/chat/session-rail-tabs";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
@@ -57,7 +54,7 @@ import { useWorkpieceAutoOpen } from "@/components/chat/use-workpiece-auto-open"
 import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/chat/workpiece-auto-open";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
-import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { DesktopPane, DiffPane, EditorPane, SessionDetailsRail, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
 import { filesFromSteps } from "@/components/chat/file-entries";
 import {
   type ApiRun,
