@@ -813,6 +813,9 @@ describe("durable admission — cancellation + fan-out ceiling", () => {
   test("invalid resource requests fail terminally instead of queueing forever", async () => {
     const previous = process.env.FLEET_SANDBOX_CPU_MILLICORES;
     process.env.FLEET_SANDBOX_CPU_MILLICORES = "999999";
+    // Larger than any host: the preload opens the host budget wide, so pin the
+    // budget this request must exceed (afterEach restores the preload value).
+    process.env.FLEET_HOST_CPU_MILLICORES = "12000";
     const orgId = track(`org-${uid("invalid-resource")}`);
     const runId = await accept(orgId);
     await pumpThread(runId);

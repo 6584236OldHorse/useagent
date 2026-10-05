@@ -31,7 +31,7 @@ import {
 } from "../src/slack/sandbox-file";
 import { createOrgSession, fetchApi, json, type OrgSession } from "./helpers";
 import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 const storage = new InMemoryArtifactStorage();
 const sandboxFiles = new Map<string, Buffer>();
@@ -60,7 +60,11 @@ beforeAll(async () => {
   stopSlackOutboxRelay();
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // One processDue pass claims the twenty oldest due rows in the shared table,
+  // and other suites leave undrained rows behind; start every case from an
+  // empty outbox so their leftovers cannot starve this run's own delivery.
+  await db.execute(sql`delete from slack_outbox`);
   sandboxFiles.clear();
   resolvedPaths.clear();
   downloadCount = 0;
