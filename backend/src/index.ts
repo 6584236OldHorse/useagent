@@ -94,6 +94,7 @@ import { integrationRoutes } from "./integrations/routes";
 import { codexSubscriptionRelayRoutes } from "./provider-connections/codex-subscription-relay";
 import { wikiGenRoutes } from "./wiki-gen/routes";
 import { cleanupRepositoryScratch } from "./wiki-gen/clone";
+import { startFreeModelLanePruner } from "./runs/free-model-lane-prune";
 import {
   configuredEngineReadiness,
   configuredUserFacingEngines,
@@ -190,6 +191,8 @@ await ensureCanonicalExecutionTranscriptIndexForBoot();
 // generation before serving config; the hydrator then follows it every minute.
 await hydrateFreeModelLaneFromRegistry();
 startFreeModelRegistryHydrator();
+// Drop Free-lane models OpenRouter stopped serving, hourly, with or without the qualifier.
+startFreeModelLanePruner();
 configureProductChildPump(pumpThread);
 
 // Reconcile the restricted gateway role's grants on EVERY boot: a migration
