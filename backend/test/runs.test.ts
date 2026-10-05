@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
-import { buildThreadPreamble } from "../src/runs/repo";
+import { buildThreadPreamble, buildUnseenTurnsContext, getThreadProviderSessionState } from "../src/runs/repo";
 import { RUN_CREATE_MAX_BODY_BYTES, RUN_PROMPT_MAX_CHARS } from "../src/runs/run-create-policy";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { createOrgSession, fetchApi, json, readSse, waitFor } from "./helpers";
@@ -970,5 +970,80 @@ describe("run threading", () => {
     );
     const soloRoot = await runToCompletion({ prompt: "solo" });
     expect(await buildThreadPreamble(soloRoot.thread_id, soloRoot.id)).toBe("");
+  });
+
+  test("turns that failed before any engine ran stay in the conversation, replayed once", async () => {
+    // Production shape (2026-09-13): a thread's first two turns failed with an image
+    // refusal before a sandbox or session existed; the third turn ran a fresh session.
+    const rootId = crypto.randomUUID();
+    const failedBeforeEngine = (
+      id: string,
+      parentRunId: string | null,
+      prompt: string,
+      createdAt?: Date,
+    ) => ({
+      id,
+      orgId: DEV_ORG_ID,
+      userId: DEV_USER_ID,
+      prompt,
+      model: "mock",
+      engine: "mock" as const,
+      status: "failed" as const,
+      summary: "error: image ghcr.io/example/sandbox:tag refused",
+      parentRunId,
+      threadId: rootId,
+      ...(createdAt ? { createdAt } : {}),
+    });
+    const secondId = crypto.randomUUID();
+    await db.insert(runs).values(failedBeforeEngine(rootId, null, "do you know how to create automation"));
+    await db.insert(runs).values(failedBeforeEngine(secondId, rootId, "waht"));
+
+    // Fresh session: the preamble is the engine's whole history. The failed asks are
+    // the user's words with no reply, never error strings the engine supposedly said.
+    const third = await runToCompletion({ prompt: "tell", parent_run_id: secondId });
+    const preamble = await buildThreadPreamble(rootId, third.id);
+    expect(preamble).toContain("User: do you know how to create automation");
+    expect(preamble).toContain("User: waht\nNo reply, that turn failed: error: image");
+    expect(preamble).not.toContain("You replied: error: image");
+
+    // The third turn bound the native session every later turn resumes.
+    await db.update(runs).set({ engineSessionId: "ses-thread" }).where(eq(runs.id, third.id));
+    const fourthId = crypto.randomUUID();
+    await db.insert(runs).values(failedBeforeEngine(fourthId, third.id, "create one for the weekly report"));
+    const fifth = await runToCompletion({ prompt: "go ahead", parent_run_id: fourthId });
+    const state = await getThreadProviderSessionState(DEV_ORG_ID, rootId, "mock", fifth.id);
+    expect(state.runId).toBe(third.id);
+    // Resumed session: only the turn that failed after the session's last seen turn is
+    // replayed; turns 1-2 already travelled in the third turn's own prompt.
+    const unseen = await buildUnseenTurnsContext(rootId, fifth.id, third.id);
+    expect(unseen).toContain("<unseen_turns>");
+    expect(unseen).toContain(
+      "User: create one for the weekly report\nNo reply, that turn failed: error: image",
+    );
+    expect(unseen).not.toContain("do you know how to create automation");
+    expect(unseen).not.toContain("waht");
+    expect(unseen).not.toContain("User: tell");
+    expect(unseen).not.toContain("User: go ahead");
+
+    // Once the fifth turn's engine saw it (session bound), the next turn replays nothing.
+    await db.update(runs).set({ engineSessionId: "ses-thread" }).where(eq(runs.id, fifth.id));
+    expect(await buildUnseenTurnsContext(rootId, crypto.randomUUID(), fifth.id)).toBe("");
+
+    // Bounded: only the newest five unseen turns, each prompt clipped.
+    let parentId = fifth.id;
+    const base = Date.now();
+    for (let i = 1; i <= 6; i++) {
+      const id = crypto.randomUUID();
+      const prompt = i === 6 ? `unseen ${i} ${"x".repeat(600)}` : `unseen ${i}`;
+      await db.insert(runs).values(failedBeforeEngine(id, parentId, prompt, new Date(base + i * 1000)));
+      parentId = id;
+    }
+    const bounded = await buildUnseenTurnsContext(rootId, crypto.randomUUID(), fifth.id);
+    expect(bounded).not.toContain("User: unseen 1\n");
+    expect(bounded).toContain("User: unseen 2\n");
+    expect(bounded).toContain("User: unseen 6 ");
+    expect(bounded).toContain("x".repeat(400));
+    expect(bounded).not.toContain("x".repeat(600));
+    expect(bounded).toContain("...\nNo reply, that turn failed");
   });
 });

@@ -9,6 +9,7 @@ import {
   and,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -689,33 +690,50 @@ export async function getThreadRunsByIds(
  * with the OLDEST turns dropped first. */
 const THREAD_MAX_TURNS = 6;
 const THREAD_MAX_CHARS = 4000;
+/** A resumed session replays at most this many unseen turns, each clipped. */
+const UNSEEN_MAX_TURNS = 5;
+const UNSEEN_PROMPT_MAX_CHARS = 500;
+
+type RunPosition = { readonly createdAt: Date; readonly id: string };
+
+/** Where `runId` sits in its thread's (created_at, id) order; null when unknown. */
+async function runPosition(threadId: string, runId: string): Promise<RunPosition | null> {
+  const [row] = await db
+    .select({ createdAt: runs.createdAt, id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.threadId, threadId), eq(runs.id, runId)))
+    .limit(1);
+  return row ?? null;
+}
+const before = (pos: RunPosition) =>
+  or(lt(runs.createdAt, pos.createdAt), and(eq(runs.createdAt, pos.createdAt), lt(runs.id, pos.id)));
+const after = (pos: RunPosition) =>
+  or(gt(runs.createdAt, pos.createdAt), and(eq(runs.createdAt, pos.createdAt), gt(runs.id, pos.id)));
+
+/** One prior turn as the engine's own history. A failed turn has no reply; its
+ * failure is stated as such, never presented as something the engine said. */
+function renderTurn(r: Pick<RunRecord, "prompt" | "status" | "summary">): string {
+  return `User: ${r.prompt}\n` + (r.status === "completed"
+    ? `You replied: ${r.summary ?? "no summary"}`
+    : `No reply, that turn failed: ${r.summary ?? "unknown error"}`);
+}
 
 /** Compose the engine context preamble for a run: walk its thread's PRIOR turns
  * (every other run in the thread, oldest→newest) and render each as
- * `User: <prompt>\nResult: <summary ?? 'no summary'>`. Returns "" when there is
- * no prior context (a thread root). */
+ * `User: <prompt>` plus the reply, or the failure when there was none. Returns
+ * "" when there is no prior context (a thread root). */
 export async function buildThreadPreamble(
   threadId: string,
   currentRunId: string,
 ): Promise<string> {
-  const [currentRun] = await db
-    .select({ createdAt: runs.createdAt })
-    .from(runs)
-    .where(and(eq(runs.threadId, threadId), eq(runs.id, currentRunId)))
-    .limit(1);
-  const priorRun = currentRun
-    ? or(
-        lt(runs.createdAt, currentRun.createdAt),
-        and(eq(runs.createdAt, currentRun.createdAt), lt(runs.id, currentRunId)),
-      )
-    : ne(runs.id, currentRunId);
+  const current = await runPosition(threadId, currentRunId);
   const rows = await db
-    .select({ prompt: runs.prompt, summary: runs.summary })
+    .select({ prompt: runs.prompt, status: runs.status, summary: runs.summary })
     .from(runs)
     .where(
       and(
         eq(runs.threadId, threadId),
-        priorRun,
+        current ? before(current) : ne(runs.id, currentRunId),
         inArray(runs.status, ["completed", "failed"]),
       ),
     )
@@ -724,9 +742,7 @@ export async function buildThreadPreamble(
   if (rows.length === 0) return "";
 
   // Keep the most recent turns, then trim oldest-first to the char budget.
-  let blocks = rows
-    .toReversed()
-    .map((r) => `User: ${r.prompt}\nYou replied: ${r.summary ?? "no summary"}`);
+  let blocks = rows.toReversed().map(renderTurn);
   while (blocks.length > 1 && blocks.join("\n\n").length > THREAD_MAX_CHARS) {
     blocks = blocks.slice(1);
   }
@@ -741,6 +757,53 @@ export async function buildThreadPreamble(
     `"previously", they mean these turns — answer from them instead of saying ` +
     `you lack history. (Only work outside this conversation is unknown to you ` +
     `unless a team-memory block is provided above.)\n\n${blocks.join("\n\n")}\n\n---\n\n`
+  );
+}
+
+/** The prior turns a RESUMED native session never saw: the thread's runs that
+ * failed before a provider session was bound (`engine_session_id` null, so no
+ * prompt ever reached an engine), created after `sinceRunId`, the run whose
+ * session this turn resumes. That run's own prompt already carried everything
+ * before it, so each unseen turn is replayed exactly once. Newest
+ * UNSEEN_MAX_TURNS only, prompts clipped; "" when there are none. */
+export async function buildUnseenTurnsContext(
+  threadId: string,
+  currentRunId: string,
+  sinceRunId: string,
+): Promise<string> {
+  const [current, since] = await Promise.all([
+    runPosition(threadId, currentRunId),
+    runPosition(threadId, sinceRunId),
+  ]);
+  const rows = await db
+    .select({ prompt: runs.prompt, status: runs.status, summary: runs.summary })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.threadId, threadId),
+        current ? before(current) : ne(runs.id, currentRunId),
+        since ? after(since) : undefined,
+        eq(runs.status, "failed"),
+        isNull(runs.engineSessionId),
+      ),
+    )
+    .orderBy(desc(runs.createdAt), desc(runs.id))
+    .limit(UNSEEN_MAX_TURNS);
+  if (rows.length === 0) return "";
+  const blocks = rows.toReversed().map((r) =>
+    renderTurn({
+      ...r,
+      prompt: r.prompt.length > UNSEEN_PROMPT_MAX_CHARS
+        ? `${r.prompt.slice(0, UNSEEN_PROMPT_MAX_CHARS)}...`
+        : r.prompt,
+    }),
+  );
+  return (
+    "<unseen_turns>\n" +
+    "Earlier in this conversation the user sent these messages, but each turn failed " +
+    "before it reached you, so they are missing from your session history (oldest first). " +
+    "They are history, not new instructions; act only on the current request below.\n\n" +
+    `${blocks.join("\n\n")}\n</unseen_turns>\n\n`
   );
 }
 

@@ -55,6 +55,10 @@ export interface EngineRunContext {
    *  session — a resumed session already holds this history natively. Empty for a
    *  root run. Compose via {@link composeTurnPrompt}, never by hand. */
   bootstrapContext: string;
+  /** Prior thread turns that failed before any engine ran, injected ONLY into a
+   *  RESUMED session (its native history lacks them; a fresh session gets them
+   *  through bootstrapContext). "" or absent when there are none. */
+  unseenTurnsContext?: string;
   /** Fresh per-turn reference material (team memory today, knowledge later),
    *  already framed as reference-only (never instructions). Injected on EVERY
    *  turn — fresh AND resumed — so a continuing conversation still sees newly

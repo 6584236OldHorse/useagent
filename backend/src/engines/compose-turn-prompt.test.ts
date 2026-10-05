@@ -21,6 +21,7 @@ const ctx = (
   over: Partial<{
     prompt: string;
     bootstrapContext: string;
+    unseenTurnsContext: string;
     turnContext: string;
     resourceContext: string;
     skillContext: string;
@@ -131,6 +132,12 @@ describe("composeTurnPrompt — fresh vs resumed context", () => {
     expect(out).not.toContain("operating_rules"); // and already saw the global rules on its first turn
     expect(out).toContain("skills_list");
     expect(out).toContain("skill_activate");
+  });
+
+  test("a resumed session carries the thread turns its native history never saw; a fresh one has them in bootstrap", () => {
+    const context = ctx({ unseenTurnsContext: "UNSEEN" });
+    expect(compose(context, true)).toBe(`UNSEEN${P}${W}${S}TURN${userRequest("USER")}`);
+    expect(compose(context, false)).toBe(`${R}BOOT${P}${W}${S}TURN${userRequest("USER")}`);
   });
 
   test("REGRESSION: a resumed session STILL carries fresh turnContext (memory not dropped)", () => {

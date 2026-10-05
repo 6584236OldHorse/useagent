@@ -50,6 +50,8 @@ export async function setRunEngineSession(
 export interface ThreadProviderSessionState {
   readonly binding: ProviderSessionBinding | null;
   readonly legacySessionId: string | null;
+  /** The run that recorded the session: the last turn its engine saw. */
+  readonly runId: string | null;
 }
 
 /** Most recent same-engine provider session in a thread, excluding the turn
@@ -64,6 +66,7 @@ export async function getThreadProviderSessionState(
     .select({
       binding: runs.providerSession,
       legacySessionId: runs.engineSessionId,
+      runId: runs.id,
     })
     .from(runs)
     .where(
@@ -80,6 +83,7 @@ export async function getThreadProviderSessionState(
   return {
     binding: parseProviderSessionBinding(row?.binding),
     legacySessionId: row?.legacySessionId ?? null,
+    runId: row?.runId ?? null,
   };
 }
 

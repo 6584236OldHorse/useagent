@@ -1,6 +1,6 @@
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
-import { buildThreadPreamble, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
+import { buildThreadPreamble, buildUnseenTurnsContext, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
@@ -288,7 +288,7 @@ async function runWorker(runId: string): Promise<void> {
         end?.();
       }
     };
-    const [providerSessionState, recall, bootstrapContext, skillCatalogPage, resourceSnapshot] = await Promise.all([
+    const [providerSessionState, recall, bootstrapContext, skillCatalogPage, resourceSnapshot, unseenTurnsContext] = await Promise.all([
       providerSessionStatePromise,
       // Layered recall (new_mem_prompt.md 6.2): Tencent L0 (immediate ground
       // evidence, incl. explicit "remember X") + L1 (distilled) searched in
@@ -337,17 +337,25 @@ async function runWorker(runId: string): Promise<void> {
             })
           : Promise.resolve(null),
       ),
+      // A resumed native session holds only the turns that reached its engine;
+      // replay the thread's turns that failed before any engine ran. A fresh
+      // session gets them through bootstrapContext instead.
+      timedContextOperation("worker.unseen_turns", async () => {
+        const state = await providerSessionStatePromise;
+        return state.runId ? buildUnseenTurnsContext(run.threadId, run.id, state.runId) : "";
+      }),
     ]);
     const providerSession = providerSessionState.binding ?? undefined;
     const engineSessionId = providerSession?.nativeSessionId ??
       providerSessionState.legacySessionId ?? undefined;
     const { turnContext, skillCatalogContext, resourceContext } = frameTurnContexts({ recall, skillCatalogPage, resourceSnapshot, botIdentity: bot.identity });
 
-    if (turnContext || bootstrapContext || skillContext || skillCatalogContext || resourceContext) {
+    if (turnContext || bootstrapContext || unseenTurnsContext || skillContext || skillCatalogContext || resourceContext) {
       console.log(
         `[worker] run ${runId} thread ${run.threadId} scope=${plan?.scope ?? "off"}: ` +
           `turnContext ${turnContext.length} (${recall?.items.length ?? 0} memory items, ` +
           `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${bootstrapContext.length}` +
+          ` + unseenTurnsContext ${unseenTurnsContext.length}` +
           ` + skillContext ${skillContext.length} chars` +
           ` + skillCatalogContext ${skillCatalogContext.length} chars` +
           ` + resourceContext ${resourceContext.length} chars`,
@@ -397,6 +405,7 @@ async function runWorker(runId: string): Promise<void> {
         run.engine,
         run.prompt,
         bootstrapContext,
+        unseenTurnsContext,
         turnContext,
         plan !== null,
         resourceContext,
@@ -605,6 +614,7 @@ async function runEngine(
   engineId: string,
   prompt: string,
   bootstrapContext: string,
+  unseenTurnsContext: string,
   turnContext: string,
   memoryEnabled: boolean,
   resourceContext: string,
@@ -704,6 +714,7 @@ async function runEngine(
     runId,
     prompt,
     bootstrapContext,
+    unseenTurnsContext,
     turnContext,
     memoryEnabled,
     resourceContext,
