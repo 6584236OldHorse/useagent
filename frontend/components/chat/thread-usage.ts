@@ -39,6 +39,10 @@ export function threadUsage(turns: readonly UsageTurn[]): ThreadUsage {
       const native = turn.native;
       for (const frame of native?.nativeFrames ?? []) {
         if (frame.eventType !== "part.step-finish") continue;
+        // The runtime lane (Codex, Claude) stores the context in use after a
+        // call, revised in place per turn: a snapshot the ring reads, not a
+        // per-call ledger these totals could sum. Its threads read "not reported".
+        if (frame.provider === "t3") continue;
         if (frame.native.parentSessionId) continue;
         if (frame.native.sessionId && native?.childSessionIds.has(frame.native.sessionId)) continue;
         const payload = asRecord(frame.payload);

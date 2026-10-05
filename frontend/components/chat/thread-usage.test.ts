@@ -70,6 +70,23 @@ describe("threadUsage", () => {
     });
   });
 
+  test("the runtime lane's context snapshot is not a ledger: its threads read not reported", () => {
+    const usage = threadUsage([
+      {
+        run: {},
+        status: "completed",
+        steps: STEPS,
+        native: {
+          nativeFrames: [
+            { ...frame("f1", 1, { tokens: { input: 40_000, output: 900, total: 41_000 } }), provider: "t3" },
+          ],
+          childSessionIds: new Set<string>(),
+        },
+      },
+    ]);
+    expect(usage).toEqual({ inputTokens: null, outputTokens: null, toolCalls: 2 });
+  });
+
   test("a gateway child session's turn never feeds the parent's tokens", () => {
     const usage = threadUsage([
       {
