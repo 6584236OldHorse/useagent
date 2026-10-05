@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
 import { getRunForOrg } from "./repo";
 import {
   buildForwardHeaders,
@@ -97,6 +98,7 @@ desktopProxyRoutes.use("*", orgScope);
 // plain GET to the same path falls through (upgradeWebSocket calls next()).
 desktopProxyRoutes.get(
   "/:threadId/websockify",
+  requireBrowserWebSocketOrigin,
   upgradeWebSocket((c) => {
     // Capture params NOW — context reads inside async ws callbacks are unreliable.
     const threadId = c.req.param("threadId") ?? "";

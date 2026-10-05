@@ -1,6 +1,112 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { desktopClientQueryRedirect } from "./desktop-proxy";
+import { Hono } from "hono";
+import { betterAuthTrustedOrigins } from "../env";
+import type { AppEnv } from "../http";
+import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
+import { desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
+import { terminalRoutes } from "./terminal";
+
+describe("browser WebSocket origin policy", () => {
+  // The documented frontend command runs on :3400 without configuration.
+  // Do not derive this fallback from the backend value being checked.
+  const frontendOrigin = new URL(process.env.FRONTEND_ORIGIN ?? "http://localhost:3400").origin;
+  const paths = [
+    "/api/runs/origin-test-run/terminal",
+    "/api/desktop-proxy/origin-test-thread/websockify",
+  ];
+
+  function fixture() {
+    const app = new Hono<AppEnv>();
+    // Resolve only the auth context; exercise the actual production route and
+    // Hono/Bun upgrade adapter without invoking provider callbacks or a DB.
+    app.use("*", async (c, next) => {
+      c.set("orgId", "origin-test-org");
+      c.set("userId", "origin-test-user");
+      return next();
+    });
+    app.route("/api/runs", terminalRoutes);
+    app.route("/api/desktop-proxy", desktopProxyRoutes);
+    let upgrades = 0;
+    const server = {
+      requestIP: () => ({ address: "127.0.0.1" }),
+      upgrade: () => { upgrades++; return true; },
+    };
+    return { app, server, upgrades: () => upgrades };
+  }
+
+  test("default auth origins match the documented frontend port", () => {
+    expect(betterAuthTrustedOrigins({})).toContain("http://localhost:3400");
+    expect(betterAuthTrustedOrigins({})).not.toContain("http://localhost:3200");
+  });
+
+  test("both browser routes reject untrusted origins before upgrading", async () => {
+    const { app, server, upgrades } = fixture();
+    const expected = frontendOrigin;
+    const wrongPort = new URL(expected);
+    wrongPort.port = wrongPort.port === "8443" ? "8444" : "8443";
+    for (const path of paths) {
+      for (const origin of [undefined, "null", "https://untrusted.example", wrongPort.origin, `${expected}/`]) {
+        const headers = new Headers({ upgrade: "websocket" });
+        if (origin !== undefined) headers.set("origin", origin);
+        const response = await app.request(path, { headers }, server);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toEqual({ error: "forbidden_origin" });
+      }
+    }
+    expect(upgrades()).toBe(0);
+  });
+
+  test("both browser routes permit the exact configured frontend origin", async () => {
+    const { app, server, upgrades } = fixture();
+    for (const path of paths) {
+      const response = await app.request(path, {
+        headers: { upgrade: "WebSocket", origin: frontendOrigin },
+      }, server);
+      // The real adapter returns an empty response when Bun accepts an upgrade.
+      expect(response.status).toBe(200);
+    }
+    expect(upgrades()).toBe(2);
+  });
+
+  test("ordinary HTTP does not acquire a WebSocket Origin requirement", async () => {
+    const app = new Hono<AppEnv>();
+    app.get("/http", requireBrowserWebSocketOrigin, (c) => c.text("ordinary HTTP"));
+    const response = await app.request("/http");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("ordinary HTTP");
+  });
+
+  test("the configured origin still completes a native Bun socket upgrade", async () => {
+    const { app } = fixture();
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: app.fetch,
+      // Do not dispatch provider callbacks: this test proves only the real
+      // HTTP/WebSocket upgrade boundary, with no DB or sandbox operations.
+      websocket: {
+        open(socket) { socket.send("upgraded"); socket.close(); },
+        message() {},
+      },
+    });
+    try {
+      for (const path of paths) {
+        const result = await new Promise<string>((resolve, reject) => {
+          const socket = new WebSocket(`${server.url.origin.replace("http:", "ws:")}${path}`, {
+            headers: { origin: frontendOrigin },
+          });
+          const timeout = setTimeout(() => { socket.close(); reject(new Error("upgrade timed out")); }, 2_000);
+          socket.onmessage = (event) => { clearTimeout(timeout); resolve(String(event.data)); };
+          socket.onerror = () => { clearTimeout(timeout); reject(new Error("upgrade failed")); };
+        });
+        expect(result).toBe("upgraded");
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+});
 
 describe("desktop proxy recovery", () => {
   test("reflects provider VNC client state without replacing the proxy path", () => {

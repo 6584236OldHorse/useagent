@@ -9,6 +9,8 @@ import {
   runtimeDevModeEnabled,
 } from "./security/runtime-secrets";
 
+const DEFAULT_FRONTEND_ORIGIN = "http://localhost:3400";
+
 /**
  * Dev mode gates every fail-OPEN behavior in the app: the seeded dev-org
  * fallback for unauthenticated requests (middleware/org.ts), the insecure
@@ -50,7 +52,7 @@ export function betterAuthTrustedOrigins(
   source: Record<string, string | undefined> = process.env,
 ): string[] {
   const candidates = [
-    source.FRONTEND_ORIGIN ?? "http://localhost:3200",
+    source.FRONTEND_ORIGIN ?? DEFAULT_FRONTEND_ORIGIN,
     source.BETTER_AUTH_URL ?? "http://localhost:3201",
     ...(source.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
   ];
@@ -125,7 +127,7 @@ export const env = {
   DATABASE_URL:
     process.env.DATABASE_URL ?? "postgres://postgres@localhost:5432/useagent",
   PORT: Number(process.env.PORT ?? 3201),
-  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN ?? "http://localhost:3200",
+  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN ?? DEFAULT_FRONTEND_ORIGIN,
   BETTER_AUTH_URL: process.env.BETTER_AUTH_URL ?? "http://localhost:3201",
   // Lazy so the dedicated gateway process can reuse non-auth configuration
   // helpers without importing the backend's cookie-signing root. The full app's

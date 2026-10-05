@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
 import { getCustomerRunForOrg } from "./repo";
 import { resolvePreviewSandbox } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
@@ -44,6 +45,7 @@ terminalRoutes.use("*", orgScope);
 
 terminalRoutes.get(
   "/:id/terminal",
+  requireBrowserWebSocketOrigin,
   upgradeWebSocket((c) => {
     // Per-connection state, filled in onOpen (async work happens there — the
     // upgrade callback itself must return handlers synchronously). Capture the
