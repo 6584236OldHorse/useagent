@@ -105,20 +105,36 @@ const EMPTY_EXECUTION_SUMMARY: ExecutionSummarySnapshot = {
  *  identity, so an empty lane never invalidates a memoized timeline. */
 const EMPTY_CANONICAL: readonly StoredCanonicalEvent[] = Object.freeze([]);
 
+/** Per-run scopes of a root summary, cached by the root's identity: a rebuild
+ *  that the projector did not feed (a text delta, a step) hands every run the
+ *  same scoped object again, so a memo keyed on it stays put. */
+const scopedSummaries = new WeakMap<ExecutionSummarySnapshot, Map<string, ExecutionSummarySnapshot>>();
+
 function executionSummaryForRun(
   root: ExecutionSummarySnapshot | null,
   runId: string,
 ): ExecutionSummarySnapshot | null {
   if (!root) return null;
+  let byRun = scopedSummaries.get(root);
+  if (!byRun) {
+    byRun = new Map();
+    scopedSummaries.set(root, byRun);
+  }
+  const cached = byRun.get(runId);
+  if (cached) return cached;
   const childIds = new Set(
     root.children.filter((child) => child.runId === runId).map((child) => child.id),
   );
-  if (childIds.size === 0) return EMPTY_EXECUTION_SUMMARY;
-  return {
-    version: 1,
-    children: root.children.filter((child) => childIds.has(child.id)),
-    delegationEdges: root.delegationEdges.filter((edge) => childIds.has(edge.childId)),
-  };
+  const scoped: ExecutionSummarySnapshot =
+    childIds.size === 0
+      ? EMPTY_EXECUTION_SUMMARY
+      : {
+          version: 1,
+          children: root.children.filter((child) => childIds.has(child.id)),
+          delegationEdges: root.delegationEdges.filter((edge) => childIds.has(edge.childId)),
+        };
+  byRun.set(runId, scoped);
+  return scoped;
 }
 
 export function createThreadStore(options: ThreadStoreOptions = {}): ThreadStore {

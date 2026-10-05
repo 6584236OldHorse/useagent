@@ -5,7 +5,7 @@ import { botContextForTurn } from "../src/bots/prompt-context";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
 import { bus, RUN_SPAWNED } from "../src/worker";
-import { createOrgSession, fetchApi, json } from "./helpers";
+import { createOrgSession, fetchApi, json, waitFor } from "./helpers";
 
 const previousFlag = process.env.BOTS;
 
@@ -278,6 +278,10 @@ describe("bots", () => {
         body: { text: "Tell me in one sentence what you do." },
       });
       expect(first.status).toBe(201);
+      // The request usually spawns inline, but a pump that raced it or a
+      // deferred admission spawns a moment after the response; the invariant
+      // is what the bot row held AT the spawn, not who dispatched it.
+      await waitFor(async () => observed.has(first.body.id), { timeoutMs: 5_000 });
       expect(await observed.get(first.body.id)).toBe(first.body.id);
     } finally {
       bus.off(RUN_SPAWNED, onSpawn);

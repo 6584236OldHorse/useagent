@@ -119,12 +119,14 @@ describe("native bridge step projection", () => {
       input: { path: "/root/work/hello.txt", content: "ready" },
       output: "Successfully wrote 5 bytes to hello.txt",
       error: false,
+      native: { callID: "chatcmpl-tool-b4bc5882b1f615a3" },
     });
     expect(steps[1]!.code).toEqual({
       tool: "bash",
       input: { command: "cat /root/work/hello.txt" },
       output: "ready\n\nWall time: 0.02 seconds",
       error: false,
+      native: { callID: "call_00207c0322f74f74aee87879" },
     });
   });
 
@@ -140,7 +142,12 @@ describe("native bridge step projection", () => {
     await projector.drain();
     expect(steps).toHaveLength(1);
     expect(steps[0]!.step.kind).toBe("command");
-    expect(steps[0]!.step.code_json).toEqual({ tool: "bash", input: { command: "sleep 90" } });
+    // The call id is on the row from the start, so the UI can name the open call from its frame.
+    expect(steps[0]!.step.code_json).toEqual({
+      tool: "bash",
+      input: { command: "sleep 90" },
+      native: { callID: "call-sleep" },
+    });
     expect(steps[0]!.code).toBeUndefined();
   });
 

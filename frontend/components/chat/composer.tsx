@@ -1,10 +1,10 @@
 "use client";
 
-
 import {
   RiAddLine,
   RiArrowDownSLine,
   RiArrowUpLine,
+  RiCornerDownLeftLine,
   RiMicLine,
   RiStopFill,
   RiToolsLine,
@@ -40,7 +40,6 @@ import { composerPlaceholder, getComposerAction } from "@/components/chat/compos
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { cx as cn } from "@/utils/cx";
 type Variant = "hero" | "compact";
-
 
 /**
  * Submit a composed prompt. `idempotencyKey` is a stable per-submission id the
@@ -118,8 +117,8 @@ export type ComposerProps = {
   /** Exact repository revisions already bound to this thread. */
   repoRevisions?: Readonly<Record<string, string | null>>;
   onSubmit: ComposerSubmit;
-  /** A turn is running in this thread - an empty input exposes Stop, while a
-   *  non-empty draft exposes a labelled Steer action for the queued reply. */
+  /** A turn is running in this thread: the send action becomes Queue (the reply
+   *  is queued behind the run); with `onStop` an empty input exposes Stop instead. */
   running?: boolean;
   stopping?: boolean;
   /** Visible failure from the durable cancel request; the Stop control remains retryable. */
@@ -293,7 +292,7 @@ export function Composer({
   });
   const actionBusy = composerAction.kind === "stop" ? stopping : busy;
   const actionDisabled = composerAction.kind === "stop" ? stopping : !canSend;
-  const actionLabel = composerAction.kind === "steer" ? "Steer this run" : composerAction.label;
+  const actionLabel = composerAction.kind === "steer" ? "Queue this message" : composerAction.label;
 
   // Slash-command autocomplete: live while the FIRST token is being typed
   // ("/rev" but not "/review changes"). A trailing space ends completion.
@@ -778,13 +777,13 @@ export function Composer({
                         <Loader variant="circular" size="sm" className="border-white" />
                       ) : composerAction.kind === "stop" ? (
                         <RiStopFill className="size-5" aria-hidden />
-                      ) : (
+                      ) : composerAction.kind === "steer" ? (
                         <>
-                          <RiArrowUpLine className="size-5" aria-hidden />
-                          {composerAction.kind === "steer" ? (
-                            <span className="text-body-2-medium">{composerAction.label}</span>
-                          ) : null}
+                          <span className="text-body-2-medium">{composerAction.label}</span>
+                          <RiCornerDownLeftLine className="size-4" aria-hidden />
                         </>
+                      ) : (
+                        <RiArrowUpLine className="size-5" aria-hidden />
                       )}
                     </motion.span>
                   </AnimatePresence>

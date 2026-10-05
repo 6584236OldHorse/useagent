@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { composerPlaceholder, getComposerAction } from "./composer-model";
+import { compactAvailable, composerPlaceholder, getComposerAction } from "./composer-model";
 
 describe("composer action contract", () => {
   test("keeps idle drafts on the compact send action", () => {
@@ -11,10 +11,10 @@ describe("composer action contract", () => {
     });
   });
 
-  test("labels a non-empty active-run draft as steer", () => {
+  test("labels a non-empty active-run draft as Queue", () => {
     expect(getComposerAction({ running: true, hasDraft: true, canStop: true })).toEqual({
       kind: "steer",
-      label: "Steer",
+      label: "Queue",
     });
   });
 
@@ -25,11 +25,35 @@ describe("composer action contract", () => {
     });
   });
 
-  test("falls back to a disabled send action when stopping is unavailable", () => {
+  test("stays on Queue while running when the footer owns Stop (no stop handler here)", () => {
     expect(getComposerAction({ running: true, hasDraft: false, canStop: false })).toEqual({
-      kind: "send",
-      label: "Send",
+      kind: "steer",
+      label: "Queue",
     });
+  });
+});
+
+describe("compact now availability", () => {
+  const quiet = {
+    running: false,
+    pending: false,
+    turnStatuses: ["completed"],
+    controlOpen: false,
+    locked: false,
+    commands: [{ name: "compact" }],
+  };
+
+  test("offered only on a quiet thread whose engine has the command", () => {
+    expect(compactAvailable(quiet)).toBe(true);
+    expect(compactAvailable({ ...quiet, commands: [{ name: "review" }] })).toBe(false);
+    expect(compactAvailable({ ...quiet, running: true })).toBe(false);
+    expect(compactAvailable({ ...quiet, pending: true })).toBe(false);
+    expect(compactAvailable({ ...quiet, controlOpen: true })).toBe(false);
+    expect(compactAvailable({ ...quiet, locked: true })).toBe(false);
+  });
+
+  test("any queued turn blocks it, a queued spawned session included (it holds the lane even when no row shows it)", () => {
+    expect(compactAvailable({ ...quiet, turnStatuses: ["completed", "queued"] })).toBe(false);
   });
 });
 
