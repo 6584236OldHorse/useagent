@@ -68,7 +68,9 @@ export async function assertSandboxMinutes(orgId: string, userId: string | null,
  * its creation to its release (a lease still open, e.g. one the reconciler is
  * reclaiming for a crashed worker, is charged up to now). Only a run that had
  * a sandbox is charged; chat and mock runs hold no sandbox and leave no entry.
- * Idempotent by run id: a second settlement inserts nothing.
+ * Whole seconds are the floor of the summed lifetimes, so a fraction never
+ * rounds a member into a minute early. Idempotent by run id: a second
+ * settlement inserts nothing.
  * ponytail: a sandbox retained between turns is not charged for its idle time;
  * charge at teardown too if idle retention must count.
  */
@@ -79,8 +81,8 @@ export async function accrueRunSandboxMinutes(
   if (!run.orgId || !run.userId) return false;
   const [held] = await exec.execute(sql`
     select
-      coalesce(sum(greatest(0, extract(epoch from
-        coalesce(case when state = 'released' then updated_at end, now()) - created_at))), 0)::bigint as seconds,
+      floor(coalesce(sum(greatest(0, extract(epoch from
+        coalesce(case when state = 'released' then updated_at end, now()) - created_at))), 0))::bigint as seconds,
       count(*)::int as sandboxes
     from sandbox_leases
     where run_id = ${run.id} and (sandbox_id is not null or ${run.sandboxId !== null})`);

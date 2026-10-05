@@ -35,6 +35,7 @@ export function sandboxMinutesCapped(minutes: SandboxMinutes): boolean {
 
 export function SandboxMinutesRow() {
   const [minutes, setMinutes] = useState<SandboxMinutes | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -42,9 +43,10 @@ export function SandboxMinutesRow() {
       .then(async (res) => (res.ok ? parseSandboxMinutes(await res.json()) : null))
       .then((next) => {
         if (next) setMinutes(next);
+        else setUnavailable(true);
       })
       .catch(() => {
-        // Keep the loading label; the row is informational.
+        if (!ctrl.signal.aborted) setUnavailable(true);
       });
     return () => ctrl.abort();
   }, []);
@@ -56,7 +58,7 @@ export function SandboxMinutesRow() {
   return (
     <SettingsRow label="Sandbox minutes" description={description}>
       <Chip variant="caption" color={minutes && sandboxMinutesCapped(minutes) ? "rose" : "soft"}>
-        {minutes ? sandboxMinutesLabel(minutes) : "Loading..."}
+        {minutes ? sandboxMinutesLabel(minutes) : unavailable ? "Unavailable" : "Loading..."}
       </Chip>
     </SettingsRow>
   );

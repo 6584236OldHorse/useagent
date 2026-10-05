@@ -5,6 +5,7 @@ import { db } from "../src/db/client";
 import { member, runs, sandboxMinutesEntries } from "../src/db/schema";
 import { createLease } from "../src/fleet/lease-repo";
 import { finalizeRun } from "../src/runs/finalize";
+import { acceptRunCancel } from "../src/commands/cancel";
 import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
 import {
   accrueRunSandboxMinutes,
@@ -39,10 +40,10 @@ afterEach(() => {
   delete process.env.SANDBOX_MINUTES_PER_USER;
 });
 
-async function runRow(id: string, sandboxId: string | null) {
+async function runRow(id: string, sandboxId: string | null, status: "running" | "queued" = "running") {
   await db.insert(runs).values({
     id, orgId: session.orgId, userId, prompt: "hold a sandbox", model: "mock-model",
-    engine: "mock", status: "running", threadId: id, sandboxId,
+    engine: "mock", status, threadId: id, sandboxId,
   });
 }
 
@@ -127,6 +128,44 @@ describe("sandbox minutes", () => {
     await lease(bare, null);
     expect((await finalizeRun(bare, "completed", "done", 10)).applied).toBe(true);
     expect(await entry(bare)).toBeNull();
+  });
+
+  test("a Stop on a queued run that already holds its thread's retained sandbox charges that lease", async () => {
+    const id = `minutes_${uid()}`;
+    await runRow(id, "sb-retained", "queued");
+    // Admission granted the lease on the retained sandbox; the worker had not
+    // marked the run running when the person pressed Stop.
+    const held = await lease(id, "sb-retained");
+    await db.execute(sql`update sandbox_leases set created_at = now() - interval '30 seconds' where id = ${held}`);
+    const stopped = await acceptRunCancel({ orgId: session.orgId, actorId: userId, runId: id });
+    expect(stopped).toMatchObject({ status: "accepted", runStatusWas: "queued" });
+    const charged = await entry(id);
+    expect(charged).toMatchObject({ sandboxes: 1 });
+    expect(charged!.seconds).toBeGreaterThanOrEqual(30);
+    // The cancel was the settlement: a later finalize applies nothing and charges nothing more.
+    expect((await finalizeRun(id, "completed", "late", 10)).applied).toBe(false);
+    expect(await db.select().from(sandboxMinutesEntries).where(eq(sandboxMinutesEntries.chargeKey, id))).toHaveLength(1);
+  });
+
+  test("whole seconds are the floor of the lease lifetimes, so a fraction never rounds a member into a minute early", async () => {
+    process.env.SANDBOX_MINUTES_PER_USER = "1";
+    const fresh = await createOrgSession("minutes-floor");
+    const freshUser = await memberOf(fresh.orgId);
+    const id = `minutes_${uid()}`;
+    await db.insert(runs).values({
+      id, orgId: fresh.orgId, userId: freshUser, prompt: "almost a minute", model: "mock-model",
+      engine: "mock", status: "running", threadId: id, sandboxId: "sb-short",
+    });
+    const held = await createLease({
+      runId: id, threadId: id, orgId: fresh.orgId, provider: "daytona", tier: "standard",
+      cpuMillicores: 2_000, memoryMib: 8_192, leaseTtlMs: 60_000, sandboxId: "sb-short",
+    });
+    await db.execute(sql`update sandbox_leases set created_at = now() - interval '59.5 seconds' where id = ${held}`);
+    expect((await finalizeRun(id, "failed", "engine error", 10)).applied).toBe(true);
+    expect((await entry(id))!.seconds).toBe(59);
+    const mine = await json<{ used: number; cap: number | null }>("/api/sandbox-minutes", { cookies: fresh.cookies });
+    expect(mine.body).toMatchObject({ used: 0, cap: 1 });
+    expect((await post({ prompt: "still under the cap", engine: "mock" }, {}, fresh.cookies)).status).toBe(201);
   });
 
   test("a member at the cap is refused new work with the figures; replays and the kill switch still pass", async () => {
@@ -232,6 +271,21 @@ describe("preferred sandbox provider", () => {
       expect((await put("local")).status).toBe(400);
       expect((await put("nonsense")).status).toBe(400);
       expect((await put("cube")).body.provider).toBe("cube");
+      // Only an explicit provider changes the stored choice: a body without one,
+      // an array, or unparsable JSON is refused and clears nothing.
+      const raw = (body: string) => json<{ error?: string }>(
+        "/api/sandbox-preference",
+        { method: "PUT", body, headers: { "content-type": "application/json" }, cookies: session.cookies },
+      );
+      expect((await raw("{}")).status).toBe(400);
+      expect((await raw("[]")).status).toBe(400);
+      expect((await raw("not json")).status).toBe(400);
+      expect((await get()).body.provider).toBe("cube");
+      // A vendor whose credential was removed since is not what runs; the view says so.
+      delete process.env.CUBE_API_KEY;
+      expect((await get()).body).toMatchObject({ provider: null, defaultProvider: "daytona" });
+      process.env.CUBE_API_KEY = "cube_deployment";
+      expect((await get()).body.provider).toBe("cube");
 
       const built: string[] = [];
       const deps = {

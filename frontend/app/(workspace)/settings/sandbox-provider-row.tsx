@@ -59,6 +59,7 @@ export function SandboxProviderSelect({
 
 export function SandboxProviderRow() {
   const [preference, setPreference] = useState<SandboxPreference | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,9 +69,10 @@ export function SandboxProviderRow() {
       .then(async (res) => (res.ok ? parseSandboxPreference(await res.json()) : null))
       .then((next) => {
         if (next) setPreference(next);
+        else setUnavailable(true);
       })
       .catch(() => {
-        // Keep the loading label.
+        if (!ctrl.signal.aborted) setUnavailable(true);
       });
     return () => ctrl.abort();
   }, []);
@@ -115,7 +117,7 @@ export function SandboxProviderRow() {
             ) : null}
           </div>
         ) : (
-          <p className="text-body-2-regular text-text-secondary">Loading...</p>
+          <p className="text-body-2-regular text-text-secondary">{unavailable ? "Unavailable" : "Loading..."}</p>
         )}
       </SettingsRow>
     </SettingsCard>
