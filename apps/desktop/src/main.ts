@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  type MessageBoxOptions,
   nativeImage,
   safeStorage,
   shell,
@@ -132,7 +133,7 @@ async function startDesktop(): Promise<void> {
     window,
     createDesktopAuthClient(plane, app.getPath("userData")),
     async (organizations: readonly DesktopOrganization[]) => {
-      const result = await dialog.showMessageBox(window, {
+      const options: MessageBoxOptions = {
         type: "question",
         title: "Choose workspace",
         message: "Choose the workspace to open in useAgent.",
@@ -140,7 +141,10 @@ async function startDesktop(): Promise<void> {
         defaultId: 0,
         cancelId: organizations.length,
         noLink: true,
-      });
+      };
+      const result = window.isVisible()
+        ? await dialog.showMessageBox(window, options)
+        : await dialog.showMessageBox(options);
       return organizations[result.response]?.id;
     },
   );

@@ -12,19 +12,21 @@ test("browser sign-in uses the official exchange, writes only to the app session
   let requested = 0;
   const tokens: string[] = [];
   const activated: string[] = [];
+  let activeOrganizationId: string | null = "org-one";
   const client = {
     async requestAuth() { requested++; },
-    async authenticate({ token }: { token: string }) { tokens.push(token); return { error: null }; },
+    async authenticate({ token }: { token: string }) { tokens.push(token); activeOrganizationId = null; return { error: null }; },
     getCookie: () => "__Secure-better-auth.session_token=app-session; unrelated=value",
-    async getSession() { return { data: { session: { activeOrganizationId: null } }, error: null }; },
+    async getSession() { return { data: { session: { activeOrganizationId } }, error: null }; },
     organization: {
       async list() { return { data: [{ id: "org-one", name: "One" }], error: null }; },
-      async setActive({ organizationId }: { organizationId: string }) { activated.push(organizationId); return { error: null }; },
+      async setActive({ organizationId }: { organizationId: string }) { activated.push(organizationId); activeOrganizationId = organizationId; return { error: null }; },
     },
   };
   const login = createDesktopSignIn(new URL("https://plane.example"), window, client, async () => undefined);
   expect(await login.restore()).toBe(true);
   expect(set).toHaveLength(1);
+  expect(activated).toEqual([]);
   set.length = 0;
   await login.begin();
   await expect(login.complete("not-a-url")).rejects.toThrow("Invalid");
@@ -43,9 +45,10 @@ test("browser sign-in uses the official exchange, writes only to the app session
 test("two-workspace sign-in cannot load the hosted app until a member workspace is chosen", async () => {
   const set: unknown[] = [];
   const loaded: string[] = [];
+  let shown = 0;
   const window = {
     webContents: { session: { cookies: { set: async (cookie: unknown) => { set.push(cookie); } } } },
-    loadURL: async (url: string) => { loaded.push(url); }, show() {}, focus() {},
+    loadURL: async (url: string) => { loaded.push(url); }, show() { shown++; }, focus() {},
   } as unknown as BrowserWindow;
   const activated: string[] = [];
   let choose!: (organizationId: string) => void;
@@ -70,10 +73,12 @@ test("two-workspace sign-in cannot load the hosted app until a member workspace 
   while (!chooserStarted) await Promise.resolve();
   expect(set).toEqual([]);
   expect(loaded).toEqual([]);
+  expect(shown).toBe(0);
 
   choose("org-two");
   await completing;
   expect(activated).toEqual(["org-two"]);
   expect(set).toHaveLength(1);
   expect(loaded).toEqual(["https://plane.example/"]);
+  expect(shown).toBe(1);
 });

@@ -33,16 +33,6 @@ export function createDesktopSignIn(
   client: DesktopAuthClient,
   chooseOrganization: (organizations: readonly DesktopOrganization[]) => Promise<string | undefined>,
 ) {
-  const restore = async (): Promise<boolean> => {
-    const cookies = [...parseCookies(client.getCookie())]
-      .filter(([name]) => /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/.test(name));
-    if (!cookies.some(([name]) => name.endsWith(".session_token"))) return false;
-    await Promise.all(cookies.map(([name, cookie]) => window.webContents.session.cookies.set({
-      url: plane.href, name, value: cookie, path: "/", httpOnly: true,
-      secure: plane.protocol === "https:", sameSite: "lax",
-    })));
-    return true;
-  };
   const ensureActiveOrganization = async (): Promise<void> => {
     const [session, organizations] = await Promise.all([client.getSession(), client.organization.list()]);
     if (session.error || !session.data || organizations.error || !Array.isArray(organizations.data)) {
@@ -65,13 +55,23 @@ export function createDesktopSignIn(
       throw new Error("Desktop workspace could not be selected.");
     }
   };
+  const restore = async (): Promise<boolean> => {
+    const cookies = [...parseCookies(client.getCookie())]
+      .filter(([name]) => /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/.test(name));
+    if (!cookies.some(([name]) => name.endsWith(".session_token"))) return false;
+    await ensureActiveOrganization();
+    await Promise.all(cookies.map(([name, cookie]) => window.webContents.session.cookies.set({
+      url: plane.href, name, value: cookie, path: "/", httpOnly: true,
+      secure: plane.protocol === "https:", sameSite: "lax",
+    })));
+    return true;
+  };
   return {
     begin: () => client.requestAuth(),
     restore,
     async complete(value: string): Promise<void> {
       const result = await client.authenticate({ token: callbackToken(value) });
       if (result.error) throw new Error("Desktop sign-in could not be verified. Try again.");
-      await ensureActiveOrganization();
       if (!await restore()) throw new Error("Invalid sign-in response.");
       await window.loadURL(plane.href);
       window.show();
