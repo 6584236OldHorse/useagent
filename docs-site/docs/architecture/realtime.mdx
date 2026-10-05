@@ -15,12 +15,13 @@ distributed pub/sub, and that shapes how it scales.
   <Card title="Thread stream" icon="messages-square">
     `GET /api/runs/:rootRunId/thread-events`, one connection per conversation,
     replayable. Every connection starts with a `resume` frame, then the durable
-    snapshot, then only the native and canonical frames above the cursors the
-    browser sent (`canonicalAfter` + `canonicalId`, `nativeAfter` per run, each
-    naming the row's event id). A cursor whose row this backend does not hold with
-    that id (a rollback, a restore, another database) refuses the whole set: the
-    replay is from zero and `reset` tells the browser to drop what it retained.
-    This is the session view's lifeline.
+    snapshot, then every native frame, then only the canonical events above the
+    cursor the browser sent (`canonicalAfter`, the row's `canonicalId`, and the
+    `epoch` of the backend process that delivered it). A cursor from another
+    epoch, or one whose row is not here with that id, is refused: the replay is
+    from zero and `reset` tells the browser to drop what it retained. Native
+    frames never resume because the gateway process also writes them. This is
+    the session view's lifeline.
   </Card>
   <Card title="Org-change stream" icon="bell">
     `GET /api/runs/changes`, one authenticated org stream carrying live

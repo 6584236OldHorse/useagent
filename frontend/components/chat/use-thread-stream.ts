@@ -100,24 +100,17 @@ export function resetRetainedThreadStoresForTest(): void {
   retained.clear();
 }
 
-export interface NativeCursor {
-  readonly seq: number;
-  readonly eventId: string;
-}
-
-export interface ResumeCursors {
+export interface ResumeCursor {
   readonly canonicalAfter: number;
   readonly canonicalId: string | null;
-  readonly nativeAfter: ReadonlyMap<string, NativeCursor>;
 }
 
-/** What the store already holds, as the server's resume cursors: the newest canonical
- *  delivery seq across the thread and the newest native seq per run, each with the
- *  event id at that row so the server can prove it holds the same history. */
-export function resumeCursors(snapshot: ThreadSnapshot): ResumeCursors {
+/** What the store already holds, as the server's canonical resume cursor: the newest
+ *  delivery seq across the thread and the event id at that row, so the server can
+ *  prove it still holds the same history. Native frames always replay from zero. */
+export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
   let canonicalAfter = 0;
   let canonicalId: string | null = null;
-  const nativeAfter = new Map<string, NativeCursor>();
   for (const view of snapshot.byId.values()) {
     for (const e of view.canonical) {
       if (e.deliverySeq > canonicalAfter) {
@@ -125,24 +118,21 @@ export function resumeCursors(snapshot: ThreadSnapshot): ResumeCursors {
         canonicalId = e.eventId;
       }
     }
-    let newest: NativeCursor | null = null;
-    for (const f of view.native.nativeFrames) {
-      if (!newest || f.seq > newest.seq) newest = { seq: f.seq, eventId: f.eventId };
-    }
-    if (newest) nativeAfter.set(view.run.id, newest);
   }
-  return { canonicalAfter, canonicalId, nativeAfter };
+  return { canonicalAfter, canonicalId };
 }
 
-/** The stream URL, carrying only the cursors that are above zero. */
-export function threadEventsUrl(rootRunId: string, cursors: ResumeCursors): string {
+/** The epoch of the backend process that delivered each store's canonical rows; a
+ *  cursor is only sent back with it, so another process refuses it and replays. */
+const streamEpochs = new WeakMap<ThreadStore, string>();
+
+/** The stream URL, carrying the cursor only when there is one and its epoch is known. */
+export function threadEventsUrl(rootRunId: string, cursor: ResumeCursor, epoch: string | null): string {
   const params = new URLSearchParams();
-  if (cursors.canonicalAfter > 0 && cursors.canonicalId) {
-    params.set("canonicalAfter", String(cursors.canonicalAfter));
-    params.set("canonicalId", cursors.canonicalId);
-  }
-  for (const [runId, cursor] of cursors.nativeAfter) {
-    params.append("nativeAfter", `${runId}:${cursor.seq}:${cursor.eventId}`);
+  if (cursor.canonicalAfter > 0 && cursor.canonicalId && epoch) {
+    params.set("canonicalAfter", String(cursor.canonicalAfter));
+    params.set("canonicalId", cursor.canonicalId);
+    params.set("epoch", epoch);
   }
   const query = params.toString();
   return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;
@@ -243,8 +233,10 @@ export function applyDecodedFrame(store: ThreadStore, frame: DecodedFrame): void
       return;
     }
     case "resume":
-      // A reset is handled by the flush that owns the store swap; an honoured resume
-      // needs nothing: the frames that follow are exactly what the store lacks.
+      // A reset is handled by the flush that owns the store swap. The epoch travels
+      // with the store so a later reconnect sends the cursor back to the process that
+      // minted it, and a fresh process refuses it and replays.
+      if (frame.resume.epoch) streamEpochs.set(store, frame.resume.epoch);
       return;
     case "unknown":
     case "malformed":
@@ -283,9 +275,12 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
   const reconcile = useCallback(async (): Promise<ReconcileResult> => {
+    // Bound to the store mounted when the fetch started: a response that lands after
+    // a navigation or a reset never reaches the store that replaced it.
+    const target = storeRef.current;
     const runs = await fetchThread(rootRunId);
-    if (!runs) return { ok: false };
-    storeRef.current.applySnapshot(runs);
+    if (!runs || target !== storeRef.current) return { ok: false };
+    target.applySnapshot(runs);
     return { ok: true, runs };
   }, [rootRunId]);
 
@@ -356,9 +351,12 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
       scheduled = raf ? raf(flushFrames) : setTimeout(flushFrames, 0);
     };
     const reconcileSettlement = async (runId: string): Promise<boolean> => {
+      // Bound to the store in place when the fetch started: a reset that lands while
+      // the fetch is in flight must not receive the history it just discarded.
+      const target = active;
       const runs = await fetchThread(rootRunId);
-      if (!runs || cancelled) return false;
-      active.applySnapshot(runs);
+      if (!runs || cancelled || target !== active) return false;
+      target.applySnapshot(runs);
       const run = runs.find((candidate) => candidate.id === runId);
       return !!run && run.status !== "queued" && run.status !== "running";
     };
@@ -366,14 +364,15 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
       // Recomputed on every (re)connect: the store's cursors tell the server what
       // to skip, so a reconnect or a return to a retained thread replays only the
       // newer frames instead of the whole history.
-      url: () => threadEventsUrl(rootRunId, resumeCursors(active.getSnapshot())),
+      url: () => threadEventsUrl(rootRunId, resumeCursor(active.getSnapshot()), streamEpochs.get(active) ?? null),
       frameTypes: THREAD_FRAME_TYPES,
       healthFrame: "snapshot",
       createEventSource: browserEventSource,
       onFrame,
       poll: () => {
+        const target = active;
         void fetchThread(rootRunId).then((runs) => {
-          if (runs && !cancelled) active.applySnapshot(runs);
+          if (runs && !cancelled && target === active) target.applySnapshot(runs);
         });
       },
       reconcileSettlement,

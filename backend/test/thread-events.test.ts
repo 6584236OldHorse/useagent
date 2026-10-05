@@ -9,6 +9,9 @@ import { turnStream } from "../src/runs/turn-stream";
 import { publishThreadChange } from "../src/runs/thread-signals";
 import { acceptRunCommand } from "../src/commands";
 import { persistAndPublish } from "../src/runs/canonical-events";
+import { STREAM_EPOCH } from "../src/runs/thread-resume";
+import { db } from "../src/db/client";
+import { canonicalizationOutbox } from "../src/db/schema";
 import { translateOpenCode, type OpenCodeFrame } from "../src/engines/opencode-canonical";
 
 // Deterministic tests for the ADDITIVE thread SSE stream
@@ -430,9 +433,10 @@ describe("thread-events — post-open isolation (fail-closed after the stream is
   });
 });
 
-// ── Resume cursors: a browser that already holds part of the thread asks only for
-//    what is newer; a cursor whose row is not here with the same id is refused as a whole.
-describe("thread-events — resume cursors", () => {
+// ── Resume cursor: a browser that already holds part of the thread asks only for the
+//    canonical rows above its cursor; a cursor from another process, or whose row is
+//    not here with the same id, is refused. Native frames always replay from zero.
+describe("thread-events — resume cursor", () => {
   async function seedResumable() {
     const org = await createOrgSession();
     const root = await seedRun({ orgId: org.orgId, status: "completed" });
@@ -445,36 +449,31 @@ describe("thread-events — resume cursors", () => {
     }));
     const delivered = (await persistAndPublish(translateOpenCode(frames, { runId: root, threadId: root }).events))
       .toSorted((a, b) => a.deliverySeq - b.deliverySeq);
-    const seqs = delivered.map((d) => d.deliverySeq);
-    const ids = delivered.map((d) => d.eventId);
-    return { org, root, seqs, ids };
+    return { org, root, seqs: delivered.map((d) => d.deliverySeq), ids: delivered.map((d) => d.eventId) };
   }
   const nativeSeqs = (c: StreamClient, runId: string): number[] =>
     c.frames.filter((f) => f.event === "native" && f.data.runId === runId).map((f) => f.data.frame.seq as number);
   const canonicalSeqs = (c: StreamClient): number[] =>
     c.frames.filter((f) => f.event === "canonical").map((f) => f.data.event.deliverySeq as number);
   const eventIndex = (c: StreamClient, event: string): number => c.frames.findIndex((f) => f.event === event);
-  const q = (params: Record<string, string | string[]>): string => {
-    const search = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) for (const one of Array.isArray(v) ? v : [v]) search.append(k, one);
-    return search.toString();
-  };
+  const q = (params: Record<string, string>): string => new URLSearchParams(params).toString();
 
-  test("without cursors the first frame is a from-zero resume and everything replays", async () => {
+  test("without a cursor the first frame is a from-zero resume carrying this process's epoch, and everything replays", async () => {
     const { org, root, seqs } = await seedResumable();
     const c = await open(`/api/runs/${root}/thread-events`, org.cookies);
     await c.waitFrame(() => canonicalSeqs(c).length === seqs.length);
-    expect(c.frames[0]).toMatchObject({ event: "resume", data: { threadId: root, resume: { canonicalAfter: 0, nativeAfter: {}, reset: false } } });
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { threadId: root, resume: { canonicalAfter: 0, reset: false, epoch: STREAM_EPOCH } } });
     expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
     expect(canonicalSeqs(c)).toEqual(seqs);
   });
 
-  test("honoured cursors replay only what is newer, in the documented order", async () => {
+  test("an honoured cursor replays every native frame but only the newer canonical rows, in the documented order", async () => {
     const { org, root, seqs, ids } = await seedResumable();
-    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, nativeAfter: `${root}:1:${root}::n1` })}`, org.cookies);
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, epoch: STREAM_EPOCH })}`, org.cookies);
+    await c.waitFrame((f) => f.some((x) => x.event === "canonical-complete") || canonicalSeqs(c).length > 0);
     await c.waitFrame((f) => f.some((x) => x.event === "canonical" && x.data.event.deliverySeq === seqs[2]));
-    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: seqs[1], nativeAfter: { [root]: 1 }, reset: false } } });
-    expect(nativeSeqs(c, root)).toEqual([2]);
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: seqs[1], reset: false } } });
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
     expect(canonicalSeqs(c)).toEqual([seqs[2]]);
     expect(eventIndex(c, "resume")).toBeLessThan(eventIndex(c, "snapshot"));
     expect(eventIndex(c, "snapshot")).toBeLessThan(eventIndex(c, "native"));
@@ -482,37 +481,35 @@ describe("thread-events — resume cursors", () => {
   });
 
   for (const [name, params] of [
-    ["a canonical cursor above the durable state", (r: string, seqs: number[], ids: string[]) => ({ canonicalAfter: String(seqs[2]! + 1000), canonicalId: ids[2]!, nativeAfter: `${r}:1:${r}::n1` })],
-    ["a canonical cursor whose row carries another event id", (r: string, seqs: number[]) => ({ canonicalAfter: String(seqs[1]), canonicalId: "from-a-restored-database", nativeAfter: `${r}:1:${r}::n1` })],
-    ["a native cursor whose row carries another event id", (r: string, seqs: number[], ids: string[]) => ({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, nativeAfter: `${r}:1:${r}::other` })],
-    ["a native cursor for a run this thread has no frames for", (r: string, seqs: number[], ids: string[]) => ({ canonicalAfter: String(seqs[0]), canonicalId: ids[0]!, nativeAfter: `${crypto.randomUUID()}:0:${r}::n0` })],
+    ["a cursor above the durable state", (seqs: number[], ids: string[]) => ({ canonicalAfter: String(seqs[2]! + 1000), canonicalId: ids[2]!, epoch: STREAM_EPOCH })],
+    ["a cursor whose row carries another event id", (seqs: number[]) => ({ canonicalAfter: String(seqs[1]), canonicalId: "from-a-restored-database", epoch: STREAM_EPOCH })],
+    ["a cursor minted by another backend process", (seqs: number[], ids: string[]) => ({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, epoch: "some-earlier-boot" })],
   ] as const) {
-    test(`${name} is refused as a whole: reset + from-zero replay`, async () => {
+    test(`${name} is refused: reset + from-zero replay`, async () => {
       const { org, root, seqs, ids } = await seedResumable();
-      const c = await open(`/api/runs/${root}/thread-events?${q(params(root, seqs, ids))}`, org.cookies);
-      await c.waitFrame((f) => canonicalSeqs(c).length === seqs.length && f.some((x) => x.event === "native" && x.data.frame.seq === 2));
-      expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: 0, nativeAfter: {}, reset: true } } });
-      expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+      const c = await open(`/api/runs/${root}/thread-events?${q(params(seqs, ids))}`, org.cookies);
+      await c.waitFrame(() => canonicalSeqs(c).length === seqs.length);
+      expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: 0, reset: true } } });
       expect(canonicalSeqs(c)).toEqual(seqs);
     });
   }
 
-  test("malformed or id-less cursors read as absent", async () => {
-    const { org, root, seqs } = await seedResumable();
-    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), nativeAfter: ["junk", `${root}:x:${root}::n1`, `${root}:1`] })}`, org.cookies);
+  test("a malformed or incomplete cursor reads as absent", async () => {
+    const { org, root, seqs, ids } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]! })}`, org.cookies);
     await c.waitFrame(() => canonicalSeqs(c).length === seqs.length);
-    expect(c.frames[0]!.data.resume).toEqual({ canonicalAfter: 0, nativeAfter: {}, reset: false });
-    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+    expect(c.frames[0]!.data.resume).toMatchObject({ canonicalAfter: 0, reset: false });
+    const d = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: "-5", canonicalId: ids[1]!, epoch: STREAM_EPOCH })}`, org.cookies);
+    await d.waitFrame(() => canonicalSeqs(d).length === seqs.length);
+    expect(d.frames[0]!.data.resume).toMatchObject({ canonicalAfter: 0, reset: false });
   });
 
-  test("live frames at or below the native cursor are suppressed; newer ones pass", async () => {
+  test("completion records follow the canonical rows on every connection", async () => {
     const { org, root } = await seedResumable();
-    const c = await open(`/api/runs/${root}/thread-events?${q({ nativeAfter: `${root}:2:${root}::n2` })}`, org.cookies);
-    await c.waitFrame((f) => f.some((x) => x.event === "snapshot"));
-    const base = { provider: "opencode", eventType: "part.tool.completed", sessionId: null, parentSessionId: null, messageId: null, partId: "live", callId: null, payloadText: null } as const;
-    publishNativeFrame(root, makeNativeFrame({ ...base, eventId: `${root}::n1`, seq: 1 }));
-    publishNativeFrame(root, makeNativeFrame({ ...base, eventId: `${root}::live`, seq: 7 }));
-    await c.waitFrame((f) => f.some((x) => x.event === "native" && x.data.frame.seq === 7));
-    expect(nativeSeqs(c, root)).toEqual([7]);
+    await db.insert(canonicalizationOutbox).values({ runId: root, threadId: root, state: "complete", sourceFrameMax: 2, sourceStepCount: 0 }).onConflictDoNothing();
+    const c = await open(`/api/runs/${root}/thread-events`, org.cookies);
+    await c.waitFrame((f) => f.some((x) => x.event === "canonical-complete"));
+    expect(eventIndex(c, "canonical")).toBeLessThan(eventIndex(c, "canonical-complete"));
+    expect(c.frames.filter((x) => x.event === "canonical").length).toBe(3);
   });
 });

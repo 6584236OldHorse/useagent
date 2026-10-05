@@ -42,15 +42,17 @@ export interface CanonicalCompleteFrame {
   readonly lostFrames: number;
 }
 
-/** The first frame of every connection: which resume cursors the server honoured.
- *  `reset` means the client's cursors were ahead of what that backend holds (a
- *  rollback, a different database): the replay that follows is from zero and the
- *  client must drop what it retained before applying it. Every field defaults to a
- *  from-zero replay with nothing to drop, which is also what an older backend does. */
+/** The first frame of every connection: whether the server honoured the client's
+ *  canonical resume cursor. `reset` means it did not (another backend process, a
+ *  restore, a replaced row): the replay that follows is from zero and the client
+ *  must drop what it retained before applying it. `epoch` identifies the backend
+ *  process; a cursor is only ever sent back with the epoch that delivered it. Every
+ *  field defaults to a from-zero replay with nothing to drop, which is also what an
+ *  older backend does. */
 export interface ResumeFrame {
   readonly canonicalAfter: number;
-  readonly nativeAfter: Readonly<Record<string, number>>;
   readonly reset: boolean;
+  readonly epoch: string | null;
 }
 
 /** A decoded thread frame. `native`/`run`/`step`/`delta`/`snapshot` carry raw product
@@ -125,17 +127,10 @@ export function validateCanonicalComplete(
 /** Lenient by design: a missing or junk `resume` body is a from-zero replay. */
 export function validateResume(raw: unknown): ResumeFrame {
   const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  const nativeAfter: Record<string, number> = {};
-  const native = obj.nativeAfter;
-  if (native !== null && typeof native === "object" && !Array.isArray(native)) {
-    for (const [runId, seq] of Object.entries(native as Record<string, unknown>)) {
-      if (isFiniteNumber(seq) && seq >= 0) nativeAfter[runId] = seq;
-    }
-  }
   return {
     canonicalAfter: isFiniteNumber(obj.canonicalAfter) && obj.canonicalAfter >= 0 ? obj.canonicalAfter : 0,
-    nativeAfter,
     reset: obj.reset === true,
+    epoch: isNonEmptyString(obj.epoch) ? obj.epoch : null,
   };
 }
 

@@ -11,7 +11,7 @@ import {
   claimThreadStore,
   releaseThreadStore,
   resetRetainedThreadStoresForTest,
-  resumeCursors,
+  resumeCursor,
   seedThreadStore,
   shouldRetireOptimistic,
   threadEventsUrl,
@@ -109,37 +109,36 @@ describe("retained stores (return to a thread without replaying it)", () => {
   });
 });
 
-describe("resume cursors (what the store already holds)", () => {
-  const nativeFrame = (runId: string, seq: number) => ({
-    schemaVersion: 1, eventId: `${runId}:e${seq}`, seq, provider: "opencode", eventType: "part.text",
-    native: { sessionId: null, parentSessionId: null, messageId: null, partId: `p${seq}`, callId: null }, payload: {},
-  });
-
-  test("an empty store carries no cursors and the plain stream URL", () => {
+describe("resume cursor (what the store already holds)", () => {
+  test("an empty store carries no cursor and the plain stream URL", () => {
     const store = createThreadStore();
-    const cursors = resumeCursors(store.getSnapshot());
-    expect(cursors).toEqual({ canonicalAfter: 0, canonicalId: null, nativeAfter: new Map() });
-    expect(threadEventsUrl("A", cursors)).toBe("/api/runs/A/thread-events");
+    const cursor = resumeCursor(store.getSnapshot());
+    expect(cursor).toEqual({ canonicalAfter: 0, canonicalId: null });
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events");
   });
 
-  test("the newest canonical delivery seq and the newest native seq per run", () => {
+  test("the newest canonical delivery seq with its event id, sent only with the epoch that delivered it", () => {
     const store = createThreadStore();
     store.applySnapshot([makeRun("A"), makeRun("B", "completed", "A")]);
-    store.applyNative("A", nativeFrame("A", 0));
-    store.applyNative("A", nativeFrame("A", 4));
-    store.applyNative("B", nativeFrame("B", 2));
     for (const [runId, deliverySeq] of [["A", 10], ["B", 12], ["A", 11]] as const) {
       store.applyCanonical({
         schemaVersion: 1, kind: "message.delta", eventId: `${runId}-${deliverySeq}`, runId, threadId: "A", seq: deliverySeq,
         ts: 0, deliverySeq, revision: 0, identity: {}, text: "x",
       } as never);
     }
-    const cursors = resumeCursors(store.getSnapshot());
-    expect(cursors.canonicalAfter).toBe(12);
-    expect(cursors.canonicalId).toBe("B-12");
-    expect([...cursors.nativeAfter]).toEqual([["A", { seq: 4, eventId: "A:e4" }], ["B", { seq: 2, eventId: "B:e2" }]]);
-    expect(threadEventsUrl("A", cursors)).toBe(
-      "/api/runs/A/thread-events?canonicalAfter=12&canonicalId=B-12&nativeAfter=A%3A4%3AA%3Ae4&nativeAfter=B%3A2%3AB%3Ae2",
-    );
+    const cursor = resumeCursor(store.getSnapshot());
+    expect(cursor).toEqual({ canonicalAfter: 12, canonicalId: "B-12" });
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?canonicalAfter=12&canonicalId=B-12&epoch=boot-1");
+    expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
+  });
+});
+
+describe("a thread store only takes runs of its own thread", () => {
+  test("a late response for another thread is dropped, a run without a thread id is kept", () => {
+    const store = createThreadStore({ rootThreadId: "B" });
+    store.applySnapshot([{ ...makeRun("B"), thread_id: "B" } as ApiRun, { ...makeRun("A"), thread_id: "A" } as ApiRun, makeRun("B2", "queued", "B")]);
+    expect(store.getSnapshot().runs.map((r) => r.id)).toEqual(["B", "B2"]);
+    store.upsertRun({ ...makeRun("A2"), thread_id: "A" } as ApiRun);
+    expect(store.getSnapshot().byId.has("A2")).toBe(false);
   });
 });
