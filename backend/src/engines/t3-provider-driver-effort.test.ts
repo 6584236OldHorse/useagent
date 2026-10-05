@@ -10,8 +10,11 @@ import { makeT3ProviderDriver } from "./t3-provider-driver";
 
 interface Dispatched {
   readonly type: string;
-  readonly modelSelection?: { readonly options: readonly { id: string; value: string }[] };
-  readonly bootstrap?: { readonly createThread: { readonly modelSelection: unknown } };
+  readonly modelSelection?: {
+    readonly instanceId: string;
+    readonly model: string;
+    readonly options: readonly { id: string; value: string }[];
+  };
 }
 
 function recordingDriver(engine: "codex" | "claude") {
@@ -24,7 +27,7 @@ function recordingDriver(engine: "codex" | "claude") {
         return { projects: [], threads: [] } as T;
       }
       if (request.method === "POST") {
-        dispatched.push(request.payload as Dispatched);
+        dispatched.push(request.payload as unknown as Dispatched);
         // The shell poll after each create sees the created row.
         return {} as T;
       }
