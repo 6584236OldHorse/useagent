@@ -2,6 +2,7 @@ import {
   RiFileCopy2Line,
   RiGitMergeLine,
   RiGlobalLine,
+  RiInformationLine,
   RiRobot2Line,
   RiTerminalBoxLine,
 } from "@remixicon/react";
@@ -9,7 +10,7 @@ import type { RemixiconComponentType } from "@remixicon/react";
 
 import { cx as cn } from "@/utils/cx";
 
-export type SurfaceChoice = "desktop" | "terminal" | "artifacts" | "agents" | "diff";
+export type SurfaceChoice = "desktop" | "terminal" | "artifacts" | "agents" | "diff" | "details";
 
 // The rail is a resizable sub-viewport panel (viewport breakpoints can't
 // describe it), so a container query on the switcher header collapses each
@@ -64,6 +65,12 @@ const SURFACES: readonly SurfaceOption[] = [
     unavailable: "No subagents yet.",
     icon: RiRobot2Line,
   },
+  {
+    id: "details",
+    label: "Details",
+    description: "Environment, task plan and usage.",
+    icon: RiInformationLine,
+  },
 ] as const;
 
 /** Header label for the rail's ACTIVE tab: the chooser surfaces plus the
@@ -80,6 +87,7 @@ export function railTabLabelFor(
     workspace: "Workspace",
     terminal: "Terminal",
     desktop: "Desktop",
+    details: "Details",
   } satisfies Record<Exclude<SurfaceChoice | "editor" | "workspace", null>, string>;
   return labels[railTab];
 }

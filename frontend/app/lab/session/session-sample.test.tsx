@@ -44,6 +44,12 @@ test("renders one synthetic session through the real timeline + chrome renderers
   expect(html.match(/data-testid="subagent-fold-row"/g)).toHaveLength(2);
   expect(html).toContain('data-testid="subagent-summary"');
   expect(html).toContain(">More<");
+  // The shell panels: chat tabs, the Bookmarks drop target, the Details rail.
+  expect(html).toContain('data-testid="chat-tabs"');
+  expect(html).toContain('data-testid="sidebar-bookmarks"');
+  expect(html).toContain('data-testid="session-details"');
+  expect(html).toContain('data-testid="details-plan"');
+  expect(html).toContain('data-testid="usage-input"');
 
   // The left index is navigable.
   expect(html).toContain('aria-label="Covered types"');

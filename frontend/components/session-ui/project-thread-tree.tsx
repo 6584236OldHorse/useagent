@@ -10,17 +10,20 @@
 import {
   RiArrowDownSLine,
   RiArrowRightSLine,
+  RiCheckLine,
   RiFileTextLine,
   RiFolderLine,
   RiFolderOpenLine,
+  RiPushpinLine,
 } from "@remixicon/react";
 import type { RunStatus } from "@useagent/agent-client/wire";
 import type { ProductThreadStatus } from "@useagent/agent-client";
 import Link from "next/link";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { DragEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type NativeAgentRow, NativeAgentRows } from "@/components/session-ui/native-agent-rows";
 import { StatusDot } from "@/components/shared/status-dot";
+import { THREAD_DRAG_TYPE } from "@/components/shell/sidebar-bookmarks-store";
 import { threadStatusPresentation } from "@/components/shell/thread-discovery";
 import { cx } from "@/utils/cx";
 
@@ -58,9 +61,11 @@ export interface ProjectMenuControl {
 }
 
 /** Thread row under an open folder - one indent step past the folder icon, a
- *  doc icon in the shared 16px icon column, the same uniform 32px row height
- *  as every other rail row, and a plain right-aligned muted relative time.
- *  Navigates to the thread; the active thread holds a rounded pill fill. */
+ *  doc icon in the shared 16px icon column (a lime check once the thread
+ *  completed), the same uniform 32px row height as every other rail row, and a
+ *  plain right-aligned muted relative time. Navigates to the thread; the active
+ *  thread holds a rounded pill fill. The row can be dragged onto the rail's
+ *  Bookmarks, and carries a pin button for the same on hover or focus. */
 function ThreadItem({
   thread,
   href,
@@ -68,6 +73,7 @@ function ThreadItem({
   hasChildren,
   expanded,
   onToggle,
+  onPin,
 }: {
   thread: ProjectThread;
   href: string;
@@ -75,14 +81,20 @@ function ThreadItem({
   hasChildren: boolean;
   expanded: boolean;
   onToggle: () => void;
+  onPin?: () => void;
 }) {
   const status = threadStatusPresentation(thread.status);
 
   return (
     <div
       data-session-ui="thread-row"
+      draggable
+      onDragStart={(event: DragEvent<HTMLDivElement>) => {
+        event.dataTransfer.setData(THREAD_DRAG_TYPE, thread.id);
+        event.dataTransfer.effectAllowed = "copy";
+      }}
       className={cx(
-        "flex h-8 w-full items-center gap-2 rounded-2lg pr-2 pl-6 transition-colors duration-150 ease",
+        "group flex h-8 w-full items-center gap-2 rounded-2lg pr-2 pl-6 transition-colors duration-150 ease",
         active
           ? "bg-background-secondary-hover text-text-primary"
           : "hover:bg-background-secondary-hover",
@@ -105,6 +117,10 @@ function ThreadItem({
           <span role="img" aria-label={status.label} title={status.label}>
             <StatusDot {...status.dot} />
           </span>
+        ) : thread.status === "completed" ? (
+          <span role="img" aria-label="Completed" title="Completed">
+            <RiCheckLine className="size-4 text-lime-600" aria-hidden />
+          </span>
         ) : (
           <RiFileTextLine className="size-4 text-foreground-icon-tertiary" aria-hidden />
         )}
@@ -124,6 +140,17 @@ function ThreadItem({
       <span className="shrink-0 text-caption-1-medium whitespace-nowrap tabular-nums text-text-tertiary">
         {thread.time}
       </span>
+      {onPin && (
+        <button
+          type="button"
+          aria-label={`Pin ${thread.label}`}
+          title="Pin to Bookmarks"
+          onClick={onPin}
+          className="flex size-5 shrink-0 items-center justify-center rounded-md text-text-tertiary opacity-0 transition-opacity hover:bg-background-tertiary-hover hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring group-hover:opacity-100"
+        >
+          <RiPushpinLine className="size-3.5" aria-hidden />
+        </button>
+      )}
     </div>
   );
 }
@@ -141,6 +168,7 @@ function ThreadBranch({
   onKeyDown,
   onToggle,
   enabled,
+  onPin,
 }: {
   thread: ProjectThread;
   threadHref: (thread: ProjectThread) => string;
@@ -154,6 +182,7 @@ function ThreadBranch({
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
   onToggle: (id: string) => void;
   enabled: boolean;
+  onPin?: (id: string) => void;
 }) {
   const hasChildren = Boolean(
     thread.children?.length || thread.nativeChildren?.rows.length,
@@ -180,6 +209,7 @@ function ThreadBranch({
         hasChildren={hasChildren}
         expanded={expanded}
         onToggle={() => onToggle(thread.id)}
+        onPin={onPin ? () => onPin(thread.id) : undefined}
       />
       {expanded ? (
         // WAI-ARIA tree children require a role=group container; fieldset would add unrelated form semantics.
@@ -206,6 +236,7 @@ function ThreadBranch({
               onKeyDown={onKeyDown}
               onToggle={onToggle}
               enabled={enabled}
+              onPin={onPin}
             />
           ))}
         </div>
@@ -219,11 +250,14 @@ export function ProjectThreadList({
   threadHref,
   ariaLabel,
   enabled = true,
+  onPinThread,
 }: {
   threads: readonly ProjectThread[];
   threadHref: (thread: ProjectThread) => string;
   ariaLabel: string;
   enabled?: boolean;
+  /** Pins a thread to the rail's Bookmarks; rows get a pin button when given. */
+  onPinThread?: (id: string) => void;
 }) {
   const treeRef = useRef<HTMLDivElement>(null);
   const ids = useMemo(() => projectThreadTreeIds(threads), [threads]);
@@ -239,6 +273,9 @@ export function ProjectThreadList({
     rows?.[Math.max(0, Math.min(index, (rows.length ?? 1) - 1))]?.focus();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    // A row's own buttons (the pin) keep their native activation: Enter or
+    // Space on one must not open the thread instead.
+    if (event.target !== event.currentTarget && (event.target as HTMLElement).closest("button")) return;
     const rows = [...(treeRef.current?.querySelectorAll<HTMLElement>("[data-thread-tree-id]") ?? [])];
     const index = rows.indexOf(event.currentTarget);
     const id = event.currentTarget.dataset.threadTreeId ?? "";
@@ -282,6 +319,7 @@ export function ProjectThreadList({
           onKeyDown={onKeyDown}
           onToggle={onToggle}
           enabled={enabled}
+          onPin={onPinThread}
         />
       ))}
     </div>
@@ -324,12 +362,14 @@ function ProjectFolder({
   onToggle,
   threadHref,
   renderMenu,
+  onPinThread,
 }: {
   group: ProjectGroup;
   expanded: boolean;
   onToggle: (key: string) => void;
   threadHref: (thread: ProjectThread) => string;
   renderMenu?: (group: ProjectGroup, control: ProjectMenuControl) => ReactNode;
+  onPinThread?: (id: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showAllThreads, setShowAllThreads] = useState(false);
@@ -373,6 +413,7 @@ function ProjectFolder({
                 threadHref={threadHref}
                 ariaLabel={`Threads in ${group.label}`}
                 enabled={expanded}
+                onPinThread={onPinThread}
               />
               {hiddenThreadCount > 0 || showAllThreads ? (
                 <button
@@ -404,12 +445,15 @@ export function ProjectThreadTree({
   onToggle,
   threadHref,
   renderMenu,
+  onPinThread,
 }: {
   groups: readonly ProjectGroup[];
   isExpanded: (key: string) => boolean;
   onToggle: (key: string) => void;
   threadHref: (thread: ProjectThread) => string;
   renderMenu?: (group: ProjectGroup, control: ProjectMenuControl) => ReactNode;
+  /** Pins a thread to the rail's Bookmarks; rows get a pin button when given. */
+  onPinThread?: (id: string) => void;
 }) {
   return (
     <nav aria-label="Projects" className="flex w-full flex-col">
@@ -421,6 +465,7 @@ export function ProjectThreadTree({
           onToggle={onToggle}
           threadHref={threadHref}
           renderMenu={renderMenu}
+          onPinThread={onPinThread}
         />
       ))}
     </nav>

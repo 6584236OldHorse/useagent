@@ -117,10 +117,15 @@ describe("unified shell contract", () => {
 
     expect(sessionView).toContain("const [railTabOverride, setRailTabOverride] = useState<");
     expect(sessionView).toContain('SurfaceChoice | "editor" | "workspace" | null');
-    for (const tab of ["agents", "artifacts", "editor", "terminal", "desktop"]) {
-      expect(sessionView).toContain(`data-testid="rail-tab-${tab}"`);
-      expect(sessionView).toContain(`isSelected={railTab === "${tab}"}`);
-      expect(sessionView).toContain(`onSelect={() => setRailTabOverride("${tab}")}`);
+    // The pills live in the rail switcher; the session view feeds it the choice
+    // and takes the override back unchanged.
+    const railTabs = readFromFrontend("components/chat/session-rail-tabs.tsx");
+    expect(sessionView).toContain("railTab={railTab}");
+    expect(sessionView).toContain("onSelect={setRailTabOverride}");
+    expect(railTabs).toContain("data-testid={`rail-tab-${id}`}");
+    expect(railTabs).toContain("isSelected={railTab === id}");
+    for (const tab of ["agents", "artifacts", "editor", "terminal", "desktop", "details"]) {
+      expect(railTabs).toContain(`tab("${tab}"`);
     }
   });
 

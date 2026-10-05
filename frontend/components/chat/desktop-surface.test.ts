@@ -17,10 +17,12 @@ describe("Desktop product surface", () => {
 
   test("every sandbox-backed thread exposes Browser but mounts noVNC only after selection", () => {
     const sessionView = read("./session-view.tsx");
+    const railTabs = read("./session-rail-tabs.tsx");
 
-    expect(sessionView).toContain('data-testid="rail-tab-desktop"');
-    expect(sessionView).toContain('isSelected={railTab === "desktop"}');
-    expect(sessionView).toContain('onSelect={() => setRailTabOverride("desktop")}');
+    // The Browser pill is unconditional in the rail's switcher.
+    expect(railTabs).toContain('tab("desktop", RiComputerLine, "Browser")');
+    expect(railTabs).toContain("data-testid={`rail-tab-${id}`}");
+    expect(railTabs).not.toContain("hasDesktop");
     expect(sessionView).not.toContain("{hasDesktop && (");
     expect(sessionView).toContain("<DesktopPane");
     expect(sessionView).toContain(
