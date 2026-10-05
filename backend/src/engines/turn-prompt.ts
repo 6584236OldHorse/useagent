@@ -127,8 +127,10 @@ export function composeTurnPrompt(
   const tools = executionCapabilities.facilities.tools;
   const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
   const botsReachable = gatewayReachable;
-  // Memory works through the same gateway tools; a turn without them is told so
-  // rather than left to invent a memory file in the sandbox.
+  // Memory works through the same gateway tools; a session without them is told
+  // so rather than left to invent a memory file in the sandbox. Said once per
+  // session with the operating rules: a resumed session still holds it, and only
+  // the recalled facts change from turn to turn.
   const memoryRules = ctx.memoryEnabled ? (gatewayReachable ? MEMORY_TURN_GUIDANCE : MEMORY_TURN_GUIDANCE_NO_TOOLS) : "";
   const perTurn =
     executionCapabilityPrompt(executionCapabilities) +
@@ -139,9 +141,8 @@ export function composeTurnPrompt(
     skillReference +
     (ctx.resourceContext ?? "") +
     (ctx.inputContext ?? "") +
-    ctx.turnContext +
-    memoryRules;
-  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + ctx.bootstrapContext + perTurn;
+    ctx.turnContext;
+  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
   return `${prefix}<current_user_request>\n${ctx.prompt}\n</current_user_request>`;
 }
 import type { ExecutionCapabilitySnapshot } from "@useagent/agent-harness/canonical";

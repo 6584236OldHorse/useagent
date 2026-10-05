@@ -312,21 +312,28 @@ describe("served ports", () => {
 });
 
 describe("memory guidance", () => {
-  test("a run with memory and gateway tools is told to use the memory tools, after the recalled block", () => {
-    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true }), true, EXECUTION);
+  test("a fresh session with memory and gateway tools is told once how the memory tools work", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true }), false, EXECUTION);
     expect(prompt).toContain(MEMORY_TURN_GUIDANCE);
-    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeGreaterThan(prompt.indexOf("TURN"));
-    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeLessThan(prompt.indexOf("<current_user_request>"));
+    // With the operating rules, before the bootstrap history and the per-turn material.
+    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeGreaterThan(prompt.indexOf(R));
+    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeLessThan(prompt.indexOf("BOOT"));
   });
 
-  test("a turn that cannot reach the gateway gets the honest no-tools text", () => {
-    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true, origin: "slack" }), true, EXECUTION);
+  test("a resumed session is not told again; its history already holds the rules", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true }), true, EXECUTION);
+    expect(prompt).not.toContain("<memory_rules>");
+    expect(prompt).toContain("TURN");
+  });
+
+  test("a session that cannot reach the gateway gets the honest no-tools text", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true, origin: "slack" }), false, EXECUTION);
     expect(prompt).toContain(MEMORY_TURN_GUIDANCE_NO_TOOLS);
     expect(prompt).not.toContain("memory_remember");
   });
 
   test("a deployment without memory says nothing about it", () => {
-    const prompt = composeTurnPrompt(ctx(), true, EXECUTION);
+    const prompt = composeTurnPrompt(ctx(), false, EXECUTION);
     expect(prompt).not.toContain("<memory_rules>");
   });
 
