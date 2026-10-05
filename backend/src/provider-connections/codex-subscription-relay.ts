@@ -122,6 +122,9 @@ interface RelaySessionState {
   readonly turnRuns: Map<string, string>;
   /** Ends the live connection and its app-server; set while one is open. */
   disconnect: (() => void) | null;
+  /** Reconnects the live app-server's MCP clients, so they read the active
+   * run's bearer; set once its connection has initialized. */
+  reloadTools: (() => void) | null;
 }
 
 interface RelayDependencies {
@@ -228,6 +231,7 @@ export function openCodexRelaySession(input: {
     run: null,
     turnRuns: new Map(),
     disconnect: null,
+    reloadTools: null,
   };
   writeGatewayHeaders(state, null);
   sessions.set(key, state);
@@ -243,6 +247,8 @@ export function openCodexRelaySession(input: {
       if (state.closed) throw new Error("Codex relay session is closed");
       state.run = { ...run, turnStarts: 0 };
       writeGatewayHeaders(state, run.toolGatewayBearer);
+      // The runtime reloads tools before each turn too; this does not rely on it.
+      state.reloadTools?.();
     },
     deactivate() {
       state.run = null;
@@ -382,6 +388,8 @@ codexSubscriptionRelayRoutes.get(
     };
     const clientFrames = createSerialTaskQueue(rejectRelay);
     const serverFrames = createSerialTaskQueue(rejectRelay);
+    let reloadTools: (() => void) | null = null;
+    let dropRelayResponse: (line: string) => boolean = () => false;
 
     return {
       onOpen: (_event, socket) => {
@@ -397,6 +405,21 @@ codexSubscriptionRelayRoutes.get(
           environmentBootstrap?.close();
           closeChild();
         };
+        const relayRequests = new Set<string>();
+        reloadTools = () => clientFrames.enqueue(async () => {
+          const process = await childReady;
+          if (!environmentBootstrap || !process.stdin.writable) return;
+          const id = `useagent-relay-${crypto.randomUUID()}`;
+          relayRequests.add(id);
+          const forwarded = await environmentBootstrap.acceptClientFrame(
+            JSON.stringify({ id, method: "config/mcpServer/reload" }),
+          );
+          for (const childFrame of forwarded) process.stdin.write(`${childFrame}\n`);
+        });
+        dropRelayResponse = (line) => {
+          const id = parseCodexSubscriptionFrame(line).id;
+          return typeof id === "string" && relayRequests.delete(id);
+        };
         void attachCodexSubscriptionAppServer({
           childReady,
           isClosed: () => closed,
@@ -405,6 +428,7 @@ codexSubscriptionRelayRoutes.get(
             child = null;
           },
           onLine: (line) => serverFrames.enqueue(async () => {
+            if (dropRelayResponse(line)) return;
             await authorizeSession(session);
             if (!protocol || !environmentBootstrap) {
               throw new Error("Codex relay protocol is unavailable");
@@ -453,6 +477,11 @@ codexSubscriptionRelayRoutes.get(
             throw new Error("Codex relay protocol is unavailable");
           }
           admitTurnStart(session, frame);
+          // Once the runtime has initialized this connection, a later run's
+          // activation may ask the app-server to reconnect its tools.
+          if (parseCodexSubscriptionFrame(frame, "client").method === "initialized") {
+            session.reloadTools = reloadTools;
+          }
           // The protocol may rewrite the frame (bound-thread `thread/start`
           // becomes `thread/resume`); everything downstream sees the outbound.
           const outbound = await protocol.acceptClientFrame(frame);
@@ -470,6 +499,7 @@ codexSubscriptionRelayRoutes.get(
         if (session && accepted) {
           session.live = false;
           session.disconnect = null;
+          session.reloadTools = null;
           if (!session.reusable) closeSession(key, session);
         }
       },
@@ -520,6 +550,7 @@ function closeSession(key: string, session: RelaySessionState): void {
   sessions.delete(key);
   session.disconnect?.();
   session.disconnect = null;
+  session.reloadTools = null;
   try {
     writeGatewayHeaders(session, null);
   } catch {

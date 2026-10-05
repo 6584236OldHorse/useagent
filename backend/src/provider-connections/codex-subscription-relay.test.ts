@@ -1138,6 +1138,38 @@ describe("Codex relay sessions across runs", () => {
     session.close();
   });
 
+  test("activating the next run on a live connection makes the app-server reconnect its tools with that run's bearer", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    child.received.splice(0);
+
+    session.deactivate();
+    session.activate({ runId: "run-2", model: "gpt-5.5", toolGatewayBearer: null });
+    await eventually(() => expect(child.received.some((frame) => frame.includes('"method":"config/mcpServer/reload"'))).toBe(true));
+    const reload = JSON.parse(child.received.find((frame) => frame.includes("config/mcpServer/reload"))!) as { id: string };
+    // The relay's own request is answered to the relay, never to the runtime.
+    const toRuntime: string[] = [];
+    socket.onmessage = (event) => void toRuntime.push(String(event.data));
+    child.stdout.write(`${JSON.stringify({ id: reload.id, result: {} })}\n`);
+    child.stdout.write('{"method":"item/started","params":{"id":"after"}}\n');
+    await eventually(() => expect(toRuntime).toEqual(['{"method":"item/started","params":{"id":"after"}}']));
+    session.close();
+  });
+
   test("native output belongs to the run whose turn produced it, never to the run active when it lands", async () => {
     process.env.FINISHED_WORK_ROLLOUT = "shadow";
     const storage = new InMemoryArtifactStorage();
