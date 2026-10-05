@@ -243,6 +243,7 @@ function UserMenuView({
                 key={workspace.id}
                 id={`workspace-${workspace.id}`}
                 textValue={workspace.name}
+                shouldCloseOnSelect={false}
                 onAction={() => void onSelectWorkspace?.(workspace.id)}
               >
                 <RiBuilding4Line
