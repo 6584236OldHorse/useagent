@@ -641,18 +641,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           for (;;) {
             const createdAt = turnRequestedAt;
             if (ctx.commandName) {
-              const rejection = await runtimeCommandDispatchRejection({
-                ctx,
-                sandbox,
-                engine,
-                session,
-                command: {
-                  name: ctx.commandName,
-                  provider: ctx.commandProvider ?? null,
-                  sessionId: ctx.commandSessionId ?? null,
-                  catalogRevision: ctx.commandCatalogRevision ?? null,
-                },
-              });
+              const command = {
+                name: ctx.commandName, provider: ctx.commandProvider ?? null,
+                sessionId: ctx.commandSessionId ?? null, catalogRevision: ctx.commandCatalogRevision ?? null,
+              };
+              const rejection = await runtimeCommandDispatchRejection({ ctx, sandbox, engine, session, command });
               if (rejection) throw new Error(`Native command dispatch rejected: ${rejection}`);
             }
             ctx.timing?.mark("dispatch");
@@ -678,22 +671,10 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             try {
               const summary = ctx.commandName === "compact"
                 ? await waitForRuntimeCompact(
-                    ctx,
-                    sandbox,
-                    turnBase,
-                    redact,
-                    runtimeUserMessageId(ctx.runId),
-                    runtimeTurnWaitDependencies,
+                    ctx, sandbox, turnBase, redact, runtimeUserMessageId(ctx.runId), runtimeTurnWaitDependencies,
                   )
                 : await waitForRuntimeTurn(
-                    ctx,
-                    sandbox,
-                    projector.seen(),
-                    turnBase,
-                    redact,
-                    runtimeTurnWaitDependencies,
-                    engine,
-                    projector,
+                    ctx, sandbox, projector.seen(), turnBase, redact, runtimeTurnWaitDependencies, engine, projector,
                   );
               await ctx.emit({ kind: "done", label: "Done", chip: null });
               ctx.setSummary(summary, Date.now() - startedAt);
