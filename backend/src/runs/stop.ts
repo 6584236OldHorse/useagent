@@ -201,20 +201,32 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
   // a signalled actor's teardown pumps its thread, and whatever it would
   // dispatch is already settled by then. A run whose cancel failed keeps its
   // thread's actors unsignalled and its thread unpumped, and is tried again
-  // on the next pass. Passes continue until one finds nothing new.
+  // on the next pass; a signal held back stays owed until it is delivered.
+  // Passes continue until one finds nothing new.
   const touched = new Set([root.threadId]);
   const handled = new Set<string>();
   const failed = new Map<string, string>();
+  const owedSignals = new Map<string, RunRow>();
   let children = 0;
+  const signalOwed = async (blocked: ReadonlySet<string>) => {
+    for (const run of [...owedSignals.values()]) {
+      if (blocked.has(run.threadId)) continue;
+      try {
+        await signalRun(run);
+        owedSignals.delete(run.id);
+      } catch (error) {
+        console.warn(`[stop] delegated run ${run.id} could not be signalled yet:`, error);
+      }
+    }
+  };
   for (let pass = 0; ; pass += 1) {
     if (pass === MAX_PASSES) {
       console.warn(`[stop] ${input.runId}: delegation still changing after ${MAX_PASSES} passes; a later Stop picks up the rest`);
       break;
     }
     const fresh = (await liveDelegatedRuns(input.orgId, root)).filter((run) => !handled.has(run.id));
-    if (fresh.length === 0) break;
+    if (fresh.length === 0 && owedSignals.size === 0) break;
     const blocked = new Set<string>();
-    const toSignal: RunRow[] = [];
     let progressed = false;
     for (const run of fresh) {
       try {
@@ -224,19 +236,21 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
         touched.add(run.threadId);
         progressed = true;
         if (recorded.kind === "cancelled") children += 1;
-        if (recorded.kind !== "terminal" && recorded.status === "running") toSignal.push(run);
+        if (recorded.kind !== "terminal" && recorded.status === "running") owedSignals.set(run.id, run);
       } catch (error) {
         failed.set(run.id, run.threadId);
         blocked.add(run.threadId);
         console.warn(`[stop] delegated run ${run.id} was not cancelled with ${input.runId}:`, error);
       }
     }
-    for (const run of toSignal) {
-      if (blocked.has(run.threadId)) continue;
-      await signalRun(run).catch((error) => console.warn(`[stop] delegated run ${run.id} could not be signalled:`, error));
-    }
+    const owedBefore = owedSignals.size;
+    await signalOwed(blocked);
+    if (owedSignals.size < owedBefore) progressed = true;
     if (!progressed) break;
   }
+  // A signal still owed because a queued cancel in its thread kept failing is
+  // delivered anyway: a running actor nobody stops is worse than a pump.
+  await signalOwed(new Set());
   const held = new Set(failed.values());
   for (const threadId of touched) if (!held.has(threadId)) await pumpThread(threadId);
   if (rootResult.settledAs) return { status: "settled", runStatus: rootResult.settledAs };
