@@ -31,7 +31,8 @@ test("Electron PKCE handoff creates a separate revocable session and rejects rep
   desktop.absorb(response);
   const identity = await response.json();
   expect(identity.user.id).toBe(browserSession.body.user.id);
-  expect(identity.token).not.toBe(browserSession.body.session.token);
+  expect(typeof identity.token).toBe("string");
+  expect(browser.cookies).not.toContain(identity.token);
   expect((await fetchApi("/api/auth/electron/token", exchange)).status).toBe(404);
 
   // The SDK transfers identity, not the browser's workspace. Main must select

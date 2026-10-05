@@ -83,11 +83,41 @@ test("two-workspace sign-in cannot load the hosted app until a member workspace 
   expect(shown).toBe(1);
 });
 
-test("a revoked stored session returns to login without copying stale cookies", async () => {
+test("a workspace the user was removed from falls back to the remaining membership", async () => {
   const set: unknown[] = [];
-  let listed = 0;
+  const activated: string[] = [];
   const window = {
     webContents: { session: { cookies: { set: async (cookie: unknown) => { set.push(cookie); } } } },
+  } as unknown as BrowserWindow;
+  const client = {
+    async requestAuth() {},
+    async authenticate() { return { error: null }; },
+    getCookie: () => "better-auth.session_token=app-session",
+    async getSession() { return { data: { session: { activeOrganizationId: "org-gone" } }, error: null }; },
+    organization: {
+      async list() { return { data: [{ id: "org-one", name: "One" }], error: null }; },
+      async setActive({ organizationId }: { organizationId: string }) { activated.push(organizationId); return { error: null }; },
+    },
+  };
+  const login = createDesktopSignIn(new URL("https://plane.example"), window, client, async () => undefined);
+  expect(await login.restore()).toBe(true);
+  expect(activated).toEqual(["org-one"]);
+  expect(set).toHaveLength(1);
+
+  client.organization.list = async () => ({ data: [], error: null });
+  await expect(login.restore()).rejects.toThrow("Desktop workspace was not selected.");
+});
+
+test("a revoked stored session returns to login without copying stale cookies", async () => {
+  const set: unknown[] = [];
+  const removed: string[] = [];
+  let listed = 0;
+  const window = {
+    webContents: { session: { cookies: {
+      set: async (cookie: unknown) => { set.push(cookie); },
+      get: async () => [{ name: "__Secure-better-auth.session_token" }, { name: "better-auth.session_data" }, { name: "theme" }],
+      remove: async (_url: string, name: string) => { removed.push(name); },
+    } } },
   } as unknown as BrowserWindow;
   const client = {
     async requestAuth() {},
@@ -104,6 +134,7 @@ test("a revoked stored session returns to login without copying stale cookies", 
   expect(await login.restore()).toBe(false);
   expect(listed).toBe(0);
   expect(set).toEqual([]);
+  expect(removed).toEqual(["__Secure-better-auth.session_token", "better-auth.session_data"]);
 });
 
 test("duplicate workspace names remain distinguishable in the native choice", () => {

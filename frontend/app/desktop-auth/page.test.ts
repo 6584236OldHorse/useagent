@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { desktopAuthRequest, restartElectronRedirect } from "./page";
+import { desktopAuthRequest, restartElectronRedirect, startDesktopGoogleSignIn } from "./page";
 import { desktopAuthClient } from "@/lib/desktop-auth-client";
 
 const valid = `https://plane.example/desktop-auth?client_id=electron&state=${"A".repeat(16)}&code_challenge=${"B".repeat(43)}&code_challenge_method=S256`;
@@ -21,4 +21,13 @@ test("desktop approval replaces an expired redirect poll with a fresh bounded po
   const cleared: Array<ReturnType<typeof setInterval>> = [];
   expect(restartElectronRedirect(expired, () => fresh, timer => cleared.push(timer))).toBe(fresh);
   expect(cleared).toEqual([expired]);
+});
+
+test("desktop Google sign-in returns OAuth to the desktop-auth page that polls for the redirect", async () => {
+  const request = desktopAuthRequest(valid)!;
+  const calls: unknown[] = [];
+  await startDesktopGoogleSignIn(request, async (input) => { calls.push(input); return { error: null }; });
+  expect(calls).toEqual([{ provider: "google", callbackURL: request.url, fetchOptions: { query: request.query } }]);
+  await expect(startDesktopGoogleSignIn(request, async () => ({ error: { message: "denied" } })))
+    .rejects.toThrow("Could not start Google sign-in.");
 });

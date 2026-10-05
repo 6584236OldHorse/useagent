@@ -23,6 +23,16 @@ export function desktopAuthRequest(value: string): DesktopAuthRequest | null {
   return { query, url: `${url.pathname}${url.search}` };
 }
 
+/** OAuth must land back on this page, which is the only one polling for the desktop redirect. */
+export async function startDesktopGoogleSignIn(
+  request: DesktopAuthRequest,
+  social: (input: { provider: "google"; callbackURL: string; fetchOptions: { query: Record<string, string> } }) => Promise<{ error: unknown }>
+    = (input) => desktopAuthClient.signIn.social(input),
+): Promise<void> {
+  const result = await social({ provider: "google", callbackURL: request.url, fetchOptions: { query: request.query } });
+  if (result.error) throw new Error("Could not start Google sign-in.");
+}
+
 export function restartElectronRedirect(
   previous: ReturnType<typeof setInterval> | null,
   start: () => ReturnType<typeof setInterval> = () => desktopAuthClient.ensureElectronRedirect(),
@@ -72,13 +82,7 @@ export default function DesktopAuthPage() {
     </AuthScreen>
   );
   if (!loading && !session) return (
-    <AuthForm
-      callbackURL={request.url}
-      googleAction={async () => {
-        const result = await desktopAuthClient.signIn.social({ provider: "google", fetchOptions: { query: request.query } });
-        if (result.error) throw new Error("Could not start Google sign-in.");
-      }}
-    />
+    <AuthForm callbackURL={request.url} googleAction={() => startDesktopGoogleSignIn(request)} />
   );
   return (
     <AuthScreen>

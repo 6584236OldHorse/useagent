@@ -6,9 +6,19 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing release tag containing the matching runner binaries
+        description: Product release tag to build; its commit must already be on main
         required: true
         type: string
+      runner_tag:
+        description: Runner prerelease tag (runner-<sha9>); empty picks the newest runner-* prerelease
+        required: false
+        type: string
+        default: ""
+      runner_checksums:
+        description: Optional "<sha256>  <asset name>" lines that pin the runner assets ahead of the release notes
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -22,29 +32,59 @@ env:
   RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
 
 jobs:
+  provenance:
+    name: Verify release provenance
+    # Runner prereleases share the release event; they are inputs here, not products.
+    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'runner-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      runner_tag: ${{ steps.runner.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the release tag to a commit on main
+        id: resolve
+        shell: bash
+        run: |
+          commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$commit" origin/main
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the runner prerelease
+        id: runner
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNNER_TAG: ${{ inputs.runner_tag }}
+        run: |
+          if [ -z "$RUNNER_TAG" ]; then
+            RUNNER_TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '[.[] | select(.prerelease and (.tag_name | startswith("runner-")))][0].tag_name // empty')"
+          fi
+          [[ "$RUNNER_TAG" =~ ^runner-[0-9a-f]{9}$ ]]
+          echo "tag=$RUNNER_TAG" >> "$GITHUB_OUTPUT"
+
   macos:
     name: macOS ${{ matrix.arch }}
+    needs: provenance
     runs-on: macos-14
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         arch: [arm64, x64]
-    env:
-      CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
-      CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-          fetch-depth: 0
+          ref: ${{ needs.provenance.outputs.commit }}
 
       - name: Verify exact release checkout
         shell: bash
-        run: test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+        run: test "$(git rev-parse HEAD)" = "${{ needs.provenance.outputs.commit }}"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -58,19 +98,29 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RUNNER_TAG: ${{ needs.provenance.outputs.runner_tag }}
           RUNNER_ASSET: useagent-runner-darwin-${{ matrix.arch }}
+          RUNNER_CHECKSUMS: ${{ inputs.runner_checksums }}
         run: |
           mkdir -p apps/desktop/resources/runner
-          gh release download "$RELEASE_TAG" \
+          gh release download "$RUNNER_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$RUNNER_ASSET" \
             --dir apps/desktop/resources/runner
 
-          expected_digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            | jq -r --arg asset "$RUNNER_ASSET" '.assets[] | select(.name == $asset) | .digest')"
-          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          actual_digest="sha256:$(shasum -a 256 "apps/desktop/resources/runner/$RUNNER_ASSET" | cut -d' ' -f1)"
-          test "$actual_digest" = "$expected_digest"
+          # A pinned input wins over the checksum block in the prerelease notes.
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RUNNER_TAG")"
+          expected="$(printf '%s\n%s\n' "$RUNNER_CHECKSUMS" "$(jq -r '.body // ""' <<<"$release")" \
+            | awk -v asset="$RUNNER_ASSET" '$2 == asset && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1; exit }')"
+          if [ -z "$expected" ]; then
+            echo "No sha256 for $RUNNER_ASSET in the $RUNNER_TAG notes; pass it through runner_checksums." >&2
+            exit 1
+          fi
+          actual="$(shasum -a 256 "apps/desktop/resources/runner/$RUNNER_ASSET" | cut -d' ' -f1)"
+          test "$actual" = "$expected"
+          # GitHub's asset digest is often null for these uploads; it only has to agree when present.
+          api_digest="$(jq -r --arg asset "$RUNNER_ASSET" '.assets[] | select(.name == $asset) | .digest // empty' <<<"$release")"
+          test -z "$api_digest" || test "$api_digest" = "sha256:$actual"
           expected_arch="${{ matrix.arch }}"
           test "$expected_arch" != x64 || expected_arch=x86_64
           lipo -archs "apps/desktop/resources/runner/$RUNNER_ASSET" | tr ' ' '\n' | grep -Fx "$expected_arch"
@@ -82,6 +132,12 @@ jobs:
 
       - name: Build signed and notarized packages
         working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             test -n "${!name}"

@@ -16,6 +16,8 @@ export type DesktopOrganization = { id: string; name: string };
 export const desktopOrganizationLabel = (organization: DesktopOrganization): string =>
   `${organization.name} (${organization.id})`;
 
+const AUTH_COOKIE = /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/;
+
 function callbackToken(value: string): string {
   if (value.length > 16_384) throw new Error("Invalid desktop sign-in callback.");
   let url: URL;
@@ -47,10 +49,8 @@ export function createDesktopSignIn(
       typeof organization.id === "string" && organization.id.length > 0
       && typeof organization.name === "string" && organization.name.length > 0);
     const active = session.data.session.activeOrganizationId;
-    if (active) {
-      if (!available.some(organization => organization.id === active)) throw new Error("Desktop workspace could not be verified.");
-      return true;
-    }
+    // A stored workspace the user was removed from counts as unset, so a remaining membership can still open.
+    if (active && available.some(organization => organization.id === active)) return true;
     const organizationId = available.length === 1 ? available[0]!.id
       : available.length > 1 ? await chooseOrganization(available) : undefined;
     if (!organizationId || !available.some(organization => organization.id === organizationId)) {
@@ -61,11 +61,20 @@ export function createDesktopSignIn(
     }
     return true;
   };
+  /** Chromium keeps its own copy of the session cookie; a failed restore must not leave it signed in. */
+  const clearAuthCookies = async (): Promise<void> => {
+    const { cookies } = window.webContents.session;
+    const stale = await cookies.get({ url: plane.href });
+    await Promise.all(stale.filter(cookie => AUTH_COOKIE.test(cookie.name)).map(cookie => cookies.remove(plane.href, cookie.name)));
+  };
   const restore = async (): Promise<boolean> => {
-    if (!await ensureActiveOrganization()) return false;
-    const cookies = [...parseCookies(client.getCookie())]
-      .filter(([name]) => /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/.test(name));
-    if (!cookies.some(([name]) => name.endsWith(".session_token"))) return false;
+    const cookies = await ensureActiveOrganization()
+      ? [...parseCookies(client.getCookie())].filter(([name]) => AUTH_COOKIE.test(name))
+      : [];
+    if (!cookies.some(([name]) => name.endsWith(".session_token"))) {
+      await clearAuthCookies();
+      return false;
+    }
     await Promise.all(cookies.map(([name, cookie]) => window.webContents.session.cookies.set({
       url: plane.href, name, value: cookie, path: "/", httpOnly: true,
       secure: plane.protocol === "https:", sameSite: "lax",

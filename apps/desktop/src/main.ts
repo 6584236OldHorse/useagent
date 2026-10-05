@@ -149,7 +149,8 @@ async function startDesktop(): Promise<void> {
       return organizations[result.response]?.id;
     },
   );
-  await signIn.restore();
+  // A failed restore has already cleared Chromium's auth cookies; only a verified session opens the product.
+  const restored = await signIn.restore();
   if (app.isPackaged) app.setAsDefaultProtocolClient("useagent");
   mainWindow.on("close", (event) => {
     if (keepRunningInBackground && !quitting) {
@@ -178,7 +179,7 @@ async function startDesktop(): Promise<void> {
   refreshTray();
   setInterval(refreshTray, 1_000).unref();
   configureUpdater();
-  await mainWindow.loadURL(plane.href);
+  await mainWindow.loadURL(restored ? plane.href : new URL("/login", plane).href);
 }
 
 if (!app.requestSingleInstanceLock()) {
