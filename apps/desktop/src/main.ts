@@ -31,7 +31,11 @@ let signIn: ReturnType<typeof createDesktopSignIn> | undefined;
 
 function completeSignIn(url: string): void {
   if (!signIn) { dialog.showErrorBox("Sign-in expired", "Open useAgent and start sign-in again."); return; }
-  void signIn.complete(url).catch(() => dialog.showErrorBox("Sign-in did not complete", "Return to useAgent and try signing in again."));
+  void signIn.complete(url).catch((error: unknown) => {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("desktop sign-in failed:", reason);
+    dialog.showErrorBox("Sign-in did not complete", `${reason}\n\nReturn to useAgent and try signing in again.`);
+  });
 }
 
 app.on("open-url", (event, url) => { event.preventDefault(); completeSignIn(url); });
