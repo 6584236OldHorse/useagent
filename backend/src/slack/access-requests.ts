@@ -436,7 +436,7 @@ export async function reopenInvitedRequest(invitationId: string): Promise<void> 
 export async function acceptLinkedInvitationAsMember(invitationId: string, who: { id: string; email: string }): Promise<string | null> {
   const consumed = await db.transaction(async (tx): Promise<string | null> => {
     const [row] = await tx
-      .select({ id: invitation.id, email: invitation.email, organizationId: invitation.organizationId })
+      .select({ id: invitation.id, email: invitation.email, role: invitation.role, organizationId: invitation.organizationId })
       .from(invitation)
       .innerJoin(slackAccessRequests, and(eq(slackAccessRequests.invitationId, invitation.id), eq(slackAccessRequests.status, "invited")))
       .where(and(eq(invitation.id, invitationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
@@ -444,12 +444,17 @@ export async function acceptLinkedInvitationAsMember(invitationId: string, who: 
       .limit(1);
     if (!row || row.email.toLowerCase() !== who.email.toLowerCase()) return null;
     const [membership] = await tx
-      .select({ id: member.id })
+      .select({ id: member.id, role: member.role })
       .from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, who.id)))
       .limit(1);
     if (!membership) return null;
     await tx.update(invitation).set({ status: "accepted" }).where(eq(invitation.id, row.id));
+    // The invitation's promise counts here as it would through the library.
+    const promised = strongest(row.role);
+    if (RANK[promised]! > RANK[strongest(membership.role)]!) {
+      await tx.update(member).set({ role: promised }).where(eq(member.id, membership.id));
+    }
     return row.organizationId;
   });
   if (!consumed) return null;

@@ -3026,7 +3026,9 @@ describe("slack workspace identity (fail closed)", () => {
 
   test("another sender's admission never settles an invitation a typed request is still waiting on", async () => {
     const listed = () => json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
-    const alice = `${uid("alice")}@example.test`;
+    // Alice has an account of her own already.
+    const aliceSession = await createOrgSession("alice");
+    const alice = aliceSession.email;
     // Sender A: no address from Slack; an admin types Alice's address, so A waits on Alice's acceptance.
     const senderA = `U-${uid("a")}`;
     const channelA = `D${uid("dm")}`;
@@ -3046,6 +3048,16 @@ describe("slack workspace identity (fail closed)", () => {
     await postSlack(eventCallback({ type: "message", channel: channelA, channel_type: "im", user: senderA, text: `hi ${uid("x")}`, ts: `${uid("ts")}.2` }));
     await waitFor(async () => rec.messages.find((m) => m.channel === channelA && m.text.includes("An admin has invited you")) ?? null);
     expect(await db.execute(sql`select 1 from slack_users where team_id = ${TEAM} and slack_user_id = ${senderA}`)).toHaveLength(0);
+    // Alice, already a member through B, accepts A's invitation herself: A binds, and the invitation's promised role counts.
+    await db.execute(sql`update invitation set role = 'admin' where id = (select invitation_id from slack_access_requests where id = ${requestA.id})`);
+    const [aliceAccount] = await db.execute(sql`select id from "user" where email = ${alice}`);
+    const [invA] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${requestA.id}`);
+    const accepted = await json<{ status?: string; message?: string }>("/api/auth/organization/accept-invitation", { method: "POST", cookies: aliceSession.cookies, body: { invitationId: (invA as { invitation_id: string }).invitation_id } });
+    expect(`${accepted.status} ${accepted.body.status ?? accepted.body.message ?? ""}`.trim()).toBe("200 accepted");
+    const [bindingA] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${senderA}`);
+    expect((bindingA as { user_id: string }).user_id).toBe((aliceAccount as { id: string }).id);
+    const [aliceRole] = await db.execute(sql`select role from member where organization_id = ${DEV_ORG_ID} and user_id = ${(aliceAccount as { id: string }).id}`);
+    expect((aliceRole as { role: string }).role).toBe("admin");
   });
 
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
