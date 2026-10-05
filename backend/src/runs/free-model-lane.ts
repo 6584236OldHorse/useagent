@@ -12,11 +12,13 @@ const MIN_CONTEXT_LENGTH = 65_536;
 const DISCOVERY_CAP = 100;
 
 /** Curated fallback lane (verified tool-capable free models): the boot state
- * until the published generation is adopted. */
+ * until the published generation is adopted. Listed in the order migration
+ * 0066 published them, so a process that has adopted that generation and one
+ * that has not advertise the same list. */
 export const FREE_MODEL_LANE_SEED = [
   "minimax/minimax-m3:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
   "dots-studio/dots-3-note-preview:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
 ] as const;
 const FREE_MODEL_LANE_SEED_SET = new Set<string>(FREE_MODEL_LANE_SEED);
 
