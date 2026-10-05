@@ -1,9 +1,9 @@
-import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
-import { INVITATION_EXPIRES_IN_SECONDS, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
+import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
-import { account, invitation, member, organization, user } from "../db/auth-schema";
+import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
 import type { AppEnv } from "../http";
 
@@ -106,23 +106,6 @@ routes.post("/api/auth/organization/update-member-role", async (c) => {
   if (role !== undefined && !exactRole(role)) return c.json({ message: ROLE_MESSAGE }, 400);
   return auth.handler(request);
 });
-const NO_WAY_IN =
-  "That address has no account with a password here, and this deployment cannot create one. Set up Google sign-in, or invite an address that already signs in with a password.";
-
-/** Whether an invitation to this address can ever be used. Any deployment that
- *  creates accounts says yes; a closed one needs an account with a password,
- *  since a Google-only account from a time when Google was on has no way in. */
-async function canSignIn(email: string): Promise<boolean> {
-  if (selfSignupEnabled() || googleAuthEnabled()) return true;
-  const [known] = await db
-    .select({ id: user.id })
-    .from(user)
-    .innerJoin(account, and(eq(account.userId, user.id), eq(account.providerId, "credential"), isNotNull(account.password)))
-    .where(eq(user.email, email.trim().toLowerCase()))
-    .limit(1);
-  return known !== undefined;
-}
-
 const RESEND_WINDOW_MS = 60_000;
 const recentResends = new Map<string, number>();
 // ponytail: process-local, which matches the documented one-backend deployment; move to the database if replicas ever appear.
