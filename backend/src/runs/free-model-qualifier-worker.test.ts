@@ -878,4 +878,48 @@ describe("free-model qualifier worker", () => {
     expect(fake.publishes.some((p) => p.systemFailure)).toBe(false);
     expect(result).toMatchObject({ systemFailure: false, claimed: 2, recorded: 2 });
   });
+  test("without a stored OpenRouter key for the probe organization the tick discovers but does not probe", async () => {
+    const pending = candidate("vendor/pending:free");
+    const { repository, records } = fakeRepository({
+      state: registryState([]),
+      candidates: [pending],
+      claims: [claim(pending)],
+    });
+    const probe = driver({ classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null });
+    const result = await runFreeModelQualifierTick({
+      driver: probe.driver,
+      probeCredential: async () => false,
+      repository,
+      discover: discovery("vendor/pending:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(result.status).toBe("completed");
+    expect(result.discovered).toBe(1);
+    expect(result.claimed).toBe(0);
+    expect(probe.requests).toEqual([]);
+    expect(records).toHaveLength(0);
+  });
+  test("a probe-credential lookup that never answers costs the tick its probes, not its discovery", async () => {
+    const pending = candidate("vendor/pending:free");
+    const { repository, records } = fakeRepository({
+      state: registryState([]),
+      candidates: [pending],
+      claims: [claim(pending)],
+    });
+    const probe = driver({ classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null });
+    const started = Date.now();
+    const result = await runFreeModelQualifierTick({
+      driver: probe.driver,
+      probeCredential: () => new Promise<boolean>(() => {}),
+      repository,
+      discover: discovery("vendor/pending:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(Date.now() - started).toBeLessThan(QUALIFIER_ADMISSION_WAIT_MS + 3_000);
+    expect(result).toMatchObject({ status: "completed", discovered: 1, claimed: 0 });
+    expect(probe.requests).toEqual([]);
+    expect(records).toHaveLength(0);
+  }, 15_000);
 });

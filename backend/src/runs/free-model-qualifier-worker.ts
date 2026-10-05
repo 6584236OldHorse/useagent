@@ -291,6 +291,10 @@ export interface FreeModelQualifierTickDeps {
   /** Null: no organization owns probe runs yet, so the tick discovers and
    * republishes but never probes. */
   readonly driver: FreeModelQualificationDriver | null;
+  /** Whether the probe organization holds an OpenRouter credential of its own
+   * (its stored secret). A probe without one fails before the model, so the
+   * tick then discovers and republishes but does not probe. */
+  readonly probeCredential?: () => Promise<boolean>;
   readonly repository?: FreeModelQualifierRepository;
   readonly discover?: () => Promise<CatalogDiscoveryResult>;
   /** Fires once the catalog phase settled, before any probe starts. */
@@ -322,7 +326,7 @@ export async function runFreeModelQualifierTick(
   const admission = deps.admission ?? (() => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS));
   const nowMs = deps.nowMs ?? Date.now;
   const driver = deps.driver;
-  const maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
+  let maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
   const leaseMs = deps.leaseMs ?? QUALIFIER_LEASE_MS;
   // A read that cannot answer in time (a held lock, an exhausted connection
   // pool) answers "unknown", never "open". The deadline is the tick's own: it
@@ -348,6 +352,17 @@ export async function runFreeModelQualifierTick(
       systemFailure: false,
       publishOutcome: "unchanged",
     };
+  }
+
+  // The probe organisation's own key decides whether this tick probes at all.
+  // The read is a database lookup, so it runs on the tick's clock like the
+  // admission read: no answer in time means no probes this tick.
+  if (driver && deps.probeCredential) {
+    const holdsKey = await awaitWithSignal(
+      deps.probeCredential,
+      AbortSignal.timeout(QUALIFIER_ADMISSION_WAIT_MS + 1_000),
+    ).catch(() => false);
+    if (!holdsKey) maxProbes = 0;
   }
 
   const discovery = await (deps.discover ?? discoverFreeModelCandidates)();

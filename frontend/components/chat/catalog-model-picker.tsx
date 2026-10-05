@@ -28,6 +28,7 @@ import {
   type ModelPickerRow,
   type ModelPickerSection,
 } from "@/components/pro/model-picker";
+import Link from "next/link";
 import { cx } from "@/utils/cx";
 
 export interface ProviderCatalog {
@@ -91,6 +92,16 @@ export function engineProvider(
     {
       label: "Free",
       action: refresh ? <RefreshModelsAction label="Refresh free models" refresh={refresh} /> : undefined,
+      // Free models are free on the member's own OpenRouter key; the deployment
+      // never lends one, so the section says where the key goes.
+      note: (
+        <>
+          Free on your OpenRouter key.{" "}
+          <Link href="/settings" className="text-text-secondary underline underline-offset-2 hover:text-text-primary">
+            Add it in Settings
+          </Link>
+        </>
+      ),
       rows: free,
     },
     { label: "Discovered", rows: discovered },

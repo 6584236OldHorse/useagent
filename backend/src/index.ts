@@ -120,6 +120,7 @@ import {
 } from "./runs/free-model-qualification-driver";
 import { acceptInternalRunCommand } from "./commands/service";
 import { latestProviderGatewayOutcome } from "./provider-gateway/audit";
+import { resolveProviderCredential } from "./provider-gateway/credentials";
 import { acceptRunCancel } from "./commands/cancel";
 import {
   deploymentInflightSnapshot,
@@ -567,6 +568,11 @@ if (freeModelQualifierEnabled()) {
     : null;
   freeModelQualifier = startFreeModelQualifierWorker({
     driver,
+    // Probe runs spend the probe organization's own stored OpenRouter key, never
+    // the deployment's; without one the lane discovers but does not probe.
+    probeCredential: qualifierOrgId
+      ? async () => (await resolveProviderCredential(qualifierOrgId, "openrouter")) !== null
+      : undefined,
     adoptPublishedLane: (state) => freeModelLaneCache.adoptRegistryLane(state.currentModelIds),
   });
 }

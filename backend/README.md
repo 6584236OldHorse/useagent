@@ -226,23 +226,21 @@ The important variables are:
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.
 - `GITHUB_TOKEN` or `GITHUB_APP_*` for repository access.
-- The Free model lane (OpenRouter `:free` variants for OpenCode) qualifies
-  itself: at boot and every 15 minutes the backend discovers the public
-  catalog, runs short low-priority probe runs (at most 96 a day, one at a
-  time, never while deployment admission is closed) and advertises the last
-  generation it published. Probe runs belong to `FREE_MODEL_QUALIFIER_ORG_ID`,
-  else the deployment's primary organization (`USEAGENT_PRIMARY_ORG_ID`);
-  without either the lane only discovers. `FREE_MODEL_QUALIFIER=off` is the
-  kill switch (the lane then stays at its last generation). OpenCode Zen's
-  free models join the lane once the deployment can run them: set
-  `OPENCODE_API_KEY` and `PROVIDER_HEALTH_OPENCODE=verified`; they reach the
-  sandbox through the provider gateway like every other provider. Zen's free
-  marker is the lane's own, not Zen's, so the deployment's Zen account must
-  hold no credit balance with auto-reload off: a model Zen reprices then fails
-  there until the next catalog read drops it, instead of billing the house.
-
-## Deploy and Terraform
-
+- The Free model lane (OpenRouter `:free` variants for OpenCode) is free on the
+  member's own OpenRouter key: a member connects it in Settings and free
+  models cost them nothing; the deployment's keys never serve a member's run.
+  The lane qualifies itself: at boot and every 15 minutes the backend
+  discovers the public catalog and runs short low-priority probe runs (at most
+  96 a day, one at a time, never while deployment admission is closed) and
+  advertises the last generation it published. Probe runs belong to
+  `FREE_MODEL_QUALIFIER_ORG_ID`, else the deployment's primary organization
+  (`USEAGENT_PRIMARY_ORG_ID`), and spend that organization's stored OpenRouter
+  key; without one the lane discovers but does not probe.
+  `FREE_MODEL_QUALIFIER=off` is the kill switch (the lane then stays at its
+  last generation). OpenCode Zen's free models join the lane once
+  `OPENCODE_API_KEY` and `PROVIDER_HEALTH_OPENCODE=verified` are set; Zen's
+  free marker is the lane's own, so that account must hold no credit balance
+  with auto-reload off.
 - the provisioning scripts provisions one backend, a separate restricted gateway service, Cube, memory, and systemd wiring. Production sets `REQUIRE_SINGLE_BACKEND=true` because ambient org invalidation is process-local.
 - `infra/self-host/README.md` documents the Terraform scope. It only manages Cloudflare DNS.
 
