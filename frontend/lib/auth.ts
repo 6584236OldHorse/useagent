@@ -1,3 +1,5 @@
+"use client";
+
 // Browser auth helpers — the ONE place the frontend talks to better-auth. The
 // backend mounts better-auth at `/api/auth/*` and the Next `/api/*` rewrite
 // proxies it same-origin, so the session cookie is first-party and rides on
