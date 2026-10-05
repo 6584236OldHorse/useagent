@@ -91,10 +91,10 @@ const COMPATIBILITY_SANDBOX_GENERATION = "provider-gateway-v17-useagent-mcp-comp
 export const SANDBOX_GENERATION_LABEL = CANONICAL_SANDBOX_GENERATION_LABEL;
 const LEGACY_SANDBOX_MARKER = "$HOME/.skynet/provider-gateway-generation";
 const CANONICAL_SANDBOX_MARKER = "$HOME/.useagent/provider-gateway-generation";
-const SANDBOX_MARKER = LEGACY_SANDBOX_MARKER;
+const SANDBOX_MARKER = CANONICAL_SANDBOX_MARKER;
 const LEGACY_OPENAI_TOKEN_FILE = "$HOME/.skynet/provider-openai.token";
 const CANONICAL_OPENAI_TOKEN_FILE = "$HOME/.useagent/provider-openai.token";
-const OPENAI_TOKEN_FILE = LEGACY_OPENAI_TOKEN_FILE;
+const OPENAI_TOKEN_FILE = CANONICAL_OPENAI_TOKEN_FILE;
 export const CLAUDE_CONFIG_DIR = "/tmp/skynet-claude-config";
 export const CLAUDE_CAPABILITY_DIR = "/tmp/useagent-claude-capability";
 export const CLAUDE_CAPABILITY_GID = 1000;
@@ -404,13 +404,54 @@ async function writePrivateFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
+  const compatibilityAliases: Readonly<Record<string, { legacy: string; relativeTarget: string }>> = {
+    [CANONICAL_OPENAI_TOKEN_FILE]: {
+      legacy: LEGACY_OPENAI_TOKEN_FILE,
+      relativeTarget: "../.useagent/provider-openai.token",
+    },
+    [CANONICAL_SANDBOX_MARKER]: {
+      legacy: LEGACY_SANDBOX_MARKER,
+      relativeTarget: "../.useagent/provider-gateway-generation",
+    },
+  };
+  const temporaryPaths: string[] = [];
+  const aliasedFiles = files.filter(({ path }) => compatibilityAliases[path]);
+  const leafChecks = aliasedFiles.flatMap(({ path }) => {
+    const alias = compatibilityAliases[path];
+    if (!alias) return [];
+    return [path, alias.legacy].map(
+      (leaf) => `if [ -d ${leaf} ] && [ ! -L ${leaf} ]; then exit 1; fi`,
+    );
+  });
   const writes = files.map(({ path, content }) => {
     const encoded = Buffer.from(content, "utf8").toString("base64");
+    const alias = compatibilityAliases[path];
+    if (alias) {
+      const leaf = path.slice(path.lastIndexOf("/") + 1);
+      const canonicalTemporary = `$HOME/.useagent/.${leaf}-${crypto.randomUUID()}.tmp`;
+      const legacyTemporary = `$HOME/.skynet/.${leaf}-${crypto.randomUUID()}.tmp`;
+      temporaryPaths.push(canonicalTemporary, legacyTemporary);
+      return [
+        `(umask 077; printf %s '${encoded}' | base64 -d > ${canonicalTemporary})`,
+        `chmod 600 ${canonicalTemporary}`,
+        `node -e 'require("node:fs").renameSync(process.argv[1],process.argv[2])' ${canonicalTemporary} ${path}`,
+        `ln -s ${alias.relativeTarget} ${legacyTemporary}`,
+        `node -e 'require("node:fs").renameSync(process.argv[1],process.argv[2])' ${legacyTemporary} ${alias.legacy}`,
+        `node -e 'const f=require("node:fs"),c=process.argv[1],l=process.argv[2],t=process.argv[3],s=f.lstatSync(c);if(!s.isFile()||s.isSymbolicLink()||(s.mode&511)!==384||!f.lstatSync(l).isSymbolicLink()||f.readlinkSync(l)!==t)process.exit(1)' ${path} ${alias.legacy} ${alias.relativeTarget}`,
+      ].join(" && ");
+    }
     return `printf %s '${encoded}' | base64 -d > ${path} && chmod 600 ${path}`;
   });
   const result = await sandbox.process.executeCommand(
-    `mkdir -p $HOME/.skynet $HOME/.claude $HOME/.codex && ` +
-      `chmod 700 $HOME/.skynet && ${writes.join(" && ")}`,
+    [
+      `trap 'rm -f -- ${temporaryPaths.join(" ")} 2>/dev/null || true' EXIT`,
+      "if [ -L $HOME/.skynet ] || [ -L $HOME/.useagent ]; then exit 1; fi",
+      "if [ -e $HOME/.skynet ]; then test -d $HOME/.skynet; else mkdir -m 700 $HOME/.skynet; fi",
+      "if [ -e $HOME/.useagent ]; then test -d $HOME/.useagent; else mkdir -m 700 $HOME/.useagent; fi",
+      "mkdir -p $HOME/.claude $HOME/.codex",
+      ...leafChecks,
+      ...writes,
+    ].join(" && "),
     undefined,
     undefined,
     20,
