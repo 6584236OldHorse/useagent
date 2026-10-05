@@ -64,6 +64,14 @@ const FILTERS = [
 ] as const;
 type FilterValue = (typeof FILTERS)[number]['value'];
 
+export function runTone(run: Run): RunTone {
+  return run.latest_status === 'queued' ? 'live' : statusTone(run.latest_status);
+}
+
+export function matchesRunStatus(run: Run, filter: FilterValue): boolean {
+  return filter === 'all' || runTone(run) === filter;
+}
+
 export function validEngineFilter(selected: string, engines: readonly string[]): string {
   return selected === 'all' || engines.includes(selected) ? selected : 'all';
 }
@@ -84,7 +92,7 @@ const COLUMNS: ColumnDef<Run>[] = [
       const run = row.original;
       return (
         <div className='flex max-w-[440px] items-center gap-3'>
-          <StatusDot {...TONE_TO_DOT[statusTone(run.status)]} />
+          <StatusDot {...TONE_TO_DOT[runTone(run)]} />
           <div className='min-w-0'>
             <p className='truncate text-body-2-medium text-text-primary'>
               {runTitle(run.prompt)}
@@ -130,7 +138,7 @@ const COLUMNS: ColumnDef<Run>[] = [
     enableSorting: false,
     header: 'Status',
     cell: ({ row }) => {
-      const chip = TONE_TO_CHIP[statusTone(row.original.status)];
+      const chip = TONE_TO_CHIP[runTone(row.original)];
       return <StatusChip color={chip.color} label={chip.label} pulse={chip.pulse} />;
     },
   },
@@ -285,7 +293,7 @@ export function RunsList({
   const filtered = React.useMemo(
     () =>
       runs.filter((run) => {
-        if (filter !== 'all' && statusTone(run.status) !== filter) return false;
+        if (!matchesRunStatus(run, filter)) return false;
         if (engineFilter !== 'all' && run.engine !== engineFilter) return false;
         if (!q) return true;
         return (
