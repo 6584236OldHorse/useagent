@@ -23,6 +23,16 @@ describe("sandbox provider selection", () => {
     expect(sandboxProviderKind({})).toBe("daytona");
   });
 
+  test("a developer's machine is never the deployment's default provider", () => {
+    expect(() => sandboxProviderKind({ SANDBOX_PROVIDER: "local" })).toThrow(/must be daytona, cube, box/);
+    expect(sandboxRuntimeLayout("local")).toEqual({
+      home: "/home/user",
+      workdir: "/home/user/work",
+      bunExecutable: "/usr/local/bin/bun",
+      runsAsRoot: false,
+    });
+  });
+
   test("derives root and non-root runtime layouts from provider plugins", () => {
     expect(sandboxRuntimeLayout("daytona")).toEqual({
       home: "/root",
