@@ -246,6 +246,11 @@ export function nextProbeAtForResult(
   );
 }
 
+/** Failures every probe would share until an operator acts. */
+export function laneWideFailure(errorCode: FreeModelProbeErrorCode | null): boolean {
+  return errorCode === "authentication_failed" || errorCode === "rate_limited";
+}
+
 function sameLane(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((model, index) => model === right[index]);
 }
@@ -424,7 +429,10 @@ export async function runFreeModelQualifierTick(
       errorCode: result.errorCode,
     });
     if (persisted) recorded += 1;
-    if (result.classification === "system_failure") {
+    // Only a failure that would hit every probe pauses the lane: the account
+    // rejected or throttled. One provider's outage or a slow answer keeps its
+    // own model on the system-failure retry and the batch moves on.
+    if (result.classification === "system_failure" && laneWideFailure(result.errorCode)) {
       systemFailure = true;
       break;
     }
