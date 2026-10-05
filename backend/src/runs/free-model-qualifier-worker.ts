@@ -232,10 +232,16 @@ export async function runFreeModelQualifierTick(
   const driver = deps.driver;
   const maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
   const leaseMs = deps.leaseMs ?? QUALIFIER_LEASE_MS;
-  // A read that cannot get the lock in time answers "unknown", never "open".
+  // A read that cannot answer in time (a held lock, an exhausted connection
+  // pool) answers "unknown", never "open". The deadline is the tick's own: it
+  // runs from the call, whatever the read is waiting on underneath.
   const admissionOpen = async (): Promise<boolean | null> => {
     try {
-      return (await admission()).open;
+      const state = await awaitWithSignal(
+        admission,
+        AbortSignal.timeout(QUALIFIER_ADMISSION_WAIT_MS + 1_000),
+      );
+      return state.open;
     } catch {
       return null;
     }

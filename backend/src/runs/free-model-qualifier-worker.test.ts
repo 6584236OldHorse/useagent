@@ -9,6 +9,7 @@ import {
   desiredPublishedLane,
   fetchOpenRouterFreeModelCandidates,
   freeModelQualifierEnabled,
+  QUALIFIER_ADMISSION_WAIT_MS,
   respondToManualRefresh,
   runFreeModelQualifierTick,
   startFreeModelQualifierWorker,
@@ -633,4 +634,28 @@ describe("free-model qualifier worker", () => {
     expect((await next.result).status).toBe("completed");
     expect(catalogCalls).toBe(1);
   });
+  test("an admission read that never answers ends the tick on the tick's own clock", async () => {
+    const { repository } = fakeRepository({ state: registryState([]), candidates: [] });
+    const never = Promise.withResolvers<Awaited<ReturnType<typeof openAdmission>>>();
+    let reads = 0;
+    const worker = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: discovery(),
+      admission: () => {
+        reads += 1;
+        return reads === 1 ? never.promise : openAdmission();
+      },
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!worker) throw new Error("expected the worker");
+    const started = Date.now();
+    const first = worker.tick();
+    // QUALIFIER_ADMISSION_WAIT_MS + 1 s is the bound; the test waits for it.
+    expect((await first.result).status).toBe("skipped_admission_unavailable");
+    expect(Date.now() - started).toBeLessThan(QUALIFIER_ADMISSION_WAIT_MS + 3_000);
+    expect((await worker.tick().result).status).toBe("completed");
+    never.resolve(await openAdmission());
+  }, 15_000);
 });
