@@ -8,6 +8,7 @@ import type { EngineRunContext } from "../src/engines/types";
 import { settleStoppedTurnUsage } from "../src/engines/runtime-stop-accounting";
 import { finalizeRun } from "../src/runs/finalize";
 import { drainProviderEvents } from "../src/runs/provider-events";
+import { priceRunUsage } from "../src/runs/spend";
 import { createSecretRedactor } from "../src/secrets/redact";
 import { createOrgSession, waitFor } from "./helpers";
 
@@ -245,4 +246,66 @@ test("a stalled step write does not hold the stop: cancellation proceeds within 
   const [account] = await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)
     .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId)));
   expect(account!.spent).toBeCloseTo(0.3, 6);
+});
+
+// A projection stalled on a step write resumes with its older snapshot after
+// Stop's cleanup recorded a newer revision of the same activity: it applies
+// nothing older, so the charge keeps the newer figure.
+test("a projection resuming with an older snapshot after the stop cleanup recorded a newer revision applies nothing older", async () => {
+  const session = await createOrgSession("seal-revision");
+  const [who] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, session.orgId));
+  const runId = `seal_rev_${crypto.randomUUID()}`;
+  await db.insert(runs).values({
+    id: runId, orgId: session.orgId, userId: who!.userId, prompt: "revise me", model: "claude-opus-5",
+    engine: "claude", status: "running", threadId: runId, origin: "internal:e2e",
+  });
+  const stalled = Promise.withResolvers<void>();
+  const emitted: string[] = [];
+  const ctx = {
+    runId,
+    threadId: runId,
+    signal: new AbortController().signal,
+    emit: async (step: { label: string }) => {
+      emitted.push(step.label);
+      if (emitted.length === 1) await stalled.promise; // the first step write stalls past the stop
+      return `step-${emitted.length}`;
+    },
+    setSummary() {},
+  } as unknown as EngineRunContext;
+  const projector = createTurnProjector({ ctx, redact: createSecretRedactor([]), engine: "codex", seen: new Map() });
+  const usage = (id: string, sequence: number, costUsd: number) => ({
+    id, tone: "tool" as const, kind: "tool.completed", summary: `Tool ${id}`,
+    payload: { toolCallId: id, status: "completed", typedUsage: { inputTokens: 10, outputTokens: 5, costUsd } },
+    turnId: "turn-1", sequence,
+  });
+  const at = (snapshotSequence: number, activities: ReturnType<typeof usage>[]) => ({
+    snapshotSequence,
+    thread: {
+      id: `skynet-thread-${runId}`,
+      latestTurn: { turnId: "turn-1", state: "completed" as const, assistantMessageId: null },
+      messages: [],
+      activities,
+      session: null,
+    },
+  });
+  const older = at(2, [usage("tool-a", 1, 0.1), usage("tool-b", 2, 0.2)]);
+  const newer = at(3, [usage("tool-a", 1, 0.1), usage("tool-b", 3, 0.4)]);
+
+  // The original projection captures tool-a and stalls on its step write.
+  const original = projector.apply(older);
+  await waitFor(async () => (emitted.length === 1 ? true : null));
+  // Stop's cleanup lands the terminal snapshot: tool-b at its newer revision.
+  const landed = await settleStoppedTurnUsage({
+    cancel: async () => undefined,
+    read: async () => newer,
+    apply: (snap, signal) => projector.apply(snap, undefined, { signal }),
+  });
+  expect(landed).toBe(true);
+  // The stalled write releases and the original projection resumes with the
+  // older tool-b: it must not overwrite the newer figure.
+  stalled.resolve();
+  await original;
+  await drainProviderEvents(runId);
+  expect(await priceRunUsage(runId)).toEqual({ cost: 0.5, tokens: 30, source: "usage" });
+  expect(emitted).toHaveLength(2);
 });

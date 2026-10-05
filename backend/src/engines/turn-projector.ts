@@ -38,6 +38,18 @@ export interface TurnProjector {
   readonly settled: boolean;
 }
 
+/** Whether `next` is a newer revision of an activity than `recorded`: runtime
+ *  sequences compare as numbers; a revision without one is newer only when it
+ *  differs. A projection resuming with an older snapshot after a newer one
+ *  landed (a stalled step write released after Stop's cleanup) applies nothing
+ *  older, so a later figure is never overwritten by an earlier one. */
+export function revisionIsNewer(next: string, recorded: string | undefined): boolean {
+  if (recorded === undefined) return true;
+  const a = Number(next);
+  const b = Number(recorded);
+  return Number.isFinite(a) && Number.isFinite(b) ? a > b : next !== recorded;
+}
+
 /** The revisions a thread already holds before a turn is dispatched. */
 export function activityRevisions(snapshot: RuntimeThreadSnapshot): Map<string, string> {
   return new Map(snapshot.thread.activities.map((activity) => [activity.id, runtimeActivityRevision(activity)]));
@@ -85,7 +97,7 @@ export function createTurnProjector(input: {
         // is still unseen for a later projection instead of silently lost.
         if (signal?.aborted || sealed) break;
         const revision = runtimeActivityRevision(activity);
-        if (revisions.get(activity.id) === revision) continue;
+        if (!revisionIsNewer(revision, revisions.get(activity.id))) continue;
         revisions.set(activity.id, revision);
         try {
           // Fenced by the settlement seal: once the run is settled (whichever
