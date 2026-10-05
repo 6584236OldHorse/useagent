@@ -12,7 +12,7 @@ await import("./helpers");
 const { createAuthServer } = await import("../src/auth");
 const { handleAuthRequest } = await import("../src/auth/routes");
 const { db } = await import("../src/db/client");
-const { account, member, organization, session, user } = await import("../src/db/auth-schema");
+const { account, invitation, member, organization, session, user } = await import("../src/db/auth-schema");
 process.env.GOOGLE_CLIENT_ID = "google-test-client";
 process.env.GOOGLE_CLIENT_SECRET = "google-test-secret";
 process.env.BETTER_AUTH_SECRET = "google-auth-test-secret-0123456789abcdef";
@@ -37,6 +37,8 @@ google.getUserInfo = async ({ idToken }) => ({
   user:
     idToken === "existing"
       ? { id: "google-existing", email, emailVerified: true, name: prefix }
+      : idToken === "invited"
+        ? { id: "google-invited", email: `${prefix}-invited@example.test`, emailVerified: true, name: `${prefix}-invited` }
       : idToken === "unverified"
         ? {
             id: "google-unverified",
@@ -117,4 +119,26 @@ test("Google links a verified existing user and rejects an unknown user in produ
   expect(await db.select().from(user).where(eq(user.email, `${prefix}-unknown@example.test`))).toEqual(
     [],
   );
+});
+
+test("a pending invitation lets a new Google identity create its account in production", async () => {
+  const invitedEmail = `${prefix}-invited@example.test`;
+  await db.insert(invitation).values({
+    id: `inv_${crypto.randomUUID()}`,
+    organizationId: orgId,
+    email: invitedEmail,
+    role: "member",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 86_400_000),
+    inviterId: userId,
+  });
+  process.env.NODE_ENV = "production";
+  try {
+    const created = await auth.api.signInSocial({ body: { provider: "google", idToken: { token: "invited" } } });
+    expect(created.user.email).toBe(invitedEmail);
+  } finally {
+    if (prior.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prior.NODE_ENV;
+  }
+  expect(await db.select().from(user).where(eq(user.email, invitedEmail))).toHaveLength(1);
 });

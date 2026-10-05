@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { auth } from "../auth";
+import { invitationMailEnabled } from "../auth-invitations";
 import { allowDevOrg, googleAuthEnabled } from "../env";
 import type { AppEnv } from "../http";
 
@@ -28,6 +29,7 @@ routes.get("/api/auth/provider-config", (c) =>
     google: googleAuthEnabled(),
     emailPassword: true,
     allowDevOrg: allowDevOrg(),
+    invitationEmail: invitationMailEnabled(),
   }),
 );
 routes.on("GET", ["/api/auth/get-session", "/api/auth/list-sessions"], async (c) =>

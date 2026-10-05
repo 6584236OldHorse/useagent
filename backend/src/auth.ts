@@ -4,6 +4,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
 import { createPersonalOrgForUser } from "./auth-hooks";
+import { INVITATION_EXPIRES_IN_SECONDS, deliverInvitation, invitedSignupAllowed } from "./auth-invitations";
 import { db } from "./db/client";
 import * as schema from "./db/auth-schema";
 import {
@@ -15,8 +16,9 @@ import {
 
 /**
  * Better Auth server with Google, existing-account password sign-in, and
- * organizations. Production user creation is rejected; verified Google
- * identities can only link to an existing local user.
+ * organizations. Production creates no accounts on its own: a verified Google
+ * identity links to an existing local user, or creates one only when a pending
+ * organisation invitation names that email.
  */
 export function createAuthServer() {
   const google = googleAuthConfig();
@@ -32,18 +34,28 @@ export function createAuthServer() {
           google: {
             clientId: google.clientId,
             clientSecret: google.clientSecret,
-            disableSignUp: !allowSignup,
+            // The user-create hook below decides, per email, whether a new
+            // Google identity may become an account (invited, or dev mode).
+            disableSignUp: false,
           },
         }
       : {},
     account: { accountLinking: { requireLocalEmailVerified: false } },
-    plugins: [organization(), electron()],
+    plugins: [
+      organization({
+        invitationExpiresIn: INVITATION_EXPIRES_IN_SECONDS,
+        sendInvitationEmail: async (data) => {
+          await deliverInvitation(data);
+        },
+      }),
+      electron(),
+    ],
     trustedOrigins: betterAuthTrustedOrigins(),
     databaseHooks: {
       user: {
         create: {
-          before: async () => {
-            if (!selfSignupEnabled()) {
+          before: async (user) => {
+            if (!selfSignupEnabled() && !(await invitedSignupAllowed(user.email))) {
               throw APIError.from("FORBIDDEN", {
                 code: "SIGNUP_DISABLED",
                 message: "Account creation is disabled",
