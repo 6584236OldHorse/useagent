@@ -4,7 +4,7 @@ import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
-import { allowDevOrg, googleAuthEnabled } from "../env";
+import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled } from "../env";
 import type { AppEnv } from "../http";
 
 /** Session reads are renderer-reachable (the desktop copies the HttpOnly
@@ -46,6 +46,34 @@ routes.post("/api/auth/electron/token", (c) => {
   if (origin !== "useagent:/") return c.json({ message: "Desktop token exchange requires the native app." }, 403);
   return auth.handler(c.req.raw);
 });
+const ROLE_MESSAGE = "Role must be owner, admin or member";
+const exactRole = (value: unknown): boolean => value === "owner" || value === "admin" || value === "member";
+
+function trustedOrigin(request: Request): boolean {
+  const referer = request.headers.get("referer");
+  let origin = request.headers.get("origin");
+  if (!origin && referer) {
+    try {
+      origin = new URL(referer).origin;
+    } catch {
+      return false;
+    }
+  }
+  return !!origin && betterAuthTrustedOrigins().includes(origin);
+}
+
+/** The same trimming gap applies when a role is changed. */
+routes.post("/api/auth/organization/update-member-role", async (c) => {
+  const request = c.req.raw;
+  let role: unknown;
+  try {
+    role = ((await request.clone().json()) as { role?: unknown } | null)?.role;
+  } catch {
+    return auth.handler(request);
+  }
+  if (role !== undefined && !exactRole(role)) return c.json({ message: ROLE_MESSAGE }, 400);
+  return auth.handler(request);
+});
 /** A resend renews the invitation that already exists, with the role stored on
  *  it, never the role the request names. It is answered here in full instead of
  *  being forwarded, so nothing can change between the check and the renewal.
@@ -61,7 +89,14 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
   } catch {
     return auth.handler(request); // better-auth answers malformed bodies itself
   }
-  if (body.resend !== true || typeof body.email !== "string") return auth.handler(request);
+  if (body.resend !== true || typeof body.email !== "string") {
+    // The library trims role tokens when it validates them but stores the raw
+    // string, so "admin, owner" passes as admin and lands as owner. One exact role.
+    if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
+    return auth.handler(request);
+  }
+  // Answered outside the library, so its origin check is repeated here.
+  if (!trustedOrigin(request)) return c.json({ message: "Invalid origin" }, 403);
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) return c.json({ message: "Not authenticated" }, 401);
   const organizationId =
@@ -106,14 +141,19 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1);
-  await deliverInvitation({
-    id: renewed.id,
-    email: renewed.email,
-    role: renewed.role ?? "member",
-    organization: { name: org?.name ?? "" },
-    invitation: { expiresAt: renewed.expiresAt },
-    inviter: { user: { name: session.user.name, email: session.user.email } },
-  });
+  try {
+    await deliverInvitation({
+      id: renewed.id,
+      email: renewed.email,
+      role: renewed.role ?? "member",
+      organization: { name: org?.name ?? "" },
+      invitation: { expiresAt: renewed.expiresAt },
+      inviter: { user: { name: session.user.name, email: session.user.email } },
+    });
+  } catch (error) {
+    // The invitation is renewed either way and the link still works; the mail is best effort.
+    console.error(`[auth] invitation ${renewed.id} could not be resent:`, (error as Error).message);
+  }
   return c.json(renewed);
 });
 /** The invitation a link points at, for the person it was sent to. better-auth's

@@ -19,6 +19,9 @@ import { testDatabaseUrl } from "./test-database";
 
 process.env.DATABASE_URL = testDatabaseUrl();
 process.env.PORT = "3211";
+// The in-process client sends this origin; the library skips its own origin check
+// under NODE_ENV=test, our own guards do not.
+process.env.BETTER_AUTH_TRUSTED_ORIGINS ??= "http://localhost:3200";
 
 delete process.env.OPENROUTER_API_KEY;
 delete process.env.OPENAI_API_KEY;

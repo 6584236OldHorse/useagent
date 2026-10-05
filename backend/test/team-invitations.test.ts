@@ -253,3 +253,96 @@ test("an outsider or a plain member gets the same answer whatever invitations ex
   }
   expect([...answers]).toEqual(["403 You are not allowed to invite people to this workspace"]);
 });
+
+test("a role is one exact word, on a fresh invitation and on a role change", async () => {
+  const org = await createOrgSession("roles");
+  const other = await createOrgSession("roles-other");
+  const [otherUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, other.email));
+  const memberId = `member_${crypto.randomUUID()}`;
+  await db.insert(member).values({ id: memberId, organizationId: org.orgId, userId: otherUser!.id, role: "member", createdAt: new Date() });
+  for (const role of ["admin, owner", "owner ", ["owner"]]) {
+    const invite = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "exact@example.test", role },
+    });
+    expect(invite.status).toBe(400);
+    expect(invite.body.message).toContain("Role must be");
+    const change = await json<{ message?: string }>("/api/auth/organization/update-member-role", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, memberId, role },
+    });
+    expect(change.status).toBe(400);
+  }
+  const fine = await json("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "exact@example.test", role: "admin" },
+  });
+  expect(fine.status).toBe(200);
+});
+
+test("a resend from an untrusted or missing origin is refused before anything is read", async () => {
+  const org = await createOrgSession("origin");
+  const invite = await json("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "origin@example.test", role: "member" },
+  });
+  expect(invite.status).toBe(200);
+  for (const origin of ["https://elsewhere.example", ""]) {
+    const res = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      headers: { origin },
+      body: { organizationId: org.orgId, email: "origin@example.test", role: "member", resend: true },
+    });
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("Invalid origin");
+  }
+});
+
+test("a mail failure on resend still renews the invitation and answers 200", async () => {
+  const relay = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.write("220 ready\r\n");
+      },
+      data(socket) {
+        socket.end();
+      },
+    },
+  });
+  const saved = { ...process.env };
+  process.env.CONNECTOR_EMAIL_HOST = "127.0.0.1";
+  process.env.CONNECTOR_EMAIL_PORT = String(relay.port);
+  process.env.CONNECTOR_EMAIL_SECURE = "false";
+  process.env.CONNECTOR_EMAIL_FROM = "hello@example.test";
+  try {
+    const org = await createOrgSession("mailfail");
+    const invite = await json<{ id: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "mailfail@example.test", role: "member" },
+    });
+    expect(invite.status).toBe(200);
+    await db.update(invitation).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(invitation.id, invite.body.id));
+    const resent = await json<{ id: string; expiresAt: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "mailfail@example.test", role: "member", resend: true },
+    });
+    expect(resent.status).toBe(200);
+    expect(resent.body.id).toBe(invite.body.id);
+    expect(new Date(resent.body.expiresAt).getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+  } finally {
+    for (const key of ["CONNECTOR_EMAIL_HOST", "CONNECTOR_EMAIL_PORT", "CONNECTOR_EMAIL_SECURE", "CONNECTOR_EMAIL_FROM"]) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    relay.stop(true);
+  }
+});
