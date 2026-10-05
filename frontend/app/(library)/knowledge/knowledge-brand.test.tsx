@@ -3,10 +3,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { knowledgeFolderLabel, knowledgeItemForDisplay, seedFolders } from "./knowledge-data";
 import { KnowledgeGallery } from "./knowledge-gallery";
 
-test("keeps the persisted knowledge folder key while displaying useAgent", () => {
+test("keeps the persisted knowledge folder key while displaying UseAgent", () => {
   expect(seedFolders).toContain("useagent-app");
-  expect(knowledgeFolderLabel("useagent-app")).toBe("useAgent");
-  expect(knowledgeFolderLabel("skynet-app")).toBe("useAgent");
+  expect(knowledgeFolderLabel("useagent-app")).toBe("UseAgent");
+  expect(knowledgeFolderLabel("skynet-app")).toBe("UseAgent");
   expect(knowledgeFolderLabel("Engineering")).toBe("Engineering");
   const storedItem = {
     id: "knowledge-1",
@@ -16,12 +16,12 @@ test("keeps the persisted knowledge folder key while displaying useAgent", () =>
     updated: "now",
     pinned: false,
   };
-  expect(knowledgeItemForDisplay(storedItem).folder).toBe("useAgent");
+  expect(knowledgeItemForDisplay(storedItem).folder).toBe("UseAgent");
   expect(storedItem.folder).toBe("skynet-app");
 
   const gallery = renderToStaticMarkup(
     <KnowledgeGallery initialLive initialError={false} initialItems={[storedItem]} />,
   );
-  expect(gallery).toContain(">useAgent<");
+  expect(gallery).toContain(">UseAgent<");
   expect(gallery).not.toContain(">skynet-app<");
 });

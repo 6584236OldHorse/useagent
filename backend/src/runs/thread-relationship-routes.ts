@@ -220,7 +220,7 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
   const context = JSON.stringify(redact.unknown(
     events.length > 0 ? transcriptContext : { transcript: [], durable_fallback: fallbackContext },
   ));
-  const prefix = "Continue this work in a new durable useAgent child session. This is captured context, not a claim that the native execution itself was resumed.\n\n";
+  const prefix = "Continue this work in a new durable UseAgent child session. This is captured context, not a claim that the native execution itself was resumed.\n\n";
   const emptyContext = "No canonical transcript was captured; inspect the parent task and continue from its durable result.";
   let bounded = context.slice(0, CHILD_CONTEXT_MAX_CHARS - prefix.length);
   while (Buffer.byteLength(prefix + bounded, "utf8") > CHILD_CONTEXT_MAX_BYTES) bounded = bounded.slice(0, -1);

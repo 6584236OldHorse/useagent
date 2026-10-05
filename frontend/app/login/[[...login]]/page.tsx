@@ -4,8 +4,8 @@ import { verificationNotice } from "@/components/auth/verification-notice";
 import { AuthForm } from "../auth-form";
 
 export const metadata: Metadata = {
-  title: "Sign in - useAgent",
-  description: "Sign in to your useAgent workspace.",
+  title: "Sign in - UseAgent",
+  description: "Sign in to your UseAgent workspace.",
 };
 
 export default async function LoginPage({

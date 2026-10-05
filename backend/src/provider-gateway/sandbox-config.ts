@@ -379,7 +379,7 @@ export function codexProviderConfigToml(
     'approval_policy = "never"',
     "",
     "[model_providers.skynet]",
-    'name = "useAgent provider gateway"',
+    'name = "UseAgent provider gateway"',
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     "requires_openai_auth = false",

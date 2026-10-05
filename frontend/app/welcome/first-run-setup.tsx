@@ -179,7 +179,7 @@ export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
     <AuthScreen>
       <div className="flex flex-col gap-8">
         <div>
-          <h1 className="text-display-md text-text-primary">Welcome to useAgent</h1>
+          <h1 className="text-display-md text-text-primary">Welcome to UseAgent</h1>
           <p className="mt-2 text-body-regular text-text-secondary">
             Name your workspace and bring your team. Both can change later in Settings.
           </p>

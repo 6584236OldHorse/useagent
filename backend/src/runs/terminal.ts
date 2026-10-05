@@ -11,7 +11,7 @@ import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
 import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
 
 /** The notice line the pane recognizes as a declared capability gap (no reconnect loop). */
-export const TERMINAL_UNAVAILABLE_NOTICE = "[useAgent] terminal unavailable:";
+export const TERMINAL_UNAVAILABLE_NOTICE = "[UseAgent] terminal unavailable:";
 
 export function terminalFailureNotice(error: unknown): string {
   const message = errorMessage(error);
@@ -19,9 +19,9 @@ export function terminalFailureNotice(error: unknown): string {
     return `\r\n\x1b[2m${TERMINAL_UNAVAILABLE_NOTICE} ${message}\x1b[0m\r\n`;
   }
   if (/not found|no live sandbox/i.test(message)) {
-    return "\r\n\x1b[2m[useAgent] no live sandbox yet\x1b[0m\r\n";
+    return "\r\n\x1b[2m[UseAgent] no live sandbox yet\x1b[0m\r\n";
   }
-  return `\r\n\x1b[31m[useAgent] ${message}\x1b[0m\r\n`;
+  return `\r\n\x1b[31m[UseAgent] ${message}\x1b[0m\r\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ terminalRoutes.get(
             const sandboxId = sandbox.id;
             const state = (sandbox as { state?: string }).state;
             if (state === "stopped" || state === "paused" || state === "archived") {
-              send("\r\n\x1b[2m[useAgent] waking sandbox…\x1b[0m\r\n");
+              send("\r\n\x1b[2m[UseAgent] waking sandbox…\x1b[0m\r\n");
               await sandbox.start();
             }
 
@@ -105,7 +105,7 @@ terminalRoutes.get(
               await handle.disconnect().catch(() => {});
               return;
             }
-            send("\x1b[2m[useAgent] connected to sandbox " + sandboxId.slice(0, 8) + "\x1b[0m\r\n");
+            send("\x1b[2m[UseAgent] connected to sandbox " + sandboxId.slice(0, 8) + "\x1b[0m\r\n");
             await pty.sendInput("cd ~/work 2>/dev/null || cd ~; printf '\\033[2J\\033[H'\n");
           } catch (err) {
             // Missing sandboxes may wake on a later run. Revoked credentials

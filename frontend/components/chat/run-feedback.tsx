@@ -169,7 +169,7 @@ export function RunFeedback({ runId }: { runId: string }) {
         <Modal.Content className="max-w-[440px] rounded-2xl border border-border-button-default bg-background-primary-default shadow-dropdown">
           <Modal.Header
             title="How did this run go?"
-            description="Goes to the team running useAgent, with a link to this run."
+            description="Goes to the team running UseAgent, with a link to this run."
           />
           <RunFeedbackForm
             verdict={verdict}

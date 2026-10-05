@@ -240,7 +240,7 @@ describe("durable slack outbox", () => {
           threadTs,
           runId,
           messageRole: "user_mirror",
-          chunks: ["From User in useAgent:\nrequest"],
+          chunks: ["From User in UseAgent:\nrequest"],
         },
       }, tx);
     });
@@ -248,7 +248,7 @@ describe("durable slack outbox", () => {
     const ordered = recorder(() => ({ ok: true }));
     await processDue(ordered.client);
     expect(ordered.posted.map((message) => message.text)).toEqual([
-      "From User in useAgent:\nrequest",
+      "From User in UseAgent:\nrequest",
       "result",
     ]);
     expect(await enqueue({
@@ -261,7 +261,7 @@ describe("durable slack outbox", () => {
         threadTs,
         runId,
         messageRole: "user_mirror",
-        chunks: ["From User in useAgent:\nrequest"],
+        chunks: ["From User in UseAgent:\nrequest"],
       },
     })).toBe(false); // delivered intent cannot be re-enqueued
   });

@@ -1,8 +1,8 @@
 {
   "name": "@useagent/desktop",
   "version": "0.0.5",
-  "description": "Thin desktop shell for a hosted useAgent control plane",
-  "author": "useAgent",
+  "description": "Thin desktop shell for a hosted UseAgent control plane",
+  "author": "UseAgent",
   "private": true,
   "main": "dist/main.cjs",
   "scripts": {

@@ -30,11 +30,11 @@ let quitAfterRunnerStops = false;
 let signIn: ReturnType<typeof createDesktopSignIn> | undefined;
 
 function completeSignIn(url: string): void {
-  if (!signIn) { dialog.showErrorBox("Sign-in expired", "Open useAgent and start sign-in again."); return; }
+  if (!signIn) { dialog.showErrorBox("Sign-in expired", "Open UseAgent and start sign-in again."); return; }
   void signIn.complete(url).catch((error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error);
     console.error("desktop sign-in failed:", reason);
-    dialog.showErrorBox("Sign-in did not complete", `${reason}\n\nReturn to useAgent and try signing in again.`);
+    dialog.showErrorBox("Sign-in did not complete", `${reason}\n\nReturn to UseAgent and try signing in again.`);
   });
 }
 
@@ -141,7 +141,7 @@ async function startDesktop(): Promise<void> {
       const options: MessageBoxOptions = {
         type: "question",
         title: "Choose workspace",
-        message: "Choose the workspace to open in useAgent.",
+        message: "Choose the workspace to open in UseAgent.",
         buttons: [...organizations.map(desktopOrganizationLabel), "Cancel"],
         defaultId: 0,
         cancelId: organizations.length,
@@ -166,7 +166,7 @@ async function startDesktop(): Promise<void> {
   const trayImage = nativeImage.createFromPath(join(app.getAppPath(), "resources/trayTemplate.svg"));
   trayImage.setTemplateImage(true);
   tray = new Tray(trayImage);
-  tray.setToolTip("useAgent");
+  tray.setToolTip("UseAgent");
   const refreshTray = (): void => {
     const status = shellStatus ?? runner.getStatus();
     tray?.setContextMenu(
@@ -175,7 +175,7 @@ async function startDesktop(): Promise<void> {
         { label: "Sandboxes: Unknown", enabled: false },
         { label: `Image: ${manifest.image}`, enabled: false },
         { type: "separator" },
-        { label: mainWindow?.isVisible() ? "Hide useAgent" : "Open useAgent", click: () => (mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show()) },
+        { label: mainWindow?.isVisible() ? "Hide UseAgent" : "Open UseAgent", click: () => (mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show()) },
         { label: "Quit", click: () => app.quit() },
       ]),
     );
@@ -196,7 +196,7 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow?.focus();
   });
   app.whenReady().then(startDesktop).catch((error: unknown) => {
-    dialog.showErrorBox("useAgent could not start", desktopLoadErrorMessage(error));
+    dialog.showErrorBox("UseAgent could not start", desktopLoadErrorMessage(error));
     app.quit();
   });
 }

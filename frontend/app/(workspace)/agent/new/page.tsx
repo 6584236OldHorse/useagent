@@ -11,7 +11,7 @@ import { fetchSkills } from "./skills-data";
 
 export const metadata: Metadata = {
   title: "New thread",
-  description: "Start a direct conversation or a sandbox-backed task with useAgent.",
+  description: "Start a direct conversation or a sandbox-backed task with UseAgent.",
 };
 
 interface RecentRun {

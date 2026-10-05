@@ -369,7 +369,7 @@ try {
     let skPayload: Row = {};
     try { skPayload = (typeof skPe?.payload === "string" ? JSON.parse(skPe.payload) : skPe?.payload) as Row ?? {}; } catch { /* ignore */ }
     pass(
-      "versioned useAgent skill applied (pinned on run + skill.loaded marker)",
+      "versioned UseAgent skill applied (pinned on run + skill.loaded marker)",
       pinnedOk && !!skPe && skPayload.skillId === skillId,
       `pinned=${pinnedOk} marker=${!!skPe} skillId=${short(skPayload.skillId)} v=${skPayload.version}`,
     );

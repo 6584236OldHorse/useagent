@@ -85,7 +85,7 @@ function receipt(overrides: Partial<GitHubPublicationReceiptRecord> = {}): GitHu
     draft: false,
     commitMessage: "Update README",
     pullRequestTitle: "Update README",
-    pullRequestBody: "Prepared by useAgent",
+    pullRequestBody: "Prepared by UseAgent",
     headBranch: "useagent/readme",
     commitSha: null,
     pullRequestNumber: null,
@@ -177,7 +177,7 @@ async function reconcilePullCandidate(candidate: Record<string, unknown>) {
     headBranch: "useagent/readme",
     commitMessage: "Update README",
     pullRequestTitle: "Update README",
-    pullRequestBody: "Prepared by useAgent",
+    pullRequestBody: "Prepared by UseAgent",
     draft: false,
   });
   return { result, successCalls, releasedErrors };
@@ -272,7 +272,7 @@ describe("GitHub publication gateway workflow", () => {
       ...exact,
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(bypass.structuredContent).toEqual({ error: "approval_required" });
@@ -292,7 +292,7 @@ describe("GitHub publication gateway workflow", () => {
       ...exact,
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).not.toBe(true);
@@ -321,7 +321,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(absentRecorded).toBe(true);
@@ -350,7 +350,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(aborts).toEqual(["pre_ref_abort:missing_intended_commit"]);
@@ -387,7 +387,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(successCalls).toBe(0);
@@ -452,7 +452,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).toBe(true);
@@ -491,7 +491,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).toBe(true);
@@ -518,7 +518,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).toBe(true);
@@ -585,7 +585,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).not.toBe(true);
@@ -645,7 +645,7 @@ describe("GitHub publication gateway workflow", () => {
       headBranch: "useagent/readme",
       commitMessage: "Update README",
       pullRequestTitle: "Update README",
-      pullRequestBody: "Prepared by useAgent",
+      pullRequestBody: "Prepared by UseAgent",
       draft: false,
     });
     expect(result.isError).toBe(true);

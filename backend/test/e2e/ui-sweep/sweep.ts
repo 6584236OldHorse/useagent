@@ -478,7 +478,7 @@ async function s8_desktop(wf: string): Promise<Result> {
     await page.waitForTimeout(250);
     checks.push({ name: "desktop: controlled noVNC receives keyboard frames", ok: desktopKeyFrames > keyFramesBeforeDesktopInput, note: `frames=${desktopKeyFrames - keyFramesBeforeDesktopInput}` });
 
-    const composer = page.locator('textarea[placeholder="Reply to useAgent…"]');
+    const composer = page.locator('textarea[placeholder="Reply to UseAgent…"]');
     await composer.click();
     await page.waitForFunction(() => document.querySelector<HTMLIFrameElement>('iframe[title="Sandbox desktop"]')?.style.pointerEvents === "none");
     const keyFramesBeforeComposerInput = desktopKeyFrames;

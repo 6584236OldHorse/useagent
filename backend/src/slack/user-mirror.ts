@@ -69,7 +69,7 @@ export async function enqueueSlackUserMirrorForRun(
     threadTs: thread.threadTs,
     runId: run.id,
     messageRole: "user_mirror",
-    text: `From ${slackPlainLabel(actor.name)} in useAgent:\n${slackMessageBody(run.prompt)}`,
+    text: `From ${slackPlainLabel(actor.name)} in UseAgent:\n${slackMessageBody(run.prompt)}`,
   });
   return { status: "ready", created, idempotencyKey };
 }

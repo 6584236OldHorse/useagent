@@ -89,10 +89,10 @@ export default function DesktopAuthPage() {
       <section className="space-y-5">
         <h1 className="text-display-sm text-text-primary">Connect your desktop</h1>
         <p className="text-body-regular text-text-secondary">
-          {loading ? "Checking your session..." : `Signed in as ${session?.user.email ?? "your account"}. Approve only if you started this request in your useAgent desktop app.`}
+          {loading ? "Checking your session..." : `Signed in as ${session?.user.email ?? "your account"}. Approve only if you started this request in your UseAgent desktop app.`}
         </p>
         <Button className="rounded-full" disabled={loading || pending} onClick={() => void connect()}>
-          {pending ? "Opening useAgent..." : "Connect desktop"}
+          {pending ? "Opening UseAgent..." : "Connect desktop"}
         </Button>
         {error ? <p role="alert" className="text-body-2-regular text-text-secondary">{error}</p> : null}
       </section>
