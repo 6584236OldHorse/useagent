@@ -629,10 +629,14 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
         let attempt = 1;
+        // Each attempt is requested at its own time: the runtime keeps the
+        // request time on the turn, and recovery tells attempts apart by it.
+        let turnRequestedAt = createdAt;
         const endTurn = ctx.timing?.begin("t3.turn_wait");
         let skipQueuedCancel = false;
         try {
           for (;;) {
+            const createdAt = turnRequestedAt;
             ctx.timing?.mark("dispatch");
             const endDispatch = ctx.timing?.begin("t3.dispatch_request");
             const steerResult = await driver.steer({
@@ -711,6 +715,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               }
               await ctx.emit({ kind: "task", label: recovery.label, chip: `runtime:${engine}` });
               turnBase = settledSnapshot;
+              turnRequestedAt = new Date().toISOString();
               projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen(), steps: projector.steps() });
               turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
             }

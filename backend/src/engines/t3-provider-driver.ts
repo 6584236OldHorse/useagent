@@ -209,15 +209,17 @@ function snapshotMatchesAcceptedRun(
   // The run answers for its highest accepted attempt: the continuation the
   // plane sent, if the runtime accepted one, else the run's own message. A
   // continuation that has not started yet leaves the run pending; the
-  // original's completed turn is not its answer.
+  // original's completed turn is not its answer. The runtime may leave a
+  // message's turn id unset; each attempt is requested at its own time, and
+  // the turn carries that time.
   const attempts = turnRunIds(runId).map((id) => runtimeUserMessageId(id));
-  const accepted = attempts
+  const latest = attempts
     .map((id) => snapshot.thread.messages.find((message) => message.role === "user" && message.id === id))
-    .filter((message) => message !== undefined);
-  const latest = accepted.at(-1);
+    .filter((message) => message !== undefined)
+    .at(-1);
   if (!latest) return false;
   if (latest.turnId !== null) return latest.turnId === latestTurn.turnId;
-  if (accepted.length > 1 || !latest.createdAt || !latestTurn.requestedAt) return false;
+  if (!latest.createdAt || !latestTurn.requestedAt) return false;
   const acceptedAt = Date.parse(latest.createdAt);
   const requestedAt = Date.parse(latestTurn.requestedAt);
   return Number.isFinite(acceptedAt) && acceptedAt === requestedAt;
