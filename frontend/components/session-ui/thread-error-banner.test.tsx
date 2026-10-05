@@ -9,6 +9,13 @@ import {
   ThreadErrorBanner,
 } from "./thread-error-banner";
 
+test("compact wait-only user cancellation is neutral but observation timeout remains visible", () => {
+  expect(shouldShowThreadErrorBanner("compact-qa",
+    "Stopped by user. Stopped waiting for native compaction, which may still finish.", false)).toBe(false);
+  expect(shouldShowThreadErrorBanner("compact-qa",
+    "Stopped waiting after 10 minutes. Native compaction may still finish.", false)).toBe(true);
+});
+
 test("stays hidden after its current error is dismissed", () => {
   const bannerKey = getThreadErrorBannerKey("thread-a", "Aborted");
   dismissThreadErrorBannerForSession(bannerKey);

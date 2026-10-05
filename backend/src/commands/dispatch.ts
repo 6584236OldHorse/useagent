@@ -38,6 +38,8 @@ export type CommandSettle =
 /** A command still in the mailbox (queued or in flight) joined to its run. */
 export interface ActiveCommand {
   readonly commandId: string;
+  readonly dispatchedAt: Date;
+  readonly promptDeliveredAt: Date | null;
   readonly state: "queued" | "dispatched";
   readonly runId: string;
   readonly threadId: string;
@@ -137,8 +139,8 @@ export async function requeueClaimedCommand(runId: string): Promise<void> {
  *  — the boot reconciler's work list. */
 export async function listActiveCommands(): Promise<ActiveCommand[]> {
   const rows = await db.execute(sql`
-    select c.id as command_id, c.state, c.run_id, c.thread_id,
-           r.thread_id as run_thread_id,
+    select c.id as command_id, c.state, c.run_id, c.thread_id, c.updated_at as command_updated_at,
+           r.thread_id as run_thread_id, r.prompt_delivered_at,
            r.status as run_status, r.engine, r.org_id, r.user_id,
            r.engine_session_id, r.provider_session, r.sandbox_id, r.expected_sandbox,
            r.command_name, r.command_provider, r.command_session_id, r.command_catalog_revision,
@@ -151,6 +153,8 @@ export async function listActiveCommands(): Promise<ActiveCommand[]> {
     where c.kind = ${RUN_CREATE} and c.state in ('queued', 'dispatched')`);
   return rows.map((r) => ({
     commandId: r.command_id as string,
+    dispatchedAt: new Date(r.command_updated_at as string),
+    promptDeliveredAt: r.prompt_delivered_at == null ? null : new Date(r.prompt_delivered_at as string),
     state: r.state as "queued" | "dispatched",
     runId: r.run_id as string,
     threadId: r.thread_id as string,

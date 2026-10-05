@@ -55,9 +55,8 @@ import {
 } from "../sandboxes/expected-binding";
 import { refuseRecoveredApprovals, type RecoveredApprovalDependencies } from "./recovered-approvals";
 import {
-  COMPACT_STOPPED_WAITING_SUMMARY,
   COMPACT_TIMED_OUT_WAITING_SUMMARY,
-  RUNTIME_COMPACT_TIMEOUT_MS,
+  compactRecoveryDeadlineMs,
 } from "../engines/runtime-compact-contract";
 
 export const INCOMPATIBLE_PROVIDER_SESSION_SUMMARY =
@@ -231,12 +230,7 @@ async function recoverRunningRun(
   reconcile: ReconcileProbe,
 ): Promise<"reconciled" | "failed" | "parked"> {
   if (cmd.cancelRequested) {
-    const finalized = await finalizeRun(
-      cmd.runId,
-      "failed",
-      cmd.commandName === "compact" ? COMPACT_STOPPED_WAITING_SUMMARY : CANCEL_SUMMARY,
-      0,
-    );
+    const finalized = await finalizeRun(cmd.runId, "failed", CANCEL_SUMMARY, 0);
     const durable = await resolveDurableFinalizationOutcome(cmd.runId, finalized);
     return durable?.status === "completed" ? "reconciled" : "failed";
   }
@@ -358,9 +352,9 @@ async function parkRunningRun(
   lastStepAt: Date | null,
 ): Promise<void> {
   const now = Date.now();
-  const parkBudget = cmd.commandName === "compact"
-    ? RUNTIME_COMPACT_TIMEOUT_MS
-    : RECONCILE_PARK_BUDGET_MS;
+  const deadlineMs = cmd.commandName === "compact"
+    ? compactRecoveryDeadlineMs((lastStepAt ?? cmd.dispatchedAt).getTime(), cmd.promptDeliveredAt?.getTime())
+    : now + RECONCILE_PARK_BUDGET_MS;
   const newlyParked = await enqueueReconcile({
     runId: cmd.runId,
     threadId: cmd.threadId,
@@ -368,13 +362,13 @@ async function parkRunningRun(
     sessionId: binding.nativeSessionId,
     sinceAt: lastStepAt ?? new Date(now),
     nextAttemptAt: reconcileBackoffAt(now, 0),
-    deadline: new Date(now + parkBudget),
+    deadline: new Date(deadlineMs),
   });
   if (newlyParked) {
     void recordReconcilingMarker(cmd.runId, cmd.threadId, {
       reason: "boot-restart",
       sinceMs: (lastStepAt ?? new Date(now)).getTime(),
-      deadlineMs: now + parkBudget,
+      deadlineMs,
     });
   }
 }
@@ -492,11 +486,7 @@ export async function runDueReconciles(
       });
     }
     if (run.orgId && await hasRunCancelIntent(run.orgId, run.id)) {
-      const durable = await finalizeOwned(
-        entry,
-        "failed",
-        run.commandName === "compact" ? COMPACT_STOPPED_WAITING_SUMMARY : CANCEL_SUMMARY,
-      );
+      const durable = await finalizeOwned(entry, "failed", CANCEL_SUMMARY);
       if (!durable) lost++;
       else if (durable.status === "completed") adopted++;
       else failed++;

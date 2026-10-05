@@ -9,7 +9,7 @@ import { resolveProviderRegistration, runProviderTurn } from "./engines";
 import { dispatchReadyForUser } from "./engines/sandbox-login";
 import type { EmitStep, EngineRunContext, RunInputFile } from "./engines/types";
 import { classifyTurnFailure } from "./engines/turn-failure-classification";
-import { compactWaitTerminationSummary } from "./engines/runtime-compact-contract";
+import { compactWaitTimeoutSummary } from "./engines/runtime-compact-contract";
 import { recallScopedMemory } from "./memory/team-memory";
 import { resolveScopedMemory } from "./memory/scope";
 import { isInternalRunOrigin } from "./runs/origin";
@@ -743,7 +743,7 @@ async function runEngine(
     // A user cancel wins over a coincident timeout.
     const cancelledReason = wasCancelled();
     const cancelled = cancelledReason !== null, timedOut = signal.aborted && !cancelled;
-    const compactTermination = compactWaitTerminationSummary(commandName, cancelled, timedOut, err);
+    const compactTermination = compactWaitTimeoutSummary(commandName, timedOut, err);
     let redactFailureText = (_text: string): string => "provider request failed";
     try {
       const redactor = await strictOrgSecretRedactor(orgId);

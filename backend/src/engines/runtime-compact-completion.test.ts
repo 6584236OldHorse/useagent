@@ -9,7 +9,8 @@ import {
   COMPACT_STOPPED_WAITING_SUMMARY,
   COMPACT_TIMED_OUT_WAITING_SUMMARY,
   RUNTIME_COMPACT_TIMEOUT_MS,
-  compactWaitTerminationSummary,
+  compactRecoveryDeadlineMs,
+  compactWaitTimeoutSummary,
 } from "./runtime-compact-contract";
 import {
   buildRuntimeTurnStartCommand,
@@ -110,17 +111,24 @@ test("compact dispatch and completion use the same accepted message identity", (
 
 test("Stop and timeout say only that useAgent stopped waiting", () => {
   expect(RUNTIME_COMPACT_TIMEOUT_MS).toBe(600_000);
-  expect(compactWaitTerminationSummary("compact", true, false, new Error("cancelled")))
-    .toBe(COMPACT_STOPPED_WAITING_SUMMARY);
-  expect(compactWaitTerminationSummary("compact", false, true, new Error("timeout")))
+  expect(COMPACT_STOPPED_WAITING_SUMMARY).toStartWith("Stopped by user.");
+  expect(COMPACT_STOPPED_WAITING_SUMMARY).toContain("may still finish");
+  expect(compactWaitTimeoutSummary("compact", true, new Error("timeout")))
     .toBe(COMPACT_TIMED_OUT_WAITING_SUMMARY);
-  expect(compactWaitTerminationSummary(
+  expect(compactWaitTimeoutSummary(
     "compact",
-    false,
     false,
     new Error(COMPACT_TIMED_OUT_WAITING_SUMMARY),
   )).toBe(COMPACT_TIMED_OUT_WAITING_SUMMARY);
-  expect(compactWaitTerminationSummary("review", true, false, new Error("cancelled"))).toBeNull();
+  expect(compactWaitTimeoutSummary("review", true, new Error("timeout"))).toBeNull();
+});
+
+test("restart recovery preserves the original compact deadline", () => {
+  const now = Date.UTC(2026, 8, 14, 12);
+  expect(compactRecoveryDeadlineMs(now - 9 * 60_000)).toBe(now + 60_000);
+  expect(compactRecoveryDeadlineMs(now - 11 * 60_000)).toBeLessThan(now);
+  // Provisioning may predate the accepted native operation by many minutes.
+  expect(compactRecoveryDeadlineMs(now - 20 * 60_000, now - 9 * 60_000)).toBe(now + 60_000);
 });
 
 test("compact completes from its exact request activity while latestTurn stays unchanged", async () => {

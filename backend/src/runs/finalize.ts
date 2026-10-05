@@ -51,6 +51,7 @@ import { finishedWorkEnforcementEnabled, finishedWorkRolloutMode } from "./finis
 import { lockFinishedWorkRun } from "./finished-work-lock";
 import { completeRunOutputs } from "../artifacts/completion";
 import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
+import { COMPACT_STOPPED_WAITING_SUMMARY } from "../engines/runtime-compact-contract";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { drainProviderEvents } from "./provider-events";
 import { accrueRunSpend } from "./spend";
@@ -490,7 +491,9 @@ async function commitRunFinalization(
     // terminal write. Remote file reads have already finished outside this tx.
     if (run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
       effectiveStatus = "failed";
-      effectiveSummary = CANCEL_SUMMARY;
+      effectiveSummary = run.status === "running" && run.commandName === "compact"
+        ? COMPACT_STOPPED_WAITING_SUMMARY
+        : CANCEL_SUMMARY;
       deliveryArtifactIds = [];
     }
 

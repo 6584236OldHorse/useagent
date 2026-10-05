@@ -1,19 +1,21 @@
 import type { HarnessSession } from "@useagent/agent-harness/canonical";
 
 export const COMPACT_STOPPED_WAITING_SUMMARY =
-  "Stopped waiting. Native compaction may still finish.";
+  "Stopped by user. Stopped waiting for native compaction, which may still finish.";
 export const RUNTIME_COMPACT_TIMEOUT_MS = 10 * 60_000;
 export const COMPACT_TIMED_OUT_WAITING_SUMMARY =
   "Stopped waiting after 10 minutes. Native compaction may still finish.";
 
-export function compactWaitTerminationSummary(
+export function compactRecoveryDeadlineMs(fallbackAnchorMs: number, promptDeliveredAtMs?: number): number {
+  return (promptDeliveredAtMs ?? fallbackAnchorMs) + RUNTIME_COMPACT_TIMEOUT_MS;
+}
+
+export function compactWaitTimeoutSummary(
   commandName: string | null,
-  cancelled: boolean,
   timedOut: boolean,
   error: unknown,
 ): string | null {
   if (commandName !== "compact") return null;
-  if (cancelled) return COMPACT_STOPPED_WAITING_SUMMARY;
   return timedOut || (error instanceof Error && error.message === COMPACT_TIMED_OUT_WAITING_SUMMARY)
     ? COMPACT_TIMED_OUT_WAITING_SUMMARY
     : null;
