@@ -22,6 +22,7 @@ import {
 } from "../slack/automation";
 import {
   enqueuePostMessageTx,
+  enqueueReplyTailTx,
   enqueueStopStreamTx,
   enqueueThreadStatusTx,
   enqueueUpdateCardTx,
@@ -63,6 +64,14 @@ export function terminalCanonicalizationEligible(engine: string): boolean {
 }
 
 type RunRow = typeof runs.$inferSelect;
+
+/** TEST ONLY: a barrier finalizers cross before taking the family lock, so a
+ *  test can hold two sibling finalizers at the contested point (their own
+ *  terminal writes uncommitted) and prove the lock serializes them. */
+let familyLivenessBarrier: ((runId: string) => Promise<void>) | null = null;
+export function setFamilyLivenessBarrierForTest(barrier: ((runId: string) => Promise<void>) | null): void {
+  familyLivenessBarrier = barrier;
+}
 
 /** Serialized room a reply row may use for the answer text it stores: the
  *  outbox cap less the row's other fields (ids, keys, and a notification
@@ -109,6 +118,7 @@ function cutAt(text: string, at: number): number {
  *  still running and both leave the card spinning with nobody left to
  *  settle it. The second waits here until the first has committed. */
 async function familyHasLiveRuns(tx: Executor, orgId: string, familyThreadId: string, runId: string): Promise<boolean> {
+  await familyLivenessBarrier?.(runId);
   await tx.select({ id: runs.id }).from(runs).where(eq(runs.id, familyThreadId)).for("update");
   const children = await tx
     .select({ threadId: threadRelationships.threadId })
@@ -190,13 +200,15 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   const closingHead = narrationHead === narration.length
     ? fitPrefix(closing, STREAM_NARRATION_CAP - narrationHead, REPLY_ROW_BUDGET - stored(narration), stored)
     : 0;
-  // The stream's ACCEPTED boundary outranks the row's: what Slack already
-  // holds is never repeated by a tail. When escaping keeps the row shorter
-  // than the stream, the stop appends nothing of the narration and the tails
-  // start where the stream ends (the plain fallback then shows the row's
-  // head; the streamed message keeps what it accepted).
-  const accepted = codePointCut(narration, Math.min(slack.streamedChars, narration.length));
-  const tailStart = (narrationHead < narration.length ? Math.max(narrationHead, accepted) : narrationHead) + closingHead;
+  // The tails cover everything past the row's head. What the STREAM holds is
+  // decided at their delivery, from the offset it actually accepted (an append
+  // may still be in flight here), clamped between the row's head and the end
+  // of the narration: a tail skips that part, so Slack never sees it twice.
+  // When escaping keeps the row shorter than the stream, the stop appends
+  // nothing of the narration (the plain fallback then shows the row's head;
+  // the streamed message keeps what it accepted).
+  const coverFloor = narrationHead + closingHead;
+  const coverCeiling = narration.length + closingHead;
   const replyKey = `slack-reply:${slack.teamId}:${run.id}`;
 
   kickSlack = (await enqueueStopStreamTx(tx, {
@@ -214,21 +226,25 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
       : {}),
   })) || kickSlack;
   let tailAfter = replyKey;
-  for (let part = 0, at = tailStart; at < body.length; part += 1) {
+  for (let part = 0, at = coverFloor; at < body.length; part += 1) {
     const rest = body.slice(at);
-    // A tail row stores plain chunks: sized by their serialized form too.
+    // A tail row stores its markdown slice; sized by that AND by the plain
+    // chunks a retry cursor may store in its place, so neither form can ever
+    // push the row past the cap.
     const length = fitPrefix(rest, STREAM_NARRATION_CAP, TAIL_ROW_BUDGET, (prefix) =>
-      JSON.stringify(chunkSlackText(toSlackMrkdwn(prefix))).length) || Math.min(rest.length, 2);
+      Math.max(JSON.stringify(prefix).length, JSON.stringify(chunkSlackText(toSlackMrkdwn(prefix))).length)) || Math.min(rest.length, 2);
     const tailKey = `slack-reply-tail:${slack.teamId}:${run.id}:${part}`;
-    const tailCreated = await enqueuePostMessageTx(tx, {
+    const tailCreated = await enqueueReplyTailTx(tx, {
       idempotencyKey: tailKey,
       orgId: run.orgId,
       teamId: slack.teamId,
       channel: slack.channel,
       threadTs: slack.threadTs,
       runId: run.id,
-      text: toSlackMrkdwn(rest.slice(0, length)),
-      messageRole: "reply_tail",
+      markdownText: rest.slice(0, length),
+      bodyStart: at,
+      coverFloor,
+      coverCeiling,
       part,
       waitForIdempotencyKey: tailAfter,
     });

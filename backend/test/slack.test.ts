@@ -158,6 +158,12 @@ let updateResult: import("../src/slack/client").DeliveryResult = { ok: true };
 let startStreamResult: import("../src/slack/client").DeliveryResult | null = null;
 /** When set, chat.appendStream returns this failure (drives the mid-run fallback). */
 let appendStreamResult: import("../src/slack/client").DeliveryResult | null = null;
+/** When set, chat.postMessage asks it first; a null answer means the recorded default. */
+let postMessageOverride: ((m: { channel: string; text: string; threadTs?: string; blocks?: readonly unknown[] }) => Promise<import("../src/slack/client").DeliveryResult | null>) | null = null;
+/** When set, chat.appendStream waits on it before answering (an append held
+ *  in flight across a finalization); `appendEntered` says one is waiting. */
+let appendGate: Promise<void> | null = null;
+let appendEntered = false;
 /** When set, chat.stopStream returns this failure (drives stream fallback paths). */
 let stopStreamResult: import("../src/slack/client").DeliveryResult = { ok: true };
 /** Synthetic message ts source — the card post returns one so updates can target it. */
@@ -206,6 +212,8 @@ beforeAll(async () => {
       return { ok: true };
     },
     postMessage: async (m) => {
+      const overridden = postMessageOverride ? await postMessageOverride(m) : null;
+      if (overridden) return overridden;
       rec.messages.push(m);
       // Every post returns a ts, as Slack does: the card and the plain
       // fallback message are both updated in place later.
@@ -243,6 +251,10 @@ beforeAll(async () => {
     },
     appendStream: async (s) => {
       if (appendStreamResult) return appendStreamResult;
+      if (appendGate) {
+        appendEntered = true;
+        await appendGate;
+      }
       rec.streams.push({ op: "append", channel: s.channel, threadTs: s.threadTs, messageTs: s.messageTs, chunks: s.chunks });
       return { ok: true };
     },
@@ -1533,6 +1545,91 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks)).toHaveLength(1);
   });
 
+  test("an append still in flight when the run finalizes is never repeated by a tail", async () => {
+    const t = await rootThread("in-flight append");
+    // Six stored units per char: the stop row holds fewer than the stream will.
+    const heavy = "\u0002".repeat(7_000);
+    await startNativeStream(t, heavy.slice(0, 3_000), "opening");
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 3_000 ? true : null));
+    // An append from 3,000 to 7,000 is claimed and held mid-call...
+    let release!: () => void;
+    appendGate = new Promise<void>((r) => (release = r));
+    appendEntered = false;
+    try {
+      await enqueueAppendStream({
+        idempotencyKey: `slack-stream:text:${TEAM}:${t.runId}:1`,
+        orgId: DEV_ORG_ID,
+        teamId: TEAM,
+        channel: t.channel,
+        threadTs: t.ts,
+        runId: t.runId,
+        chunks: markdownChunksFor(heavy.slice(3_000)),
+        narrationOffset: 3_000,
+        fallbackText: "more",
+      });
+      await waitFor(async () => (appendEntered ? true : null));
+      // ...while the run finalizes with the whole answer in its buffer.
+      const answer = `${heavy}Z`;
+      turnStream.publish(t.runId, answer);
+      await finalizeRun(t.runId, "completed", answer, 1);
+      release();
+      appendGate = null;
+    } finally {
+      appendGate = null;
+    }
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 7_000 ? true : null));
+    const stopped = await waitFor(async () => {
+      kickSlackOutbox();
+      return rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null;
+    }, { timeoutMs: 14_000 });
+    expect(stopped.chunks).toEqual([]);
+    // The tail was fixed before the append landed, yet it skips what the
+    // stream accepted: only "Z" follows, nothing of the 7,000 is repeated.
+    const tail = await waitFor(async () => {
+      kickSlackOutbox();
+      return rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks) ?? null;
+    }, { timeoutMs: 14_000 });
+    expect(tail.text).toBe("Z");
+    expect(rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks)).toHaveLength(1);
+  });
+
+  test("a fallback posting cut short retries without the row outgrowing what it held", async () => {
+    const t = await rootThread("fallback retry");
+    const answer = `${"\u0002".repeat(7_000)}Z`;
+    // The second plain post fails once, transiently.
+    let failed = false;
+    postMessageOverride = async (m) => {
+      const mine = rec.messages.filter((x) => x.channel === t.channel && !x.blocks).length;
+      if (m.channel === t.channel && !m.blocks && mine === 1 && !failed) {
+        failed = true;
+        return { ok: false, class: "transient", message: "internal_error" };
+      }
+      return null;
+    };
+    try {
+      await finalizeRun(t.runId, "completed", answer, 1);
+      const replyKey = `slack-reply:${TEAM}:${t.runId}`;
+      await waitFor(async () => (failed ? true : null), { timeoutMs: 14_000 });
+      const row = await waitFor(async () => {
+        const r = await getSlackOutbox(replyKey);
+        return r && r.state === "pending" ? r : null;
+      });
+      // The retry state replaced the stored head with the remaining chunks:
+      // the row is no larger than when it was enqueued.
+      expect(row.payload.length).toBeLessThanOrEqual(48_000);
+      expect("narrationText" in JSON.parse(row.payload)).toBe(false);
+      await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, replyKey));
+      const posts = await waitFor(async () => {
+        kickSlackOutbox();
+        const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);
+        return mine.some((m) => m.text.endsWith("Z")) ? mine : null;
+      }, { timeoutMs: 14_000 });
+      expect(posts.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("")).toBe(toSlackMrkdwn(answer));
+    } finally {
+      postMessageOverride = null;
+    }
+  });
+
   test("a split never lands inside a surrogate pair", async () => {
     const t = await rootThread("emoji at the cut");
     const answer = `${"a".repeat(11_999)}😀Z`;
@@ -1542,9 +1639,10 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(head.isWellFormed()).toBe(true);
     expect(head).toBe("a".repeat(11_999));
     const tail = await getSlackOutbox(`slack-reply-tail:${TEAM}:${t.runId}:0`);
-    const chunks = (JSON.parse(tail!.payload) as { chunks: string[] }).chunks;
-    expect(chunks.every((c) => c.isWellFormed())).toBe(true);
-    expect(chunks[0]).toBe("😀Z");
+    const stored = JSON.parse(tail!.payload) as { markdownText: string; bodyStart: number };
+    expect(stored.markdownText.isWellFormed()).toBe(true);
+    expect(stored.markdownText).toBe("😀Z");
+    expect(stored.bodyStart).toBe(11_999);
     const posts = await waitFor(async () => {
       kickSlackOutbox();
       const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);

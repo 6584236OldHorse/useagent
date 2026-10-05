@@ -12,6 +12,7 @@
  */
 import type { RunStatus } from "../db/schema";
 import type { RepoRef } from "../github/repo-ref";
+import { codePointCut } from "./streaming";
 
 /** The task_card status: a spinner while a turn runs, then a tick or an error glyph. */
 export type CardStatus = "in_progress" | "complete" | "error";
@@ -49,11 +50,12 @@ export function sessionUrl(origin: string, threadId: string): string {
   return `${origin.replace(/\/+$/, "")}/session/${threadId}`;
 }
 
-/** Truncate to `max` chars on a whole-grapheme-ish boundary, adding an ellipsis. */
+/** Truncate to `max` units on a code point (never inside a surrogate pair),
+ *  adding an ellipsis. */
 function truncate(text: string, max: number): string {
   const t = text.trim();
   if (t.length <= max) return t;
-  return t.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
+  return t.slice(0, codePointCut(t, Math.max(0, max - 1))).trimEnd() + "…";
 }
 
 /** Slack mention markup as a reader sees it: a labelled user or channel keeps

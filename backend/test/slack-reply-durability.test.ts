@@ -3,7 +3,7 @@ import { and, eq, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { artifacts, providerEvents, slackOutbox, slackThreads } from "../src/db/schema";
 import { acceptRunCommand } from "../src/commands";
-import { finalizeRun } from "../src/runs/finalize";
+import { finalizeRun, setFamilyLivenessBarrierForTest } from "../src/runs/finalize";
 import { recoverStaleRuns, type ReconcileProbe } from "../src/runs/recovery";
 import { recordProviderEventIfAbsent } from "../src/runs/provider-events";
 import {
@@ -464,13 +464,28 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     const second = await child("Design the inbox", "Inbox design");
     await setRunStatus(root.runId, "completed");
 
-    // Both finalize concurrently: each reads family liveness inside its own
-    // transaction. Serialized on the root's row, the second sees the first's
-    // terminal state, so one of them settles the card.
-    await Promise.all([
-      finalizeRun(first, "completed", "Calendar done", 100),
-      finalizeRun(second, "completed", "Inbox done", 100),
-    ]);
+    // Both finalize concurrently and are HELD at the contested point: each
+    // has written its own terminal state, uncommitted, and is about to read
+    // family liveness. Released together, the root's row lock serializes
+    // them, so the second sees the first's committed state and settles the
+    // card; without the lock both would read the other as running.
+    let arrived = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setFamilyLivenessBarrierForTest(async () => {
+      arrived += 1;
+      if (arrived === 2) release();
+      await gate;
+    });
+    try {
+      await Promise.all([
+        finalizeRun(first, "completed", "Calendar done", 100),
+        finalizeRun(second, "completed", "Inbox done", 100),
+      ]);
+    } finally {
+      setFamilyLivenessBarrierForTest(null);
+    }
+    expect(arrived).toBe(2);
     const revisions = await Promise.all([first, second].map(async (id) => {
       const row = await getSlackOutbox(`slack-card:final:${TEAM}:${id}`);
       const payload = JSON.parse(row?.payload ?? "{}") as { revision?: number; blocks?: Array<{ status?: string }> };

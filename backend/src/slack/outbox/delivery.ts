@@ -80,8 +80,11 @@ async function postFallbackChunks(
   for (let i = 0; i < fallbackChunks.length; i++) {
     const res = await client.postMessage({ channel, text: fallbackChunks[i]!, threadTs });
     if (!res.ok) {
+      // The cursor replaces the stored markdown head it was derived from, so
+      // a retrying row never grows past what it held at enqueue.
       if (i > 0) {
-        await updatePayload(row.id, JSON.stringify({ ...payload, fallbackChunks: fallbackChunks.slice(i) }));
+        const { narrationText: _narration, closingMarkdown: _closing, ...rest } = payload;
+        await updatePayload(row.id, JSON.stringify({ ...rest, fallbackChunks: fallbackChunks.slice(i) }));
       }
       return res;
     }
@@ -122,11 +125,29 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
   switch (row.kind) {
     case "post_message": {
       const channel = string("channel");
-      // New rows carry `chunks` (a long reply split into sequential thread
-      // messages); pre-migration rows carry a single `text`.
-      const chunks = Array.isArray(p.chunks)
-        ? p.chunks.filter((c): c is string => typeof c === "string" && c.length > 0)
-        : [string("text")].filter((c): c is string => c !== undefined);
+      let chunks: string[];
+      if (Array.isArray(p.chunks)) {
+        // New rows carry `chunks` (a long reply split into sequential thread
+        // messages, or a tail's retry cursor).
+        chunks = p.chunks.filter((c): c is string => typeof c === "string" && c.length > 0);
+      } else if (typeof p.markdownText === "string") {
+        // A reply tail: converted here, past what the stream turned out to
+        // hold. The accepted offset is final by now (the tail waits for the
+        // closed stream), so an append still in flight at finalize is never
+        // repeated. Nothing left to say is a delivered tail.
+        const runId = string("runId");
+        const accepted = runId ? (await findSlackRunResponse(runId))?.streamedChars ?? 0 : 0;
+        const floor = typeof p.coverFloor === "number" ? p.coverFloor : 0;
+        const ceiling = typeof p.coverCeiling === "number" ? p.coverCeiling : floor;
+        const covered = floor === ceiling ? floor : Math.min(ceiling, Math.max(floor, accepted));
+        const bodyStart = typeof p.bodyStart === "number" ? p.bodyStart : 0;
+        const remaining = p.markdownText.slice(Math.max(0, covered - bodyStart));
+        if (!remaining) return { ok: true };
+        chunks = chunkSlackText(toSlackMrkdwn(remaining));
+      } else {
+        // Pre-migration rows carry a single `text`.
+        chunks = [string("text")].filter((c): c is string => c !== undefined);
+      }
       if (!channel || chunks.length === 0) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
@@ -135,10 +156,14 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         const res = await client.postMessage({ channel, text: chunks[i]!, threadTs });
         if (!res.ok) {
           // Persist the chunk cursor: a retry resumes at the FAILED chunk, so
-          // already-posted ones are not duplicated. (A crash between the post
+          // already-posted ones are not duplicated, and the markdown the
+          // cursor replaces is not kept beside it. (A crash between the post
           // and this write can still re-post one chunk - the outbox's accepted
           // at-least-once trade.)
-          if (i > 0) await updatePayload(row.id, JSON.stringify({ ...p, chunks: chunks.slice(i) }));
+          if (i > 0) {
+            const { markdownText: _markdown, ...rest } = p;
+            await updatePayload(row.id, JSON.stringify({ ...rest, chunks: chunks.slice(i) }));
+          }
           return res;
         }
       }

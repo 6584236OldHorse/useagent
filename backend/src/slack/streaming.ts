@@ -51,7 +51,7 @@ export const STREAM_NARRATION_CAP = 12_000;
 function truncate(text: string, max: number): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+  return `${trimmed.slice(0, codePointCut(trimmed, Math.max(0, max - 1))).trimEnd()}…`;
 }
 
 /** Split free text into markdown chunks WITHOUT altering a single character -

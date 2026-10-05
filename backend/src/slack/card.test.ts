@@ -62,6 +62,14 @@ describe("deriveTitle", () => {
       "ask @dana in #general @here about the plan",
     );
   });
+  test("the cap never leaves a lone surrogate before the ellipsis", () => {
+    const title = deriveTitle(`${"a".repeat(62)}😀ZZ`);
+    expect(title.isWellFormed()).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(64);
+    expect(title.endsWith("…")).toBe(true);
+    expect(taskCard(buildRunCard({ ...base, title: `${"t".repeat(146)}😀ZZ` }).blocks).title.isWellFormed()).toBe(true);
+  });
+
   test("falls back to 'Run' for an empty prompt", () => {
     expect(deriveTitle("   \n  ")).toBe("Run");
     expect(deriveTitle("<@U05RJACQ25B>")).toBe("Run");

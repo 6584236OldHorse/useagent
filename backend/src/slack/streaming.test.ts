@@ -67,6 +67,12 @@ describe("wire chunk shapes (documented contract)", () => {
     expect(chunks[0]!.text.length).toBe(9_999);
   });
 
+  test("a capped task title never ends in a lone surrogate", () => {
+    const chunk = taskUpdateChunk({ id: "t", title: `${"y".repeat(248)}😀zz`, status: "complete" });
+    expect(chunk.title.isWellFormed()).toBe(true);
+    expect(chunk.title.length).toBeLessThanOrEqual(250);
+  });
+
   test("task titles cap under Slack's 256-char limit", () => {
     const chunk = taskUpdateChunk({ id: "t", title: "y".repeat(400), status: "complete" });
     expect(chunk.title.length).toBeLessThanOrEqual(250);
