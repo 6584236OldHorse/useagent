@@ -13,7 +13,7 @@ export function useIdentityMethods(): IdentityMethods & { loading: boolean; erro
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetch("/api/auth/methods", {
+        const response = await fetch("/login/methods", {
           cache: "no-store",
           credentials: "omit",
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),

@@ -17,9 +17,24 @@ test("identity migration resumes by email and slug, preserves local ids and role
   const localOrgId = `org_${crypto.randomUUID()}`;
   const localMemberId = crypto.randomUUID();
   const slug = `identity-migration-${crypto.randomUUID()}`;
+  const retainedUsers = [
+    {
+      id: crypto.randomUUID(),
+      name: "QC Fixture",
+      email: `qc-${slug}@skynet.internal`,
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "Development fixture",
+      email: `dev-${slug}@useagent.local`,
+    },
+  ];
+  const retainedUserIds = new Set(retainedUsers.map((row) => row.id));
+  const retainedMemberIds = retainedUsers.map(() => crypto.randomUUID());
   await db
     .insert(user)
     .values({ id: localUserId, name: "Migration fixture", email: `${slug}@example.test` });
+  await db.insert(user).values(retainedUsers);
   await db
     .insert(organization)
     .values({ id: localOrgId, name: "Migration fixture", slug, createdAt: new Date() });
@@ -30,12 +45,22 @@ test("identity migration resumes by email and slug, preserves local ids and role
     role: "member",
     createdAt: new Date(),
   });
+  await db.insert(member).values(
+    retainedUsers.map((row, index) => ({
+      id: retainedMemberIds[index]!,
+      userId: row.id,
+      organizationId: localOrgId,
+      role: "member",
+      createdAt: new Date(),
+    })),
+  );
   const beforeUsers = await db.select().from(user);
   const beforeOrganizations = await db.select().from(organization);
   const beforeMembers = await db.select().from(member);
   const remoteUsers = new Map<string, User>();
   const remoteOrganizations = new Map<string, Organization>();
   const remoteMembers = new Map<string, OrganizationMembership>();
+  let calls = 0;
   let creates = 0;
   let slugDisabled = true;
   let watchReuse = false;
@@ -68,26 +93,35 @@ test("identity migration resumes by email and slug, preserves local ids and role
   remoteOrganizations.set(resumedOrg.id, resumedOrg);
   const api: MigrationClient = {
     instance: {
-      getOrganizationSettings: async () =>
-        ({ enabled: true, slugDisabled }) as OrganizationSettings,
+      getOrganizationSettings: async () => {
+        calls++;
+        return { enabled: true, slugDisabled } as OrganizationSettings;
+      },
     },
     users: {
       getUser: async (id) => {
+        calls++;
         const found = remoteUsers.get(id);
         if (!found) throw Object.assign(new Error("missing"), { status: 404 });
         return found;
       },
       getUserList: async (params) => {
+        calls++;
+        if (params?.emailAddress?.some((email) => retainedUsers.some((row) => row.email === email)))
+          throw new Error("Retained user reached identity provider");
         const data = [...remoteUsers.values()].filter((entry) =>
           entry.emailAddresses.some((email) => params?.emailAddress?.includes(email.emailAddress)),
         );
         return { data, totalCount: data.length };
       },
       createUser: async (params) => {
+        calls++;
         expect(params.skipPasswordRequirement).toBe(true);
         expect(params.externalId).toBeString();
         const email = params.emailAddress?.[0];
         if (!email) throw new Error("fixture email missing");
+        if (retainedUsers.some((row) => row.email === email))
+          throw new Error("Retained user reached identity provider");
         const created = remoteUser(`user_${crypto.randomUUID()}`, email);
         remoteUsers.set(created.id, created);
         creates++;
@@ -96,6 +130,7 @@ test("identity migration resumes by email and slug, preserves local ids and role
     },
     organizations: {
       getOrganization: async (params) => {
+        calls++;
         const found =
           "organizationId" in params
             ? remoteOrganizations.get(params.organizationId)
@@ -115,6 +150,7 @@ test("identity migration resumes by email and slug, preserves local ids and role
         return found;
       },
       createOrganization: async (params) => {
+        calls++;
         const created = remoteOrganization(
           `org_${crypto.randomUUID()}`,
           params.name,
@@ -133,6 +169,7 @@ test("identity migration resumes by email and slug, preserves local ids and role
         return created;
       },
       getOrganizationMembershipList: async (params) => {
+        calls++;
         const data = [...remoteMembers.values()].filter(
           (entry) =>
             entry.organization.id === params.organizationId &&
@@ -141,6 +178,7 @@ test("identity migration resumes by email and slug, preserves local ids and role
         return { data, totalCount: data.length };
       },
       createOrganizationMembership: async (params) => {
+        calls++;
         const remote = remoteOrganizations.get(params.organizationId);
         if (!remote) throw new Error("fixture organization missing");
         const created = {
@@ -156,11 +194,21 @@ test("identity migration resumes by email and slug, preserves local ids and role
     },
   };
   try {
-    await expect(migrateIdentity(api)).rejects.toThrow("Organization slugs must be enabled");
+    const beforeUnknown = calls;
+    await expect(migrateIdentity(api, new Set([crypto.randomUUID()]))).rejects.toThrow(
+      "Retained identity migration conflict",
+    );
+    expect(calls - beforeUnknown).toBe(0);
+    expect(creates).toBe(0);
+    await expect(migrateIdentity(api, retainedUserIds)).rejects.toThrow(
+      "Organization slugs must be enabled",
+    );
     expect(creates).toBe(0);
     expect(await db.select().from(user)).toEqual(beforeUsers);
     slugDisabled = false;
-    await expect(migrateIdentity(api)).rejects.toThrow("Organization migration conflict");
+    await expect(migrateIdentity(api, retainedUserIds)).rejects.toThrow(
+      "Organization migration conflict",
+    );
     expect(creates).toBe(0);
     expect(await db.select().from(user)).toEqual(beforeUsers);
     Object.assign(resumedOrg, { privateMetadata: { useagentOrganizationId: localOrgId } });
@@ -170,7 +218,7 @@ test("identity migration resumes by email and slug, preserves local ids and role
       publicUserData: { userId: "unexplained-user" },
       role: "org:admin",
     } as OrganizationMembership);
-    await expect(migrateIdentity(api)).rejects.toThrow(
+    await expect(migrateIdentity(api, retainedUserIds)).rejects.toThrow(
       "Organization membership migration conflict",
     );
     expect(creates).toBe(0);
@@ -183,28 +231,49 @@ test("identity migration resumes by email and slug, preserves local ids and role
       email: "pending@example.test",
       expiresAt: new Date(Date.now() + 60_000),
     });
-    await expect(migrateIdentity(api)).rejects.toThrow("Pending invitations require migration");
+    await expect(migrateIdentity(api, retainedUserIds)).rejects.toThrow(
+      "Pending invitations require migration",
+    );
     expect(creates).toBe(0);
     await db.delete(invitation).where(eq(invitation.id, invitationId));
     watchReuse = true;
-    const first = await migrateIdentity(api);
+    const first = await migrateIdentity(api, retainedUserIds);
     expect(delayedSync).toBeDefined();
     await delayedSync;
     expect(syncSawMembership).toBe(true);
     expect(first.usersLinked).toBeGreaterThan(0);
     expect(first.organizationsLinked).toBeGreaterThan(0);
+    expect(first).toMatchObject({
+      usersRetained: retainedUsers.length,
+      membershipsRetained: retainedUsers.length,
+    });
     const writes = creates;
-    const second = await migrateIdentity(api);
+    const beforeBound = calls;
+    await expect(migrateIdentity(api, new Set([localUserId]))).rejects.toThrow(
+      "Retained identity migration conflict",
+    );
+    expect(calls - beforeBound).toBe(0);
+    expect(creates).toBe(writes);
+    const second = await migrateIdentity(api, retainedUserIds);
     expect(creates).toBe(writes);
     expect(second.usersCreated + second.organizationsCreated + second.membershipsCreated).toBe(0);
     expect((await db.select().from(user).where(eq(user.id, localUserId)))[0]?.clerkUserId).toBe(
       resumedUser.id,
     );
+    for (const retained of retainedUsers)
+      expect((await db.select().from(user).where(eq(user.id, retained.id)))[0]).toEqual(
+        beforeUsers.find((row) => row.id === retained.id),
+      );
     expect(
       (await db.select().from(organization).where(eq(organization.id, localOrgId)))[0]?.clerkOrgId,
     ).toBe(resumedOrg.id);
     expect(await db.select().from(member)).toEqual(beforeMembers);
     expect(remoteMembers.get(`${resumedOrg.id}:${resumedUser.id}`)?.role).toBe("org:member");
+    expect(
+      [...remoteMembers.values()].some((row) =>
+        retainedUserIds.has(row.publicUserData?.userId ?? ""),
+      ),
+    ).toBe(false);
   } finally {
     await delayedSync?.catch(() => {});
     for (const row of beforeUsers)
@@ -214,8 +283,10 @@ test("identity migration resumes by email and slug, preserves local ids and role
         .update(organization)
         .set({ clerkOrgId: row.clerkOrgId })
         .where(eq(organization.id, row.id));
-    await db.delete(member).where(eq(member.id, localMemberId));
-    await db.delete(user).where(eq(user.id, localUserId));
+    for (const id of [localMemberId, ...retainedMemberIds])
+      await db.delete(member).where(eq(member.id, id));
+    for (const id of [localUserId, ...retainedUsers.map((row) => row.id)])
+      await db.delete(user).where(eq(user.id, id));
     await db.delete(organization).where(eq(organization.id, localOrgId));
   }
 });
