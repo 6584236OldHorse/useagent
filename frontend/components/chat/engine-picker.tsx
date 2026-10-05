@@ -1,6 +1,7 @@
 "use client";
 
-import { RiArrowDownSLine, RiCheckLine, RiCpuLine, RiRefreshLine } from "@remixicon/react";
+import { RiArrowDownSLine, RiCheckLine, RiRefreshLine } from "@remixicon/react";
+import { vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   ENGINES,
@@ -53,7 +54,6 @@ export function unavailableModelOptions(
     .map((entry) => ({
       value: entry.id,
       label: entry.displayName ?? modelLabel(entry.id, engine),
-      tint: "text-text-tertiary",
       disabled: true,
       description: entry.degradationReason === "model_not_allowed"
         ? "Discovered for this account; blocked by deployment policy"
@@ -338,10 +338,15 @@ export function useEnabledEngines(): EngineId[] {
   return useEnabledEngineConfig().engines;
 }
 
+function RowMark({ option }: { option: string }) {
+  const Mark = vendorMarkForModel(option);
+  return <Mark className="text-foreground-icon-secondary size-4 shrink-0" aria-hidden />;
+}
+
 /**
- * The `✳ <engine> ⌄` model picker from the HeyRico hero — an orange asterisk +
- * the current engine label + a dropdown of the sandbox engines. This is the
- * engine selector integrated "next to the model" per spec.
+ * The `<mark> <model> ⌄` model picker: the selected model's vendor mark, its
+ * label, and a dropdown of the models this engine accepts, each row led by
+ * its own vendor mark.
  */
 export function ModelPicker({
   engine,
@@ -404,6 +409,7 @@ export function ModelPicker({
     }
   };
 
+  const SelectedMark = vendorMarkForModel(model);
   return (
     <div className={cn("relative", className)}>
       <button
@@ -415,11 +421,9 @@ export function ModelPicker({
         title={`Model: ${selectedLabel}`}
         className="text-text-primary hover:bg-background-primary-hover flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-body-2-medium transition-colors"
       >
-        {/* Engine chip glyph — the AsteriskMark is useAgent's brand, not an
-            engine's; match the composer's neutral cpu icon instead. Below sm the
-            label folds into the accessible name so the reply placeholder keeps
-            one line at phone width. */}
-        <RiCpuLine className="text-text-secondary size-4" aria-hidden />
+        {/* The selected model's vendor mark. Below sm the label folds into the
+            accessible name so the reply placeholder keeps one line at phone width. */}
+        <SelectedMark className="text-text-secondary size-4" aria-hidden />
         <span className="max-w-[11rem] truncate whitespace-nowrap max-sm:sr-only">{selectedLabel}</span>
         <RiArrowDownSLine className="text-text-tertiary size-4 max-sm:hidden" aria-hidden />
       </button>
@@ -482,6 +486,7 @@ export function ModelPicker({
                       >
                         <RiCheckLine className="size-4" aria-hidden />
                       </span>
+                      <RowMark option={e.value} />
                       <span className="min-w-0 flex-1">
                         <span className="text-body-2-regular text-text-primary block">
                           {e.label}
