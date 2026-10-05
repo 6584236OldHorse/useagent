@@ -21,6 +21,7 @@ import {
 import { isPublicApiPath, orgScope } from "./middleware/org";
 import { bearerAuth } from "./middleware/bearer";
 import { chatRoutes } from "./chat/routes";
+import { labRoutes } from "./lab/routes";
 import { botsRoutes } from "./bots/routes";
 import { toolGatewayConfig } from "./knowledge/gateway/config";
 import { knowledgeRoutes } from "./knowledge/routes";
@@ -440,6 +441,7 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env
 // (org knowledge + published wiki + team memory). Org-scoped; inert without
 // OPENROUTER_API_KEY (503). Distinct from /api/runs (which spins sandboxes).
 app.route("/api/chat", chatRoutes);
+app.route("/api/lab", labRoutes);
 
 app.route("/api/runs", runsRoutes);
 app.route("/api/spend", spendRoutes);
