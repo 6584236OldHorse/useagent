@@ -4,6 +4,7 @@ import type {
   ApiRunSummary,
   ApiStep,
   ApiThreadOutlineTurn,
+  RunConnector,
 } from "@useagent/agent-client/wire";
 import {
   and,
@@ -105,6 +106,7 @@ function toRun(
     skill_version: r.skillVersion,
     skill_content_hash: r.skillContentHash,
     uploads,
+    connector: r.connector ?? null,
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
     steps: stepRows.map(toStep),
@@ -506,6 +508,7 @@ export async function listRunSummaries(
         root.project_id,
         root.repo,
         root.repos,
+        root.connector,
         root.created_at,
         root.updated_at,
         latest.id as latest_run_id,
@@ -541,7 +544,7 @@ export async function listRunSummaries(
     )
     select
       id, prompt, model, engine, status, summary, duration_ms, project_id,
-      repo, repos, created_at, updated_at,
+      repo, repos, connector, created_at, updated_at,
       latest_run_id, latest_status, latest_cancelled, latest_created_at, latest_updated_at
     from selected_rows
     order by ${outputOrder}
@@ -562,6 +565,7 @@ export async function listRunSummaries(
       repo: row.repo ? parseRepoRef(row.repo as string).repo : null,
       repos: specs.map((spec) => spec.repo),
       repo_specs: specs,
+      connector: (row.connector as RunConnector | null) ?? null,
       created_at: new Date(row.created_at as string | Date).toISOString(),
       updated_at: new Date(row.updated_at as string | Date).toISOString(),
       latest_run_id: row.latest_run_id as string,

@@ -16,12 +16,13 @@ import {
   RiFolderOpenLine,
   RiPushpinLine,
 } from "@remixicon/react";
-import type { RunStatus } from "@useagent/agent-client/wire";
+import type { RunConnector, RunStatus } from "@useagent/agent-client/wire";
 import type { ProductThreadStatus } from "@useagent/agent-client";
 import Link from "next/link";
 import type { DragEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type NativeAgentRow, NativeAgentRows } from "@/components/session-ui/native-agent-rows";
+import { OriginLink } from "@/components/session-ui/origin-link";
 import { StatusDot } from "@/components/shared/status-dot";
 import { THREAD_DRAG_TYPE } from "@/components/shell/sidebar-bookmarks-store";
 import { threadStatusPresentation } from "@/components/shell/thread-discovery";
@@ -39,6 +40,8 @@ export interface ProjectThread {
   isSelected?: boolean;
   engine?: string;
   model?: string;
+  /** The connector the thread arrived through, when it was not started here. */
+  origin?: RunConnector | null;
   children?: ProjectThread[];
   nativeChildren?: { rows: readonly NativeAgentRow[]; overflow: number } | null;
 }
@@ -137,6 +140,7 @@ function ThreadItem({
       >
         {thread.label}
       </Link>
+      <OriginLink connector={thread.origin} />
       <span className="shrink-0 text-caption-1-medium whitespace-nowrap tabular-nums text-text-tertiary">
         {thread.time}
       </span>

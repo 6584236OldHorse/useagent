@@ -19,13 +19,56 @@ import { slackConfig } from "../env";
 import { startSlackOutboxRelay } from "./outbox";
 import { startSlackSocketMode } from "./socket-mode";
 import { handleSlackEvent, slackEventIsEarlyNoop } from "./events";
-import { startSlackInboxPump, verifySlackInboxIdentity } from "./inbox";
+import {
+  type SlackInboxClaim,
+  type SlackInboxOutcome,
+  startSlackInboxPump,
+  verifySlackInboxIdentity,
+} from "./inbox";
+import { stampSlackTurnIdentity } from "./turn-identity";
 
 export { slackRoutes } from "./routes";
 export { slackEnabled } from "../env";
 export { setSlackClientForTest, type SlackClient } from "./client";
 export { stopSlackSocketMode } from "./socket-mode";
 export { syncSlackWorkspaceBindings } from "./workspaces";
+
+/** Process one durably accepted inbox claim: verify the ingress-time identity,
+ *  hand the event to the run mapper, then stamp an accepted (or replayed) run
+ *  with who sent it and where, so the web can show the sender and link back. */
+export async function handleSlackInboxClaim({
+  payload,
+  checkpointStagedAttachmentIds,
+}: SlackInboxClaim): Promise<SlackInboxOutcome> {
+  if (slackEventIsEarlyNoop(payload.envelope)) return { status: "completed" };
+  const identity = await verifySlackInboxIdentity(payload);
+  if (identity.status === "ignored") return { status: "completed" };
+  if (identity.status === "rebound") {
+    return { status: "permanent", error: identity.error };
+  }
+  const outcome = await handleSlackEvent(payload.envelope, {
+    identity,
+    stagedAttachmentIds: payload.stagedAttachmentIds,
+    checkpointStagedAttachmentIds,
+  });
+  if (outcome.status === "accepted" || outcome.status === "replayed") {
+    const { teamId, channel, messageTs, slackUserId } = payload.identity;
+    if (teamId && channel && messageTs) {
+      await stampSlackTurnIdentity({
+        runId: outcome.runId,
+        orgId: identity.orgId,
+        teamId,
+        channel,
+        messageTs,
+        slackUserId,
+      });
+    }
+    return { status: "completed" };
+  }
+  if (outcome.status === "permanent_noop") return { status: "completed" };
+  if (outcome.status === "waiting_for_root") return { status: "waiting_for_root" };
+  return { status: "retryable_unavailable", error: outcome.reason };
+}
 
 /** Start the durable outbox delivery relay (boot recovery + interval) and,
  *  when SLACK_APP_TOKEN is set, the Socket Mode ingress (WebSocket lane - no
@@ -35,27 +78,6 @@ export function startSlackOutbox(): void {
   const cfg = slackConfig();
   if (!cfg) return;
   startSlackOutboxRelay(cfg);
-  startSlackInboxPump(async ({ payload, checkpointStagedAttachmentIds }) => {
-    if (slackEventIsEarlyNoop(payload.envelope)) return { status: "completed" };
-    const identity = await verifySlackInboxIdentity(payload);
-    if (identity.status === "ignored") return { status: "completed" };
-    if (identity.status === "rebound") {
-      return { status: "permanent", error: identity.error };
-    }
-    const outcome = await handleSlackEvent(payload.envelope, {
-      identity,
-      stagedAttachmentIds: payload.stagedAttachmentIds,
-      checkpointStagedAttachmentIds,
-    });
-    if (
-      outcome.status === "accepted" ||
-      outcome.status === "replayed" ||
-      outcome.status === "permanent_noop"
-    ) {
-      return { status: "completed" };
-    }
-    if (outcome.status === "waiting_for_root") return { status: "waiting_for_root" };
-    return { status: "retryable_unavailable", error: outcome.reason };
-  });
+  startSlackInboxPump(handleSlackInboxClaim);
   startSlackSocketMode();
 }

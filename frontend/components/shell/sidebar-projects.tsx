@@ -252,6 +252,7 @@ export function SidebarProjects() {
             status: effectiveThreadStatus(run),
             engine: run.engine,
             model: run.model,
+            origin: run.connector ?? null,
             isSelected: pathname === `/session/${run.id}`,
             children: childRows(run.id),
             nativeChildren: sidebarNativeAgentRows(run),

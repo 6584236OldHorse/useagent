@@ -51,6 +51,7 @@ const wireRun = (n: number): ApiRun => ({
   skill_version: null,
   skill_content_hash: null,
   uploads: [],
+  connector: null,
   created_at: new Date(1_700_000_000_000 + n * 60_000).toISOString(),
   updated_at: new Date(1_700_000_000_000 + n * 60_000).toISOString(),
   steps: [],
