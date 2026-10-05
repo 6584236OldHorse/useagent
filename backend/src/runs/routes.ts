@@ -28,6 +28,7 @@ import {
   type RunCommandIntent,
 } from "../commands";
 import { FleetQueueLimitError } from "../fleet/intake";
+import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
@@ -51,7 +52,6 @@ import {
 import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
-import { stopRun } from "./stop";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
 import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
@@ -74,6 +74,7 @@ import {
   USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
+import { registerRunCancelRoute } from "./cancel-route";
 import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
@@ -453,9 +454,7 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
-    if (error instanceof UploadClaimError) {
-      return c.json({ error: "upload_unavailable" }, 409);
-    }
+    if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
@@ -465,7 +464,7 @@ export async function handleRunCreate(
       );
     }
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
-    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
+    if (error instanceof SpendAllowanceExceededError || error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
@@ -499,26 +498,7 @@ export async function handleRunCreate(
 
 runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
-// POST /:id/cancel — durable user Stop. Records a `run.cancel` command
-// (idempotent), fails a not-yet-started (queued) run atomically, signals a live
-// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
-// runs still working in threads this one delegated to. Org-scoped (a
-// cross-org/missing id is a 404). A run that already settled is a no-op.
-runsRoutes.post("/:id/cancel", async (c) => {
-  const id = c.req.param("id");
-  const outcome = await stopRun({ orgId: c.get("orgId"), actorId: c.get("userId"), runId: id });
-  switch (outcome.status) {
-    case "not_found":
-      return c.json({ error: "run not found" }, 404);
-    case "settled":
-      return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
-    case "cancelling":
-      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
-    default:
-      return assertNever(outcome);
-  }
-});
-
+registerRunCancelRoute(runsRoutes);
 registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);
