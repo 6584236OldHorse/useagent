@@ -1,4 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { DelegationStoppedError, hasRunCancelIntent } from "./cancel";
 import { db, type Executor } from "../db/client";
 import { bots, commands, runs, type CommandState } from "../db/schema";
 import { createRun } from "../runs/repo";
@@ -43,6 +44,8 @@ export interface NewRunCommand {
   readonly priority: number;
   readonly threadRelationship?: RunCommandInput["threadRelationship"];
   readonly botHome?: RunCommandInput["botHome"];
+  /** A turn handed to a bot inside an existing thread; carries the run that delegated it. */
+  readonly botHandoff?: RunCommandInput["botHandoff"];
 }
 
 /** Another first message opened the bot's home thread first; the losing
@@ -114,6 +117,19 @@ export async function insertCommandWithRun(
         .where(and(eq(bots.orgId, cmd.orgId), eq(bots.id, cmd.botHome.botId), isNull(bots.homeThreadId)))
         .returning({ id: bots.id });
       if (stamped.length === 0) throw new BotHomeThreadTakenError();
+    }
+    // Delegation (a delegated thread, or a turn handed to a bot in an existing
+    // thread) is recorded under the delegating thread's lock, the same one a
+    // Stop takes: a turn that was stopped cannot delegate afterwards. Explicit
+    // continuation by a person is not delegation and is not refused.
+    const delegation = cmd.threadRelationship?.kind === "delegated" && cmd.threadRelationship.parentThreadId
+      ? { parentThreadId: cmd.threadRelationship.parentThreadId, sourceRunId: cmd.threadRelationship.sourceRunId }
+      : cmd.botHandoff
+        ? { parentThreadId: cmd.botHandoff.parentThreadId, sourceRunId: cmd.botHandoff.sourceRunId }
+        : null;
+    if (delegation) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${cmd.orgId}), hashtext(${delegation.parentThreadId}))`);
+      if (await hasRunCancelIntent(cmd.orgId, delegation.sourceRunId, tx)) throw new DelegationStoppedError();
     }
     if (cmd.threadRelationship) {
       await insertThreadRelationship({

@@ -276,13 +276,13 @@ export async function oldestQueuedAdmissionForReason(
   };
 }
 
-/** Grant capacity: bind the lease and move to `leased`, clearing queue_reason. */
+/** Grant capacity: bind the lease and move a still-queued admission to `leased`, clearing queue_reason. False when the admission left `queued` meanwhile (a Stop cancelled it): the grant must not resurrect it. */
 export async function markAdmissionLeased(
   runId: string,
   leaseId: string,
   exec: Executor = db,
-): Promise<void> {
-  await exec
+): Promise<boolean> {
+  const granted = await exec
     .update(runAdmissions)
     .set({
       state: "leased",
@@ -291,7 +291,9 @@ export async function markAdmissionLeased(
       admittedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(runAdmissions.runId, runId));
+    .where(and(eq(runAdmissions.runId, runId), eq(runAdmissions.state, "queued")))
+    .returning({ runId: runAdmissions.runId });
+  return granted.length > 0;
 }
 
 /** Keep a run queued and record WHY. `bumpRetry` is set when re-queuing after a

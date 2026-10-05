@@ -1,3 +1,4 @@
+import { CANCEL_KEY_PREFIX } from "../commands/cancel";
 /**
  * Idempotency-key grammar for bot handoffs. Kept apart from handoffs.ts so the
  * relationship repo can read the grammar back (which parent run followed up
@@ -50,6 +51,7 @@ export function parseMentionFollowupKey(key: string): MentionFollowupKey | null 
 }
 
 /** Browser idempotency keys may not claim the server's bot-handoff namespace. */
-export function isReservedBotHandoffKey(key: string): boolean {
-  return key.startsWith(`${MENTION_PREFIX}:`) || key.startsWith(`${FOLLOWUP_PREFIX}:`);
+/** Keys the plane writes itself (handoffs, stops) are refused at the public run door. */
+export function isReservedIdempotencyKey(key: string): boolean {
+  return key.startsWith(`${MENTION_PREFIX}:`) || key.startsWith(`${FOLLOWUP_PREFIX}:`) || key.startsWith(CANCEL_KEY_PREFIX);
 }

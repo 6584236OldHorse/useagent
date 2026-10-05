@@ -373,6 +373,7 @@ async function acceptRunCommandWithOrigin(
         await insertCommandWithRun(
           {
             commandId,
+            botHandoff: input.botHandoff,
             idempotencyKey: input.idempotencyKey,
             orgId: input.orgId,
             actorId: input.actorId,

@@ -9,7 +9,7 @@ import {
 } from "../db/schema";
 import { isMemoryScope } from "../memory/scope";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
-import { isReservedBotHandoffKey } from "../bots/handoff-keys";
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
 import {
   getRun,
@@ -35,7 +35,6 @@ import {
   preflightInternalRunCommandReplay,
 } from "../commands/service";
 import { expectedSandboxRunOrigin, type InternalRunOrigin } from "./origin";
-import { acceptRunCancel, CANCEL_SUMMARY } from "../commands/cancel";
 import { resolveSkillSelection } from "../skills/repo";
 import { buildNativeCommandPrompt, validateCommandIntent, type CommandIntent } from "./command-intent";
 import { readSessionCommandCatalog } from "./command-catalog";
@@ -49,10 +48,10 @@ import {
   RunIntakeError,
   type RunResource,
 } from "../resources/run-intake";
-import { bus, channel, pumpThread, signalCancel, type BusEvent } from "../worker";
+import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
-import { settleZombieCancel } from "./zombie-cancel";
+import { stopRun } from "./stop";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
 import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
@@ -294,7 +293,7 @@ export async function handleRunCreate(
   }
 
   const idempotencyKey = c.req.header("Idempotency-Key")?.trim() || null;
-  if (!options.origin && idempotencyKey && isReservedBotHandoffKey(idempotencyKey)) {
+  if (!options.origin && idempotencyKey && isReservedIdempotencyKey(idempotencyKey)) {
     return c.json({ error: "reserved_idempotency_key" }, 400);
   }
   const intent: RunCommandIntent = {
@@ -502,43 +501,19 @@ runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
 // POST /:id/cancel — durable user Stop. Records a `run.cancel` command
 // (idempotent), fails a not-yet-started (queued) run atomically, signals a live
-// actor to abort, and pumps the thread so the QUEUED lane continues. Org-scoped
-// (a cross-org/missing id is a 404). A run that already settled is a no-op.
+// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
+// runs still working in threads this one delegated to. Org-scoped (a
+// cross-org/missing id is a 404). A run that already settled is a no-op.
 runsRoutes.post("/:id/cancel", async (c) => {
-  const orgId = c.get("orgId");
   const id = c.req.param("id");
-  const outcome = await acceptRunCancel({ orgId, actorId: c.get("userId"), runId: id });
+  const outcome = await stopRun({ orgId: c.get("orgId"), actorId: c.get("userId"), runId: id });
   switch (outcome.status) {
     case "not_found":
       return c.json({ error: "run not found" }, 404);
-    case "terminal":
+    case "settled":
       return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
-    case "already":
-      // Idempotent replay — best-effort re-signal a still-live actor, then pump.
-      signalCancel(id, CANCEL_SUMMARY);
-      await pumpThread(outcome.threadId);
-      return c.json({ id, status: "cancelling" }, 200);
-    case "accepted":
-      // A RUNNING actor is aborted in-process (its teardown finalizes the run
-      // "Stopped by user" and pumps); a QUEUED run was already failed in-tx.
-      // Pump either way so the next queued turn dispatches. Do NOT pretend a live
-      // process was signalled when it was not: a run the DB marks running but with no
-      // live canceller (e.g. after a crash) has its cancel recorded durably above and
-      // reconciled by recovery - surface the gap instead of hiding it.
-      if (outcome.runStatusWas === "running") {
-        const signalled = signalCancel(id, CANCEL_SUMMARY);
-        if (!signalled) {
-          // No local actor means a crash zombie; settle and pump now rather than
-          // waiting for recovery. finalizeRun remains idempotent against a race.
-          const durableStatus = await settleZombieCancel(id);
-          if (durableStatus) {
-            await pumpThread(outcome.threadId);
-            return c.json({ id, status: durableStatus, note: "already settled" }, 200);
-          }
-        }
-      }
-      await pumpThread(outcome.threadId);
-      return c.json({ id, status: "cancelling" }, 202);
+    case "cancelling":
+      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
     default:
       return assertNever(outcome);
   }
