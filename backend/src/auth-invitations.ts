@@ -54,6 +54,22 @@ export function headerSafe(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Longest stretch of a typed name an invitation repeats. */
+const MAIL_NAME_MAX = 60;
+
+/** A typed name, one line and short, as the subject carries it. */
+function shortName(value: string): string {
+  const name = headerSafe(value);
+  return name.length > MAIL_NAME_MAX ? `${name.slice(0, MAIL_NAME_MAX - 3)}...` : name;
+}
+
+/** A name as the body carries it: a zero-width space after every ".", ":", "/"
+ *  and "@", so no mail client turns "pay.example.com" or an address someone
+ *  named their workspace after into a link. Markup is escaped by the layout. */
+function inert(name: string): string {
+  return name.replace(/[.:/@]/g, "$&\u200b");
+}
+
 /** Longest a delivery may take before the invitation is left as link-only. */
 export const INVITATION_MAIL_TIMEOUT_MS = 20_000;
 
@@ -101,10 +117,13 @@ export function accountMailHtml(mail: {
 export function invitationMessage(notice: InvitationNotice): AccountMail {
   const role = notice.role === "admin" ? "an admin" : notice.role === "owner" ? "an owner" : "a member";
   const until = notice.expiresAt.toISOString().slice(0, 10);
-  const inviter = headerSafe(notice.inviter) || "A teammate";
-  const organization = headerSafe(notice.organization) || "a workspace";
+  const inviterName = shortName(notice.inviter) || "A teammate";
+  const organizationName = shortName(notice.organization) || "a workspace";
+  const inviter = inert(inviterName);
+  const organization = inert(organizationName);
   return {
-    subject: `${inviter} invited you to ${organization} on ${PRODUCT_NAME}`,
+    // Mail clients make no links in a subject, so it keeps the names as typed.
+    subject: `${inviterName} invited you to ${organizationName} on ${PRODUCT_NAME}`,
     text: [
       `${inviter} invited you to join ${organization} as ${role}.`,
       "",

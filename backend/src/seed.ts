@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { db } from "./db/client";
 import { member, organization, user } from "./db/schema";
+import { allowDevOrg } from "./env";
 
 // ---------------------------------------------------------------------------
 // Dev fallback identity. When a request has no session, the org-scoping
@@ -23,8 +24,10 @@ export function getDevContext(): { orgId: string; userId: string } {
 /** Create the dev org, dev user, and one membership row. Every step is
  * idempotent, so booting repeatedly is a no-op. No demo content is planted —
  * Knowledge and Skills start empty and fill only with real, user- or
- * agent-authored records. */
+ * agent-authored records. Only where the dev-org fallback is on: a production
+ * database gets no owner account nobody signs up for. */
 export async function seedDev(): Promise<void> {
+  if (!allowDevOrg()) return;
   const now = new Date();
 
   await db
