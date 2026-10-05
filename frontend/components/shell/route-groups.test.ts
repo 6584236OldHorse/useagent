@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { librarySidebarActiveFor } from "./library-sidebar";
 import { APP_ROUTES } from "./route-prefetch";
@@ -21,6 +21,12 @@ describe("persistent shell route groups", () => {
       const hits = GROUPS.filter((group) => existsSync(join(APP_DIR, group, href, "page.tsx")));
       expect(hits, `${href} resolves in ${hits.join(", ")}`).toHaveLength(1);
     }
+  });
+
+  test("the bots rail link opts out of viewport prefetch (its layout seeds the roster)", () => {
+    const source = readFileSync(join(import.meta.dir, "thread-sidebar.tsx"), "utf8");
+    const bots = source.slice(source.indexOf('href: "/bots"'));
+    expect(bots.slice(0, 80)).toContain("prefetch: false");
   });
 
   test("the thread rail derives its active item from the pathname", () => {

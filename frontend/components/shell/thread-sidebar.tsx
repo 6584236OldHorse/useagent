@@ -111,6 +111,7 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
             icon: RiRobot2Line,
             tone: "blue" as const,
             href: "/bots",
+            prefetch: false,
             active: current === "bots",
           },
         ]

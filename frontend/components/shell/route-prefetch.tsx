@@ -3,15 +3,12 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-/** The thread-rail destinations a user hops between all day: warmed in full,
- * one server render each at idle, so their own chunks are cached before the
- * first hop. */
-export const PRIMARY_ROUTES = ["/dashboard", "/agent/new", "/agent/runs", "/bots"] as const;
-
-/** The Customize pages: warmed to their loading boundary (layout, skeleton and
- * shared chunks); their own page chunk arrives on the first visit and stays
- * cached after that. */
-export const SECONDARY_ROUTES = [
+/** Every top-level page a signed-in user can reach from the rails. */
+export const APP_ROUTES = [
+  "/dashboard",
+  "/agent/new",
+  "/agent/runs",
+  "/bots",
   "/settings",
   "/skills",
   "/playbooks",
@@ -28,19 +25,16 @@ export const SECONDARY_ROUTES = [
   "/secrets",
 ] as const;
 
-export const APP_ROUTES = [...PRIMARY_ROUTES, ...SECONDARY_ROUTES] as const;
-
-type PrefetchOptions = NonNullable<Parameters<ReturnType<typeof useRouter>["prefetch"]>[1]>;
-// Next does not export its prefetch kind enum from next/navigation; the runtime
-// values are the strings "auto" (the default) and "full".
-const FULL = { kind: "full" } as unknown as PrefetchOptions;
-
 /**
  * Warm every app route once the first page is idle, so an in-app hop never waits
- * on a chunk download. Primary routes are prefetched in full (their page payload
- * and chunks, one backend-backed render each, once per app load); the rest stop
- * at their loading boundary and never run a page's backend loaders. Chunks are
- * content-hashed and stay in the browser cache across hops and reloads.
+ * on the shell: the router prefetch pulls each route's layouts, its loading
+ * boundary and the chunks they reference, and a static page in full. A dynamic
+ * page stops at its loading boundary, so no page data is cached and no page
+ * loader runs; its own chunk arrives on the first visit and stays in the browser
+ * cache after that (chunks are content-hashed). Full prefetch was tried and
+ * dropped: it caches a dynamic page's data for the static window, and pages that
+ * seed state from that payload (dashboard runs, the new-thread catalog) have no
+ * refresh path for a mutation made elsewhere.
  */
 export function RoutePrefetch() {
   const router = useRouter();
@@ -48,8 +42,7 @@ export function RoutePrefetch() {
     const schedule = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
     const cancel = window.cancelIdleCallback ?? window.clearTimeout;
     const handle = schedule(() => {
-      for (const href of PRIMARY_ROUTES) router.prefetch(href, FULL);
-      for (const href of SECONDARY_ROUTES) router.prefetch(href);
+      for (const href of APP_ROUTES) router.prefetch(href);
     });
     return () => cancel(handle);
   }, [router]);

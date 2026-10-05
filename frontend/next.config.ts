@@ -53,12 +53,6 @@ export default function nextConfig(phase: string): NextConfig {
     // actually referenced.
     experimental: {
       optimizePackageImports: ["@remixicon/react", "react-aria-components"],
-      // Client router cache: a page visited within the window is served from the
-      // cached RSC payload on return instead of a round trip (dynamic pages used
-      // to be re-fetched on every hop). Safe here because live state on every
-      // page comes from client components that subscribe to the org-changes and
-      // thread streams; the server payload only seeds the first paint.
-      staleTimes: { dynamic: 30, static: 180 },
     },
     generateBuildId: async () => process.env.NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT || null,
     // We maintain AGENTS.md by hand — stop Next 16 from regenerating it.

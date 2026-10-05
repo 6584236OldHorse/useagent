@@ -46,6 +46,10 @@ export type Route = {
   icon: RemixiconComponentType;
   href: string;
   active?: boolean;
+  /** Set false for a destination whose layout runs a backend loader: a viewport
+   * prefetch would re-run it on every router refresh. The idle warm-up still
+   * fetches it once. */
+  prefetch?: boolean;
   /** Brand tint for the icon, as on the previous rail. */
   tone?: NavIconTone;
   trailing?: ReactNode;
@@ -132,6 +136,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                 render={
                   <Link
                     href={route.href}
+                    prefetch={route.prefetch}
                     aria-label={route.title}
                     aria-current={route.active ? "page" : undefined}
                   />
