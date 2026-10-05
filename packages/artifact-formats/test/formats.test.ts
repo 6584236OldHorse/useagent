@@ -417,6 +417,46 @@ describe("artifact native formats", () => {
     expect(body!.style?.color).toBe("#c8c8e0");
   });
 
+  test("scales imported PPTX fonts against a noncanonical slide height", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "WIDE_75", width: 13.333, height: 7.5 });
+    pptx.layout = "WIDE_75";
+    const slide = pptx.addSlide();
+    slide.addText("First paragraph\nSecond paragraph", {
+      x: 1,
+      y: 1,
+      w: 10,
+      h: 2,
+      fontSize: 20,
+    });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+    const bytes = written instanceof Uint8Array ? written : new Uint8Array(written as ArrayBuffer);
+
+    const imported = await extractPptxDeck(bytes);
+    const block = imported?.deck.slides[0]?.blocks[0];
+    expect(block?.content).toBe("First paragraph\nSecond paragraph");
+    expect(block?.style?.fontSize).toBe(40);
+  });
+
+  test("falls back to canonical font scaling for invalid PPTX slide heights", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "DECK", width: 10, height: 5.625 });
+    pptx.layout = "DECK";
+    pptx.addSlide().addText("Readable text", { x: 1, y: 1, w: 8, h: 2, fontSize: 20 });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+
+    for (const height of ["0", "9".repeat(400)]) {
+      const zip = await JSZip.loadAsync(written);
+      const path = "ppt/presentation.xml";
+      const presentation = await zip.file(path)?.async("string") ?? "";
+      zip.file(path, presentation.replace(/\bcy="\d+"/, `cy="${height}"`));
+      const imported = await extractPptxDeck(await zip.generateAsync({ type: "uint8array" }));
+      const fontSize = imported?.deck.slides[0]?.blocks[0]?.style?.fontSize;
+      expect(fontSize).toBe(53);
+      expect(Number.isFinite(fontSize ?? Number.NaN)).toBe(true);
+    }
+  });
+
   test("skips import when a PPTX has no parsable text (behaves as download-only)", async () => {
     // A deck with only a shape block yields no text boxes -> null (no native import).
     const deck = {

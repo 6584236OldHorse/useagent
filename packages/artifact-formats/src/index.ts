@@ -1167,6 +1167,7 @@ export async function extractXlsxWorkbook(bytes: Uint8Array): Promise<Workbook> 
 
 const DEFAULT_SLIDE_WIDTH_EMU = 9_144_000; // 10in
 const DEFAULT_SLIDE_HEIGHT_EMU = 5_143_500; // 5.625in
+const EMU_PER_POINT = 12_700;
 /** Above this reference-px font size (and with no placeholder) a text box is a
  * heading. Sits between the body presets (40-44) and the heading presets (84-96). */
 const IMPORT_HEADING_MIN_REF_PX = 60;
@@ -1177,6 +1178,11 @@ function importPercent(emu: number, totalEmu: number): number {
 
 function importClamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+}
+
+function importSlideDimension(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function importXfrm(
@@ -1218,7 +1224,7 @@ function importShapeBlock(
   if (content.trim()) {
     const szMatch = /<a:rPr[^>]*\bsz="(\d+)"/.exec(txBody);
     const fontSize = szMatch
-      ? Math.round(Number(szMatch[1]) / 100 / (405 / DECK_REFERENCE_HEIGHT))
+      ? Math.round(Number(szMatch[1]) / 100 / (slideHeight / EMU_PER_POINT / DECK_REFERENCE_HEIGHT))
       : undefined;
     const bold = /<a:rPr[^>]*\bb="1"/.test(txBody);
     const colorMatch = /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(txBody);
@@ -1391,8 +1397,8 @@ export async function extractPptxDeck(bytes: Uint8Array): Promise<PptxImportResu
   const sldSz = presentation
     ? /<p:sldSz[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(presentation)
     : null;
-  const slideWidth = sldSz ? Number(sldSz[1]) : DEFAULT_SLIDE_WIDTH_EMU;
-  const slideHeight = sldSz ? Number(sldSz[2]) : DEFAULT_SLIDE_HEIGHT_EMU;
+  const slideWidth = importSlideDimension(sldSz?.[1], DEFAULT_SLIDE_WIDTH_EMU);
+  const slideHeight = importSlideDimension(sldSz?.[2], DEFAULT_SLIDE_HEIGHT_EMU);
 
   const slideFiles = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
