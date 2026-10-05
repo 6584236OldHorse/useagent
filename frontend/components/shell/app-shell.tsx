@@ -42,7 +42,7 @@ export function AppShell({
     <SidebarThreadsProvider>
       <TooltipProvider>
         <SidebarProvider
-          className="h-[calc(100dvh-var(--desktop-titlebar-height,0px))] min-h-0 overflow-hidden bg-sidebar"
+          className="h-dvh min-h-0 overflow-hidden bg-sidebar pt-[var(--desktop-titlebar-height,0px)]"
           style={{ "--sidebar-width": "17rem" } as React.CSSProperties}
         >
           <a
