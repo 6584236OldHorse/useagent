@@ -75,6 +75,11 @@ export const GATEWAY_GRANTS: readonly string[] = [
   // tools READ the projection; the privileged BACKEND writes it (projector on
   // skill/knowledge/automation writes). SELECT only - no gateway write path.
   "GRANT SELECT ON context_index TO useagent_gateway",
+  // The gateway accepts new work through the single door (child sessions, child
+  // batches, run-automation-now, approval-minted follow-ups), and the door reads
+  // the member's sandbox minutes ledger to refuse a capped member. The ledger is
+  // written only by the privileged backend at settlement.
+  "GRANT SELECT ON sandbox_minutes_entries TO useagent_gateway",
 ];
 
 /** Migration 0039 creates the BYOK credentials view; later migrations extend
