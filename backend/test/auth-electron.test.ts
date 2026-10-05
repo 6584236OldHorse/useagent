@@ -34,8 +34,18 @@ test("Electron PKCE handoff creates a separate revocable session and rejects rep
   expect(identity.token).not.toBe(browserSession.body.session.token);
   expect((await fetchApi("/api/auth/electron/token", exchange)).status).toBe(404);
 
+  // The SDK transfers identity, not the browser's workspace. Main must select
+  // one through the membership-checked API before loading the hosted product.
+  const memberships = await json("/api/auth/organization/list", { cookies: desktop.header() });
+  expect(memberships.body).toHaveLength(2);
+  expect((await json("/api/auth/get-session", { cookies: desktop.header() })).body.session.activeOrganizationId)
+    .toBeNull();
+  expect((await fetchApi("/api/auth/organization/set-active", {
+    method: "POST", cookies: desktop.header(), body: { organizationId: browser.orgId },
+  })).status).toBe(200);
   const desktopSession = await json("/api/auth/get-session", { cookies: desktop.header() });
   expect(desktopSession.body.user.id).toBe(browserSession.body.user.id);
+  expect(desktopSession.body.session.activeOrganizationId).toBe(browser.orgId);
   expect((await fetchApi("/api/auth/sign-out", {
     method: "POST", cookies: desktop.header(), body: {},
   })).status).toBe(200);
