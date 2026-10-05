@@ -67,6 +67,22 @@ describe("release compatibility boundary", () => {
     ).toThrow(FrontendReleaseMismatchError);
     expect(win.reloaded()).toBe(true);
   });
+
+  test("says plainly when a reload already happened and cannot change the served bundle", () => {
+    const win = installWindow();
+    window.sessionStorage.setItem("skynet.release.reload", CLIENT_RELEASE_FINGERPRINT);
+
+    let caught: unknown;
+    try {
+      handleReleaseMismatch(responseWithFingerprint("run-events-v1:ffffffff"), { method: "POST" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FrontendReleaseMismatchError);
+    expect((caught as FrontendReleaseMismatchError).reloadedAlready).toBe(true);
+    expect((caught as Error).message).toContain("a reload did not change that");
+    expect(win.reloaded()).toBe(false);
+  });
 });
 
 test("legacy release-fingerprint header still satisfies the handshake", () => {

@@ -6,8 +6,18 @@ export const CLIENT_RELEASE_FINGERPRINT = `${USEAGENT_API_COMPAT}:${CLIENT_COMMI
 const RELOAD_MARKER = "skynet.release.reload";
 
 export class FrontendReleaseMismatchError extends Error {
-  constructor(readonly serverFingerprint: string) {
-    super("Frontend was updated. Reload before retrying this action.");
+  constructor(
+    readonly serverFingerprint: string,
+    /** True when this tab already reloaded for this release and still differs:
+     *  the page being served is older than the server, so another reload
+     *  changes nothing until the deployment finishes. */
+    readonly reloadedAlready = false,
+  ) {
+    super(
+      reloadedAlready
+        ? "This page is older than the server and a reload did not change that. The deployment is still finishing; try again in a minute."
+        : "Frontend was updated. Reload before retrying this action.",
+    );
     this.name = "FrontendReleaseMismatchError";
   }
 }
@@ -31,15 +41,18 @@ export function withClientReleaseHeader(path: string, init?: RequestInit): Reque
   return { ...init, headers };
 }
 
-export function scheduleReleaseReload(): void {
-  if (!isBrowser()) return;
+/** Schedule one reload per client release; returns false when this tab already
+ *  reloaded for it, which means reloading again cannot change the bundle. */
+export function scheduleReleaseReload(): boolean {
+  if (!isBrowser()) return false;
   try {
-    if (window.sessionStorage.getItem(RELOAD_MARKER) === CLIENT_RELEASE_FINGERPRINT) return;
+    if (window.sessionStorage.getItem(RELOAD_MARKER) === CLIENT_RELEASE_FINGERPRINT) return false;
     window.sessionStorage.setItem(RELOAD_MARKER, CLIENT_RELEASE_FINGERPRINT);
   } catch {
     // Storage can be unavailable in hardened browsers; the reload is still safe.
   }
   window.setTimeout(() => window.location.reload(), 0);
+  return true;
 }
 
 export function handleReleaseMismatch(response: Response, init?: RequestInit): void {
@@ -48,6 +61,6 @@ export function handleReleaseMismatch(response: Response, init?: RequestInit): v
     response.headers.get("x-skynet-release-fingerprint");
   if (!serverFingerprint || serverFingerprint === CLIENT_RELEASE_FINGERPRINT) return;
   if (serverFingerprint.endsWith(":dev")) return;
-  scheduleReleaseReload();
-  if (isMutating(init?.method)) throw new FrontendReleaseMismatchError(serverFingerprint);
+  const reloading = scheduleReleaseReload();
+  if (isMutating(init?.method)) throw new FrontendReleaseMismatchError(serverFingerprint, !reloading);
 }
