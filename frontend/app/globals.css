@@ -4091,14 +4091,13 @@ html {
   outline: 2px solid var(--neo-ink);
   outline-offset: -2px;
 }
-/* Sidebar: an edge on the canvas, a yellow brand tile, stroked header
+/* Sidebar: an edge on the canvas, a stroked brand tile, stroked header
  * buttons and search, bold rows, and the selected row lifted off the rail. */
 .neobrutal [data-slot="sidebar-container"] {
   border-right: 2px solid var(--neo-ink);
 }
 .neobrutal [data-slot="sidebar-header"] a.rounded-2lg {
-  background: var(--neo-yellow);
-  color: #000;
+  background: var(--color-background-primary-default);
   border-radius: 5px;
   box-shadow: var(--neo-lift-2);
   font-weight: 800;
