@@ -568,6 +568,8 @@ export async function handleSlackEvent(
     // rows accepted before names were resolved replay unchanged.
     prompt: stablePrompt,
     model,
+    // A reply keeps the thread's reasoning level the way it keeps its model.
+    reasoningEffort: parent?.reasoningEffort ?? null,
     engine,
     parentRunId,
     requestedRepos: [],
@@ -707,6 +709,7 @@ export async function handleSlackEvent(
         id: runId,
         prompt,
         model,
+        reasoningEffort: parent?.reasoningEffort ?? null,
         engine,
         parentRunId,
         threadId,

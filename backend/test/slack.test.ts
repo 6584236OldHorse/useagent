@@ -4003,3 +4003,40 @@ describe("slack inbound attachments", () => {
     }
   });
 });
+
+describe("slack reply reasoning effort", () => {
+  test("a threaded reply carries the thread's reasoning level the way it carries the model", async () => {
+    const marker = uid("effort");
+    const channel = `C${uid("ch")}`;
+    const rootTs = `${uid("ts")}.1`;
+    await postSlack(
+      eventCallback({
+        type: "app_mention",
+        channel,
+        user: "U-HUMAN",
+        text: `<@${BOT}> build ${marker}`,
+        ts: rootTs,
+      }),
+    );
+    const root = await waitFor(async () => findRunByPrompt(`build ${marker}`));
+    // The thread carries a level (as a turn chosen in the web picker would leave it).
+    await db.update(runs).set({ reasoningEffort: "high" }).where(eq(runs.id, root.id));
+
+    const res = await postSlack(
+      eventCallback({
+        type: "message",
+        channel,
+        user: "U-HUMAN",
+        text: `continue ${marker}`,
+        ts: `${uid("ts")}.2`,
+        thread_ts: rootTs,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const reply = await waitFor(async () => findRunByPrompt(`continue ${marker}`));
+    expect(reply.parent_run_id).toBe(root.id);
+    const accepted = await json<{ reasoning_effort: string | null; model: string }>(`/api/runs/${reply.id}`);
+    expect(accepted.body.model).toBe(root.model);
+    expect(accepted.body.reasoning_effort).toBe("high");
+  });
+});
