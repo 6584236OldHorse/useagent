@@ -23,7 +23,6 @@ import { ArtifactsRail } from "@/components/chat/artifacts-rail";
 import {
   selectActiveSessionId,
   selectSessionCapabilities,
-  selectSessionCommandCatalog,
 } from "@/components/chat/canonical-timeline";
 import { type AssistantIdentity, Conversation } from "@/components/chat/conversation";
 import { DesktopPane } from "@/components/chat/desktop-pane";
@@ -168,13 +167,6 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       null,
     [snapshot.byId, newest.id, newest.engine_session_id],
   );
-  // The active session catalog's SNAPSHOT revision (latest commands.updated deliverySeq) - sent
-  // with a native-command intent so the backend fail-closed authorization rejects a stale catalog.
-  const commandCatalogRevision = useMemo(
-    () =>
-      selectSessionCommandCatalog([...snapshot.byId.values()], engineSessionId)?.revision ?? null,
-    [snapshot.byId, engineSessionId],
-  );
   // The ONE negotiated capability map for the current session: submission
   // behavior and surface visibility consume the same contract.
   const caps = useMemo(
@@ -195,6 +187,10 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   // (the inline fold groups the same rows per parent turn).
   const gatewayChildren = useMemo(() => deriveThreadGatewayChildren(turns), [turns]);
   const live = turns.some((t) => isLiveStatus(t.status));
+  // The composer's command catalog and the SNAPSHOT revision a native-command intent is sent
+  // with, so the backend's fail-closed authorization rejects a stale catalog.
+  const { catalogState, commands, revision: commandCatalogRevision } =
+    useReplyCommandCatalog(snapshot.byId, engineSessionId, newest.engine, rootId, live);
   const terminalRunId = terminalRunIdForThread(turns);
   // The turn currently producing events (running preferred; else the newest live
   // turn about to start) - the boot orb + live indicators read from it.
@@ -645,8 +641,6 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [surfacesSheet, sheetSurfacesOpen]);
-
-  const { catalogState, commands } = useReplyCommandCatalog(snapshot.byId, engineSessionId, newest.engine);
 
   return (
     <WorkspaceOpenProvider value={openWorkpiece}>

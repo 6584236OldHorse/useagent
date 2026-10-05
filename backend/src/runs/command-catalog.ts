@@ -1,13 +1,17 @@
 import type { SessionCommandCatalog } from "@useagent/agent-client/wire";
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/client";
+import { runs } from "../db/schema";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { readSessionCommandCatalogRow } from "./session-command-catalog";
 
 // ---------------------------------------------------------------------------
-// Slash-command catalogs. A native session advertises its command list as a
-// durable canonical `commands.updated` event. Two readers use it:
+// Slash-command catalogs. A native session advertises its command list either
+// in the session command catalog table (the runtime engines: the adapter records
+// what the resident runtime advertises) or as a durable canonical
+// `commands.updated` event (Pi, through its bridge frames). Two readers use it:
 //   - the authoritative per-session catalog a typed command intent is
 //     authorized against (exactly what THIS session advertised);
 //   - the pre-session picker (GET /api/commands), which shows the latest
@@ -47,19 +51,22 @@ function commandsFromBody(body: CommandsUpdatedBody): CatalogCommand[] {
     .filter((c) => c.name.length > 0);
 }
 
-/** The AUTHORITATIVE command catalog for a SPECIFIC native session, read from the DURABLE
- *  canonical stream: the LATEST `commands.updated` for that session in the thread, WITH its
- *  `revision` (that event's `delivery_seq` - a monotonic snapshot id that also advances when a
- *  relay regeneration re-advertises). This is the ONLY thing a native-command intent is
- *  authorized against - exactly what THIS session advertised, never an org-wide picker cache.
- *  `commands` is [] when the session advertised none; the whole result is null when the session
- *  has not advertised a catalog yet (the caller then FAILS CLOSED - a command cannot be
- *  authorized against a cache). */
+/** The AUTHORITATIVE command catalog for a SPECIFIC native session, WITH the `revision` a
+ *  native-command intent must match: the session's row in the catalog table (its revision
+ *  rises whenever the advertised list changes), else the LATEST `commands.updated` for that
+ *  session in the DURABLE canonical stream (its `delivery_seq` - a monotonic snapshot id that
+ *  also advances when a relay regeneration re-advertises). This is the ONLY thing a
+ *  native-command intent is authorized against - exactly what THIS session advertised, never an
+ *  org-wide picker cache. `commands` is [] when the session advertised none; the whole result is
+ *  null when the session has not advertised a catalog yet (the caller then FAILS CLOSED - a
+ *  command cannot be authorized against a cache). */
 export async function readSessionCommandCatalog(
   threadId: string,
   provider: string,
   sessionId: string,
 ): Promise<SessionCommandCatalog | null> {
+  const recorded = await readSessionCommandCatalogRow(threadId, provider, sessionId);
+  if (recorded) return { commands: commandsFromBody({ catalog: recorded.commands }), revision: recorded.revision };
   const rows = (await db.execute(sql`
     select body, delivery_seq from canonical_events
     where thread_id = ${threadId} and kind = 'commands.updated'
@@ -95,16 +102,32 @@ export async function readLatestEngineCommandCatalog(
 
 // ── Route ────────────────────────────────────────────────────────────────────
 // GET /api/commands?engine=<id> → the current org's latest catalog for that engine.
+// With `thread` and `session` (a thread of the current org and its active native
+// session) → that session's own catalog with its `revision`, the snapshot the
+// reply composer's typed commands and Compact are sent against, and the `session`
+// it belongs to, so a composer whose session changed meanwhile can tell. A thread
+// of another org, a session without a catalog, or none given → the org snapshot
+// primes the picker, with `revision` and `session` null; never a different status.
 export const commandsRoutes = new Hono<AppEnv>();
 commandsRoutes.use("*", orgScope);
 
 commandsRoutes.get("/", async (c) => {
   const engine = c.req.query("engine")?.trim() || "opencode";
   const orgId = c.get("orgId");
+  const threadId = c.req.query("thread")?.trim() || null;
+  const sessionId = c.req.query("session")?.trim() || null;
+  if (orgId && threadId && sessionId) {
+    const [owned] = await db.select({ id: runs.id }).from(runs)
+      .where(and(eq(runs.threadId, threadId), eq(runs.orgId, orgId))).limit(1);
+    const own = owned ? await readSessionCommandCatalog(threadId, engine, sessionId) : null;
+    if (own) return c.json({ engine, commands: own.commands, revision: own.revision, session: sessionId, fetched_at: null });
+  }
   const latest = orgId ? await readLatestEngineCommandCatalog(orgId, engine) : null;
   return c.json({
     engine,
     commands: latest?.commands ?? [],
+    revision: null,
+    session: null,
     fetched_at: latest ? latest.fetchedAt.toISOString() : null,
   });
 });

@@ -490,6 +490,20 @@ describe("T3 run adapter gate", () => {
     expect(source).not.toContain("keyword");
   });
 
+  test("records the session's command catalog after session.started, before steering, and again once the turn settled", () => {
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const sessionStartedIdx = source.indexOf("await recordProviderSessionStarted(ctx, session, {");
+    const catalogIdx = source.indexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const steerIdx = source.indexOf("const steerResult = await driver.steer({");
+    const settledIdx = source.lastIndexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const closeIdx = source.indexOf("await prepared.close().catch(() => {});");
+    expect(sessionStartedIdx).toBeGreaterThan(-1);
+    expect(catalogIdx).toBeGreaterThan(sessionStartedIdx);
+    expect(steerIdx).toBeGreaterThan(catalogIdx);
+    expect(settledIdx).toBeGreaterThan(steerIdx);
+    expect(closeIdx).toBeGreaterThan(settledIdx);
+  });
+
   test("includes canonical history when T3 resumed metadata but the current auth epoch is unbound", () => {
     const ctx = {
       prompt: "continue",

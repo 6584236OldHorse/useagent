@@ -595,12 +595,14 @@ export function buildTimelineFromCanonical(
 export type {
   CanonicalCommandView,
   CommandCatalogState,
+  SessionCatalogAnswer,
   SessionCommandCatalog,
 } from "./canonical-session";
 export {
   intentCommands,
   resolveCommandCatalog,
   selectActiveSessionId,
+  selectComposerSessionCatalog,
   selectSessionCapabilities,
   selectSessionCommandCatalog,
   selectSessionCommands,

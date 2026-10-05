@@ -310,7 +310,7 @@ export interface RuntimeThreadSnapshot {
     };
   };
 }
-const PROVIDER_INSTANCE: Record<RuntimeEngineId, string> = {
+export const PROVIDER_INSTANCE: Record<RuntimeEngineId, string> = {
   codex: "codex",
   claude: "claudeAgent",
   opencode: "opencode",

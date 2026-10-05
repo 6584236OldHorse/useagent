@@ -51,6 +51,7 @@ import {
   establishProviderSession,
   recordProviderSessionStarted,
 } from "./provider-turn";
+import { recordRuntimeCommandCatalog } from "./runtime-command-catalog";
 import {
   restartRuntimeEnvironment,
   RUNTIME_CUBE_WARM_POOL_NAME,
@@ -622,6 +623,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           source: engine,
           resumed: established.resumed,
         });
+        // The session's native command list, recorded with the session so the
+        // reply composer's typed commands and Compact authorize against it.
+        await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
@@ -720,6 +724,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
             }
           }
+          // The runtime rewrites its snapshot when the provider's command list
+          // changes (a command this turn created, a refreshed provider); read it
+          // again once the turn settled so the next reply composes against the
+          // current catalog. An unchanged list records nothing.
+          await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         } finally {
           endTurn?.();
           if (ctx.signal.aborted && !skipQueuedCancel) {

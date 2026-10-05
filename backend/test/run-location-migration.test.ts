@@ -34,8 +34,8 @@ test("a database deployed at main's journal tail upgrades into the run location 
     expect(cutoff).toBeGreaterThanOrEqual(0);
     expect(ours).toBeGreaterThan(cutoff);
     expect(journal.entries[ours]!.when).toBeGreaterThan(journal.entries[cutoff]!.when);
-    // The stamp is the journal's tail: nothing after it may carry an older one.
-    expect(journal.entries[ours]!.when).toBe(Math.max(...journal.entries.map((entry) => entry.when)));
+    // Nothing after it may carry an older stamp, or the boot migrator would skip it.
+    for (const later of journal.entries.slice(ours + 1)) expect(later.when).toBeGreaterThan(journal.entries[ours]!.when);
     const mainEntries = journal.entries.slice(0, cutoff + 1);
     await mkdir(join(partialFolder, "meta"), { recursive: true });
     await Bun.write(

@@ -36,6 +36,7 @@ export * from "./schema/bot-handoffs";
 export * from "./schema/runners";
 export * from "./schema/spend";
 export * from "./schema/sandbox-minutes";
+export * from "./schema/session-command-catalogs";
 
 // Re-export the better-auth tables so drizzle-kit sees the whole schema and
 // the drizzle adapter can resolve every model.
