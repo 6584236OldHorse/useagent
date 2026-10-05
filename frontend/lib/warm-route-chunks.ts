@@ -48,8 +48,15 @@ export async function warmRouteChunks(options: WarmOptions = {}): Promise<number
   const requested = queue.length;
   const workers = Array.from({ length: Math.max(1, options.concurrency ?? 3) }, async () => {
     for (let next = queue.shift(); next; next = queue.shift()) {
-      // A plain fetch fills the HTTP cache; the immutable chunk is served from it on the hop.
-      await fetchImpl(next, { priority: "low" } as RequestInit).catch(() => undefined);
+      // A plain fetch fills the HTTP cache; the immutable chunk is served from it
+      // on the hop. The body is read to the end: fetch resolves on headers, and a
+      // download only counts once the bytes have landed.
+      try {
+        const response = await fetchImpl(next, { priority: "low" } as RequestInit);
+        await response.arrayBuffer();
+      } catch {
+        // a missing chunk is not this page's problem; the hop fetches it itself
+      }
     }
   });
   await Promise.all(workers);
