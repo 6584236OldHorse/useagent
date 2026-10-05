@@ -245,7 +245,10 @@ export function AppSidebarFrame({
         <Link
           aria-label="UseAgent new thread"
           className={cn(
-            "flex items-center gap-2.5 rounded-2lg py-1.5 text-text-primary outline-none transition-colors hover:bg-background-secondary-hover focus-visible:ring-2 focus-visible:ring-border-focus-ring",
+            // gap-1.5, not gap-2.5: the mark's 300-unit box keeps about 5px of
+            // its own whitespace on each side at size-8 (the path spans units
+            // 52 to 248), so the word already sits that much further out.
+            "flex items-center gap-1.5 rounded-2lg py-1.5 text-text-primary outline-none transition-colors hover:bg-background-secondary-hover focus-visible:ring-2 focus-visible:ring-border-focus-ring",
             isCollapsed ? "justify-center px-0" : "px-2",
           )}
           href="/agent/new"
