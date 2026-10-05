@@ -16,6 +16,14 @@ import { ne } from "drizzle-orm";
 /** Missed heartbeats before a runner counts as gone (the runner beats every 15 s). */
 export const OFFLINE_AFTER_MS = 45_000;
 
+/** Close code when the control plane drops a link it no longer trusts to be live; the runner reconnects. */
+export const CLOSE_LINK_DROPPED = 4410;
+
+/** The socket behind a link, closed by the registry when it drops the link so the runner reconnects. */
+export interface RunnerTransport {
+  close(code: number, reason: string): void;
+}
+
 export interface LiveRunner {
   readonly id: string;
   readonly orgId: string;
@@ -24,6 +32,7 @@ export interface LiveRunner {
   readonly enrolledAt: string;
   readonly fingerprint: string;
   mux: Mux | null;
+  transport: RunnerTransport | null;
   hello: HelloFrame | null;
   capacity: HeartbeatFrame["capacity"] | null;
   logins: readonly string[];
@@ -86,6 +95,7 @@ export class RunnerRegistry {
       enrolledAt: row.enrolledAt.toISOString(),
       fingerprint: fingerprintOf(row),
       mux: null,
+      transport: null,
       hello: null,
       capacity: row.capacity && "cpu" in row.capacity ? row.capacity : null,
       logins: row.logins ?? [],
@@ -98,10 +108,13 @@ export class RunnerRegistry {
   }
 
   forget(runnerId: string): void {
+    // A hello still being recorded for this runner must not install it afterwards.
+    this.attaching.set(runnerId, (this.attaching.get(runnerId) ?? 0) + 1);
     const runner = this.live.get(runnerId);
     if (!runner) return;
     runner.forwarders.closeAll();
     runner.mux?.close("runner revoked");
+    runner.transport?.close(4401, "runner revoked");
     this.live.delete(runnerId);
   }
 
@@ -110,7 +123,7 @@ export class RunnerRegistry {
    * runner. Null when the runner was revoked after its token resolved, in
    * which case nothing is attached and the caller closes the socket.
    */
-  async attach(row: RunnerRow, mux: Mux, hello: HelloFrame): Promise<LiveRunner | null> {
+  async attach(row: RunnerRow, mux: Mux, hello: HelloFrame, transport: RunnerTransport | null = null): Promise<LiveRunner | null> {
     const ticket = (this.attaching.get(row.id) ?? 0) + 1;
     this.attaching.set(row.id, ticket);
     if (row.status === "revoked" || !(await this.persist.hello(row.id, hello))) {
@@ -119,11 +132,18 @@ export class RunnerRegistry {
     }
     if (mux.isClosed || this.attaching.get(row.id) !== ticket) {
       mux.close("superseded by a newer link");
+      transport?.close(CLOSE_LINK_DROPPED, "superseded by a newer link");
+      // The hello just recorded this link as online; with no newer link speaking for the machine, that is wrong.
+      if (this.attaching.get(row.id) === ticket && !this.live.get(row.id)?.mux) await this.persist.offline(row.id);
       return null;
     }
     const runner = this.know(row);
-    if (runner.mux && runner.mux !== mux) runner.mux.close("replaced by a newer link");
+    if (runner.mux && runner.mux !== mux) {
+      runner.mux.close("replaced by a newer link");
+      runner.transport?.close(CLOSE_LINK_DROPPED, "replaced by a newer link");
+    }
     runner.mux = mux;
+    runner.transport = transport;
     runner.hello = hello;
     runner.capacity = hello.capacity;
     runner.logins = hello.logins;
@@ -151,8 +171,12 @@ export class RunnerRegistry {
     const runner = this.live.get(runnerId);
     if (!runner || runner.mux !== mux) return;
     runner.mux = null;
+    const transport = runner.transport;
+    runner.transport = null;
     runner.forwarders.closeAll();
     mux.close(reason);
+    // Closing the mux alone leaves the socket open and deaf; the runner must see the link end to reconnect.
+    transport?.close(CLOSE_LINK_DROPPED, reason);
     await this.persist.offline(runnerId);
   }
 

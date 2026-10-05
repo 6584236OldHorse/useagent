@@ -195,6 +195,21 @@ describe("local process and file system", () => {
     expect(lines.join("")).toBe("line 1\nline 2\n");
   });
 
+  test("a download or a log follow whose stream fails after its last byte fails the caller", async () => {
+    const encoder = new TextEncoder();
+    const link = runner({
+      onStream: async (_target, far) => {
+        await far.write(encoder.encode("partial"));
+        far.end();
+        far.reset("disk read failed");
+      },
+    });
+    const provider = new LocalProvider(localProviderConfig(ENV), { links: fakeLinkDirectory([link]) });
+    const { fs, process } = await provider.get("local:rn1:c1");
+    await expect(fs.downloadFile("/home/user/a.txt")).rejects.toThrow(/disk read failed/);
+    await expect(process.followSessionCommandLogs?.("s", "cmd-1", () => {}, () => {})).rejects.toThrow(/disk read failed/);
+  });
+
   test("an upload the runner rejects fails the caller", async () => {
     const link = runner({
       onStream: async (_target, far) => {

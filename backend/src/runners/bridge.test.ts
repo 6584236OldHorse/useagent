@@ -83,7 +83,8 @@ async function planeWithRunner() {
         if (t.kind === "file.write") {
           const parts: Uint8Array[] = [];
           for await (const chunk of stream.readable) parts.push(chunk);
-          calls.push({ method: "wrote", params: new TextDecoder().decode(Buffer.concat(parts)) });
+          const total = parts.reduce((n, part) => n + part.byteLength, 0);
+          calls.push(t.path === "/big" ? { method: "wrote-bytes", params: total } : { method: "wrote", params: new TextDecoder().decode(Buffer.concat(parts)) });
           stream.end();
         }
       })();
@@ -96,13 +97,13 @@ async function planeWithRunner() {
 interface ServedRun {
   readonly orgId: string;
   readonly sandboxId: string | null;
-  readonly status?: "running" | "completed" | "cancelled";
+  status?: "running" | "completed" | "cancelled";
 }
 
 function serve(
   directory: SandboxLinkDirectory,
   runs: Record<string, ServedRun>,
-  overrides: Partial<Pick<RunnerBridgeDeps, "policy" | "env" | "identity">> = {},
+  overrides: Partial<Pick<RunnerBridgeDeps, "policy" | "env" | "identity" | "recheckMs">> = {},
 ) {
   const app = new Hono<AppEnv>().route(
     "/api/internal/runners",
@@ -128,7 +129,7 @@ const context = { orgId: "org-a", userId: "user-1", runId: "run-1", threadId: "t
 const ownRun = { "run-1": { orgId: "org-a", sandboxId: "local:rn_a:c1" } };
 
 /** A link whose streams the test controls, for the bridge's own state machine. */
-function fakeStream() {
+function fakeStream(options: { readonly failWrites?: string } = {}) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const readable = new ReadableStream<Uint8Array>({
     start(c) {
@@ -145,6 +146,7 @@ function fakeStream() {
     readable,
     done: done.promise,
     async write(bytes) {
+      if (options.failWrites) throw new Error(options.failWrites);
       written.push(new TextDecoder().decode(bytes));
     },
     end() {
@@ -416,6 +418,51 @@ describe("runner bridge", () => {
     fake.done.reject(new Error("the sandbox could not keep the file"));
     await expect(stream.done).rejects.toThrow(/could not keep the file/);
     expect(fake.written).toEqual(["payload"]);
+  });
+
+  test("an open stream ends when its run stops or local execution is switched off", async () => {
+    const runs: Record<string, ServedRun> = { "run-1": { orgId: "org-a", sandboxId: "local:rn_a:c1", status: "running" } };
+    let allowed = true;
+    const origin = serve(fakeDirectory(async () => fakeStream().stream), runs, { recheckMs: 30, policy: async () => ({ allowLocalExecution: allowed }) });
+    const remote = new RemoteRunnerDirectory({ origin: () => origin });
+    remote.remember(row());
+    const link = await withRunnerBridgeContext(context, async () => remote.get("rn_a")!);
+    const stopped = await link.openStream({ kind: "file.write", sandboxId: "c1", path: "/x" });
+    runs["run-1"]!.status = "cancelled";
+    await expect(stopped.done).rejects.toThrow(/no longer valid: inactive_capability/);
+    await expect(stopped.write(new Uint8Array(1))).rejects.toThrow(/no longer valid/);
+    runs["run-1"]!.status = "running";
+    const forbidden = await link.openStream({ kind: "file.write", sandboxId: "c1", path: "/x" });
+    allowed = false;
+    await expect(forbidden.done).rejects.toThrow(/no longer valid: local_execution_disabled/);
+  });
+
+  test("an upload larger than the bridge's window flows under credit, and writing after end is refused", async () => {
+    const { registry, calls } = await planeWithRunner();
+    const origin = serve(registry.directory, ownRun);
+    const remote = new RemoteRunnerDirectory({ origin: () => origin });
+    remote.remember(row());
+    const link = await withRunnerBridgeContext(context, async () => remote.get("rn_a")!);
+    const stream = await link.openStream({ kind: "file.write", sandboxId: "c1", path: "/big" });
+    const size = MAX_BRIDGE_QUEUE_BYTES + 1024 * 1024;
+    await stream.write(new Uint8Array(size));
+    stream.end();
+    await expect(stream.write(new Uint8Array(1))).rejects.toThrow(/already ended/);
+    await stream.done;
+    expect(calls.at(-1)).toEqual({ method: "wrote-bytes", params: size });
+  });
+
+  test("a write the sandbox rejects ends the stream as a failure", async () => {
+    const fake = fakeStream({ failWrites: "no space left on the machine" });
+    const origin = serve(fakeDirectory(async () => fake.stream), ownRun);
+    const remote = new RemoteRunnerDirectory({ origin: () => origin });
+    remote.remember(row());
+    const link = await withRunnerBridgeContext(context, async () => remote.get("rn_a")!);
+    const stream = await link.openStream({ kind: "file.write", sandboxId: "c1", path: "/x" });
+    await stream.write(new TextEncoder().encode("payload"));
+    stream.end();
+    await expect(stream.done).rejects.toThrow(/write failed: no space left/);
+    expect(fake.resets).toEqual(["write failed: no space left on the machine"]);
   });
 
   test("output the gateway does not read is bounded", async () => {

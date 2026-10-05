@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { type HelloFrame, Mux, PROTOCOL_VERSION } from "@useagent/runner-protocol";
-import { RunnerRegistry, type RunnerPersistence } from "./registry";
+import { CLOSE_LINK_DROPPED, RunnerRegistry, type RunnerPersistence } from "./registry";
 import { type RunnerRow, hashRunnerToken } from "./store";
 
 function row(): RunnerRow {
@@ -39,8 +39,20 @@ const hello: HelloFrame = {
   imageDigest: null,
 };
 
-function persistence(hello: RunnerPersistence["hello"]): RunnerPersistence {
-  return { hello, heartbeat: async () => true, offline: async () => {}, markStale: async () => 0 };
+function persistence(hello: RunnerPersistence["hello"], offline: string[] = []): RunnerPersistence {
+  return {
+    hello,
+    heartbeat: async () => true,
+    offline: async (id) => {
+      offline.push(id);
+    },
+    markStale: async () => 0,
+  };
+}
+
+function transport() {
+  const closes: Array<{ code: number; reason: string }> = [];
+  return { closes, close: (code: number, reason: string) => closes.push({ code, reason }) };
 }
 
 function mux(): Mux {
@@ -77,6 +89,63 @@ describe("runner registry", () => {
     expect(await attach).toBeNull();
     expect(registry.runner("rn_a")?.mux).toBeNull();
     expect(registry.onlineForUser("org-a", "user-1")).toBeNull();
+  });
+
+  test("revocation while a hello is being recorded discards the attachment", async () => {
+    const gate = Promise.withResolvers<boolean>();
+    const registry = new RunnerRegistry({ persist: persistence(() => gate.promise) });
+    registry.know(row());
+    const link = mux();
+    const attach = registry.attach(row(), link, hello);
+    registry.forget("rn_a");
+    gate.resolve(true);
+    expect(await attach).toBeNull();
+    expect(link.isClosed).toBe(true);
+    expect(registry.runner("rn_a")).toBeNull();
+    expect(registry.onlineForUser("org-a", "user-1")).toBeNull();
+  });
+
+  test("a discarded link is recorded offline again unless a newer link speaks for the machine", async () => {
+    const offline: string[] = [];
+    const gate = Promise.withResolvers<boolean>();
+    const registry = new RunnerRegistry({ persist: persistence(() => gate.promise, offline) });
+    registry.know(row());
+    const link = mux();
+    const attach = registry.attach(row(), link, hello);
+    link.close("socket dropped");
+    gate.resolve(true);
+    expect(await attach).toBeNull();
+    expect(offline).toEqual(["rn_a"]);
+    // Overtaken: the newer hello wrote the row online and the discarded one must not undo it.
+    const later: string[] = [];
+    const first = Promise.withResolvers<boolean>();
+    let calls = 0;
+    const raced = new RunnerRegistry({ persist: persistence(() => (++calls === 1 ? first.promise : Promise.resolve(true)), later) });
+    raced.know(row());
+    const olderAttach = raced.attach(row(), mux(), hello);
+    await raced.attach(row(), mux(), hello);
+    first.resolve(true);
+    expect(await olderAttach).toBeNull();
+    expect(later).toEqual([]);
+  });
+
+  test("dropping a link closes the socket behind it so the runner reconnects", async () => {
+    const registry = new RunnerRegistry({ persist: persistence(async () => true) });
+    registry.know(row());
+    const first = transport();
+    const firstMux = mux();
+    await registry.attach(row(), firstMux, hello, first);
+    const second = transport();
+    const secondMux = mux();
+    await registry.attach(row(), secondMux, hello, second);
+    expect(first.closes).toEqual([{ code: CLOSE_LINK_DROPPED, reason: "replaced by a newer link" }]);
+    await registry.detach("rn_a", secondMux, "heartbeats stopped");
+    expect(second.closes).toEqual([{ code: CLOSE_LINK_DROPPED, reason: "heartbeats stopped" }]);
+    expect(registry.runner("rn_a")?.mux).toBeNull();
+    const third = transport();
+    await registry.attach(row(), mux(), hello, third);
+    registry.forget("rn_a");
+    expect(third.closes).toEqual([{ code: 4401, reason: "runner revoked" }]);
   });
 
   test("the newest link replaces an older live one", async () => {

@@ -183,6 +183,8 @@ class LocalProcess implements SandboxProcess {
     } finally {
       stream.end();
     }
+    // A failure the runner reports after its last byte still fails the caller.
+    await stream.done;
   }
 
   sendSessionCommandInput(sessionId: string, commandId: string, data: string) {
@@ -214,6 +216,8 @@ class LocalFileSystem implements SandboxFileSystem {
     const stream = await this.link.openStream({ kind: "file.read", sandboxId: this.containerId, path } satisfies StreamTarget);
     const bytes = await readAll(stream);
     stream.end();
+    // The bytes count only once the stream settled; a reset after the last byte fails the download.
+    await stream.done;
     return bytes;
   }
 

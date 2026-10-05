@@ -18,6 +18,8 @@ import type { RunnerRow } from "./store";
 
 const CALL_GRACE_MS = 5000;
 const TOKEN_TTL_MS = 60_000;
+/** Bytes per frame into the bridge; a write of any size is split so the bridge's window is never exceeded by one frame. */
+const WRITE_CHUNK_BYTES = 64 * 1024;
 
 /** Exactly the columns the gateway's database role may read (db/gateway-grants.ts). */
 export const KNOWN_RUNNER_COLUMNS = {
@@ -163,9 +165,20 @@ export class RemoteRunnerDirectory implements SandboxLinkDirectory {
       let opened = false;
       let localEnded = false;
       let finished = false;
+      let failure: Error | null = null;
+      // Bytes the bridge will accept before it has written earlier ones into the sandbox.
+      let credit = 0;
+      let creditWaiters: Array<() => void> = [];
+      const wakeWriters = () => {
+        const waiters = creditWaiters;
+        creditWaiters = [];
+        for (const wake of waiters) wake();
+      };
       const fail = (error: Error) => {
         if (finished) return;
         finished = true;
+        failure = error;
+        wakeWriters();
         try {
           controller.error(error);
         } catch {
@@ -184,8 +197,17 @@ export class RemoteRunnerDirectory implements SandboxLinkDirectory {
         readable,
         done: settle.promise,
         async write(bytes) {
-          if (finished) throw new Error("stream is closed");
-          socket.send(bytes);
+          if (localEnded) throw new Error("stream already ended");
+          for (let offset = 0; offset < bytes.byteLength; offset += WRITE_CHUNK_BYTES) {
+            const chunk = bytes.subarray(offset, Math.min(offset + WRITE_CHUNK_BYTES, bytes.byteLength));
+            while (credit < chunk.byteLength) {
+              if (finished) throw failure ?? new Error("stream is closed");
+              await new Promise<void>((wake) => creditWaiters.push(wake));
+            }
+            if (finished) throw failure ?? new Error("stream is closed");
+            credit -= chunk.byteLength;
+            socket.send(chunk);
+          }
         },
         end() {
           if (localEnded || finished) return;
@@ -209,7 +231,11 @@ export class RemoteRunnerDirectory implements SandboxLinkDirectory {
           if (!control) return;
           if (control.t === "opened") {
             opened = true;
+            credit = control.window ?? MAX_BRIDGE_QUEUE_BYTES;
             resolve(stream);
+          } else if (control.t === "credit") {
+            credit += control.bytes;
+            wakeWriters();
           } else if (control.t === "refused") {
             fail(Object.assign(new Error(control.message), { code: control.code }));
           } else if (control.t === "end") {
@@ -240,6 +266,7 @@ export class RemoteRunnerDirectory implements SandboxLinkDirectory {
         if (finished) return;
         if (opened && event.code === 1000) {
           finished = true;
+          wakeWriters();
           try {
             controller.close();
           } catch {

@@ -9,7 +9,7 @@ import { type HelloFrame, Mux, type MuxHandlers, PROTOCOL_VERSION, readAllFromSt
 import { localPlugin, localProviderConfig } from "@useagent/sandbox-local";
 import type { AppEnv } from "../http";
 import { CLOSE_RUNNER_TOO_OLD, CLOSE_TOKEN_REJECTED, createRunnerLinkRoutes, welcomeFor } from "./link";
-import { OFFLINE_AFTER_MS, type RunnerPersistence, RunnerRegistry } from "./registry";
+import { OFFLINE_AFTER_MS, type RunnerPersistence, RunnerRegistry, CLOSE_LINK_DROPPED } from "./registry";
 import { type RunnerRow, hashRunnerToken } from "./store";
 
 const TOKEN = "uart_rn_a.secret";
@@ -136,7 +136,7 @@ describe("runner link", () => {
     let now = 1_000_000;
     const { registry, persisted, url } = plane({ now: () => now });
     const welcomes: unknown[] = [];
-    const { socket, mux } = await connect(url, TOKEN, { onWelcome: (frame) => welcomes.push(frame) });
+    const { mux, closed } = await connect(url, TOKEN, { onWelcome: (frame) => welcomes.push(frame) });
     mux.send(hello());
     await until(() => welcomes.length === 1);
     expect(welcomes[0]).toMatchObject({ image: IMAGE, minProtocol: 1 });
@@ -155,7 +155,8 @@ describe("runner link", () => {
     expect(registry.isOnline(live)).toBe(false);
     expect(await registry.sweep()).toEqual(["rn_a"]);
     expect(live.mux).toBeNull();
-    socket.close();
+    // The sweep ends the socket too, so the runner sees the link drop and reconnects.
+    expect(await closed).toMatchObject({ code: CLOSE_LINK_DROPPED, reason: "heartbeats stopped" });
     await until(() => persisted.includes("offline:rn_a"));
     expect(persisted.slice(0, 2)).toEqual(["hello:rn_a", "heartbeat:rn_a"]);
   });

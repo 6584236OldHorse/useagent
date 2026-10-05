@@ -7,8 +7,11 @@
 //
 //   POST /bridge/call            {runnerId, method, params, timeoutMs} -> {result} | {error:{code,message}}
 //   GET  /bridge/stream (ws)     ?runnerId=&target=<base64 json>; binary frames carry bytes,
-//                                text frames carry {t:"opened"|"refused"|"end"|"reset"}; the socket
-//                                closes 1000 once the stream is done and 1011 when it failed
+//                                text frames carry {t:"opened",window}|{t:"credit",bytes}|{t:"refused"}|
+//                                {t:"end"}|{t:"reset"}; the gateway may have at most `window` bytes
+//                                unacknowledged, each write into the sandbox returns credit; the socket
+//                                closes 1000 once the stream is done and 1011 when it failed; the
+//                                capability is rechecked while the stream is open
 
 import type { ServerWebSocket } from "bun";
 import { Hono } from "hono";
@@ -28,6 +31,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 /** Bytes a bridge stream may hold in either direction; more resets the stream. */
 export const MAX_BRIDGE_QUEUE_BYTES = 8 * 1024 * 1024;
 const DRAIN_POLL_MS = 5;
+/** How often an open stream's capability is checked again (run still running, local execution still allowed). */
+const RECHECK_MS = 15_000;
 
 /** What a run's tools do inside their own container. Inventory, lifecycle, terminals and ports stay with the backend. */
 export const BRIDGE_METHODS: ReadonlySet<string> = new Set([
@@ -46,18 +51,22 @@ export const BRIDGE_METHODS: ReadonlySet<string> = new Set([
 export const BRIDGE_STREAMS: ReadonlySet<string> = new Set(["file.read", "file.write", "logs.follow"]);
 
 export type BridgeControl =
-  | { readonly t: "opened" }
+  | { readonly t: "opened"; readonly window?: number }
+  | { readonly t: "credit"; readonly bytes: number }
   | { readonly t: "refused"; readonly code: string; readonly message: string }
   | { readonly t: "end" }
   | { readonly t: "reset"; readonly reason: string };
 
 export function parseBridgeControl(text: string): BridgeControl | null {
   try {
-    const value = JSON.parse(text) as { t?: unknown; code?: unknown; message?: unknown; reason?: unknown };
+    const value = JSON.parse(text) as { t?: unknown; code?: unknown; message?: unknown; reason?: unknown; window?: unknown; bytes?: unknown };
     switch (value.t) {
       case "opened":
+        return Number.isSafeInteger(value.window) && (value.window as number) > 0 ? { t: "opened", window: value.window as number } : { t: "opened" };
+      case "credit":
+        return Number.isSafeInteger(value.bytes) && (value.bytes as number) > 0 ? { t: "credit", bytes: value.bytes as number } : null;
       case "end":
-        return { t: value.t };
+        return { t: "end" };
       case "refused":
         return typeof value.code === "string" && typeof value.message === "string" ? { t: "refused", code: value.code, message: value.message } : null;
       case "reset":
@@ -84,6 +93,7 @@ export interface RunnerBridgeDeps {
   readonly run: (orgId: string, runId: string) => Promise<BridgeRun | null>;
   readonly policy: (orgId: string) => Promise<{ readonly allowLocalExecution: boolean }>;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly recheckMs?: number;
 }
 
 interface Grant {
@@ -165,7 +175,8 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
       } catch {
         target = null;
       }
-      const grantPromise = grantFor(deps, c.req.header("authorization"), runnerId);
+      const authorization = c.req.header("authorization");
+      const grantPromise = grantFor(deps, authorization, runnerId);
       let stream: SandboxLinkStream | null = null;
       /** The gateway half-closed: no more bytes will arrive. */
       let ended = false;
@@ -178,7 +189,12 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
       const inbound: Uint8Array[] = [];
       let writer: Promise<void> = Promise.resolve();
       let closing = false;
+      let recheck: ReturnType<typeof setInterval> | null = null;
       let ws: WSContext<ServerWebSocket<unknown>> | null = null;
+      const stopRecheck = () => {
+        if (recheck) clearInterval(recheck);
+        recheck = null;
+      };
       const send = (payload: string | Uint8Array<ArrayBuffer>) => {
         try {
           ws?.send(payload);
@@ -190,6 +206,7 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
       const finish = (code: number, reason: string, control?: BridgeControl) => {
         if (closing) return;
         closing = true;
+        stopRecheck();
         if (control) send(JSON.stringify(control));
         setTimeout(() => {
           try {
@@ -209,11 +226,20 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
         stream?.reset(reason);
         finish(1011, reason, { t: "reset", reason });
       };
+      // Writes keep their order; each one that lands returns its bytes as credit, one that fails ends the stream.
       const write = (opened: SandboxLinkStream, bytes: Uint8Array) => {
-        const settle = () => {
-          queued -= bytes.byteLength;
-        };
-        writer = writer.then(() => opened.write(bytes)).then(settle, settle);
+        writer = writer
+          .then(() => opened.write(bytes))
+          .then(
+            () => {
+              queued -= bytes.byteLength;
+              if (!terminated) send(JSON.stringify({ t: "credit", bytes: bytes.byteLength } satisfies BridgeControl));
+            },
+            (error: unknown) => {
+              queued -= bytes.byteLength;
+              terminate(`write failed: ${error instanceof Error ? error.message : String(error)}`);
+            },
+          );
       };
       return {
         onOpen: (_event, socket) => {
@@ -236,7 +262,17 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
               // The gateway reset or went away while the sandbox was opening: nothing it queued may reach the sandbox.
               if (terminated) return opened.reset(terminated);
               stream = opened;
-              send(JSON.stringify({ t: "opened" } satisfies BridgeControl));
+              send(JSON.stringify({ t: "opened", window: MAX_BRIDGE_QUEUE_BYTES } satisfies BridgeControl));
+              // A run that stops, or an administrator switching local execution off, ends open streams too.
+              recheck = setInterval(() => {
+                void grantFor(deps, authorization, runnerId).then(
+                  (again) => {
+                    if ("status" in again) terminate(`capability no longer valid: ${again.error}`);
+                    else if (again.containerId !== grant.containerId) terminate("capability no longer names this sandbox");
+                  },
+                  () => terminate("capability could not be checked again"),
+                );
+              }, deps.recheckMs ?? RECHECK_MS);
               for (const chunk of inbound.splice(0)) write(opened, chunk);
               if (ended) writer = writer.then(() => opened.end()).catch(() => {});
               const reading = (async () => {
@@ -295,6 +331,7 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
           else inbound.push(bytes);
         },
         onClose: () => {
+          stopRecheck();
           if (settled || terminated) return;
           terminated = "bridge closed";
           inbound.length = 0;
@@ -302,6 +339,7 @@ export function createRunnerBridgeRoutes(deps: RunnerBridgeDeps): Hono<AppEnv> {
           stream?.reset(terminated);
         },
         onError: () => {
+          stopRecheck();
           if (settled || terminated) return;
           terminated = "bridge errored";
           inbound.length = 0;

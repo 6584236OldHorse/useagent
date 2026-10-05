@@ -122,7 +122,7 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
           finish(1013, config.enabled ? "no native image is configured for local sandboxes" : "local runners are switched off");
           return;
         }
-        const live = await deps.registry.attach(row, mux, hello);
+        const live = await deps.registry.attach(row, mux, hello, { close: (code, reason) => finish(code, reason) });
         if (!live || finished) {
           if (!finished) finish(CLOSE_TOKEN_REJECTED, "runner revoked");
           return;
