@@ -134,9 +134,8 @@ class HarvestStopped extends Error {}
 
 /** Start `work` unless the run is already cancelled, then wait at most `ms`
  *  for it. A late result or failure of work we stopped waiting for is
- *  dropped: the sandbox and publish calls cannot be cancelled themselves
- *  (ponytail: publish has no abort signal; a publish that outlives the wait
- *  still lands in the database, only its Slack upload is missed). */
+ *  dropped; the sandbox and publish calls cannot be cancelled themselves, so
+ *  publish is handed the harvest deadline and refuses to persist past it. */
 function bounded<T>(work: () => Promise<T>, ms: number, signal: AbortSignal | undefined, what: string): Promise<T> {
   if (signal?.aborted) return Promise.reject(new HarvestStopped("run cancelled"));
   if (ms <= 0) return Promise.reject(new HarvestStopped(`${what} has no time left`));
@@ -179,14 +178,17 @@ export async function harvestTurnOutputs(
   const left = () => Math.min(STEP_TIMEOUT_MS, HARVEST_BUDGET_MS - (Date.now() - startedAt));
   const published: string[] = [];
   const { signal } = options;
+  const notAfter = startedAt + HARVEST_BUDGET_MS;
   try {
     if (signal?.aborted) return published;
-    const run = await getRun(runId);
+    const run = await bounded(() => getRun(runId), left(), signal, "run lookup");
     if (!run?.orgId || !run.sandboxId) return published;
-    const workspaceRoot = await resolveAttachedSandboxWorkspaceRoot({
-      sandboxId: run.sandboxId,
-      sandboxProvider: run.sandboxProvider,
-    });
+    const workspaceRoot = await bounded(
+      () => resolveAttachedSandboxWorkspaceRoot({ sandboxId: run.sandboxId!, sandboxProvider: run.sandboxProvider }),
+      left(),
+      signal,
+      "workspace lookup",
+    );
     const since = Math.floor(new Date(run.createdAt).getTime() / 1000) - CLOCK_SLACK_SECONDS;
     const candidates = parseFileListing(
       await bounded(() => dependencies.list(run, fileListCommand(workspaceRoot, since)), left(), signal, "listing"),
@@ -206,6 +208,9 @@ export async function harvestTurnOutputs(
           threadId: run.threadId,
           path: candidate.path,
           purpose: "deliverable" as const,
+          // A publish we stopped waiting for must not land after the run has
+          // been finalized and its history sealed: persistence refuses past this.
+          notAfter,
         };
         let result: Awaited<ReturnType<typeof publishSandboxArtifact>>;
         try {

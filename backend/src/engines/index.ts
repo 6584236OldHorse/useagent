@@ -129,17 +129,21 @@ export async function runProviderTurn(
   if (!registration || !driver) return false;
   await assertRunProviderCredential(provider, ctx);
 
-  if (driver.descriptor.protocol.name === "t3-orchestration") {
-    if (!isRuntimeEngineId(driver.provider)) {
-      throw new Error(`Engine driver has unsupported provider '${driver.provider}'`);
+  try {
+    if (driver.descriptor.protocol.name === "t3-orchestration") {
+      if (!isRuntimeEngineId(driver.provider)) {
+        throw new Error(`Engine driver has unsupported provider '${driver.provider}'`);
+      }
+      await makeRuntimeAdapter(driver.provider, driver).run(ctx);
+    } else {
+      await registration.execution.run(ctx, driver);
     }
-    await makeRuntimeAdapter(driver.provider, driver).run(ctx);
-  } else {
-    await registration.execution.run(ctx, driver);
+  } finally {
+    // Deliverables the agent left in the workspace become artifacts whether or
+    // not it called the publish tool, and whether or not the turn ended well:
+    // the plane looks at the workspace itself. A cancelled run is left alone.
+    if (!ctx.signal.aborted) await harvestTurnOutputs(ctx.runId, { signal: ctx.signal });
   }
-  // Deliverables the agent left in the workspace become artifacts whether or
-  // not it called the publish tool: the plane looks at the workspace itself.
-  await harvestTurnOutputs(ctx.runId, { signal: ctx.signal });
   return true;
 }
 
