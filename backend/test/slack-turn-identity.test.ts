@@ -12,7 +12,12 @@ import { createRun } from "../src/runs/repo";
 import { subscribeThread, type ThreadChange } from "../src/runs/thread-signals";
 import { handleSlackInboxClaim, setSlackClientForTest, type SlackClient } from "../src/slack";
 import type { SlackEnvelope } from "../src/slack/events";
-import { persistSlackInboxEvent, processSlackInbox } from "../src/slack/inbox";
+import {
+  persistSlackInboxEvent,
+  processSlackInbox,
+  startSlackInboxPump,
+  stopSlackInboxPumpForTest,
+} from "../src/slack/inbox";
 import { stampSlackTurnIdentity } from "../src/slack/turn-identity";
 import { upsertSlackUser, upsertSlackWorkspace } from "../src/slack/workspaces";
 import { createOrgSession, json, uid, type OrgSession } from "./helpers";
@@ -94,6 +99,9 @@ async function runRow(id: string) {
 }
 
 beforeAll(async () => {
+  // The boot pump is kicked by every persisted event; this suite drives the
+  // same claim handler explicitly so each assertion follows a finished claim.
+  await stopSlackInboxPumpForTest();
   for (const [key, value] of Object.entries(SLACK_ENV_OVERRIDES)) {
     savedEnv[key] = process.env[key];
     if (value === undefined) delete process.env[key];
@@ -111,6 +119,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  startSlackInboxPump(handleSlackInboxClaim);
   setSlackClientForTest(null);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
