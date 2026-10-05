@@ -8,7 +8,10 @@ import type { ApiRun } from "./types";
 // executes comes first and is there on an empty thread; the branch and the
 // project join it once the thread has a repository. Absence is never printed.
 
-function turn(id: string, sandbox: { sandbox_id: string | null; sandbox_provider?: string }): Turn {
+function turn(
+  id: string,
+  sandbox: { sandbox_id: string | null; sandbox_provider?: string; run_location?: "cloud" | "local" },
+): Turn {
   const run = {
     id,
     org_id: null,
@@ -64,8 +67,10 @@ const tabOf = (html: string) => {
 test("an empty thread shows only where its run executes, never a repository placeholder", () => {
   const html = render([turn("run-1", { sandbox_id: "sbx-1", sandbox_provider: "daytona" })]);
   const tab = tabOf(html);
+  // The vendor is a title-only detail; the tab itself reads Cloud.
   expect(tab).toContain('title="Runs on Daytona"');
-  expect(tab).toContain(">Daytona<");
+  expect(tab).toContain(">Cloud<");
+  expect(tab).not.toContain(">Daytona<");
   expect(tab).not.toContain("No repository");
   expect(tab).not.toContain("Default branch");
   expect(tab).toContain(">OpenCode<");
@@ -78,14 +83,31 @@ test("a thread with a repository shows the location, then the branch, then the p
   );
   const tab = tabOf(html);
   // The newest run decides the location: a local sandbox names the machine
-  // (unknown until the runner list loads), not the older run's provider.
-  const location = tab.indexOf("Runs on Unknown machine");
+  // (the person's own until the runner list names it), never the older run's
+  // provider.
+  const location = tab.indexOf("Runs on This Mac");
   const branch = tab.indexOf(">rl-staging<");
   const project = tab.indexOf(">gateway<");
   expect(location).toBeGreaterThan(-1);
   expect(branch).toBeGreaterThan(location);
   expect(project).toBeGreaterThan(branch);
   expect(tab).not.toContain("Daytona");
+});
+
+test("before any sandbox exists the tab reads the place the thread asked for", () => {
+  const cloud = tabOf(render([turn("run-1", { sandbox_id: null, run_location: "cloud" })]));
+  expect(cloud).toContain(">Cloud<");
+  expect(cloud).toContain('title="Runs in the cloud"');
+  const local = tabOf(render([turn("run-1", { sandbox_id: null, run_location: "local" })]));
+  expect(local).toContain(">This Mac<");
+  expect(local).toContain('title="Runs on This Mac"');
+});
+
+test("a released local sandbox still reads as the machine, never as the local provider's name", () => {
+  const tab = tabOf(render([turn("run-1", { sandbox_id: null, sandbox_provider: "local" })]));
+  expect(tab).toContain(">This Mac<");
+  expect(tab).toContain('title="Runs on This Mac"');
+  expect(tab).not.toContain("Local machine");
 });
 
 test("a thread whose run recorded no sandbox shows no location item", () => {
