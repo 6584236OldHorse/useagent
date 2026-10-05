@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { SandboxHandle, SandboxExecuteResult } from "../sandboxes/provider";
 import type { CodexSubscriptionRelayBinding } from "../provider-connections/codex-subscription-relay";
 import type { CodexSubscriptionRuntimeSelection } from "../provider-connections/service";
@@ -156,6 +160,64 @@ describe("T3 Codex subscription lease", () => {
     await lease.close();
   });
 
+  test("readiness accepts only the installed Codex exec-server as the port's owner", async () => {
+    const home = await mkdtemp(join(tmpdir(), "useagent-exec-identity-"));
+    const layout = { home, workdir: `${home}/work`, runsAsRoot: false, bunExecutable: "/usr/local/bin/bun" };
+    const native = `${home}/.local/share/useagent/native-engines/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex`;
+    const foreign = `${home}/python3`;
+    await mkdir(dirname(native), { recursive: true });
+    await writeFile(native, "");
+    await writeFile(foreign, "");
+    const procRoot = async (owner?: { exe: string; args: readonly string[] }) => {
+      const proc = await mkdtemp(join(home, "proc-"));
+      await mkdir(join(proc, "net"));
+      const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+      await writeFile(join(proc, "net/tcp"), header + (owner
+        ? "   0: 00000000:9366 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4242 1 0 100 0 0 10 0\n"
+        : ""));
+      if (owner) {
+        await mkdir(join(proc, "77/fd"), { recursive: true });
+        await symlink("socket:[4242]", join(proc, "77/fd/3"));
+        await symlink(owner.exe, join(proc, "77/exe"));
+        await writeFile(join(proc, "77/cmdline"), `${owner.args.join("\0")}\0`);
+      }
+      return proc;
+    };
+    const probe = async (owner?: { exe: string; args: readonly string[] }) =>
+      spawnSync("sh", ["-c", `${buildCodexExecServerReadinessCommand(0, layout)} ${await procRoot(owner)}`]).status;
+    const listening = ["codex", "exec-server", "--listen", "ws://0.0.0.0:37734", "--environment-id", "skynet-run-1"];
+
+    expect(await probe()).toBe(1);
+    expect(await probe({ exe: native, args: listening })).toBe(0);
+    expect(await probe({ exe: foreign, args: listening })).toBe(2);
+    expect(await probe({ exe: native, args: ["codex", "app-server", "--listen", "ws://0.0.0.0:37734"] })).toBe(2);
+  });
+
+  test("fails the turn when another process holds the exec-server port", async () => {
+    const harness = fakeSandbox({ execServerPortForeign: true });
+    let relayIssued = false;
+
+    await expect(prepareCodexSubscription({
+      sandbox: harness.sandbox,
+      ctx: context(),
+      workdir: "/root/work",
+      runtime: runtime(),
+      dependencies: {
+        loadThreadBinding: async () => null,
+        openExecBridge: () => {
+          throw new Error("bridge must not open");
+        },
+        issueRelay: () => {
+          relayIssued = true;
+          throw new Error("relay must not issue");
+        },
+      },
+    })).rejects.toThrow("another process");
+
+    expect(relayIssued).toBe(false);
+    expect(harness.sessionCommands).toEqual([]);
+  });
+
   test("launches Box Codex through the installed absolute binary", async () => {
     const harness = fakeSandbox({ providerKind: "box" });
     const lease = await prepareCodexSubscription({
@@ -298,7 +360,7 @@ describe("T3 Codex subscription lease", () => {
     expect(() => buildCodexExecServerCommand("unsafe; touch /tmp/pwned")).toThrow(
       "environment id is unsafe",
     );
-    expect(buildCodexExecServerReadinessCommand()).toContain("127.0.0.1");
+    expect(buildCodexExecServerReadinessCommand()).toContain("ws://0.0.0.0:37734");
 
     const patch = buildCodexProviderInstanceCommand({
       relayUrl: "wss://useagent.example.test/api/internal/codex-relay/opaque",
@@ -419,6 +481,7 @@ function runtime(): CodexSubscriptionRuntimeSelection {
 
 function fakeSandbox(options: {
   execServerListening?: boolean;
+  execServerPortForeign?: boolean;
   failProviderPatch?: boolean;
   launchExit?: number;
   providerKind?: "box" | "cube" | "daytona";
@@ -436,9 +499,11 @@ function fakeSandbox(options: {
     process: {
       async executeCommand(command: string) {
         const providerPatch = command.includes("CODEX_INSTANCE_B64");
-        const listeningProbe = command === buildCodexExecServerReadinessCommand(0);
+        const listeningProbe = command.includes("const deadline=Date.now()+0;");
         const result = {
-          exitCode: (providerPatch && options.failProviderPatch) || (listeningProbe && !options.execServerListening) ? 1 : 0,
+          exitCode: listeningProbe && options.execServerPortForeign
+            ? 2
+            : (providerPatch && options.failProviderPatch) || (listeningProbe && !options.execServerListening) ? 1 : 0,
         };
         commands.push({ command, result });
         return result;

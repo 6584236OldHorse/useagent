@@ -26,6 +26,8 @@ import {
 
 const CODEX_EXEC_SERVER_PORT = 37_734;
 const CODEX_EXEC_SERVER_SESSION = "skynet-codex-exec-server";
+const CODEX_EXEC_SERVER_PORT_FOREIGN = 2;
+const CODEX_EXEC_SERVER_PORT_TAKEN = `Codex exec-server port ${CODEX_EXEC_SERVER_PORT} is held by another process in the sandbox`;
 const RUNTIME_SETTINGS_PATH = `${RUNTIME_ENVIRONMENT_HOME}/userdata/settings.json`;
 /** Display name carried only by the subscription (relay-backed) codex instance.
  * T3's legacy `providers.codex` synthesis uses the driver default ("Codex"), so
@@ -96,9 +98,11 @@ export async function prepareCodexSubscription(input: {
   // A retained sandbox keeps the exec-server an earlier turn started: the
   // detached process outlives its session, so a relaunch only loses the port.
   // The run-bound environment id lives in the relay and T3 settings, not here.
-  const execServerListening = await sandbox.process
-    .executeCommand(buildCodexExecServerReadinessCommand(0), undefined, undefined, 10)
-    .then((probe) => probe.exitCode === 0, () => false);
+  const probe = await sandbox.process
+    .executeCommand(buildCodexExecServerReadinessCommand(0, layout), undefined, undefined, 10)
+    .catch(() => null);
+  if (probe?.exitCode === CODEX_EXEC_SERVER_PORT_FOREIGN) throw new Error(CODEX_EXEC_SERVER_PORT_TAKEN);
+  const execServerListening = probe?.exitCode === 0;
   if (!execServerListening) {
     await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
   }
@@ -119,11 +123,12 @@ export async function prepareCodexSubscription(input: {
       }
 
       const readiness = await sandbox.process.executeCommand(
-        buildCodexExecServerReadinessCommand(),
+        buildCodexExecServerReadinessCommand(15_000, layout),
         undefined,
         undefined,
         20,
       );
+      if (readiness.exitCode === CODEX_EXEC_SERVER_PORT_FOREIGN) throw new Error(CODEX_EXEC_SERVER_PORT_TAKEN);
       if ((readiness.exitCode ?? 1) !== 0) {
         throw new Error("Codex exec-server failed readiness");
       }
@@ -201,18 +206,28 @@ export function buildCodexExecServerCommand(
   ].join("\n");
 }
 
-export function buildCodexExecServerReadinessCommand(deadlineMs = 15_000): string {
+/** Exits 0 once the exec-server port is held by this sandbox's installed native
+ * Codex binary running `exec-server --listen` on it, 1 if nothing listens by the
+ * deadline, and 2 as soon as anything else holds the port. An open port alone
+ * could be any process in the sandbox. The optional second argument is the proc
+ * root, for tests. */
+export function buildCodexExecServerReadinessCommand(
+  deadlineMs = 15_000,
+  layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
+): string {
+  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
+  const portHex = CODEX_EXEC_SERVER_PORT.toString(16).toUpperCase().padStart(4, "0");
   const script = [
-    'const net=require("node:net")',
+    'const fs=require("node:fs"),path=require("node:path")',
+    'const root=fs.realpathSync(process.argv[1]),proc=process.argv[2]||"/proc"',
     `const deadline=Date.now()+${deadlineMs}`,
-    "const probe=()=>{",
-    `const socket=net.createConnection({host:"127.0.0.1",port:${CODEX_EXEC_SERVER_PORT}})`,
-    "socket.once(\"connect\",()=>{socket.end();process.exit(0)})",
-    "socket.once(\"error\",()=>{socket.destroy();Date.now()<deadline?setTimeout(probe,50):process.exit(1)})",
-    "}",
+    `const listening=()=>{const found=new Set();for(const name of["net/tcp","net/tcp6"]){let text="";try{text=fs.readFileSync(path.join(proc,name),"utf8")}catch{continue}for(const line of text.split("\n").slice(1)){const c=line.trim().split(/\\s+/);if(c.length>9&&c[1].endsWith(":${portHex}")&&c[3]==="0A")found.add(c[9])}}return found}`,
+    'const holds=(pid,found)=>{try{return fs.readdirSync(path.join(proc,pid,"fd")).some(fd=>{try{const link=fs.readlinkSync(path.join(proc,pid,"fd",fd));return link.startsWith("socket:[")&&found.has(link.slice(8,-1))}catch{return false}})}catch{return false}}',
+    `const ours=pid=>{try{const exe=fs.realpathSync(path.join(proc,pid,"exe")),rel=path.relative(root,exe),args=fs.readFileSync(path.join(proc,pid,"cmdline"),"utf8").split("\0");return path.basename(exe)==="codex"&&rel!==""&&!rel.startsWith("..")&&!path.isAbsolute(rel)&&args[1]==="exec-server"&&args[2]==="--listen"&&args[3]==="ws://0.0.0.0:${CODEX_EXEC_SERVER_PORT}"}catch{return false}}`,
+    "const probe=()=>{const found=listening();if(found.size>0){const holders=fs.readdirSync(proc).filter(pid=>!Number.isNaN(Number(pid))&&holds(pid,found));if(holders.length>0)process.exit(holders.every(ours)?0:2)}Date.now()<deadline?setTimeout(probe,50):process.exit(found.size>0?2:1)}",
     "probe()",
   ].join(";");
-  return `node -e ${JSON.stringify(script)}`;
+  return `node -e ${JSON.stringify(script)} ${JSON.stringify(`${prefix}/share/useagent/native-engines`)}`;
 }
 
 export function buildCodexProviderInstanceCommand(input: {
