@@ -5,6 +5,8 @@ import {
   type CanonicalCommandView,
   type CommandCatalogState,
   intentCommands, resolveCommandCatalog,
+  type SessionCatalogAnswer,
+  selectComposerSessionCatalog,
   selectSessionCommandCatalog,
 } from "@/components/chat/canonical-timeline";
 import type { SlashCommand } from "@/components/chat/slash-command";
@@ -19,11 +21,15 @@ import { backendFetch } from "@/lib/backend-fetch";
  * session. Two durable sources, one state:
  *   - the canonical stream's per-session `commands.updated` (Pi advertises through its bridge
  *     frames), read from the thread snapshot with its delivery sequence as the revision;
- *   - the session command catalog the runtime engines record after their session starts and
- *     once each turn settles, fetched from GET /api/commands with the thread and session: a
- *     response carrying a `revision` is that session's own catalog, refetched when the session
- *     changes and when the thread settles.
- * With neither, the same GET (keyed by engine alone) primes the picker with the org's latest
+ *   - the answer of GET /api/commands for the thread and the current session, which is the
+ *     backend reader's own answer (the session command catalog the runtime engines record
+ *     after their session starts and once each turn settles, else the canonical stream). It
+ *     names the session it belongs to and carries a `revision` when it is the session's own
+ *     catalog; fetched when the session changes, when the thread settles and when the canonical
+ *     catalog moves, and it wins over the canonical catalog for the current session
+ *     (`selectComposerSessionCatalog`), so the composer always sends the revision the backend
+ *     requires.
+ * With neither, the same answer (keyed by engine alone) primes the picker with the org's latest
  * snapshot for display only until the session advertises. `resolveCommandCatalog` folds both
  * into one honest state (loading / unavailable / error / ready[+stale]); `revision` is the
  * snapshot a native-command intent is sent with, so the backend's fail-closed authorization
@@ -40,27 +46,21 @@ export function useReplyCommandCatalog(
   live: boolean,
 ): { catalogState: CommandCatalogState; commands: SlashCommand[]; revision: number | null } {
   const engine = normalizeEngine(rawEngine);
-  const durable = useMemo(
+  const canonical = useMemo(
     () => selectSessionCommandCatalog([...runsById.values()], engineSessionId),
     [runsById, engineSessionId],
   );
-  const hasDurable = durable !== null;
+  const canonicalRevision = canonical?.revision ?? null;
   const [fetchState, setFetchState] = useState<{
     phase: "loading" | "done" | "error";
-    commands: CanonicalCommandView[];
-    revision: number | null;
-  }>({
-    phase: "loading",
-    commands: [],
-    revision: null,
-  });
+    answer: SessionCatalogAnswer | null;
+  }>({ phase: "loading", answer: null });
   useEffect(() => {
-    if (hasDurable) return; // the canonical session catalog wins; no fetch needed
     let cancelled = false;
-    // Clear-on-change: reset immediately so a prior engine's commands never linger while loading.
-    setFetchState({ phase: "loading", commands: [], revision: null });
+    // Clear-on-change: reset immediately so a prior engine's or session's answer never lingers.
+    setFetchState({ phase: "loading", answer: null });
     void (async () => {
-      const fail = () => !cancelled && setFetchState({ phase: "error", commands: [], revision: null });
+      const fail = () => !cancelled && setFetchState({ phase: "error", answer: null });
       try {
         const session = engineSessionId
           ? `&thread=${encodeURIComponent(threadId)}&session=${encodeURIComponent(engineSessionId)}`
@@ -70,20 +70,25 @@ export function useReplyCommandCatalog(
         const body = (await res.json()) as {
           commands?: { name?: string; description?: string; input?: string }[];
           revision?: number | null;
+          session?: string | null;
         };
         if (cancelled) return;
         const list = body.commands ?? [];
         if (!Array.isArray(list)) return fail();
+        const commands: CanonicalCommandView[] = list
+          .filter((c): c is { name: string; description?: string; input?: string } => !!c.name)
+          .map((c) => ({
+            name: c.name,
+            description: c.description ?? null,
+            input: typeof c.input === "string" ? c.input : null,
+          }));
         setFetchState({
           phase: "done",
-          commands: list
-            .filter((c): c is { name: string; description?: string; input?: string } => !!c.name)
-            .map((c) => ({
-              name: c.name,
-              description: c.description ?? null,
-              input: typeof c.input === "string" ? c.input : null,
-            })),
-          revision: typeof body.revision === "number" ? body.revision : null,
+          answer: {
+            commands,
+            revision: typeof body.revision === "number" ? body.revision : null,
+            session: typeof body.session === "string" ? body.session : null,
+          },
         });
       } catch {
         fail();
@@ -92,10 +97,18 @@ export function useReplyCommandCatalog(
     return () => {
       cancelled = true;
     };
-  }, [engine, hasDurable, threadId, engineSessionId, live]);
+  }, [engine, threadId, engineSessionId, live, canonicalRevision]);
+  const session = useMemo(
+    () => selectComposerSessionCatalog(canonical, fetchState.answer, engineSessionId),
+    [canonical, fetchState.answer, engineSessionId],
+  );
   const catalogState = useMemo(
-    () => resolveCommandCatalog(durable?.commands ?? null, fetchState, engine),
-    [durable, fetchState, engine],
+    () => resolveCommandCatalog(
+      session?.commands ?? null,
+      { phase: fetchState.phase, commands: fetchState.answer?.commands ?? [] },
+      engine,
+    ),
+    [session, fetchState, engine],
   );
   // Typed intents and the Compact action: the session's own catalog only. A primed (stale)
   // catalog still lists in the picker through `catalogState`, and a pick sends the text verbatim.
@@ -103,6 +116,5 @@ export function useReplyCommandCatalog(
     () => intentCommands(catalogState).map((c) => ({ name: c.name, description: c.description ?? null })),
     [catalogState],
   );
-  const revision = durable?.revision ?? (fetchState.phase === "done" ? fetchState.revision : null);
-  return { catalogState, commands, revision };
+  return { catalogState, commands, revision: session?.revision ?? null };
 }

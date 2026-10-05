@@ -45,12 +45,15 @@ function sandboxWithCaches(caches: Partial<Record<RuntimeEngineId, string>>) {
 }
 
 /** A recording store: by default the row commits; "rejects" is a write that failed
- *  or hit its statement timeout. The real write is exercised by the database test. */
-function recorder(outcome: "resolves" | "rejects" = "resolves") {
+ *  or hit its statement timeout; "stalls" never answers (a connection that stops
+ *  receiving responses). The real write is exercised by the database test. */
+function recorder(outcome: "resolves" | "rejects" | "stalls" = "resolves") {
   const calls: { row: SessionCommandCatalogRow; timeoutMs: number | undefined }[] = [];
   const record: typeof recordSessionCommandCatalog = (row, timeoutMs) => {
     calls.push({ row, timeoutMs });
-    return outcome === "rejects" ? Promise.reject(new Error("canceling statement due to statement timeout")) : Promise.resolve();
+    if (outcome === "rejects") return Promise.reject(new Error("canceling statement due to statement timeout"));
+    if (outcome === "stalls") return new Promise<void>(() => {});
+    return Promise.resolve();
   };
   return { calls, record };
 }
@@ -173,6 +176,34 @@ describe("runtime command catalog: the runtime's status cache becomes the sessio
     };
     await recordRuntimeCommandCatalog({ ctx: { ...ctx, signal: stop.signal }, sandbox, engine: "codex", session, record });
     expect(calls).toHaveLength(0);
+  });
+
+  test("a write whose response never arrives cannot hold the turn: the wait ends at its own deadline, or at Stop", async () => {
+    const sandbox = sandboxWithCaches({ codex: recorded("codex") });
+    const timedOut = recordRuntimeCommandCatalog({ ctx, sandbox, engine: "codex", session, record: recorder("stalls").record, writeDeadlineMs: 50 });
+    expect(await settles(timedOut, 2_000)).toBe("settled");
+    const stop = new AbortController();
+    const stopped = recordRuntimeCommandCatalog({ ctx: { ...ctx, signal: stop.signal }, sandbox, engine: "codex", session, record: recorder("stalls").record });
+    setTimeout(() => stop.abort(), 20);
+    expect(await settles(stopped, 2_000)).toBe("settled");
+  });
+
+  test("a write that fails after the turn stopped waiting is observed: logged, never an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let reject: (error: Error) => void = () => {};
+      const late: typeof recordSessionCommandCatalog = () => new Promise<void>((_, r) => { reject = r; });
+      const sandbox = sandboxWithCaches({ codex: recorded("codex") });
+      const read = recordRuntimeCommandCatalog({ ctx, sandbox, engine: "codex", session, record: late, writeDeadlineMs: 30 });
+      expect(await settles(read, 2_000)).toBe("settled");
+      reject(new Error("terminating connection due to administrator command"));
+      await Bun.sleep(50);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
   });
 
   test("a write that fails or times out never reaches the worker: the read resolves without throwing", async () => {

@@ -109,7 +109,7 @@ export function intentCommands(state: CommandCatalogState): readonly CanonicalCo
 
 export function resolveCommandCatalog(
   durable: readonly CanonicalCommandView[] | null,
-  fetchState: { phase: "loading" | "done" | "error"; commands: readonly CanonicalCommandView[]; revision?: number | null },
+  fetchState: { phase: "loading" | "done" | "error"; commands: readonly CanonicalCommandView[] },
   source?: string,
 ): CommandCatalogState {
   if (durable !== null) {
@@ -119,11 +119,38 @@ export function resolveCommandCatalog(
   }
   if (fetchState.phase === "loading") return { status: "loading" };
   if (fetchState.phase === "error") return { status: "error" };
-  if (fetchState.commands.length === 0) return { status: "unavailable", source };
-  // A fetched catalog that carries a revision is the session's own record (the
-  // runtime engines keep it in the session catalog table, not the canonical
-  // stream); one without is the pre-session priming snapshot, display only.
-  return fetchState.revision != null
-    ? { status: "ready", commands: fetchState.commands, source }
-    : { status: "ready", commands: fetchState.commands, source, stale: true };
+  return fetchState.commands.length > 0
+    ? { status: "ready", commands: fetchState.commands, source, stale: true }
+    : { status: "unavailable", source };
+}
+
+/** What GET /api/commands answered for the composer's engine, thread and session. */
+export interface SessionCatalogAnswer {
+  readonly commands: readonly CanonicalCommandView[];
+  /** The catalog's revision when the answer is a session's own catalog; null when
+   *  it is the org's priming snapshot. */
+  readonly revision: number | null;
+  /** The session the answer belongs to; null for the priming snapshot. */
+  readonly session: string | null;
+}
+
+/** The catalog the composer sends its typed commands against, with the backend's
+ *  own precedence. The reader behind GET /api/commands prefers the session
+ *  command catalog table (the runtime engines) and falls back to the canonical
+ *  stream (Pi), so its answer for the CURRENT session wins over the canonical
+ *  `commands.updated` the thread snapshot carries, which stands in until the
+ *  answer arrives (a session that advertised through both keeps sending the
+ *  revision the backend requires, not the canonical one). An answer for another
+ *  session (a fetch that raced a session change) or without a revision is the
+ *  priming snapshot: it never authorizes and never masks the canonical catalog. */
+export function selectComposerSessionCatalog(
+  canonical: SessionCommandCatalog | null,
+  answer: SessionCatalogAnswer | null,
+  engineSessionId: string | null,
+): SessionCommandCatalog | null {
+  if (!engineSessionId) return null;
+  const own = answer && answer.session === engineSessionId && answer.revision !== null
+    ? { commands: answer.commands, revision: answer.revision }
+    : null;
+  return own ?? canonical;
 }

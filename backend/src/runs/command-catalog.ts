@@ -104,8 +104,10 @@ export async function readLatestEngineCommandCatalog(
 // GET /api/commands?engine=<id> → the current org's latest catalog for that engine.
 // With `thread` and `session` (a thread of the current org and its active native
 // session) → that session's own catalog with its `revision`, the snapshot the
-// reply composer's typed commands and Compact are sent against; `revision` is
-// null when the session has not advertised yet and the org snapshot primes.
+// reply composer's typed commands and Compact are sent against, and the `session`
+// it belongs to, so a composer whose session changed meanwhile can tell. A thread
+// of another org, a session without a catalog, or none given → the org snapshot
+// primes the picker, with `revision` and `session` null; never a different status.
 export const commandsRoutes = new Hono<AppEnv>();
 commandsRoutes.use("*", orgScope);
 
@@ -118,13 +120,14 @@ commandsRoutes.get("/", async (c) => {
     const [owned] = await db.select({ id: runs.id }).from(runs)
       .where(and(eq(runs.threadId, threadId), eq(runs.orgId, orgId))).limit(1);
     const own = owned ? await readSessionCommandCatalog(threadId, engine, sessionId) : null;
-    if (own) return c.json({ engine, commands: own.commands, revision: own.revision, fetched_at: null });
+    if (own) return c.json({ engine, commands: own.commands, revision: own.revision, session: sessionId, fetched_at: null });
   }
   const latest = orgId ? await readLatestEngineCommandCatalog(orgId, engine) : null;
   return c.json({
     engine,
     commands: latest?.commands ?? [],
     revision: null,
+    session: null,
     fetched_at: latest ? latest.fetchedAt.toISOString() : null,
   });
 });

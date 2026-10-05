@@ -23,6 +23,11 @@ const PROBE_TIMEOUT_SECONDS = 5;
 // transport whose response stalls never settles on its own; the plane keeps its
 // own deadline so a stalled probe can never hold the turn open.
 const PROBE_DEADLINE_MS = 10_000;
+// The write is bounded twice: the database ends a blocked statement at its
+// statement_timeout, and the turn waits for the whole operation (pool
+// acquisition, the transaction, the response) only this long, because a
+// connection that stops receiving responses never delivers that error.
+const WRITE_DEADLINE_MS = 10_000;
 
 export function runtimeCommandCatalogCachePath(engine: RuntimeEngineId): string {
   return `${RUNTIME_ENVIRONMENT_HOME}/caches/${PROVIDER_INSTANCE[engine]}.json`;
@@ -74,11 +79,13 @@ export function parseRuntimeCommandCatalog(
  *  effort by construction: nothing here can fail a turn, and nothing here can
  *  hold one open past its bounds. The probe runs under the run's signal and the
  *  plane's own deadline; the write is one statement bounded by the database's
- *  statement_timeout and is skipped once the run is stopped. A probe that finds
- *  no readable snapshot, a deadline, or a write that did not land is logged and
- *  records nothing: a command intent then fails closed, as it does today, and
- *  the next read records again. The provider is the engine, which is what the
- *  reply route authorizes against and what the pre-session picker is keyed by. */
+ *  statement_timeout, skipped once the run is stopped, and waited for only
+ *  under the run's signal and the plane's own deadline. A probe that finds no
+ *  readable snapshot, a deadline, a Stop, or a write that did not land records
+ *  nothing (logged, except a Stop): a command intent then fails closed, as it
+ *  does today, and the next read records again. The provider is the engine,
+ *  which is what the reply route authorizes against and what the pre-session
+ *  picker is keyed by. */
 export async function recordRuntimeCommandCatalog(input: {
   readonly ctx: Pick<EngineRunContext, "runId" | "threadId" | "signal">;
   readonly sandbox: { readonly process: Pick<SandboxHandle["process"], "executeCommand"> };
@@ -86,6 +93,7 @@ export async function recordRuntimeCommandCatalog(input: {
   readonly session: Pick<HarnessSession, "nativeSessionId">;
   readonly deadlineMs?: number;
   readonly writeTimeoutMs?: number;
+  readonly writeDeadlineMs?: number;
   readonly record?: typeof recordSessionCommandCatalog;
 }): Promise<void> {
   const { ctx, engine } = input;
@@ -107,16 +115,35 @@ export async function recordRuntimeCommandCatalog(input: {
       console.warn("[runtime-command-catalog] the provider status cache has no command catalog", { runId: ctx.runId, engine });
       return;
     }
-    // A Stop after the probe records nothing; a Stop during the write cannot cut
-    // the statement short of its timeout, and does not need to: the write is not
-    // awaited by finalization and a row that lands is the catalog the runtime advertised.
+    // A Stop after the probe records nothing. The write settles on its own: the
+    // database ends a blocked statement at its statement_timeout and the driver
+    // releases the connection when it does, or when the socket dies; nothing here
+    // cancels it. The turn waits for it only under the run's signal and the
+    // plane's deadline, so a Stop or a response that never arrives cannot hold
+    // the turn; a write the turn stopped waiting for is still observed here, so
+    // its failure is logged once and never an unhandled rejection, and a row it
+    // lands late is only the catalog the runtime advertised.
     if (ctx.signal.aborted) return;
-    await (input.record ?? recordSessionCommandCatalog)({
+    const write = (input.record ?? recordSessionCommandCatalog)({
       threadId: ctx.threadId ?? ctx.runId,
       provider: engine,
       nativeSessionId: input.session.nativeSessionId,
       commands: snapshot.commands,
-    }, input.writeTimeoutMs);
+    }, input.writeTimeoutMs).then(
+      () => undefined,
+      (error: unknown) => {
+        console.error("[runtime-command-catalog] the command catalog write did not land", {
+          runId: ctx.runId,
+          engine,
+          error: errorMessage(error),
+        });
+      },
+    );
+    await awaitRuntimeOperation(
+      write,
+      AbortSignal.any([ctx.signal, AbortSignal.timeout(input.writeDeadlineMs ?? WRITE_DEADLINE_MS)]),
+      async () => {},
+    );
   } catch (error) {
     if (ctx.signal.aborted) return;
     console.error("[runtime-command-catalog] the command catalog was not recorded", {

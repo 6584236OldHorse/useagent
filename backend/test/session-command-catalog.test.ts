@@ -152,7 +152,7 @@ describe("session command catalog table -> readSessionCommandCatalog", () => {
       .toEqual({ ok: true, name: "compact", args: "" });
   });
 
-  test("a stalled write ends at its statement timeout with nothing recorded and no unhandled rejection; the drain and the seals never wait on it", async () => {
+  test("a stalled write cannot hold the turn: the wait ends at the plane's deadline or at Stop, the statement ends at its timeout with nothing recorded and no unhandled rejection, and the drain and the seals never wait on it", async () => {
     const { runId, threadId } = await seedRun("claude");
     const sessionId = runtimeThreadId({ runId, threadId });
     const session = { nativeSessionId: sessionId };
@@ -171,27 +171,38 @@ describe("session command catalog table -> readSessionCommandCatalog", () => {
     await holder`begin`;
     await holder`insert into session_command_catalogs (thread_id, provider, native_session_id, commands)
       values (${threadId}, ${"claude"}, ${sessionId}, ${"[]"}::jsonb)`;
-    const stop = new AbortController();
     try {
+      // The turn's wait is bounded on the plane, well inside the statement's own timeout.
       const startedAt = Date.now();
-      const read = recordRuntimeCommandCatalog({
-        ctx: { runId, threadId, signal: stop.signal }, engine: "claude",
-        sandbox: sandboxAdvertising(recorded("claude")), session, writeTimeoutMs: 400,
+      const timedOut = recordRuntimeCommandCatalog({
+        ctx: { runId, threadId, signal: signal() }, engine: "claude",
+        sandbox: sandboxAdvertising(recorded("claude")), session, writeTimeoutMs: 1_500, writeDeadlineMs: 200,
       });
-      // Finalization's own waits do not see the stalled write: the drain settles at once and the seals run.
+      expect(await Promise.race([timedOut.then(() => "settled"), Bun.sleep(3_000).then(() => "still pending")])).toBe("settled");
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      // The statement is still blocked in the database. Finalization's own waits do not see it:
+      // the drain settles at once and the seals run.
       expect(await Promise.race([drainProviderEvents(runId).then(() => "drained"), Bun.sleep(2_000).then(() => "blocked")])).toBe("drained");
       expect(await Promise.race([prepareExecutionGraphSeal(runId).then(() => "sealed"), Bun.sleep(2_000).then(() => "blocked")])).toBe("sealed");
       const sealed = await Promise.race([canonicalizeRun(runId, threadId), Bun.sleep(5_000).then(() => null)]);
       expect(sealed?.complete).toBe(true);
-      // Stop while the statement is blocked: the write is not cut short, it ends at its timeout.
-      stop.abort();
-      expect(await Promise.race([read.then(() => "settled"), Bun.sleep(5_000).then(() => "still pending")])).toBe("settled");
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      // Stop while a second statement is blocked: the wait ends at once.
+      const stop = new AbortController();
+      const stopped = recordRuntimeCommandCatalog({
+        ctx: { runId, threadId, signal: stop.signal }, engine: "claude",
+        sandbox: sandboxAdvertising(recorded("claude")), session, writeTimeoutMs: 1_500,
+      });
+      setTimeout(() => stop.abort(), 100);
+      const stopAt = Date.now();
+      expect(await Promise.race([stopped.then(() => "settled"), Bun.sleep(3_000).then(() => "still pending")])).toBe("settled");
+      expect(Date.now() - stopAt).toBeLessThan(1_000);
+      // Both statements end at the server's statement_timeout while the lock is still held.
+      await Bun.sleep(1_800);
     } finally {
       await holder`rollback`.catch(() => {});
       holder.release();
     }
-    // Nothing of the timed-out statement lands once the lock is gone (the holder's own row rolled back).
+    // Nothing of the timed-out statements lands once the lock is gone (the holder's own row rolled back).
     await Bun.sleep(200);
     expect(await readSessionCommandCatalog(threadId, "claude", sessionId)).toBeNull();
     process.off("unhandledRejection", onUnhandled);
@@ -201,19 +212,20 @@ describe("session command catalog table -> readSessionCommandCatalog", () => {
     const catalog = await readSessionCommandCatalog(threadId, "claude", sessionId);
     expect(catalog?.revision).toBe(1);
     expect(catalog?.commands).toHaveLength(46);
-  }, 20_000);
+  }, 30_000);
 
   test("GET /api/commands with thread and session serves the session's own catalog with its revision, org-scoped", async () => {
     const { runId, threadId } = await seedRun("codex");
     const sessionId = runtimeThreadId({ runId, threadId });
     const query = (thread: string, session: string) =>
-      json<{ engine: string; commands: { name: string }[]; revision: number | null; fetched_at: string | null }>(
+      json<{ engine: string; commands: { name: string }[]; revision: number | null; session: string | null; fetched_at: string | null }>(
         `/api/commands?engine=codex&thread=${encodeURIComponent(thread)}&session=${encodeURIComponent(session)}`,
       );
-    // Before the session advertised: the org snapshot primes, with no revision.
+    // Before the session advertised: the org snapshot primes, with no revision and no session.
     const before = await query(threadId, sessionId);
     expect(before.status).toBe(200);
     expect(before.body.revision).toBeNull();
+    expect(before.body.session).toBeNull();
 
     await recordRuntimeCommandCatalog({ ctx: { runId, threadId, signal: signal() }, engine: "codex", sandbox: sandboxAdvertising(recorded("codex")), session: { nativeSessionId: sessionId } });
     const own = await query(threadId, sessionId);
@@ -225,13 +237,18 @@ describe("session command catalog table -> readSessionCommandCatalog", () => {
         { name: "feedback", description: "Send this thread and Codex logs to OpenAI", input: "Describe the issue (optional)" },
       ],
       revision: 1,
+      session: sessionId,
       fetched_at: null,
     });
-    // Another session of the thread, or another org's thread, never sees it.
-    expect((await query(threadId, "skynet-thread-other")).body.revision).toBeNull();
+    // Another session of the thread never sees it; another org's thread answers exactly like
+    // a thread with no catalog (200, the caller's own org snapshot), never a different status.
+    expect((await query(threadId, "skynet-thread-other")).body).toMatchObject({ revision: null, session: null });
     const foreign = await seedRun("codex", undefined, uid("org"));
     const foreignSession = runtimeThreadId({ runId: foreign.runId, threadId: foreign.threadId });
     await recordRuntimeCommandCatalog({ ctx: { ...foreign, signal: signal() }, engine: "codex", sandbox: sandboxAdvertising(recorded("codex")), session: { nativeSessionId: foreignSession } });
-    expect((await query(foreign.threadId, foreignSession)).body.revision).toBeNull();
+    const other = await query(foreign.threadId, foreignSession);
+    expect(other.status).toBe(200);
+    expect(other.body).toMatchObject({ revision: null, session: null });
+    expect(other.body.commands.map((c) => c.name)).not.toContain("feedback");
   });
 });

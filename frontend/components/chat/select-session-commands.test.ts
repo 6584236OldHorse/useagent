@@ -4,7 +4,7 @@
 // showing stale commands. `resolveCommandCatalog` folds the durable catalog + fetch into one
 // honest state (loading / unavailable / error / ready[+stale]).
 import { describe, expect, test } from "bun:test";
-import { intentCommands, resolveCommandCatalog, selectSessionCommands, type StoredCanonicalEvent } from "./canonical-timeline";
+import { intentCommands, resolveCommandCatalog, selectComposerSessionCatalog, selectSessionCommands, type StoredCanonicalEvent } from "./canonical-timeline";
 
 function cmds(over: {
   runId: string;
@@ -79,17 +79,32 @@ describe("resolveCommandCatalog (one honest command-picker state)", () => {
     expect(resolveCommandCatalog(null, err, "codex")).toEqual({ status: "error" });
   });
 
-  test("a fetched catalog carrying the session's revision is the session's own: ready, not stale", () => {
-    const own = { phase: "done" as const, commands: [{ name: "compact" }], revision: 3 };
-    expect(resolveCommandCatalog(null, own, "codex")).toEqual({ status: "ready", commands: [{ name: "compact" }], source: "codex" });
-    expect(intentCommands(resolveCommandCatalog(null, own, "codex"))).toEqual([{ name: "compact" }]);
-    expect(resolveCommandCatalog(null, { ...own, commands: [] }, "codex")).toEqual({ status: "unavailable", source: "codex" });
-    expect(resolveCommandCatalog(null, { ...own, revision: null }, "codex")).toEqual({ status: "ready", commands: [{ name: "compact" }], source: "codex", stale: true });
-  });
-
   test("typed intents come only from the session's own catalog; a primed catalog is display only", () => {
     expect(intentCommands(resolveCommandCatalog([{ name: "compact" }], loading, "codex"))).toEqual([{ name: "compact" }]);
     expect(intentCommands(resolveCommandCatalog(null, done([{ name: "compact" }]), "codex"))).toEqual([]);
     expect(intentCommands({ status: "loading" })).toEqual([]);
+  });
+});
+
+describe("selectComposerSessionCatalog (the backend's precedence, one authoritative source per session)", () => {
+  const canonical = { commands: [{ name: "compact", description: null, input: null }], revision: 42 };
+  const table = { commands: [{ name: "compact", description: "Summarize", input: null }, { name: "feedback", description: null, input: null }], revision: 1, session: "s1" };
+
+  test("the answer for the CURRENT session wins over the canonical catalog: a retained session with both sends the table's revision", () => {
+    expect(selectComposerSessionCatalog(canonical, table, "s1")).toEqual({ commands: table.commands, revision: 1 });
+    expect(selectComposerSessionCatalog(null, table, "s1")).toEqual({ commands: table.commands, revision: 1 });
+  });
+
+  test("an answer for another session (a fetch that raced a session change) or without a revision never authorizes and never masks the canonical catalog", () => {
+    expect(selectComposerSessionCatalog(canonical, { ...table, session: "s0" }, "s1")).toBe(canonical);
+    expect(selectComposerSessionCatalog(null, { ...table, session: "s0" }, "s1")).toBeNull();
+    expect(selectComposerSessionCatalog(canonical, { commands: [{ name: "primed", description: null, input: null }], revision: null, session: null }, "s1")).toBe(canonical);
+    expect(selectComposerSessionCatalog(null, { commands: [{ name: "primed", description: null, input: null }], revision: null, session: null }, "s1")).toBeNull();
+  });
+
+  test("the canonical catalog stands in until the answer arrives; no session, no catalog", () => {
+    expect(selectComposerSessionCatalog(canonical, null, "s1")).toBe(canonical);
+    expect(selectComposerSessionCatalog(null, null, "s1")).toBeNull();
+    expect(selectComposerSessionCatalog(canonical, table, null)).toBeNull();
   });
 });
