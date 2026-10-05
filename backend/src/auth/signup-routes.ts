@@ -68,9 +68,19 @@ function afterVerificationUrl(query: string): string {
 
 /** Delete the claim on this address, if that is all the account is, so the one
  *  who reads that mailbox can always finish a sign-up and a stale claim cannot
- *  hold the address. */
-async function releaseUnverifiedClaim(email: string): Promise<void> {
-  await db.delete(user).where(and(eq(user.email, email), claimCondition));
+ *  hold the address. True when something was released. */
+async function releaseUnverifiedClaim(email: string): Promise<boolean> {
+  const released = await db.delete(user).where(and(eq(user.email, email), claimCondition)).returning({ id: user.id });
+  return released.length > 0;
+}
+
+/** Whether the library's answer created an account (its id is a row) rather
+ *  than being the generic answer it gives for an address that already has one. */
+async function createdAccount(response: Response): Promise<boolean> {
+  const body = (await response.clone().json().catch(() => null)) as { user?: { id?: unknown } } | null;
+  const id = typeof body?.user?.id === "string" ? body.user.id : "";
+  if (!id) return true; // an answer of another shape releases nothing
+  return (await db.select({ id: user.id }).from(user).where(eq(user.id, id)).limit(1)).length > 0;
 }
 
 export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
@@ -99,7 +109,13 @@ export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
     if (!perAddress(email)) return c.json({ message: TOO_MANY_ATTEMPTS }, 429);
     const refusal = signupRefusal(email, body.inviteCode);
     if (refusal) return c.json({ message: refusal }, 403);
-    await releaseUnverifiedClaim(email);
+    // The library goes first: origin, name and password are its rules, and a
+    // request it refuses must change nothing. A new address is created and
+    // mailed on this pass. An address that already has an account gets the
+    // library's generic answer; if that account is only a claim it is released
+    // now and the same request runs once more, creating the fresh registration.
+    const first = await auth.handler(withJsonBody(request, body));
+    if (!first.ok || (await createdAccount(first)) || !(await releaseUnverifiedClaim(email))) return first;
     return auth.handler(withJsonBody(request, body));
   });
 

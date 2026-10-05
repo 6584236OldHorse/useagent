@@ -30,9 +30,10 @@ import {
  *  limiter and the sign-up limiter then both see the address the edge saw. */
 const TRUSTED_PROXIES = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"];
 
-/** Confirmation mails per address per hour, whatever asks for them: the
- *  sign-up, the card's resend, or a sign-in with the right password. */
-export const VERIFICATION_MAILS_PER_ADDRESS = 5;
+/** Confirmation mails a sign-in with the right password may trigger per
+ *  address per hour. A sign-up attempt always mails; the sign-up route bounds
+ *  those attempts per address, so this is the only other way to make mail. */
+export const SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS = 5;
 
 /**
  * Better Auth server with Google, existing-account password sign-in, and
@@ -45,7 +46,7 @@ export function createAuthServer() {
   const google = googleAuthConfig();
   const allowSignup = selfSignupEnabled();
   const open = openSignupConfig();
-  const mailAllowed = fixedWindow(VERIFICATION_MAILS_PER_ADDRESS, 60 * 60 * 1000);
+  const signInMailAllowed = fixedWindow(SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS, 60 * 60 * 1000);
   if (signupSwitchOn() && !open) {
     console.warn(
       "[auth] SIGNUP_OPEN is set but no account mail transport is configured (CONNECTOR_EMAIL_HOST and CONNECTOR_EMAIL_FROM): sign-up stays closed, an address cannot be verified without mail.",
@@ -68,9 +69,10 @@ export function createAuthServer() {
           sendOnSignIn: true,
           // The library's own link (keyed by address alone) is not mailed; the
           // signed one names the registration (auth/signup-routes.ts confirms it).
-          sendVerificationEmail: async ({ user }) => {
-            if (!mailAllowed(user.email)) {
-              console.warn(`[auth] confirmation mail for ${user.email} held: ${VERIFICATION_MAILS_PER_ADDRESS} already sent this hour`);
+          sendVerificationEmail: async ({ user }, request) => {
+            const signIn = request !== undefined && new URL(request.url).pathname.endsWith("/sign-in/email");
+            if (signIn && !signInMailAllowed(user.email)) {
+              console.warn(`[auth] confirmation mail for ${user.email} held: ${SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS} sign-in mails already this hour`);
               return;
             }
             // The account exists whatever the mail does; the card can ask again.

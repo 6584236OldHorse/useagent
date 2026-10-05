@@ -35,11 +35,11 @@ sign-in, and without mail the switch stays inert with a warning at boot,
 because an invite code proves possession of the code, not of the address. An
 address that was claimed but never confirmed is released to the next sign-up
 for it, and the earlier link stops working. Sign-up attempts are limited per
-address and per client, and at most five confirmation mails leave for one
-address per hour. While the switch is on, an existing account whose address was
-never confirmed is asked to confirm it at its next password sign-in (the link is
-mailed then), and a Google identity never links to an unconfirmed claim on an
-address. Every newly created user, however provisioned, receives a personal
+address and per client; every accepted attempt mails a fresh link, and the
+newest link is the one that works. While the switch is on, an existing account
+whose address was never confirmed is asked to confirm it at its next password
+sign-in (the link is mailed then, at most five times per address per hour), and
+a Google identity never links to an unconfirmed claim on an address. Every newly created user, however provisioned, receives a personal
 organization, an open sign-up once its address is confirmed, so they land in
 their own tenant.
 

@@ -176,6 +176,23 @@ describe("open sign-up", () => {
 
     expect((await openLink(email, second!.id)).headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?verified=1`);
     expect(await row(email)).toMatchObject({ id: second!.id, emailVerified: true });
+
+    // However often the card asks again, the newest link is the one that works.
+    const again = address("again");
+    for (let i = 0; i < 3; i++) expect((await signUp(again)).status).toBe(200);
+    const latest = await row(again);
+    expect((await openLink(again, latest!.id)).headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?verified=1`);
+  });
+
+  test("a request the library refuses changes nothing: the pending registration and its link stay", async () => {
+    const email = address("kept");
+    expect((await signUp(email)).status).toBe(200);
+    const pending = await row(email);
+    // The library's own rules (a password too short here; its origin rule is off under test) answer first.
+    const short = await signUp(email, { password: "short" });
+    expect(short.status).toBe(400);
+    expect(await row(email)).toMatchObject({ id: pending!.id, emailVerified: false });
+    expect((await openLink(email, pending!.id)).headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?verified=1`);
   });
 
   test("a link is judged by its signature before anything is looked up", async () => {
@@ -320,10 +337,11 @@ describe("open sign-up", () => {
 
   test("attempts are counted per address", async () => {
     const email = address("limited");
+    const client = { "x-forwarded-for": "198.51.100.7" }; // its own client, so this file's shared client budget is untouched
     for (let i = 0; i < SIGNUP_ATTEMPTS_PER_ADDRESS; i++) {
-      expect((await signUp(email, { inviteCode: "guess" })).status).toBe(403);
+      expect((await signUp(email, { inviteCode: "guess" }, client)).status).toBe(403);
     }
-    const res = await signUp(email);
+    const res = await signUp(email, {}, client);
     expect(res.status).toBe(429);
     expect((await res.json()).message).toContain("Too many sign-up attempts");
     expect(await row(email)).toBeUndefined();
