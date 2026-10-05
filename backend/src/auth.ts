@@ -45,7 +45,11 @@ export function createAuthServer() {
       organization({
         invitationExpiresIn: INVITATION_EXPIRES_IN_SECONDS,
         sendInvitationEmail: async (data) => {
-          await deliverInvitation(data);
+          // The invitation exists whatever the mail does, and the request that
+          // created it holds the organisation's turn: delivery runs on its own.
+          void deliverInvitation(data).catch((error: unknown) => {
+            console.error(`[auth] invitation ${data.id} could not be sent:`, (error as Error).message);
+          });
         },
       }),
       electron(),

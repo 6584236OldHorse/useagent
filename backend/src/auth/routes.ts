@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray } from "drizzle-orm";
-import { type Context, Hono } from "hono";
+import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
@@ -67,7 +67,7 @@ function trustedOrigin(request: Request): boolean {
 
 const roles = (value: string | null | undefined) => (value ?? "").split(",").map((role) => role.trim());
 
-type Refusal = { status: 400 | 401 | 403; message: string };
+type Refusal = { status: 400 | 401 | 403 | 429; message: string };
 type Manager = { session: NonNullable<Awaited<ReturnType<typeof auth.api.getSession>>>; organizationId: string; roles: string[] };
 
 /** The signed-in owner or admin behind a request, for the organisation it names
@@ -140,6 +140,14 @@ async function onlyOwner(organizationId: string, target: { memberId?: string; em
   );
 }
 
+/** The organisation a request is about, for the lock key only: the body's, else
+ *  the session's active one. Authorisation happens inside the lock. */
+async function organisationOf(request: Request, body: Record<string, unknown>): Promise<string | null> {
+  if (typeof body.organizationId === "string" && body.organizationId.trim()) return body.organizationId.trim();
+  const session = await auth.api.getSession({ headers: request.headers });
+  return session?.session.activeOrganizationId ?? null;
+}
+
 async function jsonBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const parsed = (await request.clone().json()) as unknown;
@@ -158,13 +166,17 @@ routes.post("/api/auth/organization/update-member-role", async (c) => {
   if (!body) return auth.handler(request);
   if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
   if (body.role === "owner") return auth.handler(request); // never fewer owners
-  const manager = await managerFor(request, body);
-  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-  return withOrgLock(manager.organizationId, async () => {
-    if (typeof body.memberId === "string" && (await onlyOwner(manager.organizationId, { memberId: body.memberId }))) {
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId) return c.json({ message: "Organization not found" }, 400);
+  return withOrgLock(organizationId, async () => {
+    // Authorised inside the lock: a removal that finished just before this
+    // turn is seen, and a manager removed meanwhile gets nothing done.
+    const manager = await managerFor(request, { ...body, organizationId });
+    if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+    if (typeof body.memberId === "string" && (await onlyOwner(organizationId, { memberId: body.memberId }))) {
       return c.json({ message: LAST_OWNER }, 400);
     }
-    return auth.handler(pinned(request, body, manager.organizationId));
+    return auth.handler(pinned(request, body, organizationId));
   });
 });
 
@@ -172,14 +184,16 @@ routes.post("/api/auth/organization/remove-member", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
-  const manager = await managerFor(request, body);
-  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-  return withOrgLock(manager.organizationId, async () => {
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId) return c.json({ message: "Organization not found" }, 400);
+  return withOrgLock(organizationId, async () => {
+    const manager = await managerFor(request, { ...body, organizationId });
+    if ("status" in manager) return c.json({ message: manager.message }, manager.status);
     const target = typeof body.memberIdOrEmail === "string" ? body.memberIdOrEmail : "";
-    if (target && (await onlyOwner(manager.organizationId, { memberId: target, email: target }))) {
+    if (target && (await onlyOwner(organizationId, { memberId: target, email: target }))) {
       return c.json({ message: LAST_OWNER }, 400);
     }
-    return auth.handler(pinned(request, body, manager.organizationId));
+    return auth.handler(pinned(request, body, organizationId));
   });
 });
 
@@ -187,11 +201,13 @@ routes.post("/api/auth/organization/leave", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
-  const leaver = await managerFor(request, body, "member");
-  if ("status" in leaver) return c.json({ message: leaver.message }, leaver.status);
-  return withOrgLock(leaver.organizationId, async () => {
-    if (await onlyOwner(leaver.organizationId, { userId: leaver.session.user.id })) return c.json({ message: LAST_OWNER }, 400);
-    return auth.handler(pinned(request, body, leaver.organizationId));
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId) return c.json({ message: "Organization not found" }, 400);
+  return withOrgLock(organizationId, async () => {
+    const leaver = await managerFor(request, { ...body, organizationId }, "member");
+    if ("status" in leaver) return c.json({ message: leaver.message }, leaver.status);
+    if (await onlyOwner(organizationId, { userId: leaver.session.user.id })) return c.json({ message: LAST_OWNER }, 400);
+    return auth.handler(pinned(request, body, organizationId));
   });
 });
 
@@ -227,31 +243,44 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     // string, so "admin, owner" passes as admin and lands as owner. One exact role.
     if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
     if (typeof body.email !== "string") return auth.handler(request);
-    // The manager check comes first, whatever the address, so nobody else can
-    // tell from the answer which addresses can sign in.
-    const manager = await managerFor(request, body);
-    if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-    if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
+    const organizationId = await organisationOf(request, body);
+    if (!organizationId) return c.json({ message: "Organization not found" }, 400);
     // One invitation change at a time per organisation, the same lock acceptance,
     // cancellation and rejection take: the library checks for a member and a
     // pending invitation and then inserts, and a creation racing an acceptance
-    // or another creation would otherwise hand out a second link.
-    return withOrgLock(manager.organizationId, () => auth.handler(pinned(request, body, manager.organizationId)));
+    // or another creation would otherwise hand out a second link. The manager
+    // check runs inside, whatever the address, so nobody else can tell from the
+    // answer which addresses can sign in. Mail is not awaited by the library.
+    return withOrgLock(organizationId, async () => {
+      const manager = await managerFor(request, { ...body, organizationId });
+      if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+      if (!(await canSignIn(body.email as string))) return c.json({ message: NO_WAY_IN }, 400);
+      return auth.handler(pinned(request, body, organizationId));
+    });
   }
-  const manager = await managerFor(request, body);
-  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-  const { session, organizationId, roles: mine } = manager;
-  if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
-  return withOrgLock(organizationId, () => resend(c, session, organizationId, mine, body.email as string));
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId) return c.json({ message: "Organization not found" }, 400);
+  const outcome = await withOrgLock(organizationId, async () => {
+    const manager = await managerFor(request, { ...body, organizationId });
+    if ("status" in manager) return manager;
+    if (!(await canSignIn(body.email as string))) return { status: 400 as const, message: NO_WAY_IN };
+    return renew(manager, body.email as string);
+  });
+  if ("status" in outcome) return c.json({ message: outcome.message }, outcome.status);
+  // Delivered after the organisation's turn is over, so a slow relay holds nobody up.
+  try {
+    await deliverInvitation(outcome.delivery);
+  } catch (error) {
+    // The invitation is renewed either way and the link still works; the mail is best effort.
+    console.error(`[auth] invitation ${outcome.renewed.id} could not be resent:`, (error as Error).message);
+  }
+  return c.json(outcome.renewed);
 });
 
-async function resend(
-  c: Context<AppEnv>,
-  session: Manager["session"],
-  organizationId: string,
-  mine: string[],
-  email: string,
-) {
+type Renewal = { renewed: typeof invitation.$inferSelect; delivery: Parameters<typeof deliverInvitation>[0] };
+
+async function renew(manager: Manager, email: string): Promise<Renewal | Refusal> {
+  const { session, organizationId, roles: mine } = manager;
   const live = await db
     .select({ id: invitation.id, role: invitation.role })
     .from(invitation)
@@ -264,12 +293,12 @@ async function resend(
       ),
     );
   if (live.some((row) => roles(row.role).includes("owner")) && !mine.includes("owner")) {
-    return c.json({ message: "Only an owner can resend an owner invitation" }, 403);
+    return { status: 403, message: "Only an owner can resend an owner invitation" };
   }
   // Answered outside the library, so its request limiter does not apply; one
   // resend per address and organisation per minute bounds the mail it can cause.
   if (live.length && !resendAllowed(organizationId, email)) {
-    return c.json({ message: "That invitation was resent less than a minute ago. Try again shortly." }, 429);
+    return { status: 429, message: "That invitation was resent less than a minute ago. Try again shortly." };
   }
   const [renewed] = live.length
     ? await db
@@ -278,26 +307,23 @@ async function resend(
         .where(and(inArray(invitation.id, live.map((row) => row.id)), eq(invitation.status, "pending")))
         .returning()
     : [];
-  if (!renewed) return c.json({ message: "No pending invitation for that address" }, 400);
+  if (!renewed) return { status: 400, message: "No pending invitation for that address" };
   const [org] = await db
     .select({ name: organization.name })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1);
-  try {
-    await deliverInvitation({
+  return {
+    renewed,
+    delivery: {
       id: renewed.id,
       email: renewed.email,
       role: renewed.role ?? "member",
       organization: { name: org?.name ?? "" },
       invitation: { expiresAt: renewed.expiresAt },
       inviter: { user: { name: session.user.name, email: session.user.email } },
-    });
-  } catch (error) {
-    // The invitation is renewed either way and the link still works; the mail is best effort.
-    console.error(`[auth] invitation ${renewed.id} could not be resent:`, (error as Error).message);
-  }
-  return c.json(renewed);
+    },
+  };
 }
 
 /** Cancelling is an atomic pending-to-canceled step under the organisation's
@@ -313,9 +339,9 @@ routes.post("/api/auth/organization/cancel-invitation", async (c) => {
     .where(eq(invitation.id, body.invitationId))
     .limit(1);
   if (!target) return auth.handler(request); // the library reports the unknown id
-  const manager = await managerFor(request, { ...body, organizationId: target.organizationId });
-  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-  return withOrgLock(manager.organizationId, async () => {
+  return withOrgLock(target.organizationId, async () => {
+    const manager = await managerFor(request, { ...body, organizationId: target.organizationId });
+    if ("status" in manager) return c.json({ message: manager.message }, manager.status);
     const [canceled] = await db
       .update(invitation)
       .set({ status: "canceled" })
