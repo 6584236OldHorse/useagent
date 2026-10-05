@@ -38,6 +38,12 @@ export const GATEWAY_GRANTS: readonly string[] = [
   // organisation's local-execution policy; it never holds a link or a token.
   "GRANT SELECT (id, org_id, user_id, name, platform, status, logins, enrolled_at, token_hash) ON runners TO useagent_gateway",
   "GRANT SELECT ON runner_policies TO useagent_gateway",
+  // Spend allowance: the admission check reads the member's account. Today a
+  // restricted gateway bridges every acceptance to the backend (child sessions
+  // and run-now fail closed without a primary origin), so this is defence in
+  // depth for any future in-process acceptance; the ledger is only ever
+  // written by the backend's finalization.
+  "GRANT SELECT ON spend_accounts TO useagent_gateway",
   "GRANT UPDATE (usage_count, last_run_at, updated_at) ON skills TO useagent_gateway",
   "GRANT SELECT (id, run_id, thread_id, seq, provider, event_type, payload) ON provider_events TO useagent_gateway",
   "GRANT INSERT (id, run_id, thread_id, seq, provider, event_type, native_session_id, native_parent_session_id, native_message_id, native_part_id, native_call_id, payload, created_at) ON provider_events TO useagent_gateway",

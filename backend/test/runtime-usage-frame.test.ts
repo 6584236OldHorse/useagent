@@ -181,7 +181,10 @@ describe("runtime usage frames", () => {
 
     // Every later model call is its own frame; together they are exactly the
     // thread total Codex reported, so a ledger summing them counts each call once.
-    await projector.apply(snapshot([first, contextWindowActivity(1), contextWindowActivity(2)], 5));
+    // The first frame comes back at a newer revision with what the runtime
+    // finally reported: an older revision in a later snapshot would be a stale
+    // view of the activity and is left alone.
+    await projector.apply(snapshot([contextWindowActivity(0, 3), contextWindowActivity(1), contextWindowActivity(2)], 5));
     const rows = await stored();
     expect(rows.map((row) => row.id)).toEqual([1, 2, 3].map((n) => `pe_${runId}_t3_evt-usage-${n}`));
     expect(totals(rows)).toEqual([18261, 18315, 18357]);

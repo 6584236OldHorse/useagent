@@ -52,6 +52,8 @@ import { lockFinishedWorkRun } from "./finished-work-lock";
 import { completeRunOutputs } from "../artifacts/completion";
 import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
+import { drainProviderEvents } from "./provider-events";
+import { accrueRunSpend } from "./spend";
 
 /** Providers whose runs project native events and/or `steps` into the canonical lane.
  *  Native engines plus historical ACP rows, which can still finish canonicalization
@@ -457,6 +459,9 @@ async function commitRunFinalization(
   const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
   if (executionGraph) await prepareExecutionGraphSeal(runId);
+  // Usage frames still in the run's capture chain land before the charge is
+  // read, so the settlement prices every model call the turn made.
+  await drainProviderEvents(runId);
   let applied = false;
   let effectiveStatus: "completed" | "failed" = status === "completed" ? "completed" : "failed";
   let effectiveSummary = summary;
@@ -645,6 +650,14 @@ async function commitRunFinalization(
         tx,
       );
     }
+
+    // Spend ledger: charge the settled run's real cost to its member ONCE, in
+    // this transaction, for both terminal statuses (a failed turn still spent).
+    // LAST on purpose: the account upsert takes the member's row lock, and the
+    // transaction must not wait for anything else while holding it.
+    // ponytail: usage a provider reports after settlement is not charged; add a
+    // post-seal top-up if an engine ever streams its usage late.
+    await accrueRunSpend(run, tx);
   });
 
   if (!applied) return { applied: false };

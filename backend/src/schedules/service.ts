@@ -26,6 +26,7 @@ import {
 import { resolveSkillSelection } from "../skills/repo";
 import { RunIntakeError } from "../resources/run-intake";
 import { RunAdmissionClosedError } from "../commands";
+import { SpendAllowanceExceededError } from "../runs/spend";
 import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { BotsDisabledError } from "../bots/rollout";
 import {
@@ -492,6 +493,7 @@ export async function fireScheduleForOrg(
         retryable: true,
       });
     }
+    if (error instanceof SpendAllowanceExceededError) throw new ScheduleServiceError(402, error.body);
     if (error instanceof SandboxMinutesExceededError) throw new ScheduleServiceError(402, error.body);
     throw error;
   }

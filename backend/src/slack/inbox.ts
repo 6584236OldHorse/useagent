@@ -67,7 +67,9 @@ export interface SlackInboxClaim {
 }
 
 export type SlackInboxOutcome =
-  | { readonly status: "completed" }
+  /** `noop` names a permanent no-op (a refusal, an unsupported event): the row
+   *  settles with a `permanent_noop:` marker so duplicate delivery never reopens it. */
+  | { readonly status: "completed"; readonly noop?: string }
   | { readonly status: "retryable_unavailable"; readonly error: string }
   | { readonly status: "waiting_for_root" }
   | { readonly status: "permanent"; readonly error: string };
@@ -435,8 +437,11 @@ async function checkpointStagedAttachmentIds(
   await updateClaim(row, { payload });
 }
 
-async function completeClaim(row: ClaimedSlackInboxEvent): Promise<void> {
-  await updateClaim(row, { state: "completed", error: null });
+async function completeClaim(row: ClaimedSlackInboxEvent, noop?: string): Promise<void> {
+  await updateClaim(row, {
+    state: "completed",
+    error: noop ? `permanent_noop:${noop}`.slice(0, 500) : null,
+  });
 }
 
 async function failClaim(row: ClaimedSlackInboxEvent, error: string): Promise<void> {
@@ -563,7 +568,7 @@ export async function processSlackInbox(handler: SlackInboxHandler): Promise<Sla
       });
       if (await heartbeat.stop()) throw new StaleSlackInboxClaimError();
       if (outcome.status === "completed") {
-        await completeClaim(row);
+        await completeClaim(row, outcome.noop);
         completed++;
       } else if (outcome.status === "retryable_unavailable") {
         const deferred = await deferClaim(row, payload, outcome.error);

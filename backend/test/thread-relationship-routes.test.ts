@@ -3,7 +3,7 @@ import { createOrgSession, json, uid } from "./helpers";
 import { createChildSession } from "../src/runs/child-sessions";
 import { getRunForOrg } from "../src/runs/repo";
 import { db } from "../src/db/client";
-import { agentExecutions, commands, finishedWorkReceipts, runs, threadRelationships } from "../src/db/schema";
+import { agentExecutions, commands, finishedWorkReceipts, member, runs, spendAccounts, threadRelationships } from "../src/db/schema";
 import { CANONICAL_SCHEMA_VERSION } from "@useagent/agent-harness/canonical";
 import { persistCanonicalEvents } from "../src/runs/canonical-events";
 import { createArtifactRecord } from "../src/artifacts/repo";
@@ -198,6 +198,26 @@ describe("thread relationship routes", () => {
       kind: "continued_from_native",
       parent_thread_id: childA.child.threadId,
     });
+
+    // A member at the allowance is refused a new continuation with the figures, never a 500.
+    const [ownerMember] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, owner.orgId));
+    await db.insert(spendAccounts).values({ orgId: owner.orgId, userId: ownerMember!.userId, spentUsd: 100 })
+      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 100 } });
+    try {
+      const capped = await json<{ error?: string; message?: string }>(
+        `/api/threads/${childA.child.threadId}/continue-native-child`,
+        {
+          method: "POST",
+          cookies: owner.cookies,
+          body: { executionId: execution!.id, title: "Continued at the cap", idempotencyKey: "continue-capped" },
+        },
+      );
+      expect(capped.status).toBe(402);
+      expect(capped.body.error).toBe("spend_allowance_exceeded");
+      expect(capped.body.message).toContain("$100.00 of your $100.00");
+    } finally {
+      await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, owner.orgId), eq(spendAccounts.userId, ownerMember!.userId)));
+    }
     await expect(db.transaction(async (tx) => {
       await tx.update(threadRelationships).set({ sourceExecutionId: rootExecution!.id }).where(and(
         eq(threadRelationships.orgId, owner.orgId),

@@ -117,6 +117,7 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
     }
     c.set("orgId", orgId);
     c.set("userId", userId);
+    c.set("identitySource", "session");
     return next();
   }
 
@@ -128,6 +129,7 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
   const dev = getDevContext();
   c.set("orgId", dev.orgId);
   c.set("userId", dev.userId);
+  c.set("identitySource", "dev");
   return next();
 });
 

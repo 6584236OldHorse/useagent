@@ -687,6 +687,13 @@
       "when": 1792800000013,
       "tag": "0103_runs_permission_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1792800000014,
+      "tag": "0104_spend_ledger",
+      "breakpoints": true
     }
   ]
 }

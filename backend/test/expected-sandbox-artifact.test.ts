@@ -7,6 +7,8 @@ import { artifacts, canonicalizationOutbox, providerEvents, runs } from "../src/
 import { createRun, setRunSandbox } from "../src/runs/repo";
 import { setSandboxDownloaderForTest, setSandboxPathResolverForTest } from "../src/slack/sandbox-file";
 import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
+// Boots src/index -> migrate, so the schema exists whichever file runs first.
+import "./helpers";
 
 test("artifact publication carries the durable fence through path resolution and download", async () => {
   const orgId = `expected-artifact-${crypto.randomUUID()}`;

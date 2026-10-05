@@ -3,7 +3,7 @@
 // the assistant text is published as it grows. One projector's view spans a
 // turn and the continuation the plane may send for it, so nothing that landed
 // between the two is taken as already seen or left out of the record.
-import { recordProviderEvent } from "../runs/provider-events";
+import { recordProviderEvent, CaptureFenceError, runSettlementFence } from "../runs/provider-events";
 import { createSecretRedactor } from "../secrets/redact";
 import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityProviderEvent, runtimeActivityRevision, runtimeActivityStepKey, runtimeThreadId, runtimeTurnError, runtimeTurnSettled, shouldProjectRuntimeActivity, type RuntimeEngineId, type RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { type EngineRunContext } from "./types";
@@ -60,6 +60,7 @@ export function createTurnProjector(input: {
   const threadId = runtimeThreadId(ctx);
   let publishedText = "";
   let finalText = "";
+  let sealed = false;
   return {
     get publishedText() { return publishedText; },
     get finalText() { return finalText; },
@@ -68,12 +69,25 @@ export function createTurnProjector(input: {
     async apply(snapshot, observe) {
       const toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
       for (const activity of snapshot.thread.activities) {
+        if (sealed) break;
         const revision = runtimeActivityRevision(activity);
         if (revisions.get(activity.id) === revision) continue;
         revisions.set(activity.id, revision);
-        await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
-          critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
-        });
+        try {
+          // Fenced by the settlement seal: once the run is settled (whichever
+          // path settled it), a capture still in flight writes nothing, so the
+          // charge stays what was persisted before settlement.
+          await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
+            critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
+            fence: runSettlementFence(ctx.runId),
+          });
+        } catch (error) {
+          if (!(error instanceof CaptureFenceError)) throw error;
+          revisions.delete(activity.id);
+          sealed = true;
+          console.info(`[turn-projector] run ${ctx.runId} is settled; projection stopped`);
+          break;
+        }
         await observe?.(activity);
         if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
         const step = redact.unknown(activityStep(activity, threadId, engine));
@@ -89,7 +103,7 @@ export function createTurnProjector(input: {
       const text = redact.text(assistantText(snapshot));
       const settled = runtimeTurnSettled(snapshot);
       const projection = projectRuntimeAssistantText({ publishedText, finalText }, text, settled);
-      if (projection.delta) ctx.publishDelta?.(projection.delta);
+      if (projection.delta && !sealed) ctx.publishDelta?.(projection.delta);
       publishedText = projection.publishedText;
       finalText = projection.finalText;
       const error = runtimeTurnError(snapshot);

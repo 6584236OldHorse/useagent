@@ -12,6 +12,7 @@ import { ProviderConnectionsCard } from "./provider-connections-card";
 import { SandboxMinutesRow } from "./sandbox-minutes-row";
 import { SandboxProviderRow } from "./sandbox-provider-row";
 import { SecretsCard } from "./secrets-card";
+import { SpendRow } from "./spend-row";
 import { SettingsRail } from "./settings-rail";
 import {
   SETTINGS_ACTIVATION_RATIO,
@@ -132,6 +133,7 @@ export default function SettingsPage() {
                       Starter - Free
                     </Chip>
                   </SettingsRow>
+                  <SpendRow />
                   <SandboxMinutesRow />
                 </SettingsCard>
 

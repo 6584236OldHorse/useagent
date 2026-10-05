@@ -20,7 +20,7 @@ import {
 import { createHash, createHmac } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { artifacts, commands, member, runs, sandboxMinutesEntries, slackOutbox, slackRunResponses, slackThreads, user, userUploads } from "../src/db/schema";
+import { artifacts, commands, member, runs, sandboxMinutesEntries, slackOutbox, slackRunResponses, slackThreads, spendAccounts, user, userUploads } from "../src/db/schema";
 import { artifactStorage } from "../src/artifacts/storage";
 import { finalizeRun } from "../src/runs/finalize";
 import { createRun, insertStep, updateStepCode } from "../src/runs/repo";
@@ -49,7 +49,7 @@ import { buildRunCard } from "../src/slack/card";
 import { markdownChunksFor, taskUpdateChunk, WORKING_PHRASES } from "../src/slack/streaming";
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
-import { setSlackClientForTest, type SlackClient } from "../src/slack";
+import { handleSlackInboxClaim, setSlackClientForTest, type SlackClient } from "../src/slack";
 import { bindInvitedSlackSender, requestSlackAccess } from "../src/slack/access-requests";
 import { handleSlackEvent, resetSlackDeduperForTest, type SlackEnvelope } from "../src/slack/events";
 import { setInboundFileDownloaderForTest } from "../src/slack/inbound-files";
@@ -328,24 +328,10 @@ async function deleteSlackDeliveryRows(runId: string, teamId = TEAM): Promise<vo
   `);
 }
 
+/** Claims replay through the PRODUCTION inbox handler (its markers and guards
+ *  included), never through a copy of its mapping. */
 async function replaySlackInboxClaim(claim: SlackInboxClaim): Promise<SlackInboxOutcome> {
-  const identity = await verifySlackInboxIdentity(claim.payload);
-  if (identity.status === "ignored") return { status: "completed" };
-  if (identity.status === "rebound") return { status: "permanent", error: identity.error };
-  const outcome = await handleSlackEvent(claim.payload.envelope, {
-    identity,
-    stagedAttachmentIds: claim.payload.stagedAttachmentIds,
-    checkpointStagedAttachmentIds: claim.checkpointStagedAttachmentIds,
-  });
-  if (
-    outcome.status === "accepted" ||
-    outcome.status === "replayed" ||
-    outcome.status === "permanent_noop"
-  ) {
-    return { status: "completed" };
-  }
-  if (outcome.status === "waiting_for_root") return { status: "waiting_for_root" };
-  return { status: "retryable_unavailable", error: outcome.reason };
+  return handleSlackInboxClaim(claim);
 }
 
 function restartSlackInboxPumpForTest(): void {
@@ -1952,6 +1938,62 @@ describe("slack native stream and Block Kit fallback", () => {
 });
 
 describe("slack durable inbox", () => {
+  test("a capped sender is answered with the allowance refusal once and the message settles", async () => {
+    const marker = uid("capped");
+    const channel = `C${uid("ch")}`;
+    const ts = `${uid("ts")}.1`;
+    const envelope = eventCallback({
+      type: "app_mention",
+      channel,
+      user: "U-HUMAN",
+      text: `<@${BOT}> capped ${marker}`,
+      ts,
+    }) as SlackEnvelope;
+    const inboxKey = slackInboxKey(envelope);
+    await db.insert(spendAccounts).values({ orgId: DEV_ORG_ID, userId: DEV_USER_ID, spentUsd: 100 })
+      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 100 } });
+    try {
+      expect((await postSlack(envelope)).status).toBe(200);
+      const refusal = await waitFor(async () => {
+        const rows = await db
+          .select({ payload: slackOutbox.payload })
+          .from(slackOutbox)
+          .where(eq(slackOutbox.idempotencyKey, `slack-spend-refused:${TEAM}:${channel}:${ts}`));
+        return rows[0] ?? null;
+      });
+      expect(refusal.payload).toContain("You have spent $100.00 of your $100.00 allowance");
+      const settled = await waitFor(async () => {
+        const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+        return row?.state === "completed" ? row : null;
+      });
+      expect(settled.error).toBe("permanent_noop:spend_allowance_exceeded");
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+
+      // The allowance is lifted and Slack redelivers the same message: the
+      // refusal stands, the row is never reopened and no run is created.
+      await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, DEV_ORG_ID), eq(spendAccounts.userId, DEV_USER_ID)));
+      resetSlackDeduperForTest();
+      expect((await postSlack(envelope)).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const [after] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+      expect(after).toMatchObject({ state: "completed", error: "permanent_noop:spend_allowance_exceeded" });
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+
+      // A crash between the refusal reply and the inbox marker leaves the row
+      // unmarked for a later reclaim; the durable reply still decides it.
+      await db.update(commands).set({ state: "queued", error: null, attemptCount: 0 }).where(eq(commands.id, inboxKey));
+      restartSlackInboxPumpForTest();
+      const reclaimed = await waitFor(async () => {
+        const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+        return row?.state === "completed" ? row : null;
+      });
+      expect(reclaimed.error).toBe("permanent_noop:spend_allowance_exceeded");
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+    } finally {
+      await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, DEV_ORG_ID), eq(spendAccounts.userId, DEV_USER_ID)));
+    }
+  });
+
   test("a member past the sandbox minutes cap is answered with the refusal once and the message settles", async () => {
     const marker = uid("capped-minutes");
     const channel = `C${uid("ch")}`;

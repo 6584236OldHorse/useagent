@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
-import { resolveSession } from "../auth/session";
 import { orgScope } from "../middleware/org";
 import { isMemoryScope, type MemoryScope } from "../memory/scope";
 import { resolveChatProviderCredential } from "../provider-gateway/credentials";
@@ -13,6 +12,7 @@ import { chatModelCatalog } from "./models";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
 import { chatModel, streamChat, type ChatMessage } from "./stream";
+import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 
 /**
  * Lightweight Chat API (#122) - mounted at /api/chat. A NO-SANDBOX conversational
@@ -45,18 +45,6 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
     out.push({ role: role as ChatMessage["role"], content });
   }
   return out.some((m) => m.role === "user") ? out : null;
-}
-
-/** The real authenticated user for this request (null when anonymous / dev-org
- *  fallback), so personal-scope retrieval fails closed - `c.get("userId")` is
- *  filled with the dev user by the org middleware and must not be trusted here. */
-async function authedUserId(headers: Headers): Promise<string | null> {
-  try {
-    const session = await resolveSession(headers);
-    return session?.user.id ?? null;
-  } catch {
-    return null;
-  }
 }
 
 // GET /api/chat/models - the served model catalog + current default. Powers the
@@ -92,7 +80,16 @@ chatRoutes.post("/", async (c) => {
   const memoryScope: MemoryScope = isMemoryScope(body.memoryScope) ? body.memoryScope : "org";
 
   const orgId = c.get("orgId");
-  const userId = await authedUserId(c.req.raw.headers);
+  // The identity orgScope verified, carried through rather than resolved a
+  // second time (a failed second lookup must never turn a member into nobody
+  // and hand them a house-keyed answer past their allowance). The dev fallback
+  // is anonymous here: no member credential, no allowance, and personal-scope
+  // retrieval fails closed. Anything else fails closed.
+  const identitySource = c.get("identitySource");
+  if (identitySource !== "session" && identitySource !== "dev") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const userId = identitySource === "session" ? c.get("userId") : null;
 
   // Resolve the OpenRouter credential BYOK-first: a customer's connected key
   // wins over the house key, so their own quota is spent (and an invalid
@@ -100,6 +97,14 @@ chatRoutes.post("/", async (c) => {
   const resolved = await resolveChatProviderCredential({ orgId, userId });
   if (!resolved) {
     return c.json({ error: "chat is not configured (no OpenRouter credential)" }, 503);
+  }
+  // The same allowance every run ingress enforces, before any model call: a
+  // member at the cap is refused here too. The turn itself is not metered yet.
+  try {
+    await assertSpendAllowance(orgId, userId);
+  } catch (error) {
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
+    throw error;
   }
   console.info(`[chat] org ${orgId} served by ${resolved.source}`);
 

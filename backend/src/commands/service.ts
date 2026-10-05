@@ -16,6 +16,7 @@ import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../ru
 import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
+import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 import { assertSandboxMinutes, SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { assertRunPromptLimit } from "./prompt-policy";
 import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
@@ -344,6 +345,10 @@ async function acceptRunCommandWithOrigin(
         // close waits for already-accepting transactions, then every later new
         // acceptance observes the durable closed state.
         await assertRunAdmissionOpen(tx);
+        // The spend cap is checked here, on NEW work only (a keyed replay above
+        // still returns its original run), as a lock-free read of the committed
+        // figure so this transaction takes no lock that could close a cycle.
+        await assertSpendAllowance(input.orgId, input.actorId, tx);
         // Sandbox minutes are checked here, on NEW work only (a keyed replay
         // above still returns its original run), as a lock-free read of the
         // committed ledger. A chat turn holds no sandbox and passes.
@@ -401,11 +406,14 @@ async function acceptRunCommandWithOrigin(
     // A concurrent request with the same org/key but a different root thread can
     // win the unique index. The losing transaction is aborted, so resolve the
     // winner only AFTER withThreadLifecycleLock rolls it back. The same applies
-    // to a minutes refusal: a keyed retry that read the fast path before its
-    // winner committed, then met the cap, still replays the committed winner.
-    if (input.idempotencyKey && (isUniqueViolation(err) || err instanceof SandboxMinutesExceededError)) {
-      const existing = await findCommandByKey(input.orgId, input.idempotencyKey);
-      if (existing) return classifyReplay(existing, fingerprint, origin, source);
+    // to a spend or minutes refusal: a keyed retry that read the fast path
+    // before its winner committed, then met a cap, still replays the committed winner.
+    if (
+      input.idempotencyKey &&
+      (isUniqueViolation(err) || err instanceof SpendAllowanceExceededError || err instanceof SandboxMinutesExceededError)
+    ) {
+      const replay = await replayCommittedWinner(input.orgId, input.idempotencyKey, fingerprint, origin, source);
+      if (replay) return replay;
     }
     throw err;
   }
@@ -427,6 +435,19 @@ async function acceptRunCommandWithOrigin(
   }
 
   return { status: "created", runId: input.run.id, commandId };
+}
+
+/** After a lost race or a refusal: the committed keyed winner, if any, still
+ *  answers for this submission exactly as the fast path would have. */
+export async function replayCommittedWinner(
+  orgId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+  origin: TrustedRunOrigin | null,
+  source: ConnectorRunSource | null,
+): Promise<RunCommandOutcome | null> {
+  const existing = await findCommandByKey(orgId, idempotencyKey);
+  return existing ? classifyReplay(existing, fingerprint, origin, source) : null;
 }
 
 /** Public product acceptance. Origin is always null and is not caller-settable. */

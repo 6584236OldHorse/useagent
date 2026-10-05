@@ -24,6 +24,7 @@ import {
   RunAdmissionClosedError,
   type RunCommandIntent,
 } from "../commands";
+import { SpendAllowanceExceededError } from "../runs/spend";
 import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { pumpThread } from "../worker";
 import { stageInboundSlackFiles, type SlackInboundFileMeta } from "./inbound-files";
@@ -36,6 +37,7 @@ import {
   enqueueThreadStatusTx,
   enqueueUpdateCardTx,
   kickSlackOutbox,
+  slackSpendRefusalKey,
 } from "./outbox";
 import { buildRunCard, stripMentions } from "./card";
 import { WORKING_PHRASES } from "./streaming";
@@ -259,6 +261,27 @@ export type SlackEventOutcome =
   | { readonly status: "permanent_noop"; readonly reason: string }
   | { readonly status: "retryable_unavailable"; readonly reason: string }
   | { readonly status: "waiting_for_root"; readonly threadTs: string };
+
+async function handleSpendRefused(input: {
+  readonly error: SpendAllowanceExceededError;
+  readonly orgId: string;
+  readonly teamId: string;
+  readonly channel: string;
+  readonly ts: string;
+  readonly threadTs: string;
+}): Promise<SlackEventOutcome> {
+  // The refusal is the answer: replied once (keyed by the message) and settled,
+  // never retried, since only a raised allowance can change the outcome.
+  await enqueuePostMessage({
+    idempotencyKey: slackSpendRefusalKey(input.teamId, input.channel, input.ts),
+    orgId: input.orgId,
+    teamId: input.teamId,
+    channel: input.channel,
+    threadTs: input.threadTs,
+    text: input.error.message,
+  });
+  return { status: "permanent_noop", reason: input.error.code };
+}
 
 async function handleSandboxMinutesRefused(input: {
   readonly error: SandboxMinutesExceededError;
@@ -567,15 +590,10 @@ export async function handleSlackEvent(
       source: "slack",
     });
   } catch (error) {
+    const refusal = { orgId, teamId, channel, ts, threadTs: slackThreadTs };
+    if (error instanceof SpendAllowanceExceededError) return handleSpendRefused({ error, ...refusal });
     if (!(error instanceof RunAdmissionClosedError)) throw error;
-    return handleAdmissionClosed({
-      error,
-      orgId,
-      teamId,
-      channel,
-      ts,
-      threadTs: slackThreadTs,
-    });
+    return handleAdmissionClosed({ error, ...refusal });
   }
   if (replay) {
     if (replay.status === "replayed" && !link) {
@@ -715,6 +733,7 @@ export async function handleSlackEvent(
     });
   } catch (error) {
     const refusal = { orgId, teamId, channel, ts, threadTs: slackThreadTs };
+    if (error instanceof SpendAllowanceExceededError) return handleSpendRefused({ error, ...refusal });
     if (error instanceof SandboxMinutesExceededError) return handleSandboxMinutesRefused({ error, ...refusal });
     if (!(error instanceof RunAdmissionClosedError)) throw error;
     return handleAdmissionClosed({ error, ...refusal });

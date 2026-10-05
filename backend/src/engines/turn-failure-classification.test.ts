@@ -45,6 +45,16 @@ describe("turn failure classification", () => {
     expect(failure.summary.length).toBe(7 + 180);
   });
 
+  test("names a spent provider key plainly instead of relaying the refusal", () => {
+    const failure = classifyTurnFailure(
+      new Error('upstream 403: {"error":{"message":"Key limit exceeded","code":403}}'),
+    );
+    expect(failure.kind).toBe("provider");
+    expect(failure.label).toBe("Provider key limit reached");
+    expect(failure.summary).toContain("reached its spending limit");
+    expect(failure.summary).not.toContain("—");
+  });
+
   test("falls back to a generic engine error for a message-less throw", () => {
     const failure = classifyTurnFailure(new Error(""));
     expect(failure.kind).toBe("provider");

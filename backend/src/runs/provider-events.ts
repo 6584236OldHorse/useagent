@@ -1,6 +1,6 @@
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { db, type DbTx, type Executor } from "../db/client";
-import { providerEvents } from "../db/schema";
+import { providerEvents, runs } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
 import { errorMessage } from "../util/error-message";
 import { noteCaptureLoss } from "./capture-loss";
@@ -408,6 +408,25 @@ export class CaptureFenceError extends Error {
  *  written; it should lock what it checks (a `select ... for update` on the claim row) so
  *  ownership and persistence are one atomic step. */
 export type WriteFence = (tx: Executor) => Promise<boolean>;
+
+/**
+ * The settlement seal: a run's terminal status, set by finalizeRun's row update
+ * BEFORE it charges the run. A capture fenced by this holds the run row FOR
+ * SHARE while it checks, which conflicts with that update's lock, so the two are
+ * ordered: a capture that gets the lock first is priced by the charge, and one
+ * that waits behind the update sees the terminal status and writes nothing.
+ * No capture of a settled run can land through any projection path.
+ */
+export function runSettlementFence(runId: string): WriteFence {
+  return async (tx) => {
+    const [row] = await tx
+      .select({ status: runs.status })
+      .from(runs)
+      .where(eq(runs.id, runId))
+      .for("share");
+    return row !== undefined && (row.status === "queued" || row.status === "running");
+  };
+}
 
 async function persistAndPublish(input: ProviderEventInput, seq: RunSequencer): Promise<void> {
   const { frame, assignedSeq } = await persistFrame(input, seq, db);

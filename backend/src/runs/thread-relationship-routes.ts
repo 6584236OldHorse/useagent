@@ -30,6 +30,7 @@ import { UploadClaimError } from "../uploads/repo";
 import { loadCanonicalExecutionEvents } from "./canonical-events";
 import { strictOrgSecretRedactor } from "../secrets/store";
 import { listArtifactsForOrg } from "../artifacts/repo";
+import { SpendAllowanceExceededError } from "./spend";
 
 const CONTINUE_REFERENCE_LIMIT = 4;
 const CONTINUE_RESULT_MAX_CHARS = 1_000;
@@ -242,6 +243,7 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
       sourceExecutionId: source.execution.id,
     });
   } catch (error) {
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     throw error;
   }
@@ -303,6 +305,7 @@ routes.post("/:threadId/messages", async (c) => {
     if (error instanceof RunPromptTooLargeError) return c.json({ error: error.code }, 413);
     if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     if (error instanceof FleetQueueLimitError) return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
     if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);

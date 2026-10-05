@@ -31,6 +31,8 @@ import { reposRoutes } from "./github/routes";
 import { pullsRoutes } from "./github/pulls-routes";
 import { desktopProxyRoutes } from "./runs/desktop-proxy";
 import { fleetRoutes } from "./runs/fleet-routes";
+import { spendRoutes } from "./runs/spend-routes";
+import { spendAllowanceDefaultUsd } from "./runs/spend";
 import { sandboxMinutesRoutes } from "./runs/sandbox-minutes-routes";
 import { sandboxPreferenceRoutes } from "./sandboxes/preference-routes";
 import { portProxyRoutes } from "./runs/port-proxy";
@@ -458,6 +460,8 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env
 app.route("/api/chat", chatRoutes);
 
 app.route("/api/runs", runsRoutes);
+app.route("/api/spend", spendRoutes);
+spendAllowanceDefaultUsd(); // boot-time validation of SPEND_ALLOWANCE_USD against the ledger ceiling (logged once)
 app.route("/api/sandbox-minutes", sandboxMinutesRoutes);
 app.route("/api/sandbox-preference", sandboxPreferenceRoutes);
 app.route("/api/capabilities", capabilityCatalogRoutes);

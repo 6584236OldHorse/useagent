@@ -28,6 +28,7 @@ import {
   NO_GROWTH,
 } from "@/components/pro/running-phase";
 import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
+import { useSpend } from "@/hooks/use-spend";
 
 /**
  * The reply composer of a thread plus everything that frames it: the running
@@ -115,6 +116,7 @@ export function ConversationComposer({
   repoRevisions?: Readonly<Record<string, string | null>>;
 }) {
   const context = useMemo(() => latestThreadContext(turns), [turns]);
+  const spend = useSpend();
   // The chip follows the thread's newest turn until the person picks a mode; a
   // legacy turn that reported none reads as full access, the posture it ran
   // with. An engine that cannot honour the mode sends Full access instead.
@@ -270,6 +272,7 @@ export function ConversationComposer({
           project={first?.[0]?.split("/").at(-1) ?? null}
           agent={engineDisplayLabel(defaultEngine)}
           context={context}
+          spend={spend}
           onCompact={canCompact ? compact : undefined}
         />
       }
