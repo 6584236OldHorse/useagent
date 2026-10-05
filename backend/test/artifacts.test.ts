@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 import * as artifactFormats from "@useagent/artifact-formats";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   csvToWorkbook,
   migrateHtmlToDocument,
@@ -18,6 +18,7 @@ import {
 } from "../src/artifacts/publish";
 import { readTrustedImageOutput } from "../src/artifacts/trusted-output";
 import { setArtifactStorageForTest } from "../src/artifacts/storage";
+import { lockArtifactStorageKey } from "../src/artifacts/storage-key-lock";
 import { setOfficePreviewConverterForTest } from "../src/artifacts/office-preview";
 import { executeArtifactTool } from "../src/knowledge/gateway/artifact-tools";
 import { createRun, setRunSandbox } from "../src/runs/repo";
@@ -33,7 +34,7 @@ import {
   setSandboxPathResolverForTest,
 } from "../src/slack/sandbox-file";
 import { deleteSecret, upsertSecret } from "../src/secrets/store";
-import { createOrgSession, fetchApi, json, type OrgSession } from "./helpers";
+import { createOrgSession, fetchApi, json, type OrgSession, waitFor } from "./helpers";
 import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
 import { db } from "../src/db/client";
 import { artifacts, providerEvents } from "../src/db/schema";
@@ -117,6 +118,82 @@ afterAll(() => {
 });
 
 describe("durable artifacts", () => {
+  test("serializes the PDF page route's blob publication and reference update", async () => {
+    const runId = await createSandboxRun(owner);
+    const sourceBytes = (await artifactFormats.renderArtifactExport({ pdfText: "page one" }, "pdf")).bytes;
+    const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
+    await storage.put(sourceDigest, sourceBytes);
+    const created = await createArtifactRecord({
+      orgId: owner.orgId,
+      userId: owner.email,
+      runId,
+      threadId: runId,
+      sourcePath: "/root/work/report.pdf",
+      name: "report.pdf",
+      contentType: "application/pdf",
+      sizeBytes: sourceBytes.byteLength,
+      sha256: sourceDigest,
+      storageKey: sourceDigest,
+      workpieceKind: "pdf",
+      workpieceState: null,
+    });
+    const expectedBytes = await artifactFormats.applyPdfPageOperation(sourceBytes, {
+      type: "reorder",
+      order: [0],
+    });
+    const expectedDigest = createHash("sha256").update(expectedBytes).digest("hex");
+    let lockHeld!: () => void;
+    const acquired = new Promise<void>((resolve) => { lockHeld = resolve; });
+    let releaseLock!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await lockArtifactStorageKey(tx, expectedDigest);
+      lockHeld();
+      await release;
+    });
+    await acquired;
+    let requestSettled = false;
+    const request = json<{ artifact: ArtifactDescriptor }>(
+      `/api/artifacts/${created.row.id}/workpiece/pdf-pages`,
+      {
+        method: "POST",
+        cookies: owner.cookies,
+        body: { expected_revision: 0, operation: { type: "reorder", order: [0] } },
+      },
+    ).finally(() => { requestSettled = true; });
+    let waitError: unknown;
+    try {
+      await waitFor(async () => {
+        const rows = await db.execute(sql`
+          with target as (
+            select hashtextextended(${`artifact-storage:${expectedDigest}`}, 0) as value
+          )
+          select count(*)::int as count
+          from pg_locks, target
+          where locktype = 'advisory'
+            and database = (select oid from pg_database where datname = current_database())
+            and classid = (((target.value >> 32) & 4294967295)::oid)
+            and objid = ((target.value & 4294967295)::oid)
+            and objsubid = 1
+            and not granted
+        `);
+        return Number(rows[0]?.count) > 0;
+      }, { timeoutMs: 2_000, intervalMs: 10 });
+      expect(requestSettled).toBe(false);
+    } catch (error) {
+      waitError = error;
+    } finally {
+      releaseLock();
+    }
+    const [response] = await Promise.all([request, holder.then(() => null)]);
+    if (waitError) throw waitError;
+
+    expect(response.status).toBe(200);
+    const updated = await getArtifact(created.row.id);
+    expect(updated?.storageKey).toBe(expectedDigest);
+    expect(await storage.read(expectedDigest)).toEqual(expectedBytes);
+  });
+
   test("publishes trusted provider bytes without persisting a host path", async () => {
     const runId = crypto.randomUUID();
     await createRun({

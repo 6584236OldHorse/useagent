@@ -36,6 +36,7 @@ import {
   type ArtifactRecord,
 } from "./repo";
 import { artifactStorage, type ArtifactByteRange } from "./storage";
+import { withArtifactStorageKeyLock } from "./storage-key-lock";
 import { materializePptxImages } from "./publish";
 import { parseWorkpieceState } from "./workpiece";
 import {
@@ -577,14 +578,17 @@ artifactRoutes.post("/:id/workpiece/pdf-pages", async (c) => {
   }
 
   const digest = createHash("sha256").update(outputBytes).digest("hex");
-  await artifactStorage().put(digest, outputBytes);
-  const updated = await applyArtifactPdfPageRevision({
-    orgId: c.get("orgId"),
-    id: artifact.id,
-    expectedRevision: Number(expectedRevision),
-    sha256: digest,
-    storageKey: digest,
-    sizeBytes: outputBytes.byteLength,
+  const updated = await withArtifactStorageKeyLock(digest, async (tx) => {
+    await artifactStorage().put(digest, outputBytes);
+    return applyArtifactPdfPageRevision({
+      orgId: c.get("orgId"),
+      id: artifact.id,
+      expectedRevision: Number(expectedRevision),
+      sha256: digest,
+      storageKey: digest,
+      sizeBytes: outputBytes.byteLength,
+      exec: tx,
+    });
   });
   if (!updated) {
     const current = await getArtifactForOrg(c.get("orgId"), artifact.id);

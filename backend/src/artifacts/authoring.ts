@@ -30,6 +30,7 @@ import { recordProviderEvent } from "../runs/provider-events";
 import { materializeFinishedWorkArtifactIfActive } from "../runs/finished-work-materialization-context";
 import { claimUploadForRun } from "../uploads/repo";
 import { artifactStorage } from "./storage";
+import { lockArtifactStorageKey } from "./storage-key-lock";
 import { buildInitialWorkpieceState, parseWorkpieceState } from "./workpiece";
 import {
   createArtifactRecord,
@@ -304,6 +305,7 @@ export async function createAuthoredArtifact(input: {
     }
 
     const digest = createHash("sha256").update(sourceBytes).digest("hex");
+    await lockArtifactStorageKey(tx, digest);
     const existingAuthored = input.uploadId ? null : await (async () => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${[
         "authored-artifact-publish",

@@ -21,6 +21,7 @@ import {
 import { db } from "../db/client";
 import { sql } from "drizzle-orm";
 import { artifactStorage } from "./storage";
+import { lockArtifactStorageKey, withArtifactStorageKeyLock } from "./storage-key-lock";
 import { getRunForOrg } from "../runs/repo";
 import { publishOrgChange } from "../runs/org-signals";
 import {
@@ -191,12 +192,16 @@ async function attachOfficePreview(
     return clearStale();
   }
   const previewKey = createHash("sha256").update(pdf).digest("hex");
-  await artifactStorage().put(previewKey, pdf);
-  return (await updateArtifactPreview({
-    orgId: input.orgId,
-    id: input.record.id,
-    previewStorageKey: previewKey,
-  })) ?? input.record;
+  const attached = await withArtifactStorageKeyLock(previewKey, async (tx) => {
+    await artifactStorage().put(previewKey, pdf);
+    return updateArtifactPreview({
+      orgId: input.orgId,
+      id: input.record.id,
+      previewStorageKey: previewKey,
+      exec: tx,
+    });
+  });
+  return attached ?? input.record;
 }
 
 const IMPORT_IMAGE_EXTENSION: Readonly<Record<string, string>> = {
@@ -222,25 +227,27 @@ async function storeImportedImage(
   },
 ): Promise<string> {
   const digest = createHash("sha256").update(image.bytes).digest("hex");
-  const existing = await findArtifactByOrgAndSha256(ctx.orgId, digest);
-  if (existing) return `/api/artifacts/${existing.id}/content`;
-  const extension = IMPORT_IMAGE_EXTENSION[image.contentType] ?? "img";
-  const created = await createArtifactRecord({
-    orgId: ctx.orgId,
-    userId: ctx.userId,
-    runId: ctx.run.id,
-    threadId: ctx.run.threadId,
-    sourcePath: `${ctx.sourcePath}::media/${ctx.index + 1}`,
-    name: `${ctx.deckStem}-image-${ctx.index + 1}.${extension}`,
-    contentType: image.contentType,
-    sizeBytes: image.bytes.byteLength,
-    sha256: digest,
-    storageKey: digest,
-    workpieceKind: null,
-    workpieceState: null,
+  return withArtifactStorageKeyLock(digest, async (tx) => {
+    const existing = await findArtifactByOrgAndSha256(ctx.orgId, digest, tx);
+    if (existing) return `/api/artifacts/${existing.id}/content`;
+    const extension = IMPORT_IMAGE_EXTENSION[image.contentType] ?? "img";
+    const created = await createArtifactRecord({
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      runId: ctx.run.id,
+      threadId: ctx.run.threadId,
+      sourcePath: `${ctx.sourcePath}::media/${ctx.index + 1}`,
+      name: `${ctx.deckStem}-image-${ctx.index + 1}.${extension}`,
+      contentType: image.contentType,
+      sizeBytes: image.bytes.byteLength,
+      sha256: digest,
+      storageKey: digest,
+      workpieceKind: null,
+      workpieceState: null,
+    }, tx);
+    await artifactStorage().put(digest, image.bytes);
+    return `/api/artifacts/${created.row.id}/content`;
   });
-  await artifactStorage().put(digest, image.bytes);
-  return `/api/artifacts/${created.row.id}/content`;
 }
 
 /** Store each picture a PPTX import lifted out of its slides as a linked, content-
@@ -420,11 +427,11 @@ export async function publishSandboxArtifact(input: {
         })`,
       );
     }
-    await artifactStorage().put(digest, file.bytes);
-    if ((await artifactStorage().size(digest)) !== file.bytes.length) {
-      throw new Error("artifact storage size verification failed");
-    }
-    const revised = await db.transaction(async (tx) => {
+    const revised = await withArtifactStorageKeyLock(digest, async (tx) => {
+      await artifactStorage().put(digest, file.bytes);
+      if ((await artifactStorage().size(digest)) !== file.bytes.length) {
+        throw new Error("artifact storage size verification failed");
+      }
       const updated = await reviseArtifactPublication({
         orgId: input.orgId,
         id: target.id,
@@ -467,6 +474,7 @@ export async function publishSandboxArtifact(input: {
   }
 
   const stored = await db.transaction(async (tx) => {
+    await lockArtifactStorageKey(tx, digest);
     // Serialize one logical publication across processes. Without this lock, a
     // creator that fails storage verification can roll back metadata already
     // returned by a concurrent idempotent publisher.
@@ -491,9 +499,9 @@ export async function publishSandboxArtifact(input: {
       workpieceKind,
       workpieceState,
     }, tx);
-    // Metadata is transactional but must precede bytes so orphan reclamation's
-    // final database check sees the in-flight publication. A storage failure
-    // rolls the row back while retaining at most a reclaimable content blob.
+    // The digest lock spans byte publication and this reference's commit. A
+    // storage failure rolls the row back while retaining at most a reclaimable
+    // content blob.
     await artifactStorage().put(digest, file.bytes);
     const storedSize = await artifactStorage().size(digest);
     if (storedSize !== file.bytes.length) {
@@ -563,6 +571,7 @@ export async function publishTrustedArtifact(input: {
   );
 
   const stored = await db.transaction(async (tx) => {
+    await lockArtifactStorageKey(tx, digest);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${[
       "trusted-artifact-publish",
       trustedOutputSourceAliases(sourcePath)[0],

@@ -118,6 +118,10 @@ export class LocalArtifactStorage implements ArtifactStorage {
   async reclaimUnreferenced(input: {
     readonly referencedKeys: ReadonlySet<string>;
     readonly isReferenced?: (storageKey: string) => Promise<boolean>;
+    readonly withStorageKeyLock?: (
+      storageKey: string,
+      action: (isReferenced: () => Promise<boolean>) => Promise<void>,
+    ) => Promise<void>;
     readonly minAgeMs?: number;
     readonly dryRun?: boolean;
     readonly now?: Date;
@@ -182,26 +186,33 @@ export class LocalArtifactStorage implements ArtifactStorage {
         if (!key.startsWith(prefix)) continue;
         const path = join(directory, key);
         const quarantined = join(directory, entry);
-        try {
-          await restoreQuarantinedBytes(quarantined, path);
-          candidates.add(key);
-        } catch (error) {
-          if (missing(error)) continue;
-          if (permissionDenied(error)) {
-            warnPermission("link", quarantined, key);
-            continue;
+        const restore = async (): Promise<void> => {
+          try {
+            await restoreQuarantinedBytes(quarantined, path);
+            candidates.add(key);
+          } catch (error) {
+            if (missing(error)) return;
+            if (permissionDenied(error)) {
+              warnPermission("link", quarantined, key);
+              return;
+            }
+            throw error;
           }
-          throw error;
-        }
-        try {
-          await unlink(quarantined);
-        } catch (error) {
-          if (missing(error)) continue;
-          if (permissionDenied(error)) {
-            warnPermission("unlink", quarantined, key);
-            continue;
+          try {
+            await unlink(quarantined);
+          } catch (error) {
+            if (missing(error)) return;
+            if (permissionDenied(error)) {
+              warnPermission("unlink", quarantined, key);
+              return;
+            }
+            throw error;
           }
-          throw error;
+        };
+        if (input.withStorageKeyLock) {
+          await input.withStorageKeyLock(key, async () => restore());
+        } else {
+          await restore();
         }
       }
 
@@ -212,68 +223,74 @@ export class LocalArtifactStorage implements ArtifactStorage {
           retained.push(key);
           continue;
         }
-        const path = join(directory, key);
-        let info;
-        try {
-          info = await stat(path);
-        } catch (error) {
-          if (missing(error)) continue;
-          if (permissionDenied(error)) {
-            retained.push(key);
-            warnPermission("stat", path, key);
-            continue;
-          }
-          throw error;
-        }
-        if (info.mtimeMs > cutoffMs) {
-          retained.push(key);
-          continue;
-        }
-        if (input.dryRun) {
-          if (await input.isReferenced?.(key)) retained.push(key);
-          else removed.push(key);
-          continue;
-        }
-
-        // Quarantine by atomic rename before the final database recheck. A
-        // concurrent publisher either inserted its reference before this
-        // recheck (restore the quarantined bytes) or observes the canonical
-        // path missing and writes a fresh copy. In neither interleaving can GC
-        // unlink the publisher's canonical bytes.
-        const quarantined = `${path}.${randomUUID()}.reclaim`;
-        try {
-          await rename(path, quarantined);
-        } catch (error) {
-          if (missing(error)) continue;
-          if (permissionDenied(error)) {
-            retained.push(key);
-            warnPermission("rename", path, key);
-            continue;
-          }
-          throw error;
-        }
-        try {
-          if (await input.isReferenced?.(key)) {
-            await restoreQuarantinedBytes(quarantined, path);
-            await unlink(quarantined);
-            retained.push(key);
-          } else {
-            await unlink(quarantined).catch((error) => {
-              if (!missing(error)) throw error;
-            });
-            removed.push(key);
-          }
-        } catch (error) {
+        const reclaimCandidate = async (
+          isReferenced: () => Promise<boolean>,
+        ): Promise<void> => {
+          const path = join(directory, key);
+          let info;
           try {
-            await restoreQuarantinedBytes(quarantined, path);
-          } catch (restoreError) {
-            throw new AggregateError(
-              [error, restoreError],
-              `artifact reclaim failed and could not restore ${key}`,
-            );
+            info = await stat(path);
+          } catch (error) {
+            if (missing(error)) return;
+            if (permissionDenied(error)) {
+              retained.push(key);
+              warnPermission("stat", path, key);
+              return;
+            }
+            throw error;
           }
-          await unlink(quarantined).catch(() => {});
-          throw error;
+          if (info.mtimeMs > cutoffMs) {
+            retained.push(key);
+            return;
+          }
+          if (input.dryRun) {
+            if (await isReferenced()) retained.push(key);
+            else removed.push(key);
+            return;
+          }
+
+          const quarantined = `${path}.${randomUUID()}.reclaim`;
+          try {
+            await rename(path, quarantined);
+          } catch (error) {
+            if (missing(error)) return;
+            if (permissionDenied(error)) {
+              retained.push(key);
+              warnPermission("rename", path, key);
+              return;
+            }
+            throw error;
+          }
+          try {
+            if (await isReferenced()) {
+              await restoreQuarantinedBytes(quarantined, path);
+              await unlink(quarantined);
+              retained.push(key);
+            } else {
+              await unlink(quarantined).catch((error) => {
+                if (!missing(error)) throw error;
+              });
+              removed.push(key);
+            }
+          } catch (error) {
+            try {
+              await restoreQuarantinedBytes(quarantined, path);
+            } catch (restoreError) {
+              throw new AggregateError(
+                [error, restoreError],
+                `artifact reclaim failed and could not restore ${key}`,
+              );
+            }
+            await unlink(quarantined).catch(() => {});
+            throw error;
+          }
+        };
+        const unlockedReferenceCheck = async (): Promise<boolean> =>
+          (await input.isReferenced?.(key)) ?? false;
+        if (input.withStorageKeyLock) {
+          await input.withStorageKeyLock(key, reclaimCandidate);
+        } else {
+          await reclaimCandidate(unlockedReferenceCheck);
         }
       }
     }
