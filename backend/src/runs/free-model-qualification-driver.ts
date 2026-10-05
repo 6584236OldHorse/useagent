@@ -45,6 +45,10 @@ export interface InternalQualificationRunServices {
   readonly read: (orgId: string, runId: string) => Promise<ApiRun | null>;
   readonly cancel: (orgId: string, runId: string) => Promise<void>;
   readonly admission?: () => Promise<{ readonly open: boolean }>;
+  /** The newest upstream status the provider gateway recorded for the run, so a
+   * failed probe is classified by what the provider answered rather than by the
+   * engine's summary text. */
+  readonly lastUpstream?: (runId: string) => Promise<{ readonly upstreamStatus: number | null } | null>;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly nowMs?: () => number;
 }
@@ -136,8 +140,24 @@ async function withinDeadline<T>(
 export function classifyFailedQualificationRun(
   summary: string | null,
   latencyMs: number,
+  upstreamStatus: number | null = null,
 ): Exclude<FreeModelQualificationResult, { classification: "success" }> {
   const text = (summary ?? "").toLowerCase();
+  // What the provider actually answered outranks what the engine wrote about it:
+  // a free tier that is busy (429) is not the model failing, and a slug the
+  // provider no longer serves (404) is.
+  if (upstreamStatus === 429) {
+    return { classification: "system_failure", latencyMs, httpStatus: 429, errorCode: "rate_limited" };
+  }
+  if (upstreamStatus === 401 || upstreamStatus === 402 || upstreamStatus === 403) {
+    return { classification: "system_failure", latencyMs, httpStatus: upstreamStatus, errorCode: "authentication_failed" };
+  }
+  if (upstreamStatus !== null && upstreamStatus >= 500) {
+    return { classification: "system_failure", latencyMs, httpStatus: upstreamStatus, errorCode: "provider_capacity" };
+  }
+  if (upstreamStatus === 404) {
+    return { classification: "model_failure", latencyMs, httpStatus: 404, errorCode: "invalid_response" };
+  }
   const httpStatus = statusFromSummary(text);
   if (
     text.includes("hosted app") ||
@@ -364,7 +384,10 @@ export function createInternalOpenCodeQualificationDriver(
           };
         }
         if (run?.status === "failed") {
-          return classifyFailedQualificationRun(run.summary, nowMs() - startedAt);
+          const upstream = services.lastUpstream
+            ? await withinDeadline(() => services.lastUpstream!(acceptedRunId), deadlineAt).catch(() => null)
+            : null;
+          return classifyFailedQualificationRun(run.summary, nowMs() - startedAt, upstream?.upstreamStatus ?? null);
         }
         try {
           await withinDeadline(() => sleep(pollMs), deadlineAt);

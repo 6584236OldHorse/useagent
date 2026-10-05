@@ -119,6 +119,7 @@ import {
   createInternalOpenCodeQualificationDriver,
 } from "./runs/free-model-qualification-driver";
 import { acceptInternalRunCommand } from "./commands/service";
+import { latestProviderGatewayOutcome } from "./provider-gateway/audit";
 import { acceptRunCancel } from "./commands/cancel";
 import {
   deploymentInflightSnapshot,
@@ -560,6 +561,7 @@ if (freeModelQualifierEnabled()) {
             }
           },
           admission: () => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS),
+          lastUpstream: latestProviderGatewayOutcome,
         },
       )
     : null;

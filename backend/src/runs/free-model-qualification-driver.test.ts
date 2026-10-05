@@ -6,6 +6,7 @@ import {
   FREE_MODEL_QUALIFICATION_ORIGIN,
   FREE_MODEL_QUALIFICATION_PRIORITY,
   type InternalQualificationRunServices,
+  classifyFailedQualificationRun,
 } from "./free-model-qualification-driver";
 
 function step(kind: ApiStep["kind"], code: Record<string, unknown> | null = null): ApiStep {
@@ -354,5 +355,20 @@ describe("internal OpenCode free-model qualification driver", () => {
     await Bun.sleep(25);
     expect(lateAcceptCommitted).toBe(true);
     expect(fixture.cancelled).toHaveLength(1);
+  });
+});
+
+describe("a failed probe is classified by what the provider answered", () => {
+  test("the gateway's upstream status outranks the engine's summary", () => {
+    const noProgress = "error: Provider made no progress (8 consecutive retry warnings): retry attempt 8: OpenCode";
+    // Without the audit the summary alone reads as a model failure.
+    expect(classifyFailedQualificationRun(noProgress, 270_000)).toMatchObject({ classification: "model_failure", errorCode: "unknown" });
+    expect(classifyFailedQualificationRun(noProgress, 270_000, 429)).toEqual({ classification: "system_failure", latencyMs: 270_000, httpStatus: 429, errorCode: "rate_limited" });
+    expect(classifyFailedQualificationRun(noProgress, 270_000, 401)).toMatchObject({ classification: "system_failure", errorCode: "authentication_failed" });
+    expect(classifyFailedQualificationRun(noProgress, 270_000, 502)).toMatchObject({ classification: "system_failure", errorCode: "provider_capacity" });
+    // A slug the provider no longer serves is the model's failure, not the deployment's.
+    expect(classifyFailedQualificationRun(noProgress, 17_000, 404)).toMatchObject({ classification: "model_failure", errorCode: "invalid_response" });
+    // A 200 upstream answer leaves the summary rules in charge.
+    expect(classifyFailedQualificationRun("timed out waiting for the tool", 10_000, 200)).toMatchObject({ classification: "system_failure", errorCode: "timeout" });
   });
 });
