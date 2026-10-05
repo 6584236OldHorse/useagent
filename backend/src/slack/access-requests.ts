@@ -9,7 +9,7 @@
  * for the sender may match an existing account; an address an admin typed may
  * only create a new one, never attach a stranger to somebody's account.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { INVITATION_MAIL_TIMEOUT_MS, headerSafe, invitationMailConfig } from "../auth-invitations";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
@@ -51,12 +51,14 @@ export async function requestSlackAccess(input: {
     eq(slackAccessRequests.orgId, input.orgId),
   );
   const [existing] = await db
-    .select({ id: slackAccessRequests.id, status: slackAccessRequests.status })
+    .select({ id: slackAccessRequests.id, status: slackAccessRequests.status, email: slackAccessRequests.email })
     .from(slackAccessRequests)
     .where(sender)
     .limit(1);
   if (existing?.status === "denied") return "denied";
-  if (existing?.status === "pending") return "waiting";
+  // A pending request that already carries Slack's word about the address needs
+  // nothing more; one without it gets another look, in case the lookup failed.
+  if (existing?.status === "pending" && existing.email) return "waiting";
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
   const name = profile?.name ?? input.slackUserId;
@@ -73,7 +75,12 @@ export async function requestSlackAccess(input: {
       ? await tx.select({ status: slackAccessRequests.status }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
       : [];
     if (locked?.status === "denied") return "denied";
-    if (locked?.status === "pending") return "waiting";
+    if (locked?.status === "pending") {
+      if (email) {
+        await tx.update(slackAccessRequests).set({ name, email, image: profile?.image ?? null }).where(and(eq(slackAccessRequests.id, existing!.id), isNull(slackAccessRequests.email)));
+      }
+      return "waiting";
+    }
     if (locked) {
       // Allowed once. A stale event from before the decision must not reopen a
       // live membership; only a membership that is gone asks again.
@@ -119,6 +126,9 @@ export async function listAccessRequests(orgId: string): Promise<AccessRequestRo
       createdAt: slackAccessRequests.createdAt,
     })
     .from(slackAccessRequests)
+    // Only while the workspace still belongs here: a request from a workspace
+    // since rebound to another org can no longer be answered by this one.
+    .innerJoin(slackWorkspaces, and(eq(slackWorkspaces.teamId, slackAccessRequests.teamId), eq(slackWorkspaces.orgId, slackAccessRequests.orgId)))
     .where(and(eq(slackAccessRequests.orgId, orgId), eq(slackAccessRequests.status, "pending")))
     .limit(200);
   return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));

@@ -2745,6 +2745,46 @@ describe("slack workspace identity (fail closed)", () => {
     expect((row as { status: string }).status).toBe("allowed");
   });
 
+  test("a missed profile is refreshed on the next message, and Slack's address then matches an existing account", async () => {
+    const slackUserId = `U-${uid("refresh")}`;
+    const email = `${uid("refresh")}@example.test`;
+    const [account] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Already Here', ${email}, true) returning id`);
+    let profile: { name: string; email: string | null; image: string | null } | null = null;
+    const client = { userInfo: async () => profile } as unknown as SlackClient;
+    const ask = () => requestSlackAccess({ teamId: TEAM, slackUserId, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client });
+    expect(await ask()).toBe("asked");
+    const listed = () => json<{ requests: Array<{ id: string; name: string; email: string | null }> }>("/api/team/access-requests");
+    let request = (await listed()).body.requests.find((r) => r.name === slackUserId)!;
+    expect(request.email).toBeNull();
+    await waitFor(async () => rec.messages.find((m) => m.channel === "U-HUMAN" && m.text.includes(slackUserId)) ?? null);
+    profile = { name: "Refreshed Name", email, image: null };
+    const before = rec.messages.length;
+    expect(await ask()).toBe("waiting");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(rec.messages.length).toBe(before); // no second notice to the admins
+    request = (await listed()).body.requests.find((r) => r.id === request.id)!;
+    expect(request.email).toBe(email);
+    expect(request.name).toBe("Refreshed Name");
+    // Slack vouched for the address, so Allow without typing attaches the existing account.
+    const allowed = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: {} });
+    expect(allowed.body.status).toBe("allowed");
+    const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
+    expect((binding as { user_id: string }).user_id).toBe((account as { id: string }).id);
+  });
+
+  test("a workspace rebound to another org takes its open requests off this org's list", async () => {
+    const teamId = `T-${uid("rebound")}`;
+    await upsertSlackWorkspace({ teamId, orgId: DEV_ORG_ID, userId: DEV_USER_ID });
+    const id = crypto.randomUUID();
+    await db.execute(sql`insert into slack_access_requests (id, team_id, slack_user_id, org_id, name) values (${id}, ${teamId}, 'U-LEFT-BEHIND', ${DEV_ORG_ID}, 'Left Behind')`);
+    const listed = () => json<{ requests: Array<{ id: string }> }>("/api/team/access-requests");
+    expect((await listed()).body.requests.some((r) => r.id === id)).toBe(true);
+    await upsertSlackWorkspace({ teamId, orgId: `org-${uid("elsewhere")}`, userId: DEV_USER_ID });
+    expect((await listed()).body.requests.some((r) => r.id === id)).toBe(false);
+    const decide = await json(`/api/team/access-requests/${id}/deny`, { method: "POST", body: {} });
+    expect(decide.status).toBe(404);
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;
