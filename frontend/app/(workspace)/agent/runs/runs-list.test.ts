@@ -1,14 +1,24 @@
-import { expect, mock, test } from 'bun:test';
+import { expect, test } from 'bun:test';
+import {
+  AppRouterContext,
+  type AppRouterInstance,
+} from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { Run } from './runs-data';
+import { RunsList, matchesRunStatus, runTone, validEngineFilter } from './runs-list';
 
-mock.module('next/navigation', () => ({
-  useRouter: () => ({ push: () => {} }),
-}));
-
-const { RunsList, matchesRunStatus, runTone, validEngineFilter } = await import('./runs-list');
+// The list reads the app router; a provider stub keeps this suite free of
+// module mocks, which are process-wide and would reach every other suite.
+const router = {
+  push() {},
+  replace() {},
+  refresh() {},
+  back() {},
+  forward() {},
+  prefetch() {},
+} as unknown as AppRouterInstance;
 
 function run(status: Run['status'], latestStatus: Run['latest_status']): Run {
   return {
@@ -41,10 +51,14 @@ test('clears an engine filter that disappeared from the live snapshot', () => {
 
 test('renders the latest turn status instead of the root turn status', () => {
   const html = renderToStaticMarkup(
-    createElement(RunsList, {
-      initialRuns: [run('completed', 'running')],
-      initialError: false,
-    }),
+    createElement(
+      AppRouterContext.Provider,
+      { value: router },
+      createElement(RunsList, {
+        initialRuns: [run('completed', 'running')],
+        initialError: false,
+      }),
+    ),
   );
 
   expect(html).toContain('bg-orange-500 animate-pulse');
