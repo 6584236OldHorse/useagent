@@ -270,6 +270,21 @@ describe("T3 run adapter gate", () => {
       .not.toContain("CANONICAL PRIOR THREAD HISTORY");
   });
 
+  test("reads a warm runtime's shell alongside the provider bridge, and again after any barrier", () => {
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const prepareProviderIdx = source.indexOf("async prepareProvider(sandbox, workdir, binding, preparation) {");
+    const earlyIdx = source.indexOf("if (runtimeEnvironmentAccessValidated(sandbox)) {", prepareProviderIdx);
+    const bridgeIdx = source.indexOf("return await prepareRuntimeProviderBridge(", prepareProviderIdx);
+    expect(prepareProviderIdx).toBeGreaterThan(-1);
+    expect(earlyIdx).toBeGreaterThan(prepareProviderIdx);
+    expect(bridgeIdx).toBeGreaterThan(earlyIdx);
+    // Every barrier, which may restart the runtime, discards the early read.
+    const barriers = source.split('const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");');
+    expect(barriers).toHaveLength(4);
+    for (const before of barriers.slice(0, -1)) expect(before.trimEnd().endsWith("runtimeTouched = true;")).toBe(true);
+    expect(source).toContain("const shell = (!runtimeTouched && await earlyShell) ||");
+  });
+
   test("keeps desktop/noVNC readiness off the ordinary T3 turn critical path", () => {
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8") +
       readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");

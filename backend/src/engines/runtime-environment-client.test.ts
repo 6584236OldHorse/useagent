@@ -8,9 +8,11 @@ import {
   buildRuntimeEnvironmentSessionProbeCommand,
   buildRuntimeEnvironmentWebSocketTicketCommand,
   decodeRuntimeEnvironmentCommandOutput,
+  invalidateRuntimeEnvironmentAccess,
   issueRuntimeEnvironmentWebSocketTicket,
   prewarmRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeEnvironmentAccessValidated,
   RuntimeEnvironmentRequestError,
 } from "./runtime-environment-client";
 import { buildRuntimeEnvironmentReadinessCommand } from "./runtime-environment";
@@ -175,6 +177,7 @@ describe("T3 environment client", () => {
       },
     } as unknown as SandboxHandle;
 
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(false);
     await expect(
       requestRuntimeEnvironment<{ projects: unknown[]; threads: unknown[] }>(
         sandbox,
@@ -182,6 +185,8 @@ describe("T3 environment client", () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual({ projects: [], threads: [] });
+    // A warm runtime: the adapter may read its shell alongside the provider bridge.
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(true);
     await expect(
       requestRuntimeEnvironment<{ projects: unknown[]; threads: unknown[] }>(
         sandbox,
@@ -198,6 +203,8 @@ describe("T3 environment client", () => {
       expect.stringContaining("/api/orchestration/shell"),
     ]);
     expect(Bun.spawnSync(["bash", "-n", "-c", commands[0]!]).exitCode).toBe(0);
+    invalidateRuntimeEnvironmentAccess(sandbox);
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(false);
   });
 
   test("falls back to the existing auth repair when the coalesced first access is stale", async () => {
