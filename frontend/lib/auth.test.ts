@@ -62,7 +62,12 @@ test("provider config uses the dedicated route and fails closed", async () => {
   const seen: string[] = [];
   const fetcher = (async (path: string) => {
     seen.push(path);
-    return Response.json({ google: true, emailPassword: false, allowDevOrg: false });
+    return Response.json({
+      google: true,
+      emailPassword: false,
+      allowDevOrg: false,
+      signup: { inviteCode: true, domains: ["acme.com", 3] },
+    });
   }) as unknown as Parameters<typeof getAuthConfig>[0];
 
   expect(await getAuthConfig(fetcher)).toEqual({
@@ -70,6 +75,7 @@ test("provider config uses the dedicated route and fails closed", async () => {
     emailPassword: false,
     allowDevOrg: false,
     invitationEmail: null, // the server did not say
+    signup: { inviteCode: true, domains: ["acme.com"] },
   });
   expect(seen).toEqual(["/api/auth/provider-config"]);
 
@@ -81,6 +87,7 @@ test("provider config uses the dedicated route and fails closed", async () => {
     emailPassword: false,
     allowDevOrg: false,
     invitationEmail: null,
+    signup: null,
   });
 });
 

@@ -132,6 +132,9 @@ export interface AuthConfig {
   /** The deployment emails organisation invitations; otherwise the inviter shares the link. */
   /** Whether invitations go out by email; null until the server has said. */
   invitationEmail: boolean | null;
+  /** Open sign-up: whether an invite code is asked for and which email domains
+   *  are admitted (empty: any). Null when the deployment creates no accounts. */
+  signup: { inviteCode: boolean; domains: string[] } | null;
 }
 
 const FALLBACK_CONFIG: AuthConfig = {
@@ -139,6 +142,7 @@ const FALLBACK_CONFIG: AuthConfig = {
   emailPassword: false,
   allowDevOrg: false,
   invitationEmail: null,
+  signup: null,
 };
 
 /** Public auth config. It never carries any secret. */
@@ -149,11 +153,18 @@ export async function getAuthConfig(
     const res = await fetcher("/api/auth/provider-config");
     if (!res.ok) return FALLBACK_CONFIG;
     const data = (await res.json()) as Partial<AuthConfig>;
+    const signup = data.signup && typeof data.signup === "object" ? data.signup : null;
     return {
       google: Boolean(data.google),
       emailPassword: data.emailPassword === true,
       allowDevOrg: Boolean(data.allowDevOrg),
       invitationEmail: typeof data.invitationEmail === "boolean" ? data.invitationEmail : null,
+      signup: signup
+        ? {
+            inviteCode: signup.inviteCode === true,
+            domains: Array.isArray(signup.domains) ? signup.domains.filter((domain): domain is string => typeof domain === "string") : [],
+          }
+        : null,
     };
   } catch {
     return FALLBACK_CONFIG;

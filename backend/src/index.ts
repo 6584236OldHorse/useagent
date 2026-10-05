@@ -447,7 +447,7 @@ app.post("/api/config/models/refresh", async (c) => {
 });
 
 // Better Auth owns login, sessions, and organization membership.
-app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
+app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a
 // model completion directly (OpenRouter), augmented with read-only retrieval

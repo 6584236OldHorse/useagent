@@ -1,13 +1,14 @@
 import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
-import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
+import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation } from "../auth-invitations";
 import { acceptLinkedInvitationAsMember, bindInvitedSlackSender, linkedSlackSenders, reopenInvitedRequest } from "../slack/access-requests";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
-import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
+import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, invitationMailEnabled, openSignupConfig } from "../env";
 import type { AppEnv } from "../http";
 import { withOrgLock } from "../org-lock";
+import { createSignupRoutes, fixedWindow, jsonBody, withJsonBody } from "./signup-routes";
 
 /** Session reads are renderer-reachable (the desktop copies the HttpOnly
  *  cookie into Chromium), so every token-like field leaves the JSON here. */
@@ -29,14 +30,18 @@ async function redactSessionTokens(response: Response): Promise<Response> {
 }
 
 const routes = new Hono<AppEnv>();
-routes.get("/api/auth/provider-config", (c) =>
-  c.json({
+routes.get("/api/auth/provider-config", (c) => {
+  const open = openSignupConfig();
+  return c.json({
     google: googleAuthEnabled(),
     emailPassword: true,
     allowDevOrg: allowDevOrg(),
     invitationEmail: invitationMailEnabled(),
-  }),
-);
+    // Open sign-up: whether the card offers it, asks for an invite code, and
+    // which domains it admits. The code itself never leaves the server.
+    signup: open ? { inviteCode: open.inviteCode !== "", domains: open.domains } : null,
+  });
+});
 routes.on("GET", ["/api/auth/get-session", "/api/auth/list-sessions"], async (c) =>
   redactSessionTokens(await auth.handler(c.req.raw)),
 );
@@ -102,10 +107,7 @@ async function managerFor(request: Request, body: Record<string, unknown>, least
 /** The request the library sees names the organisation that was locked, so a
  *  workspace switch in between cannot move the change elsewhere. */
 function pinned(request: Request, body: Record<string, unknown>, organizationId: string): Request {
-  const next = new Request(request, { body: JSON.stringify({ ...body, organizationId }) });
-  next.headers.set("content-type", "application/json");
-  next.headers.delete("content-length");
-  return next;
+  return withJsonBody(request, { ...body, organizationId });
 }
 
 const LAST_OWNER = "A workspace needs at least one owner. Make someone else an owner first.";
@@ -133,15 +135,6 @@ async function organisationOf(request: Request, body: Record<string, unknown>): 
   if (typeof body.organizationId === "string" && body.organizationId.trim()) return body.organizationId.trim();
   const session = await auth.api.getSession({ headers: request.headers });
   return session?.session.activeOrganizationId ?? null;
-}
-
-async function jsonBody(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const parsed = (await request.clone().json()) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return null;
-  }
 }
 
 /** The same trimming gap applies when a role is changed, and taking ownership
@@ -199,16 +192,7 @@ routes.post("/api/auth/organization/leave", async (c) => {
 });
 
 const RESEND_WINDOW_MS = 60_000;
-const recentResends = new Map<string, number>();
-// ponytail: process-local, which matches the documented one-backend deployment; move to the database if replicas ever appear.
-function resendAllowed(organizationId: string, email: string): boolean {
-  const now = Date.now();
-  for (const [key, at] of recentResends) if (now - at > RESEND_WINDOW_MS) recentResends.delete(key);
-  const key = `${organizationId}:${email.trim().toLowerCase()}`;
-  if (recentResends.has(key)) return false;
-  recentResends.set(key, now);
-  return true;
-}
+const resendAllowed = fixedWindow(1, RESEND_WINDOW_MS);
 
 /** A resend renews the invitation that already exists, with the role stored on
  *  it, never the role the request names. It is answered here in full instead of
@@ -284,7 +268,7 @@ async function renew(manager: Manager, email: string): Promise<Renewal | Refusal
   }
   // Answered outside the library, so its request limiter does not apply; one
   // resend per address and organisation per minute bounds the mail it can cause.
-  if (live.length && !resendAllowed(organizationId, email)) {
+  if (live.length && resendAllowed(`${organizationId}:${email.trim().toLowerCase()}`) > 0) {
     return { status: 429, message: "That invitation was resent less than a minute ago. Try again shortly." };
   }
   const [renewed] = live.length
@@ -445,8 +429,9 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
 routes.on(["GET", "POST"], "/api/auth/organization/list-user-invitations", (c) =>
   c.json({ message: "Not available" }, 404),
 );
+routes.route("/", createSignupRoutes(auth));
 routes.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
-export function handleAuthRequest(request: Request): Response | Promise<Response> {
-  return routes.fetch(request);
+export function handleAuthRequest(request: Request, env?: AppEnv["Bindings"]): Response | Promise<Response> {
+  return routes.fetch(request, env);
 }

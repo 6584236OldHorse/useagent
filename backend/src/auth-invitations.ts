@@ -1,11 +1,13 @@
+import { createHmac } from "node:crypto";
 import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { sendSmtp } from "./connectors/email/smtp";
 import { db, type Executor } from "./db/client";
 import { account, invitation, user } from "./db/auth-schema";
-import { env, googleAuthEnabled, selfSignupEnabled } from "./env";
+import { env, googleAuthEnabled, type InvitationMailConfig, invitationMailConfig, sameSecret, selfSignupEnabled } from "./env";
 
 /**
- * Organisation invitations. Production creates no accounts on its own; a
+ * Organisation invitations, and the sign-up verification mail that shares
+ * their transport. A closed deployment creates no accounts on its own; a
  * pending invitation is the one door in. The invite goes out as an email when
  * the deployment has an SMTP host, and is always available as a link the
  * inviter can hand over themselves.
@@ -37,43 +39,6 @@ export async function invitedSignupAllowed(
 /** Where an invitation is accepted: the accept page lives on the frontend. */
 export function invitationLink(id: string, origin: string = env.FRONTEND_ORIGIN): string {
   return new URL(`/accept-invitation/${encodeURIComponent(id)}`, origin).toString();
-}
-
-export interface InvitationMailConfig {
-  readonly host: string;
-  readonly port: number;
-  readonly secure: boolean;
-  readonly user?: string;
-  readonly pass?: string;
-  readonly from: string;
-}
-
-/**
- * Account mail reuses the connector's SMTP settings (host, port, login, from)
- * without its recipient allow-list, since an invitation goes to a new address
- * by definition. The SMTP client speaks implicit TLS, so the default port is 465.
- * Null means no delivery: the UI shows the link instead.
- */
-export function invitationMailConfig(
-  source: Record<string, string | undefined> = process.env,
-): InvitationMailConfig | null {
-  const host = source.CONNECTOR_EMAIL_HOST?.trim();
-  const from = source.CONNECTOR_EMAIL_FROM?.trim();
-  if (!host || !from) return null;
-  const port = Number(source.CONNECTOR_EMAIL_PORT ?? 465);
-  if (!Number.isInteger(port) || port <= 0) return null;
-  return {
-    host,
-    port,
-    secure: source.CONNECTOR_EMAIL_SECURE === "true" || port === 465,
-    user: source.CONNECTOR_EMAIL_USER?.trim() || undefined,
-    pass: source.CONNECTOR_EMAIL_PASS || undefined,
-    from,
-  };
-}
-
-export function invitationMailEnabled(): boolean {
-  return invitationMailConfig() !== null;
 }
 
 export interface InvitationNotice {
@@ -152,6 +117,106 @@ export async function deliverInvitation(
   );
   console.log(`[auth] invitation ${data.id} emailed to ${data.email}`);
   return "sent";
+}
+
+/** How long a confirmation link works. */
+export const CONFIRMATION_TTL_MS = 60 * 60 * 1000;
+
+function digest(payload: string, secret: string): string {
+  return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+/** A signed, expiring statement that this registration (account id and
+ *  address) asked to be confirmed. The id is under the signature, so a link
+ *  confirms only the registration it was mailed for: a later sign-up for the
+ *  same address is another registration, and its predecessor's link is dead
+ *  (auth/signup-routes.ts). */
+export function confirmationToken(
+  account: { id: string; email: string },
+  secret: string = env.BETTER_AUTH_SECRET,
+  now: number = Date.now(),
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({ id: account.id, email: account.email.toLowerCase(), until: now + CONFIRMATION_TTL_MS }),
+  ).toString("base64url");
+  return `${payload}.${digest(payload, secret)}`;
+}
+
+export type ConfirmationClaim = { id: string; email: string } | "expired" | "invalid";
+
+/** The registration a token names, decided before anything is looked up. */
+export function readConfirmationToken(
+  token: string,
+  secret: string = env.BETTER_AUTH_SECRET,
+  now: number = Date.now(),
+): ConfirmationClaim {
+  const [payload = "", signature = ""] = token.split(".");
+  if (!payload || !sameSecret(signature, digest(payload, secret))) return "invalid";
+  try {
+    const claim = JSON.parse(Buffer.from(payload, "base64url").toString()) as { id?: unknown; email?: unknown; until?: unknown };
+    if (typeof claim.id !== "string" || typeof claim.email !== "string" || typeof claim.until !== "number") return "invalid";
+    return claim.until < now ? "expired" : { id: claim.id, email: claim.email };
+  } catch {
+    return "invalid";
+  }
+}
+
+export interface ConfirmationLinks {
+  /** Confirms the registration and sends the person to the login card. */
+  readonly confirm: string;
+  /** "This was not me": cancels the registration while it is still a claim. */
+  readonly decline: string;
+}
+
+/** The links in the mail, both carrying the same token; the route decides what happens. */
+export function confirmationLinks(token: string, origin: string = env.BETTER_AUTH_URL): ConfirmationLinks {
+  const query = `?token=${encodeURIComponent(token)}`;
+  return {
+    confirm: new URL(`/api/auth/confirm-signup${query}`, origin).toString(),
+    decline: new URL(`/api/auth/decline-signup${query}`, origin).toString(),
+  };
+}
+
+export function verificationMessage(links: ConfirmationLinks): { subject: string; text: string } {
+  return {
+    subject: "Confirm your useAgent sign-up",
+    text: [
+      "Someone signed up for useAgent with this address. If that was you, confirm it to sign in:",
+      "",
+      links.confirm,
+      "",
+      "The password for this sign-up was chosen by whoever filled in the form. If that",
+      "was not you, do not confirm; cancel the sign-up here instead, and nothing is created:",
+      "",
+      links.decline,
+      "",
+      "Both links work for one hour.",
+    ].join("\n"),
+  };
+}
+
+export async function deliverVerification(
+  email: string,
+  links: ConfirmationLinks,
+  config: InvitationMailConfig | null = invitationMailConfig(),
+  send: typeof sendSmtp = sendSmtp,
+): Promise<void> {
+  // Open sign-up is refused without a transport (env.ts), so this only guards a
+  // transport removed after boot; the person can ask again from the card.
+  if (!config) throw new Error("no mail transport for sign-up verification");
+  const message = verificationMessage(links);
+  await send(
+    {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      user: config.user,
+      pass: config.pass,
+      timeoutMs: INVITATION_MAIL_TIMEOUT_MS,
+    },
+    { from: config.from, to: [email], subject: message.subject, text: message.text },
+  );
+  console.log(`[auth] sign-up verification emailed to ${email}`);
 }
 
 export const NO_WAY_IN =

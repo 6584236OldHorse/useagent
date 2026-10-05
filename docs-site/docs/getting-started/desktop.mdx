@@ -26,9 +26,9 @@ installation instructions.
 ## Sign in and connect this Mac
 
 The intended sign-in flow uses Better Auth with Google in your system browser
-and returns to the app through a one-use PKCE handoff. Self-service signup is
-closed, so an existing account is required. Invitations only add existing
-accounts to teams. The handoff does not put API keys, personal access tokens, or
+and returns to the app through a one-use PKCE handoff. Self-service sign-up is
+closed unless the deployment opens it (`SIGNUP_OPEN`), so an existing account is
+usually required. Invitations only add existing accounts to teams. The handoff does not put API keys, personal access tokens, or
 raw OAuth tokens in the redirect URL. This browser-first flow has not completed
 release certification.
 
