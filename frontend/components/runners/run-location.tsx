@@ -9,6 +9,7 @@ import {
   PROVIDER_NAMES,
   type Runner,
   runnerLocationLabel,
+  runOnMachine,
   sandboxVendorLabel,
 } from "./runner-data";
 
@@ -37,6 +38,7 @@ export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
   const sandboxId = run.sandbox_id;
   const sandboxProvider = run.sandbox_provider;
   const runnerId = localRunnerId(sandboxId);
+  const machine = runOnMachine(sandboxId, sandboxProvider, run.run_location);
   useEffect(() => {
     if (!runnerId) return;
     let cancelled = false;
@@ -51,7 +53,7 @@ export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
   }, [runnerId]);
   // A cloud run's vendor is what the deployment's provider points at (E2B or
   // Cube for the E2B-protocol plugin), which only the config knows.
-  const cloud = !runnerId && typeof sandboxProvider === "string";
+  const cloud = !machine && typeof sandboxProvider === "string";
   useEffect(() => {
     if (!cloud) return;
     let cancelled = false;
@@ -67,13 +69,14 @@ export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
     deployment && deployment.provider === sandboxProvider
       ? { ...PROVIDER_NAMES, [deployment.provider]: deployment.label }
       : PROVIDER_NAMES;
-  const label = runnerLocationLabel(sandboxId, runners, run.run_location);
-  const vendor = runnerId ? null : sandboxVendorLabel(sandboxProvider, names);
-  const hosted = label === "Cloud";
+  const label = runnerLocationLabel(sandboxId, sandboxProvider, runners, run.run_location);
+  // The place is classified by its identity, never by the words: a machine may
+  // be enrolled under any name, "Cloud" included.
+  const vendor = machine ? null : sandboxVendorLabel(sandboxProvider, names);
   return {
     label,
-    title: vendor ? `Runs on ${vendor}` : hosted ? "Runs in the cloud" : `Runs on ${label}`,
-    icon: hosted ? RiCloudLine : RiComputerLine,
+    title: vendor ? `Runs on ${vendor}` : machine ? `Runs on ${label}` : "Runs in the cloud",
+    icon: machine ? RiComputerLine : RiCloudLine,
   };
 }
 

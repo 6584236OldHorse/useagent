@@ -7,6 +7,7 @@ import {
   PROVIDER_NAMES,
   runnerLocationLabel,
   runnerLoginAvailable,
+  runOnMachine,
   sandboxVendorLabel,
 } from "./runner-data";
 
@@ -32,18 +33,31 @@ describe("runner location", () => {
   });
 
   test("names the machine for a local sandbox and says Cloud for any hosted one", () => {
-    expect(runnerLocationLabel("local:rn_a:container_1", [runner])).toBe("Desk Mac");
+    expect(runnerLocationLabel("local:rn_a:container_1", undefined, [runner])).toBe("Desk Mac");
     // Until the runner list names it, a local sandbox is the person's own machine.
-    expect(runnerLocationLabel("local:rn_missing:container_1", [runner])).toBe("This Mac");
+    expect(runnerLocationLabel("local:rn_missing:container_1", undefined, [runner])).toBe("This Mac");
     // A hosted sandbox never names its vendor here, whatever the thread asked for.
-    expect(runnerLocationLabel("sandbox_1", [runner])).toBe("Cloud");
-    expect(runnerLocationLabel("sandbox_1", [runner], "local")).toBe("Cloud");
+    expect(runnerLocationLabel("sandbox_1", "daytona", [runner])).toBe("Cloud");
+    expect(runnerLocationLabel("sandbox_1", "daytona", [runner], "local")).toBe("Cloud");
+    expect(runnerLocationLabel("sandbox_1", undefined, [runner])).toBe("Cloud");
+    // A released local sandbox keeps its provider after its id is cleared.
+    expect(runnerLocationLabel(null, "local", [runner])).toBe("This Mac");
     // Before any sandbox exists the place the thread asked for names the run;
     // a thread that asked for nothing runs in the cloud.
-    expect(runnerLocationLabel(null, [], "cloud")).toBe("Cloud");
-    expect(runnerLocationLabel(null, [], "local")).toBe("This Mac");
-    expect(runnerLocationLabel(null, [], null)).toBe("Cloud");
-    expect(runnerLocationLabel("local:rn_a:container_1", [runner], "local")).toBe("Desk Mac");
+    expect(runnerLocationLabel(null, undefined, [], "cloud")).toBe("Cloud");
+    expect(runnerLocationLabel(null, undefined, [], "local")).toBe("This Mac");
+    expect(runnerLocationLabel(null, undefined, [], null)).toBe("Cloud");
+    expect(runnerLocationLabel("local:rn_a:container_1", undefined, [runner], "local")).toBe("Desk Mac");
+  });
+
+  test("classifies the place by its identity, so a machine may carry any name", () => {
+    expect(runOnMachine("local:rn_a:container_1", undefined)).toBe(true);
+    expect(runOnMachine(null, "local")).toBe(true);
+    expect(runOnMachine(null, undefined, "local")).toBe(true);
+    expect(runOnMachine("sandbox_1", "daytona", "local")).toBe(false);
+    expect(runOnMachine(null, undefined, "cloud")).toBe(false);
+    expect(runOnMachine(null, undefined)).toBe(false);
+    expect(runnerLocationLabel("local:rn_a:container_1", undefined, [{ ...runner, name: "Cloud" }])).toBe("Cloud");
   });
 
   test("keeps the vendor for a title: the deployment's own label, else the plugin's name", () => {

@@ -126,19 +126,34 @@ export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   local: "Local machine",
 };
 
+/** Whether a run executes on the person's own machine: a local sandbox id,
+ *  the local provider (a released sandbox keeps its provider after its id is
+ *  cleared), or Local asked for before any sandbox exists. Everything else is
+ *  hosted; a thread that asked for nothing runs in the cloud. */
+export function runOnMachine(
+  sandboxId: string | null,
+  sandboxProvider: unknown,
+  runLocation: RunLocation | null | undefined = null,
+): boolean {
+  return (
+    localRunnerId(sandboxId) !== null ||
+    sandboxProvider === "local" ||
+    (!sandboxId && runLocation === "local")
+  );
+}
+
 /** Where a run executes, in the composer's two words: the machine's enrolled
- *  name for a local sandbox ("This Mac" until the runner list names it, or
- *  when the thread asked for Local and no sandbox exists yet) and "Cloud" for
- *  anything hosted. A sandbox that is not local is hosted, and a thread that
- *  asked for nothing runs in the cloud; the vendor never appears here. */
+ *  name for a run on the person's machine ("This Mac" until the runner list
+ *  names it) and "Cloud" for anything hosted; the vendor never appears here. */
 export function runnerLocationLabel(
   sandboxId: string | null,
+  sandboxProvider: unknown,
   runners: readonly Runner[],
   runLocation: RunLocation | null | undefined = null,
 ): string {
   const runnerId = localRunnerId(sandboxId);
   if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "This Mac";
-  return !sandboxId && runLocation === "local" ? "This Mac" : "Cloud";
+  return runOnMachine(sandboxId, sandboxProvider, runLocation) ? "This Mac" : "Cloud";
 }
 
 /** The vendor behind a hosted sandbox, kept for a title only: the deployment's

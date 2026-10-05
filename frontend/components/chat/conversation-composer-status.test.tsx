@@ -103,6 +103,13 @@ test("before any sandbox exists the tab reads the place the thread asked for", (
   expect(local).toContain('title="Runs on This Mac"');
 });
 
+test("a released local sandbox still reads as the machine, never as the local provider's name", () => {
+  const tab = tabOf(render([turn("run-1", { sandbox_id: null, sandbox_provider: "local" })]));
+  expect(tab).toContain(">This Mac<");
+  expect(tab).toContain('title="Runs on This Mac"');
+  expect(tab).not.toContain("Local machine");
+});
+
 test("a thread whose run recorded no sandbox shows no location item", () => {
   const tab = tabOf(render([turn("run-1", { sandbox_id: null })]));
   expect(tab).not.toContain("Runs on");
