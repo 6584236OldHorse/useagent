@@ -4,7 +4,6 @@ import {
 } from "../sandboxes/provider";
 import { setTimeout as delay } from "node:timers/promises";
 import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
-import { RUNTIME_STOP_ACCOUNTING_MS } from "./runtime-stop-accounting";
 import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
@@ -128,12 +127,6 @@ export function decodeRuntimeThreadStreamItems(data: string): readonly RuntimeTh
   });
 }
 
-/** Resolves once `signal` aborts (at once when it already has). */
-const onceAborted = (signal: AbortSignal): Promise<void> =>
-  signal.aborted
-    ? Promise.resolve()
-    : new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-
 function messageText(data: unknown): Promise<string> {
   if (typeof data === "string") return Promise.resolve(data);
   if (data instanceof ArrayBuffer) {
@@ -151,8 +144,6 @@ export async function followRuntimeThreadSnapshots(input: {
   readonly readSnapshot: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
   readonly applySnapshot: (snapshot: RuntimeThreadSnapshot) => Promise<boolean>;
   readonly subscribe?: typeof subscribeRuntimeThread;
-  /** How long a cancelled follow still waits for a projection in flight; tests shorten it. */
-  readonly stopBoundMs?: number;
 }): Promise<void> {
   let observedSequence = input.initialSequence;
   let refreshThroughSequence = observedSequence;
@@ -209,17 +200,6 @@ export async function followRuntimeThreadSnapshots(input: {
   const awaitApplications = async () => {
     await applicationTail;
   };
-  // Work in flight is drained in full while the turn runs (after a transport
-  // failure, for STREAM_ERROR_DRAIN_MS at most). Once the caller has cancelled,
-  // on either path, only for the stop bound: a projection stalled on a step
-  // write must not hold the provider cancellation behind it, and the
-  // settlement seal keeps whatever it records after settlement from landing.
-  const drainWithin = (transportFailed: boolean) => Promise.race([
-    awaitRefresh().then(awaitApplications),
-    onceAborted(input.signal).then(() =>
-      delay(input.stopBoundMs ?? RUNTIME_STOP_ACCOUNTING_MS, undefined, { ref: false })),
-    ...(transportFailed ? [delay(STREAM_ERROR_DRAIN_MS, undefined, { ref: false })] : []),
-  ]);
 
   let streamError: unknown;
   try {
@@ -240,14 +220,18 @@ export async function followRuntimeThreadSnapshots(input: {
         return true;
       },
     );
-    await drainWithin(false);
+    await awaitRefresh();
+    await awaitApplications();
     stopped.abort();
   } catch (error) {
     streamError = error;
     // A terminal notification can beat its authoritative refresh to a broken
-    // socket: drain work already in flight before classifying the transport
-    // failure, within the same bounds.
-    await drainWithin(true).catch(() => {});
+    // socket. Drain work already in flight before classifying the transport
+    // failure, bounded independently of the caller's cancellation/deadline.
+    await Promise.race([
+      awaitRefresh().then(awaitApplications),
+      delay(STREAM_ERROR_DRAIN_MS, undefined, { signal }),
+    ]).catch(() => {});
     stopped.abort();
   }
   if (refreshError) throw refreshError;

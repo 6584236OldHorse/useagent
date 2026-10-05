@@ -62,7 +62,7 @@ import {
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
 import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
-import { activityRevisions, createTurnProjector, type SeenRevision, type TurnProjector } from "./turn-projector";
+import { activityRevisions, createTurnProjector, type TurnProjector } from "./turn-projector";
 import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { operatorEnv } from "./runtime-env";
@@ -71,7 +71,6 @@ import { prepareSandboxTurn } from "./sandbox-turn-preparation";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
 import { reloadRetainedOpenCodeSession } from "./runtime-session-stop";
 import { awaitRuntimeOperation } from "./runtime-operation";
-import { landUnsettledTurn } from "./runtime-stop-accounting";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -306,7 +305,7 @@ const runtimeTurnWaitDependencies: RuntimeTurnWaitDependencies = {
 export async function waitForRuntimeTurn(
   ctx: EngineRunContext,
   sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  preExistingActivities: ReadonlyMap<string, SeenRevision>,
+  preExistingActivities: ReadonlyMap<string, string>,
   priorSnapshot: RuntimeThreadSnapshot,
   redact: ReturnType<typeof createSecretRedactor>,
   dependencies: RuntimeTurnWaitDependencies = runtimeTurnWaitDependencies,
@@ -632,18 +631,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         let turnRequestedAt = createdAt;
         const endTurn = ctx.timing?.begin("t3.turn_wait");
         let skipQueuedCancel = false;
-        let turnDispatched = false;
-        // Why an unsettled turn is cancelled when the loop leaves it without Stop.
-        let lostReason = "turn lost";
         try {
           for (;;) {
             const createdAt = turnRequestedAt;
             ctx.timing?.mark("dispatch");
             const endDispatch = ctx.timing?.begin("t3.dispatch_request");
-            // Dispatched from the moment the prompt is sent: a reply lost on
-            // the way back (or cut by Stop) leaves a turn the provider may be
-            // running, and the cleanup below must cancel it.
-            turnDispatched = true;
             const steerResult = await driver.steer({
               runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),
               threadId: ctx.threadId ?? ctx.runId,
@@ -691,11 +683,12 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
                 skipQueuedCancel = recovery.stuckStartConfirmed;
                 throw recovery.error;
               }
-              // A turn that made no progress is not settled: the cleanup below
-              // cancels it with this reason and lands what it billed, and a
-              // cancel failure never masks the no-progress reason.
               if (error instanceof NoProgressError && !ctx.signal.aborted) {
-                lostReason = "provider made no progress";
+                // The durable run is failing with the provider's real reason; also
+                // stop the sandbox-side turn so a persistent thread does not keep
+                // retrying against the provider gateway. Best-effort only: a cancel
+                // failure must not mask the no-progress reason.
+                await driver.cancel(session, "provider made no progress", controlMetadata).catch(() => {});
                 throw error;
               }
               // A turn that may still be running is never steered again; only a
@@ -729,27 +722,17 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           }
         } finally {
           endTurn?.();
-          // A dispatched turn the runtime never settled may still be running
-          // and billing: after Stop, and after a lost transport or a turn that
-          // produced nothing alike. Cancel first, then land the usage the
-          // interruption itself produced, so the settlement charges what
-          // actually ran; bounded, never past 5 s.
-          if (!skipQueuedCancel) {
-            await landUnsettledTurn({
-              dispatched: turnDispatched,
-              settled: projector.settled,
-              stopping: ctx.signal.aborted,
-              cancel: async () => {
-                const cancelResult = await driver.cancel(session, ctx.signal.aborted ? "turn aborted" : lostReason, controlMetadata);
-                if (cancelResult.status !== "ok") {
-                  throw new Error(
-                    `the provider runtime ${engine} cancel failed (${cancelResult.status}): ${cancelResult.message ?? "unsupported"}`,
-                  );
-                }
-              },
-              read: (signal) => readRuntimeTerminalSnapshot(ctx, sandbox, signal),
-              apply: (snapshot, signal) => projector.apply(snapshot, undefined, { signal }),
-            });
+          if (ctx.signal.aborted && !skipQueuedCancel) {
+            const cancelResult = await driver.cancel(
+              session,
+              "turn aborted",
+              controlMetadata,
+            );
+            if (cancelResult.status !== "ok") {
+              throw new Error(
+                `the provider runtime ${engine} cancel failed (${cancelResult.status}): ${cancelResult.message ?? "unsupported"}`,
+              );
+            }
           }
         }
       } finally {
