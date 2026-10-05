@@ -89,8 +89,12 @@ export function mergeOpenCodeProviderConfig(
 export const SANDBOX_GENERATION = "provider-gateway-v17-useagent-mcp-gateway-only-secrets";
 const COMPATIBILITY_SANDBOX_GENERATION = "provider-gateway-v17-useagent-mcp-compatibility-secrets";
 export const SANDBOX_GENERATION_LABEL = CANONICAL_SANDBOX_GENERATION_LABEL;
-const SANDBOX_MARKER = "$HOME/.skynet/provider-gateway-generation";
-const OPENAI_TOKEN_FILE = "$HOME/.skynet/provider-openai.token";
+const LEGACY_SANDBOX_MARKER = "$HOME/.skynet/provider-gateway-generation";
+const CANONICAL_SANDBOX_MARKER = "$HOME/.useagent/provider-gateway-generation";
+const SANDBOX_MARKER = LEGACY_SANDBOX_MARKER;
+const LEGACY_OPENAI_TOKEN_FILE = "$HOME/.skynet/provider-openai.token";
+const CANONICAL_OPENAI_TOKEN_FILE = "$HOME/.useagent/provider-openai.token";
+const OPENAI_TOKEN_FILE = LEGACY_OPENAI_TOKEN_FILE;
 export const CLAUDE_CONFIG_DIR = "/tmp/skynet-claude-config";
 export const CLAUDE_CAPABILITY_DIR = "/tmp/useagent-claude-capability";
 export const CLAUDE_CAPABILITY_GID = 1000;
@@ -105,6 +109,10 @@ const CLAUDE_ONE_MILLION_CONTEXT_MODELS = new Set([
 
 function sandboxGeneration(mode: SandboxSecretMode = sandboxSecretMode()): string {
   return mode === "gateway_only" ? SANDBOX_GENERATION : COMPATIBILITY_SANDBOX_GENERATION;
+}
+
+function readPresentCanonicalOrLegacyFile(canonical: string, legacy: string): string {
+  return `if [ -e "${canonical}" ] || [ -L "${canonical}" ]; then file="${canonical}"; else file="${legacy}"; fi; test -r "$file" && test -s "$file" && cat "$file"`;
 }
 
 function mint(ctx: EngineRunContext, engine: EngineId, provider: ProviderId): string | null {
@@ -371,7 +379,10 @@ export function codexProviderConfigToml(
     "",
     "[model_providers.skynet.auth]",
     'command = "sh"',
-    `args = ["-c", ${JSON.stringify(`cat \"${OPENAI_TOKEN_FILE}\"`)}]`,
+    `args = ["-c", ${JSON.stringify(readPresentCanonicalOrLegacyFile(
+      CANONICAL_OPENAI_TOKEN_FILE,
+      LEGACY_OPENAI_TOKEN_FILE,
+    ))}]`,
     "refresh_interval_ms = 1",
     "timeout_ms = 5000",
     "",
@@ -533,8 +544,12 @@ export async function providerGatewaySandboxIsCurrent(sandbox: SandboxHandle): P
     LEGACY_SANDBOX_GENERATION_LABEL,
   );
   if (labeledGeneration.conflict || labeledGeneration.value !== generation) return false;
+  const markerRead = readPresentCanonicalOrLegacyFile(
+    CANONICAL_SANDBOX_MARKER,
+    LEGACY_SANDBOX_MARKER,
+  );
   const result = await sandbox.process
-    .executeCommand(`test \"$(cat ${SANDBOX_MARKER} 2>/dev/null)\" = \"${generation}\"`, undefined, undefined, 10)
+    .executeCommand(`test \"$(${markerRead} 2>/dev/null)\" = \"${generation}\"`, undefined, undefined, 10)
     .catch(() => null);
   return result?.exitCode === 0;
 }

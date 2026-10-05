@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxHandle } from "../sandboxes/provider";
@@ -92,6 +92,74 @@ function expectLifetime(
 }
 
 describe("sandbox provider gateway config", () => {
+  test("private provider readers prefer present canonical files and fail closed", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-private-reader-"));
+    try {
+      const legacyDir = join(root, ".skynet");
+      const canonicalDir = join(root, ".useagent");
+      await mkdir(legacyDir);
+      await mkdir(canonicalDir);
+      const legacyToken = join(legacyDir, "provider-openai.token");
+      const canonicalToken = join(canonicalDir, "provider-openai.token");
+      await writeFile(legacyToken, "legacy-token");
+      const config = codexProviderConfigToml("gpt-5.6-sol");
+      const encodedCommand = config?.match(/^args = \["-c", (.+)\]$/m)?.[1];
+      if (!encodedCommand) throw new Error("missing Codex auth command");
+      const authCommand = (JSON.parse(encodedCommand) as string).replaceAll("$HOME", root);
+      const run = () => Bun.spawnSync(["sh", "-c", authCommand], { stdout: "pipe", stderr: "pipe" });
+      expect(run().stdout.toString()).toBe("legacy-token");
+      await writeFile(canonicalToken, "canonical-token");
+      expect(run().stdout.toString()).toBe("canonical-token");
+      await chmod(canonicalToken, 0o000);
+      if (process.getuid?.() !== 0) {
+        const unreadable = run();
+        expect(unreadable.exitCode).not.toBe(0);
+        expect(unreadable.stdout.toString()).toBe("");
+      }
+      await chmod(canonicalToken, 0o600);
+      await writeFile(canonicalToken, "");
+      const empty = run();
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stdout.toString()).toBe("");
+      await rm(canonicalToken, { recursive: true });
+      await mkdir(canonicalToken);
+      const directory = run();
+      expect(directory.exitCode).not.toBe(0);
+      expect(directory.stdout.toString()).toBe("");
+      await rm(canonicalToken, { recursive: true });
+      await symlink(join(canonicalDir, "missing-token"), canonicalToken);
+      const dangling = run();
+      expect(dangling.exitCode).not.toBe(0);
+      expect(dangling.stdout.toString()).toBe("");
+
+      const canonicalMarker = join(canonicalDir, "provider-gateway-generation");
+      const legacyMarker = join(legacyDir, "provider-gateway-generation");
+      await rm(canonicalToken);
+      await writeFile(legacyMarker, SANDBOX_GENERATION);
+      const sandbox = {
+        labels: { [CANONICAL_SANDBOX_GENERATION_LABEL]: SANDBOX_GENERATION },
+        process: {
+          executeCommand: async (command: string) => {
+            const result = Bun.spawnSync(["sh", "-c", command.replaceAll("$HOME", root)]);
+            return { exitCode: result.exitCode };
+          },
+        },
+      } as unknown as SandboxHandle;
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(true);
+      await writeFile(canonicalMarker, SANDBOX_GENERATION);
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(true);
+      await writeFile(canonicalMarker, "");
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(false);
+      await writeFile(canonicalMarker, "invalid-generation");
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("reads legacy and canonical label aliases only when they agree", () => {
     expect(readCompatibleSandboxLabel({}, "useagent-key", "skynet-key")).toEqual({
       value: null,
