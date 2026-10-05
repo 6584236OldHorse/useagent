@@ -5,10 +5,13 @@
 
 import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
-import { type HelloFrame, Mux, PROTOCOL_VERSION, type WelcomeFrame } from "@useagent/runner-protocol";
+import { type HelloFrame, type ImagePullCredential, type ImageRef, Mux, PROTOCOL_VERSION, type WelcomeFrame } from "@useagent/runner-protocol";
 import type { AppEnv } from "../http";
 import { currentReleaseFingerprint } from "../release";
 import { runnerConfigBlock } from "./policy";
+import { env } from "../env";
+import { createRegistryProxyRoutes } from "./registry-proxy";
+import { createPullCredentialSource, proxiedReference } from "./registry-pull";
 import { type RunnerRegistry, runnerRegistry } from "./registry";
 import { type RunnerRow, runnerForToken } from "./store";
 
@@ -25,6 +28,10 @@ export interface RunnerLinkDeps {
   readonly runnerForToken: (token: string) => Promise<RunnerRow | null>;
   readonly config: () => ReturnType<typeof runnerConfigBlock>;
   readonly release: () => string;
+  /** Whether the plane can fetch the image from its registry (it holds a credential). */
+  readonly pullCredential?: (ref: string) => Promise<ImagePullCredential | null>;
+  /** The origin runners pull the image through when the plane serves it; null keeps the upstream reference. */
+  readonly pullThrough?: () => string | null;
   readonly helloTimeoutMs?: number;
   readonly log?: (message: string) => void;
 }
@@ -34,13 +41,26 @@ export function bearerToken(header: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
-export function welcomeFor(config: ReturnType<typeof runnerConfigBlock>, release: string): WelcomeFrame | null {
+/** The image a runner should pull: through the plane when the plane can serve it
+ *  (the runner logs in with its own token), else the upstream reference as configured. */
+export function imageForRunner(image: ImageRef, servedFrom: string | null): ImageRef {
+  if (!servedFrom) return image;
+  const host = new URL(servedFrom).host;
+  const ref = proxiedReference(image.ref, host);
+  return ref ? { ref, digest: image.digest, pull: { registry: host, username: "runner" } } : image;
+}
+
+export function welcomeFor(
+  config: ReturnType<typeof runnerConfigBlock>,
+  release: string,
+  servedFrom: string | null = null,
+): WelcomeFrame | null {
   if (!config.enabled || !config.image) return null;
   return {
     t: "welcome",
     protocol: PROTOCOL_VERSION,
     minProtocol: config.minProtocol,
-    image: config.image,
+    image: imageForRunner(config.image, servedFrom),
     heartbeatSeconds: HEARTBEAT_SECONDS,
     release,
   };
@@ -117,7 +137,9 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
           finish(CLOSE_RUNNER_TOO_OLD, `the control plane needs protocol ${config.minProtocol}`);
           return;
         }
-        const welcome = welcomeFor(config, deps.release());
+        const canServe = config.image && deps.pullCredential ? (await deps.pullCredential(config.image.ref)) !== null : false;
+        if (finished) return;
+        const welcome = welcomeFor(config, deps.release(), canServe ? (deps.pullThrough?.() ?? null) : null);
         if (!welcome) {
           finish(1013, config.enabled ? "no native image is configured for local sandboxes" : "local runners are switched off");
           return;
@@ -173,9 +195,20 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
   return routes;
 }
 
+const pullCredentials = createPullCredentialSource(process.env);
+
 export const runnerLinkRoutes = createRunnerLinkRoutes({
   registry: runnerRegistry,
   runnerForToken,
   config: () => runnerConfigBlock(),
   release: () => currentReleaseFingerprint().fingerprint,
+  pullCredential: (ref) => pullCredentials.for(ref),
+  pullThrough: () => env.BETTER_AUTH_URL,
+});
+
+export const runnerRegistryProxyRoutes = createRegistryProxyRoutes({
+  runnerForToken,
+  image: () => runnerConfigBlock().image,
+  credentials: pullCredentials,
+  publicOrigin: () => env.BETTER_AUTH_URL,
 });

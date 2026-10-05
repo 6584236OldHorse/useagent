@@ -8,4 +8,6 @@
  * PROTOCOL_VERSION, and the control plane raises the minimum it advertises in
  * `/api/config` (`runner.minProtocol`) once every supported runner has moved.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+// 2: the welcome's image may name a registry login (image.pull); a runner that
+//    ignores it cannot pull an image the plane serves, so 1 is no longer enough.

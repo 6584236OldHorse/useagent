@@ -73,6 +73,11 @@ export default function nextConfig(phase: string): NextConfig {
           source: "/api/:path*",
           destination: `${origin}/api/:path*`,
         },
+        // The sandbox image registry runners pull through; the backend serves it.
+        {
+          source: "/v2/:path*",
+          destination: `${origin}/v2/:path*`,
+        },
       ];
     },
   };

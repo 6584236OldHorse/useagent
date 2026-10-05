@@ -9,15 +9,25 @@ export interface ImageProgress {
 }
 
 /** Make `image` present at its digest. Resolves with the digest now on disk. */
-export async function ensureImage(backend: LocalBackend, image: ImageRef, onProgress?: ImageProgress): Promise<string> {
+export async function ensureImage(backend: LocalBackend, image: ImageRef, onProgress?: ImageProgress, signal?: AbortSignal): Promise<string> {
   const present = await backend.imageDigest(image.ref);
   if (present === image.digest) return present;
   let lines = 0;
-  await backend.pullImage(image.ref, (line) => {
-    lines += 1;
-    // Pull output has no total; the bar creeps toward, never reaches, done.
-    onProgress?.(Math.min(0.95, 1 - 1 / (1 + lines / 25)), line);
-  });
+  // A private registry refuses anonymous pulls: the plane names the login, the
+  // engine uses it for this pull only.
+  const login = image.pull?.password
+    ? { registry: image.pull.registry, username: image.pull.username, password: image.pull.password }
+    : undefined;
+  await backend.pullImage(
+    image.ref,
+    (line) => {
+      lines += 1;
+      // Pull output has no total; the bar creeps toward, never reaches, done.
+      onProgress?.(Math.min(0.95, 1 - 1 / (1 + lines / 25)), line);
+    },
+    login,
+    signal,
+  );
   const pulled = await backend.imageDigest(image.ref);
   if (pulled !== image.digest) {
     throw new Error(`pulled ${image.ref} at ${pulled ?? "no digest"}, the control plane expects ${image.digest}`);

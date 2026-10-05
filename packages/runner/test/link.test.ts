@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Mux, type WelcomeFrame } from "@useagent/runner-protocol";
+import { Mux, PROTOCOL_VERSION, type WelcomeFrame } from "@useagent/runner-protocol";
 import { LINK_PATH, LinkClient, type LinkOptions, type LinkStop, linkUrl } from "../src/link";
 
 interface FakePlaneOptions {
@@ -109,13 +109,56 @@ describe("link client", () => {
     expect(linkUrl("http://127.0.0.1:3201/")).toBe(`ws://127.0.0.1:3201${LINK_PATH}`);
   });
 
+  test("a stop aborts the welcome's pull and waits for its cleanup before run() returns", async () => {
+    const plane = fakePlane();
+    let release: (() => void) | null = null;
+    let sawAbort = false;
+    let cleanedUp = false;
+    const { link } = client(plane.url, {
+      onWelcome: (_frame, signal) =>
+        new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => { sawAbort = true; }, { once: true });
+          release = () => { cleanedUp = true; resolve(); };
+        }),
+    });
+    const run = link.run();
+    await until(() => release !== null);
+    link.stop("signal");
+    await until(() => sawAbort);
+    const early = await Promise.race([run.then(() => "returned"), new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 150))]);
+    expect(early).toBe("pending");
+    release!();
+    expect((await run).reason).toBe("stopped");
+    expect(cleanedUp).toBe(true);
+  });
+
+  test("a stop waits for a dropped link's pull as well as the current one", async () => {
+    const sockets: Array<{ close(code?: number, reason?: string): void }> = [];
+    const plane = fakePlane({ onMux: (_mux, ws) => { sockets.push(ws); } });
+    const releases: Array<() => void> = [];
+    const { link } = client(plane.url, {
+      onWelcome: () => new Promise<void>((resolve) => { releases.push(resolve); }),
+    });
+    const run = link.run();
+    await until(() => releases.length === 1);
+    // The plane drops the first link while its pull is still running; the reconnect is welcomed again.
+    sockets[0]!.close(1012, "restart");
+    await until(() => releases.length === 2);
+    link.stop("signal");
+    releases[1]!();
+    const early = await Promise.race([run.then(() => "returned"), new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 150))]);
+    expect(early).toBe("pending");
+    releases[0]!();
+    expect((await run).reason).toBe("stopped");
+  });
+
   test("says hello, takes the welcome, heartbeats and answers rpc", async () => {
     let planeMux: Mux | null = null;
     const plane = fakePlane({ onMux: (mux) => { planeMux = mux; } });
     const { link, states, welcomes } = client(plane.url);
     const run = link.run();
     await until(() => plane.state.heartbeats >= 2);
-    expect(plane.state.hellos[0]).toMatchObject({ t: "hello", runnerId: "r1", backend: "docker", logins: ["codex"], protocol: 1 });
+    expect(plane.state.hellos[0]).toMatchObject({ t: "hello", runnerId: "r1", backend: "docker", logins: ["codex"], protocol: PROTOCOL_VERSION });
     expect(welcomes[0]?.image.ref).toBe(WELCOME.image.ref);
     expect(states.some((s) => s.startsWith("online:"))).toBe(true);
     expect(await planeMux!.rpc("sandbox.list", { a: 1 })).toEqual({ method: "sandbox.list", params: { a: 1 } });

@@ -8,7 +8,7 @@ import { websocket } from "hono/bun";
 import { type HelloFrame, Mux, type MuxHandlers, PROTOCOL_VERSION, readAllFromStream } from "@useagent/runner-protocol";
 import { localPlugin, localProviderConfig } from "@useagent/sandbox-local";
 import type { AppEnv } from "../http";
-import { CLOSE_RUNNER_TOO_OLD, CLOSE_TOKEN_REJECTED, createRunnerLinkRoutes, welcomeFor } from "./link";
+import { CLOSE_RUNNER_TOO_OLD, CLOSE_TOKEN_REJECTED, createRunnerLinkRoutes, imageForRunner, welcomeFor } from "./link";
 import { OFFLINE_AFTER_MS, type RunnerPersistence, RunnerRegistry, CLOSE_LINK_DROPPED } from "./registry";
 import { type RunnerRow, hashRunnerToken } from "./store";
 
@@ -130,6 +130,13 @@ describe("runner link", () => {
     expect(welcomeFor({ enabled: true, minProtocol: 1, image: IMAGE }, "r")).toMatchObject({ t: "welcome", image: IMAGE, heartbeatSeconds: 15, release: "r", minProtocol: 1 });
     expect(welcomeFor({ enabled: true, minProtocol: 1, image: null }, "r")).toBeNull();
     expect(welcomeFor({ enabled: false, minProtocol: 1, image: IMAGE }, "r")).toBeNull();
+    // Served through the plane: the runner pulls from the plane's host with its own token.
+    expect(imageForRunner({ ref: "ghcr.io/useagenthq/sandbox:native-1", digest: IMAGE.digest }, "https://app.useagent.org")).toEqual({
+      ref: "app.useagent.org/useagenthq/sandbox:native-1",
+      digest: IMAGE.digest,
+      pull: { registry: "app.useagent.org", username: "runner" },
+    });
+    expect(imageForRunner(IMAGE, null)).toBe(IMAGE);
   });
 
   test("hello attaches the runner, heartbeats keep it online, close detaches it", async () => {

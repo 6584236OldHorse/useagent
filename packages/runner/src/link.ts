@@ -31,7 +31,8 @@ export interface LinkOptions {
   readonly rpc: (method: string, params: unknown) => Promise<unknown>;
   readonly stream: (target: unknown, stream: MuxStream) => Promise<void> | void;
   /** The plane's answer to hello; the runner pulls the image it names before reporting online. */
-  readonly onWelcome: (frame: WelcomeFrame) => Promise<void> | void;
+  /** Make the welcomed image ready; the signal fires when the runner is stopping. */
+  readonly onWelcome: (frame: WelcomeFrame, signal: AbortSignal) => Promise<void> | void;
   readonly onState: (state: "connecting" | "online" | "offline", detail: string) => void;
   readonly connect?: (url: string, headers: Record<string, string>) => WebSocket;
   readonly backoff?: { readonly initialMs: number; readonly maxMs: number };
@@ -66,11 +67,25 @@ export class LinkClient {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private wake: (() => void) | null = null;
   image: ImageRef | null = null;
+  /** Every welcome still making its image ready, so a stop can wait for their cleanup. */
+  private readonly settling = new Set<Promise<void>>();
+  private readonly stopping = new AbortController();
 
   constructor(private readonly options: LinkOptions) {}
 
   /** Runs until the plane ends the link for good or stop() is called. */
   async run(): Promise<LinkStop> {
+    try {
+      return await this.loop();
+    } finally {
+      // Welcomes still making the image ready (a dropped link's pull can outlive its
+      // successor's) finish their cleanup (logins, temp config) before the process is
+      // allowed to go; stop() has already aborted their pulls.
+      while (this.settling.size) await Promise.all(this.settling);
+    }
+  }
+
+  private async loop(): Promise<LinkStop> {
     const backoff = this.options.backoff ?? { initialMs: 1000, maxMs: 30_000 };
     const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     let delay = backoff.initialMs;
@@ -92,6 +107,7 @@ export class LinkClient {
 
   stop(detail = "stopped"): void {
     if (!this.stopped) this.stopped = { reason: "stopped", detail };
+    this.stopping.abort();
     this.teardown();
     this.wake?.();
   }
@@ -134,9 +150,10 @@ export class LinkClient {
           return this.options.stream(target, stream);
         },
         onWelcome: (frame) => {
-          void this.welcomed(frame, mux).then((stop) => {
-            if (stop) finish(stop);
-          });
+          const settling = this.welcomed(frame, mux)
+            .then((stop) => { if (stop) finish(stop); }, () => undefined)
+            .finally(() => this.settling.delete(settling));
+          this.settling.add(settling);
         },
       },
     );
@@ -173,7 +190,7 @@ export class LinkClient {
     }
     this.image = frame.image;
     try {
-      await this.options.onWelcome(frame);
+      await this.options.onWelcome(frame, this.stopping.signal);
     } catch (error) {
       // The image could not be made ready; drop this link so the next attempt pulls again.
       this.options.onState("offline", error instanceof Error ? error.message : String(error));

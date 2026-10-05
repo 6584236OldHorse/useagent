@@ -3,15 +3,16 @@
 // the conformance suite exercises in CI.
 
 import type { LocalSandboxState } from "@useagent/runner-protocol";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
-import {
-  BackendError,
+import {BackendError,
   type ContainerInfo,
   type ContainerSpec,
   type DialedConnection,
   type ExecOptions,
-  type LocalBackend,
-} from "./types";
+  type LocalBackend, type RegistryLogin } from "./types";
 
 const flags: CliFlags = {
   tool: "docker",
@@ -43,6 +44,26 @@ function infoFromInspect(object: Record<string, unknown>): ContainerInfo {
   };
 }
 
+/**
+ * A config directory holding one registry login and nothing else of the machine's
+ * login state. It still selects the machine's daemon: the current context is copied
+ * and the context store (endpoints, TLS material) is linked in, read-only in practice.
+ */
+export async function privateDockerConfig(login: RegistryLogin, machineDir = process.env.DOCKER_CONFIG?.trim() || join(homedir(), ".docker")): Promise<string> {
+  // A relative DOCKER_CONFIG would make the link dangle from inside the temp directory.
+  const machine = resolve(machineDir);
+  const dir = await mkdtemp(join(tmpdir(), "useagent-pull-"));
+  const current = await readFile(join(machine, "config.json"), "utf8")
+    .then((text) => (JSON.parse(text) as { currentContext?: string }).currentContext, () => undefined);
+  // A junction on Windows, a symlink elsewhere; removing the directory later unlinks it, never the store.
+  const linked = await symlink(join(machine, "contexts"), join(dir, "contexts"), "junction").then(() => true, () => false);
+  await writeFile(join(dir, "config.json"), JSON.stringify({
+    ...(current && linked ? { currentContext: current } : {}),
+    auths: { [login.registry]: { auth: btoa(`${login.username}:${login.password}`) } },
+  }));
+  return dir;
+}
+
 export class DockerBackend implements LocalBackend {
   readonly kind = "docker" as const;
   readonly pinsByDigest = true;
@@ -53,18 +74,36 @@ export class DockerBackend implements LocalBackend {
     return null;
   }
 
-  async pullImage(ref: string, onProgress?: (line: string) => void): Promise<void> {
-    const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe" });
-    const relay = async (stream: ReadableStream<Uint8Array>) => {
-      const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        for (const line of decoder.decode(chunk, { stream: true }).split("\n")) {
-          if (line.trim()) onProgress?.(line.trim());
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void> {
+    // A login lives in a private config directory for this one pull, so nothing
+    // touches the machine's own docker login state.
+    const config = login ? await privateDockerConfig(login) : null;
+    const env = config ? { ...process.env, DOCKER_CONFIG: config } : process.env;
+    try {
+      if (signal?.aborted) throw new BackendError("internal", `docker pull ${ref} stopped`);
+      const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe", env });
+      const abort = () => proc.kill();
+      signal?.addEventListener("abort", abort, { once: true });
+      let last = "";
+      const relay = async (stream: ReadableStream<Uint8Array>) => {
+        const decoder = new TextDecoder();
+        for await (const chunk of stream) {
+          for (const line of decoder.decode(chunk, { stream: true }).split("\n")) {
+            if (line.trim()) {
+              last = line.trim();
+              onProgress?.(last);
+            }
+          }
         }
-      }
-    };
-    await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-    if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed`);
+      };
+      await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
+      const code = await proc.exited;
+      signal?.removeEventListener("abort", abort);
+      if (signal?.aborted) throw new BackendError("internal", `docker pull ${ref} stopped`);
+      if (code !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
+    } finally {
+      if (config) await rm(config, { recursive: true, force: true });
+    }
   }
 
   async imageDigest(ref: string): Promise<string | null> {
