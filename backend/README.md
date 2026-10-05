@@ -205,12 +205,17 @@ The important variables are:
 
 - `DATABASE_URL` for Postgres.
 - `FRONTEND_ORIGIN=http://localhost:3400` for local browser auth and CORS.
-- `BETTER_AUTH_URL=http://localhost:3201` for auth redirects.
+- `CLERK_SECRET_KEY` and `CLERK_WEBHOOK_SECRET` for sign-in and organizations
+  (the frontend takes `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`); see
+  `src/auth/clerk/README.md`. `AUTH=better-auth`, paired with a frontend built
+  with `NEXT_PUBLIC_AUTH=better-auth`, is the one-release escape hatch; it
+  still needs `BETTER_AUTH_URL=http://localhost:3201` for auth redirects and
+  `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` for Google sign-in.
 - `ENABLED_ENGINES` to opt extra engines into the backend picker.
-- `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`).
+- `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
+- `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.
 - `GITHUB_TOKEN` or `GITHUB_APP_*` for repository access.
-- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to enable Google sign-in.
 - `FREE_MODEL_QUALIFIER_ENABLED=1` starts the durable, low-priority OpenRouter
   full-agent qualifier. It is off by default and also requires
   `FREE_MODEL_QUALIFIER_ORG_ID`; deployment admission closure suppresses probes.
@@ -231,7 +236,8 @@ The important variables are:
 - Runs, SSE, canonicalization, uploads, artifacts, native artifact export, memory capture, and connector delivery are all wired.
 - The provider gateway and knowledge gateway are real backend services, not placeholders.
 - The worker routes production turns through the provider registry. Codex, Claude Code, OpenCode, and Pi retain their native `ProviderDriver` lifecycles on every supported sandbox provider.
-- Cube and Daytona both run real sandboxes, but with different provider-specific capabilities.
+- Daytona, Cube, Box and an enrolled developer's machine (`local`) all run real sandboxes, with the capability differences in the matrix above.
+- Sign-in and organizations come from Clerk; the local user, organization and membership ids remain the tenancy model.
 - Desktop readiness and repair cover noVNC, RFB, the XFCE process set, browser CDP, and the restricted CDP relays. Failure degrades the advertised capability instead of failing the coding run.
 
 ### Bounded Roadmap
