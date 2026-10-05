@@ -3,12 +3,14 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-/** Every top-level page a signed-in user can reach from the rails. */
+/** Every top-level page a signed-in user can reach from the rails, except
+ * /bots: its layout seeds the roster on the server above the loading boundary,
+ * so a prefetch would cache that roster for the static window and the panel does
+ * not refresh its seed on first mount. Bots loads fresh on the hop. */
 export const APP_ROUTES = [
   "/dashboard",
   "/agent/new",
   "/agent/runs",
-  "/bots",
   "/settings",
   "/skills",
   "/playbooks",

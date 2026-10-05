@@ -104,6 +104,8 @@ export interface SidebarNavItemProps {
   leading?: ReactNode;
   label: string;
   active?: boolean;
+  /** Pass false to keep a link out of viewport prefetch (see Route.prefetch). */
+  prefetch?: boolean;
   /** Trailing node, e.g. a "New" chip. */
   trailing?: ReactNode;
 }
@@ -116,10 +118,12 @@ export function SidebarNavItem({
   label,
   active = false,
   trailing,
+  prefetch,
 }: SidebarNavItemProps) {
   return (
     <Link
       href={href}
+      prefetch={prefetch}
       aria-current={active ? "page" : undefined}
       className={cx(
         "flex items-center gap-2 rounded-2lg px-2.5 py-1.5 text-body-2-medium transition-colors",

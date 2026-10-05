@@ -23,10 +23,15 @@ describe("persistent shell route groups", () => {
     }
   });
 
-  test("the bots rail link opts out of viewport prefetch (its layout seeds the roster)", () => {
+  test("bots is never prefetched: its layout seeds the roster above the loading boundary", () => {
     const source = readFileSync(join(import.meta.dir, "thread-sidebar.tsx"), "utf8");
     const bots = source.slice(source.indexOf('href: "/bots"'));
     expect(bots.slice(0, 80)).toContain("prefetch: false");
+    // Both rail variants forward the opt-out to their Link.
+    const frame = readFileSync(join(import.meta.dir, "app-sidebar-frame.tsx"), "utf8");
+    expect(frame.match(/prefetch=\{route\.prefetch\}/g)).toHaveLength(2);
+    expect(readFileSync(join(import.meta.dir, "sidebar-nav.tsx"), "utf8")).toContain("prefetch={prefetch}");
+    expect(APP_ROUTES as readonly string[]).not.toContain("/bots");
   });
 
   test("the thread rail derives its active item from the pathname", () => {

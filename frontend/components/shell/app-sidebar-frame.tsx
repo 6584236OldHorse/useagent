@@ -47,8 +47,7 @@ export type Route = {
   href: string;
   active?: boolean;
   /** Set false for a destination whose layout runs a backend loader: a viewport
-   * prefetch would re-run it on every router refresh. The idle warm-up still
-   * fetches it once. */
+   * prefetch would re-run it on every router refresh and cache its seed. */
   prefetch?: boolean;
   /** Brand tint for the icon, as on the previous rail. */
   tone?: NavIconTone;
@@ -158,6 +157,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
             ) : (
               <SidebarNavItem
                 href={route.href}
+                prefetch={route.prefetch}
                 icon={Icon}
                 tone={route.tone}
                 label={route.title}
