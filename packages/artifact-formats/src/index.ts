@@ -150,7 +150,7 @@ function textForState(state: WorkpieceState): string {
 }
 
 function splitMarkdownParagraphs(text: string): Paragraph[] {
-  return text.split(/\n{2,}/).flatMap((block) => {
+  return text.replace(/\r\n?/g, "\n").split(/\n{2,}/).flatMap((block) => {
     const trimmed = block.trim();
     if (!trimmed) return [];
     const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
@@ -166,7 +166,7 @@ function splitMarkdownParagraphs(text: string): Paragraph[] {
     }
     return [new Paragraph({
       children: trimmed.split("\n").map((line, index) =>
-        new TextRun({ text: index === 0 ? line : `\n${line}` })
+        new TextRun({ text: line, break: index === 0 ? undefined : 1 })
       ),
     })];
   });

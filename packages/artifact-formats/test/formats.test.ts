@@ -36,6 +36,19 @@ describe("artifact native formats", () => {
     expect(await extractDocxText(output.bytes)).toContain("Hello Loop");
   });
 
+  test("renders plain-text line breaks as DOCX breaks", async () => {
+    const output = await renderArtifactExport(
+      { text: "OPEN_CODE_QA\r\nCopper Δ Finch\r\n\r\nTail" },
+      "docx",
+    );
+    const zip = await JSZip.loadAsync(output.bytes);
+    const document = await zip.file("word/document.xml")?.async("string") ?? "";
+
+    expect(document.match(/<w:p(?:\s|>)/g)).toHaveLength(2);
+    expect(document.match(/<w:br\/>/g)).toHaveLength(1);
+    expect(document).not.toContain("\r");
+  });
+
   test("renders a workbook to XLSX faithfully: sheet names, a formula, a numFmt, bold + fill", async () => {
     const workbook: Workbook = {
       schemaVersion: 2,
