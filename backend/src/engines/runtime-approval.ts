@@ -4,7 +4,10 @@ import { approvalDecisionAllowed, readOnlyRefusal } from "./permission-mode";
 import { resolveExpectedSandbox } from "../sandboxes/binding";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { providerEventExists, recordProviderEvent } from "../runs/provider-events";
-import { requestRuntimeEnvironment, runtimeThreadSnapshotRequest } from "./runtime-environment-client";
+import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { dispatchRuntimeCommand } from "./runtime-dispatch";
+import { readRuntimeThreadView } from "./runtime-thread-read";
+import { buildV2RuntimeRequestRespond } from "./runtime-v2-wire";
 import type { EmitStep } from "./types";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
@@ -67,6 +70,7 @@ export function approvalEventId(
 export interface RuntimeApprovalReplyDependencies {
   readonly resolveSandbox: typeof resolveRuntimeApprovalSandbox;
   readonly request: typeof requestRuntimeEnvironment;
+  readonly dispatch: typeof dispatchRuntimeCommand;
   readonly recordEvent: typeof recordProviderEvent;
   readonly eventExists: typeof providerEventExists;
 }
@@ -154,6 +158,7 @@ export async function replyToRuntimeApproval(input: {
 }, dependencies: Partial<RuntimeApprovalReplyDependencies> = {}): Promise<{ alreadyAnswered: boolean }> {
   const resolveSandbox = dependencies.resolveSandbox ?? resolveRuntimeApprovalSandbox;
   const request = dependencies.request ?? requestRuntimeEnvironment;
+  const dispatch = dependencies.dispatch ?? dispatchRuntimeCommand;
   const recordEvent = dependencies.recordEvent ?? recordProviderEvent;
   const eventExists = dependencies.eventExists ?? providerEventExists;
   const respondedEventId = approvalEventId(input.runId, input.requestId, "responded");
@@ -162,11 +167,7 @@ export async function replyToRuntimeApproval(input: {
   const decision = validateRuntimeApprovalDecision(input.decision);
   const sandbox = await resolveSandbox(input.threadId, input.expectedSandbox);
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(RUNTIME_APPROVAL_TIMEOUT_MS)]);
-  const snapshot = await request<RuntimeThreadSnapshot>(
-    sandbox,
-    runtimeThreadSnapshotRequest(input.sessionId),
-    signal,
-  );
+  const snapshot = await readRuntimeThreadView(sandbox, input.sessionId, signal, request);
   const pending = assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);
   if (!approvalDecisionAllowed(input.permissionMode, pending, decision)) {
     throw new RuntimeApprovalError(
@@ -190,22 +191,15 @@ export async function replyToRuntimeApproval(input: {
       payload: { requestId: input.requestId, decision },
     }, { required: true });
   }
-  await request(
-    sandbox,
-    {
-      method: "POST",
-      path: "/api/orchestration/dispatch",
-      payload: {
-        type: "thread.approval.respond",
-        commandId: `skynet-approval-${crypto.randomUUID()}`,
-        threadId: input.sessionId,
-        requestId: input.requestId,
-        decision,
-        createdAt: new Date().toISOString(),
-      },
-    },
-    signal,
-  );
+  await dispatch(sandbox, {
+    ...buildV2RuntimeRequestRespond({
+      commandId: `skynet-approval-${crypto.randomUUID()}`,
+      threadId: input.sessionId,
+      requestId: input.requestId,
+      decision,
+    }),
+    threadId: input.sessionId,
+  }, signal);
   await recordEvent({
     id: respondedEventId,
     runId: input.runId,

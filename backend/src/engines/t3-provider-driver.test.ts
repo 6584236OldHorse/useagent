@@ -5,14 +5,12 @@ import type { SandboxHandle } from "../sandboxes/provider";
 import {
   RuntimeEnvironmentRequestError,
   type RuntimeEnvironmentRequest,
-  type requestRuntimeEnvironment,
 } from "./runtime-environment-client";
 import {
   makeT3ProviderDriver,
   T3_SESSION_GENERATION,
   t3ProviderDrivers,
 } from "./t3-provider-driver";
-import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 import { createSecretRedactor } from "../secrets/redact";
 import { PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
@@ -22,11 +20,21 @@ import {
   getLiveThreadSandbox,
   rememberLiveThreadSandbox,
 } from "./sandbox-runtime";
+import { RuntimeRpcError, type RuntimeCommand, type V2ThreadSnapshot } from "./runtime-v2-wire";
+import {
+  at, v2Item, v2Message, v2Projection, v2ProviderThread, v2Run, v2Session, v2Snapshot,
+} from "./runtime-v2.test-support";
+
+type Dependencies = Parameters<typeof makeT3ProviderDriver>[1];
+
+const THREAD = "skynet-thread-thread-1";
+const SANDBOX = { id: "cube-t3-resume" } as SandboxHandle;
+const unreachable = async (): Promise<never> => { throw new Error("unreachable"); };
 
 function sessionFor(driver: ReturnType<typeof makeT3ProviderDriver>): HarnessSession {
   return {
     provider: driver.provider,
-    nativeSessionId: "skynet-thread-thread-1",
+    nativeSessionId: THREAD,
     runtime: { kind: "sandbox", id: "cube-t3-resume" },
     protocolVersion: providerProtocolIdentity(driver.descriptor.protocol),
     capabilities: driver.descriptor.capabilities,
@@ -34,11 +42,46 @@ function sessionFor(driver: ReturnType<typeof makeT3ProviderDriver>): HarnessSes
   };
 }
 
+/** A runtime that answers thread reads with `thread`, the shell with `shell`, and records every command. */
+function runtime(thread: V2ThreadSnapshot | (() => V2ThreadSnapshot), shell = { projects: [], threads: [] }) {
+  const requests: RuntimeEnvironmentRequest[] = [];
+  const commands: RuntimeCommand[] = [];
+  const dependencies: Dependencies = {
+    resolveRuntime: async () => SANDBOX,
+    requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest): Promise<T> => {
+      requests.push(request);
+      if (request.path === "/api/orchestration/shell") return shell as T;
+      if (request.method === "POST") return {} as T;
+      return (typeof thread === "function" ? thread() : thread) as T;
+    },
+    dispatch: async (_sandbox, command) => {
+      commands.push(command);
+      return { sequence: commands.length };
+    },
+  };
+  return { dependencies, requests, commands };
+}
+
 function driverRejectingResume(error: Error) {
   return makeT3ProviderDriver("codex", {
-    resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-    requestEnvironment: async () => {
-      throw error;
+    resolveRuntime: async () => SANDBOX,
+    requestEnvironment: async () => { throw error; },
+    dispatch: unreachable,
+  });
+}
+
+function reconcile(driver: ReturnType<typeof makeT3ProviderDriver>, runId: string, secrets: string[] = [], nativeCommand?: object) {
+  if (!driver.reconcile) throw new Error("T3 driver must own recovery");
+  return driver.reconcile({
+    session: sessionFor(driver),
+    checkpoint: {
+      sinceMs: 10,
+      eventContext: {
+        runId,
+        threadId: "thread-1",
+        redact: createSecretRedactor(secrets),
+        ...(nativeCommand ? { nativeCommand } : {}),
+      } as never,
     },
   });
 }
@@ -53,37 +96,32 @@ const expectedSandbox = {
   credentialGeneration: "b".repeat(64),
 };
 
+/** One finished plane run and its answer. */
+function answered(runId: string, text: string, extra: Partial<Parameters<typeof v2Projection>[0]> = {}) {
+  return v2Snapshot(8, v2Projection({
+    runs: [v2Run({ id: `run-of-${runId}`, userMessageId: `skynet-message-${runId}` })],
+    messages: [
+      v2Message({ id: `skynet-message-${runId}`, role: "user", runId: `run-of-${runId}`, text: "Current request" }),
+      v2Message({ id: `assistant-${runId}`, runId: `run-of-${runId}`, text, createdAt: at(1) }),
+    ],
+    providerSessions: [v2Session()],
+    providerThreads: [v2ProviderThread()],
+    ...extra,
+  }));
+}
+
 describe("T3 provider drivers", () => {
   test("re-resolves the accepted sandbox before every native lifecycle operation", async () => {
     const resolutions: unknown[][] = [];
+    const { dependencies } = runtime(v2Snapshot(1), {
+      projects: [{ id: "skynet-project-thread-1" }],
+      threads: [{ id: THREAD }],
+    } as never);
     const driver = makeT3ProviderDriver("codex", {
+      ...dependencies,
       resolveRuntime: async (...args) => {
         resolutions.push(args);
-        return { id: "cube-t3-resume" } as SandboxHandle;
-      },
-      requestEnvironment: async <T>(
-        _sandbox: SandboxHandle,
-        request: RuntimeEnvironmentRequest,
-      ) => {
-        if (request.path === "/api/orchestration/shell") {
-          return {
-            projects: [{ id: "skynet-project-thread-1" }],
-            threads: [{ id: "skynet-thread-thread-1" }],
-          } as T;
-        }
-        if (request.method === "GET") {
-          return {
-            snapshotSequence: 1,
-            thread: {
-              id: "skynet-thread-thread-1",
-              latestTurn: null,
-              messages: [],
-              activities: [],
-              session: { status: "ready", lastError: null },
-            },
-          } as T;
-        }
-        return {} as T;
+        return SANDBOX;
       },
     });
     const control = { expectedSandbox, threadId: "thread-1" };
@@ -93,38 +131,23 @@ describe("T3 provider drivers", () => {
       runId: "run-1",
       threadId: "thread-1",
       runtime: current.runtime,
-      metadata: {
-        workspaceRoot: "/root/work",
-        runtimeMode: "full-access",
-        createdAt: "2026-09-07T00:00:00.000Z",
-        ...control,
-      },
+      metadata: { workspaceRoot: "/root/work", runtimeMode: "full-access", createdAt: "2026-09-07T00:00:00.000Z", ...control },
     });
     await driver.resume({ session: current, metadata: control });
     await driver.steer({
-      runId: "run-1",
-      threadId: "thread-1",
-      session: current,
-      input: { kind: "prompt", text: "continue" },
-      metadata: control,
+      runId: "run-1", threadId: "thread-1", session: current,
+      input: { kind: "prompt", text: "continue" }, metadata: control,
     });
     await driver.reconcile?.({
       session: current,
       metadata: control,
-      checkpoint: {
-        metadata: control,
-        eventContext: {
-          runId: "run-1",
-          threadId: "thread-1",
-          redact: createSecretRedactor([]),
-        },
-      },
+      checkpoint: { metadata: control, eventContext: { runId: "run-1", threadId: "thread-1", redact: createSecretRedactor([]) } },
     });
     await driver.cancel(current, "stop", control);
 
     expect(resolutions).toHaveLength(5);
-    for (const [runtime, expected, threadId] of resolutions) {
-      expect(runtime).toEqual(current.runtime);
+    for (const [runtimeArg, expected, threadId] of resolutions) {
+      expect(runtimeArg).toEqual(current.runtime);
       expect(expected).toEqual(expectedSandbox);
       expect(threadId).toBe("thread-1");
     }
@@ -137,15 +160,13 @@ describe("T3 provider drivers", () => {
         resolutions += 1;
         return null;
       },
-      requestEnvironment: async () => { throw new Error("must not execute"); },
+      requestEnvironment: unreachable,
+      dispatch: unreachable,
     });
     await expect(driver.steer({
       runId: "run-1",
       threadId: "thread-1",
-      session: {
-        ...sessionFor(driver),
-        runtime: { kind: "sandbox", id: "other-sandbox" },
-      },
+      session: { ...sessionFor(driver), runtime: { kind: "sandbox", id: "other-sandbox" } },
       input: { kind: "prompt", text: "must not dispatch" },
       metadata: { expectedSandbox, threadId: "thread-1" },
     })).resolves.toMatchObject({
@@ -161,11 +182,13 @@ describe("T3 provider drivers", () => {
       const driver = t3ProviderDrivers[provider];
       expect(validateProviderDriver(driver)).toEqual({ status: "ok" });
       expect(driver.provider).toBe(provider);
-      expect(driver.descriptor.protocol).toEqual({
-        name: "t3-orchestration",
-        version: RUNTIME_GENERATION,
-      });
+      expect(driver.descriptor.protocol).toEqual({ name: "t3-orchestration", version: RUNTIME_GENERATION });
     }
+  });
+
+  test("a session bound before protocol 2 is stale", () => {
+    expect(T3_SESSION_GENERATION).toBe(4);
+    expect(RUNTIME_GENERATION).toBe("useagent-runtime-v9");
   });
 
   test("classifies missing start metadata before resolving a runtime", async () => {
@@ -185,19 +208,14 @@ describe("T3 provider drivers", () => {
       runId: "run-1",
       threadId: "thread-1",
       runtime: { kind: "sandbox" as const, id: "personal-sandbox" },
-      metadata: {
-        workspaceRoot: "/home/user/work",
-        runtimeMode: "full-access",
-        createdAt: "2026-09-05T00:00:00.000Z",
-      },
+      metadata: { workspaceRoot: "/home/user/work", runtimeMode: "full-access", createdAt: "2026-09-05T00:00:00.000Z" },
     };
     const revoked = makeT3ProviderDriver("codex", {
       resolveRuntime: async () => {
-        throw new PersonalSandboxConnectionUnavailableError(
-          "the box connection that created this sandbox has been revoked",
-        );
+        throw new PersonalSandboxConnectionUnavailableError("the box connection that created this sandbox has been revoked");
       },
-      requestEnvironment: async () => { throw new Error("unreachable"); },
+      requestEnvironment: unreachable,
+      dispatch: unreachable,
     });
     await expect(revoked.start(request)).resolves.toEqual({
       status: "error",
@@ -208,7 +226,8 @@ describe("T3 provider drivers", () => {
     const secret = "Bearer secret-request-header";
     const unknown = makeT3ProviderDriver("codex", {
       resolveRuntime: async () => { throw new Error(secret); },
-      requestEnvironment: async () => { throw new Error("unreachable"); },
+      requestEnvironment: unreachable,
+      dispatch: unreachable,
     });
     const unknownResult = await unknown.start(request);
     expect(unknownResult).toEqual({
@@ -220,7 +239,8 @@ describe("T3 provider drivers", () => {
 
     const absent = makeT3ProviderDriver("codex", {
       resolveRuntime: async () => null,
-      requestEnvironment: async () => { throw new Error("unreachable"); },
+      requestEnvironment: unreachable,
+      dispatch: unreachable,
     });
     await expect(absent.start(request)).resolves.toEqual({
       status: "error",
@@ -236,10 +256,10 @@ describe("T3 provider drivers", () => {
         resolutions += 1;
         return null;
       },
-      requestEnvironment: async () => { throw new Error("unreachable"); },
+      requestEnvironment: unreachable,
+      dispatch: unreachable,
     });
     const stale = { ...sessionFor(driver), generation: T3_SESSION_GENERATION - 1 };
-
     await expect(driver.resume({ session: stale })).resolves.toEqual({
       status: "error",
       code: "stale_session",
@@ -250,23 +270,15 @@ describe("T3 provider drivers", () => {
 
   test("classifies only a missing native T3 thread as session_invalid", async () => {
     const missingByStatus = driverRejectingResume(
-      new RuntimeEnvironmentRequestError("T3 environment GET request failed (HTTP 404)", {
-        status: 404,
-      }),
+      new RuntimeEnvironmentRequestError("T3 environment GET request failed (HTTP 404)", { status: 404 }),
     );
     const missingByResponse = driverRejectingResume(
       new RuntimeEnvironmentRequestError("T3 environment GET request failed", {
-        response: {
-          code: "not_found",
-          reason: "thread_not_found",
-          traceId: "trace-missing-thread",
-        },
+        response: { code: "not_found", reason: "thread_not_found", traceId: "trace-missing-thread" },
       }),
     );
     const providerFailure = driverRejectingResume(
-      new RuntimeEnvironmentRequestError("T3 environment GET request failed (HTTP 503)", {
-        status: 503,
-      }),
+      new RuntimeEnvironmentRequestError("T3 environment GET request failed (HTTP 503)", { status: 503 }),
     );
     const networkFailure = driverRejectingResume(new Error("T3 transport unavailable"));
 
@@ -293,7 +305,7 @@ describe("T3 provider drivers", () => {
       threadId: "thread-1",
       session: {
         provider: driver.provider,
-        nativeSessionId: "skynet-thread-thread-1",
+        nativeSessionId: THREAD,
         runtime: { kind: "managed", id: "managed-1" },
         protocolVersion: providerProtocolIdentity(driver.descriptor.protocol),
         capabilities: driver.descriptor.capabilities,
@@ -309,64 +321,58 @@ describe("T3 provider drivers", () => {
   });
 
   test("a fresh provider lifecycle can adopt an already-projected runtime thread", async () => {
-    const requests: RuntimeEnvironmentRequest[] = [];
-    const requestEnvironment: typeof requestRuntimeEnvironment = async <T>(
-      _sandbox: SandboxHandle,
-      request: RuntimeEnvironmentRequest,
-    ): Promise<T> => {
-      requests.push(request);
-      return {
-        projects: [{ id: "skynet-project-thread-1" }],
-        threads: [{ id: "skynet-thread-thread-1" }],
-      } as T;
-    };
-    const driver = makeT3ProviderDriver("opencode", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment,
-    });
-
+    const { dependencies, requests, commands } = runtime(v2Snapshot(1), {
+      projects: [{ id: "skynet-project-thread-1" }],
+      threads: [{ id: THREAD }],
+    } as never);
+    const driver = makeT3ProviderDriver("opencode", dependencies);
     await expect(driver.start({
       runId: "run-1",
       threadId: "thread-1",
       runtime: { kind: "sandbox", id: "cube-t3-resume" },
       model: "openai/gpt-5.6-luna",
-      metadata: {
-        workspaceRoot: "/root/work",
-        runtimeMode: "full-access",
-        createdAt: "2026-08-22T00:00:00.000Z",
-      },
-    })).resolves.toMatchObject({
-      status: "ok",
-      value: { nativeSessionId: "skynet-thread-thread-1" },
-    });
+      metadata: { workspaceRoot: "/root/work", runtimeMode: "full-access", createdAt: "2026-08-22T00:00:00.000Z" },
+    })).resolves.toMatchObject({ status: "ok", value: { nativeSessionId: THREAD } });
     expect(requests).toEqual([{ method: "GET", path: "/api/orchestration/shell" }]);
+    expect(commands).toEqual([]);
   });
 
-  test("a fresh session reuses the shell the caller read and creates without polling", async () => {
-    const requests: RuntimeEnvironmentRequest[] = [];
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest): Promise<T> => {
-        requests.push(request);
-        return { sequence: requests.length } as T;
-      },
-    });
-
+  test("a fresh session creates its project over HTTP and its thread over the socket, without polling", async () => {
+    const { dependencies, requests, commands } = runtime(v2Snapshot(1));
+    const driver = makeT3ProviderDriver("codex", dependencies);
     await expect(driver.start({
       runId: "run-1",
       threadId: "thread-1",
       runtime: { kind: "sandbox", id: "cube-t3-resume" },
       metadata: {
         workspaceRoot: "/root/work",
-        runtimeMode: "full-access",
+        runtimeMode: "approval-required",
         createdAt: "2026-10-02T00:00:00.000Z",
         shell: { projects: [], threads: [] },
       },
-    })).resolves.toMatchObject({ status: "ok", value: { nativeSessionId: "skynet-thread-thread-1" } });
+    })).resolves.toMatchObject({ status: "ok", value: { nativeSessionId: THREAD } });
     expect(requests.map((request) => [request.method, request.path, request.payload?.type])).toEqual([
-      ["POST", "/api/orchestration/dispatch", "project.create"],
-      ["POST", "/api/orchestration/dispatch", "thread.create"],
+      ["POST", "/api/projects/mutate", "project.create"],
     ]);
+    expect(commands).toEqual([expect.objectContaining({
+      type: "thread.create", threadId: THREAD, projectId: "skynet-project-thread-1", runtimeMode: "approval-required",
+    })]);
+  });
+
+  test("steers with the run's own message over the socket", async () => {
+    const { dependencies, commands } = runtime(v2Snapshot(1));
+    const driver = makeT3ProviderDriver("claude", dependencies);
+    await expect(driver.steer({
+      runId: "run-9", threadId: "thread-1", session: sessionFor(driver),
+      input: { kind: "prompt", text: "continue", model: "claude-opus-5", reasoningEffort: "max" },
+    })).resolves.toEqual({ status: "ok" });
+    expect(commands).toEqual([expect.objectContaining({
+      type: "message.dispatch",
+      commandId: "skynet-turn-run-9",
+      messageId: "skynet-message-run-9",
+      text: "continue",
+      modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5", options: [{ id: "effort", value: "max" }] },
+    })]);
   });
 
   describe("a handle this process already verified", () => {
@@ -379,26 +385,22 @@ describe("T3 provider drivers", () => {
       let resolutions = 0;
       const driver = makeT3ProviderDriver("codex", {
         // The real resolve hands back the live handle while this process holds one.
-        resolveRuntime: async (runtime) => {
+        resolveRuntime: async (runtimeArg) => {
           resolutions += 1;
-          return getLiveSandbox(runtime.id) ?? fresh;
+          return getLiveSandbox(runtimeArg.id) ?? fresh;
         },
-        requestEnvironment: async <T>(sandbox: SandboxHandle): Promise<T> => {
+        requestEnvironment: unreachable,
+        dispatch: async (sandbox) => {
           used.push(sandbox);
           if (sandbox === live) throw failOnLive;
-          return {} as T;
+          return { sequence: 1 };
         },
       });
       return { driver, used, resolutions: () => resolutions };
     }
 
     function steer(driver: ReturnType<typeof makeT3ProviderDriver>) {
-      return driver.steer({
-        runId: "run-1",
-        threadId: "thread-1",
-        session: sessionFor(driver),
-        input: { kind: "prompt", text: "continue" },
-      });
+      return driver.steer({ runId: "run-1", threadId: "thread-1", session: sessionFor(driver), input: { kind: "prompt", text: "continue" } });
     }
 
     test("is dropped when it fails before the runtime answers, and the dispatch runs once more on a full resolve", async () => {
@@ -417,7 +419,7 @@ describe("T3 provider drivers", () => {
     test("is kept and not retried when the runtime itself answered", async () => {
       rememberLiveThreadSandbox(threadId, live);
       const { driver, used, resolutions } = reusingDriver(
-        new RuntimeEnvironmentRequestError("The provider runtime POST request failed (HTTP 409)", { status: 409 }),
+        new RuntimeRpcError("orchestration.dispatchCommand", "OrchestrationV2DispatchCommandError", "refused", undefined, []),
       );
       try {
         await expect(steer(driver)).resolves.toMatchObject({ status: "error", code: "steer_failed" });
@@ -430,506 +432,192 @@ describe("T3 provider drivers", () => {
     });
   });
 
-  test("owns native cancel and recovery through the same driver session", async () => {
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 8,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: {
-          turnId: "turn-1",
-          state: "completed",
-          requestedAt: "2026-09-05T00:00:00.000Z",
-          assistantMessageId: "assistant-1",
-        },
-        messages: [
-          {
-            id: "skynet-message-run-1",
-            role: "user",
-            text: "Current request",
-            turnId: null,
-            streaming: false,
-            createdAt: "2026-09-05T00:00:00.000Z",
-          },
-          {
-            id: "assistant-1",
-            role: "assistant",
-            text: "Recovered summary",
-            turnId: "turn-1",
-            streaming: false,
-          },
-        ],
-        activities: [],
-        session: { status: "ready", lastError: null },
-      },
-    };
-    const requests: RuntimeEnvironmentRequest[] = [];
-    const requestEnvironment: typeof requestRuntimeEnvironment = async <T>(
-      _sandbox: SandboxHandle,
-      request: RuntimeEnvironmentRequest,
-    ): Promise<T> => {
-      requests.push(request);
-      return snapshot as unknown as T;
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment,
-    });
+  test("cancel interrupts the run still going, and nothing on a settled thread", async () => {
+    let state = v2Snapshot(3, v2Projection({ runs: [v2Run({ id: "r-live", status: "running", completedAt: null })] }));
+    const { dependencies, requests, commands } = runtime(() => state);
+    const driver = makeT3ProviderDriver("codex", dependencies);
     const session = sessionFor(driver);
-
     await expect(driver.cancel(session, "user stop")).resolves.toEqual({ status: "ok" });
-    expect(driver.reconcile).toBeFunction();
-    if (!driver.reconcile) throw new Error("T3 driver must own recovery");
-    await expect(driver.reconcile({
-      session,
-      checkpoint: {
-        sinceMs: 10,
-        eventContext: {
-          runId: "run-1",
-          threadId: "thread-1",
-          redact: createSecretRedactor([]),
-        },
-      },
-    })).resolves.toEqual({
+    expect(commands).toEqual([expect.objectContaining({ type: "run.interrupt", threadId: THREAD, runId: "r-live" })]);
+    expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([`GET /api/orchestration/threads/${THREAD}/bounded`]);
+
+    state = v2Snapshot(4, v2Projection({ runs: [v2Run({ id: "r-live", status: "completed" })] }));
+    await expect(driver.cancel(session, "user stop")).resolves.toEqual({ status: "ok" });
+    expect(commands).toHaveLength(1);
+  });
+
+  test("recovery answers a settled run with its message and answer", async () => {
+    const { dependencies } = runtime(answered("run-1", "Recovered summary"));
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    await expect(reconcile(driver, "run-1")).resolves.toEqual({
       status: "completed",
       summary: "Recovered summary",
       events: [
-        expect.objectContaining({ eventType: "t3.message.started", messageId: "assistant-1", payload: { role: "assistant", turnId: "turn-1" } }),
-        expect.objectContaining({ eventType: "t3.message.updated", messageId: "assistant-1",
+        expect.objectContaining({ eventType: "t3.message.started", messageId: "assistant-run-1", payload: { role: "assistant", turnId: "run-of-run-1" } }),
+        expect.objectContaining({ eventType: "t3.message.updated", messageId: "assistant-run-1",
           payload: expect.objectContaining({ text: "Recovered summary", final: true, segmentCount: 1 }) }),
       ],
     });
-    expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2" },
-      { method: "POST", path: "/api/orchestration/dispatch" },
-      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2" },
-    ]);
-    expect(requests[1]?.payload).toMatchObject({
-      type: "thread.turn.interrupt",
-      threadId: "skynet-thread-thread-1",
-      turnId: "turn-1",
-    });
   });
 
-  test("restart recovery completes compact from its exact request without a new latest turn", async () => {
-    const compactActivity = {
-      id: "compact-completed",
-      tone: "info" as const,
-      kind: "context-compaction",
-      summary: "Context compacted",
-      payload: { state: "compacted", requestId: "skynet-message-run-compact" },
-      turnId: null,
-    };
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 9,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: {
-          turnId: "prior-turn",
-          state: "completed",
-          assistantMessageId: "prior-answer",
-        },
-        messages: [],
-        activities: [compactActivity],
-        session: { status: "ready", lastError: null },
-      },
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => snapshot as T,
-    });
-
-    await expect(driver.reconcile?.({
-      session: sessionFor(driver),
-      checkpoint: {
-        eventContext: {
-          runId: "run-compact",
-          threadId: "thread-1",
-          nativeCommand: {
-            name: "compact",
-            provider: "codex",
-            sessionId: "skynet-thread-thread-1",
-            catalogRevision: 4,
-          },
-          redact: createSecretRedactor([]),
-        },
-      },
+  test("restart recovery completes compact from its exact request", async () => {
+    const thread = v2Snapshot(9, v2Projection({
+      runs: [v2Run({ id: "prior", ordinal: 1 }), v2Run({ id: "compact", ordinal: 2, userMessageId: "skynet-message-run-compact", status: "running", completedAt: null })],
+      turnItems: [v2Item({ id: "compaction-1", type: "compaction", runId: "compact", status: "completed" })],
+    }));
+    const { dependencies } = runtime(thread);
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    await expect(reconcile(driver, "run-compact", [], {
+      name: "compact", provider: "codex", sessionId: THREAD, catalogRevision: 4,
     })).resolves.toMatchObject({
       status: "completed",
       summary: "Compacted",
-      events: [{
-        id: "pe_run-compact_t3_compact-completed",
-        eventType: "t3.activity.context-compaction",
-        sessionId: "skynet-thread-thread-1",
-      }],
+      events: [{ id: "pe_run-compact_t3_compaction-1:compaction", eventType: "t3.activity.context-compaction", sessionId: THREAD }],
     });
   });
 
   test("restart recovery ignores unrelated compact completion", async () => {
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 9,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: null,
-        messages: [],
-        activities: [{
-          id: "other-compact",
-          tone: "info",
-          kind: "context-compaction",
-          summary: "Context compacted",
-          payload: { state: "compacted", requestId: "skynet-message-other-run" },
-          turnId: null,
-        }],
-        session: { status: "starting", lastError: null },
-      },
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => snapshot as T,
-    });
-
-    await expect(driver.reconcile?.({
-      session: sessionFor(driver),
-      checkpoint: {
-        eventContext: {
-          runId: "run-compact",
-          threadId: "thread-1",
-          nativeCommand: {
-            name: "compact",
-            provider: "codex",
-            sessionId: "skynet-thread-thread-1",
-            catalogRevision: 4,
-          },
-          redact: createSecretRedactor([]),
-        },
-      },
+    const thread = v2Snapshot(9, v2Projection({
+      runs: [v2Run({ id: "other", userMessageId: "skynet-message-other-run" })],
+      turnItems: [v2Item({ id: "compaction-other", type: "compaction", runId: "other", status: "completed" })],
+    }));
+    const { dependencies } = runtime(thread);
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    await expect(reconcile(driver, "run-compact", [], {
+      name: "compact", provider: "codex", sessionId: THREAD, catalogRevision: 4,
     })).resolves.toEqual({ status: "in_progress" });
   });
 
+  test("restart compact recovery fails with the compact run's own reason", async () => {
+    const thread = v2Snapshot(9, v2Projection({
+      runs: [v2Run({ id: "compact", userMessageId: "skynet-message-run-compact", status: "failed" })],
+      turnItems: [v2Item({ id: "e1", type: "error", runId: "compact", failure: { class: "provider_error", message: "Context limit unavailable" } })],
+    }));
+    const { dependencies } = runtime(thread);
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    await expect(reconcile(driver, "run-compact", [], {
+      name: "compact", provider: "codex", sessionId: THREAD, catalogRevision: 4,
+    })).resolves.toEqual({ status: "failed", summary: "Context limit unavailable" });
+  });
+
   test("restart compact recovery fails closed on stale durable command identity", async () => {
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => ({
-        snapshotSequence: 1,
-        thread: {
-          id: "skynet-thread-thread-1",
-          latestTurn: null,
-          messages: [],
-          activities: [],
-          session: { status: "starting", lastError: null },
-        },
-      }) as T,
-    });
-
-    await expect(driver.reconcile?.({
-      session: sessionFor(driver),
-      checkpoint: {
-        eventContext: {
-          runId: "run-compact",
-          threadId: "thread-1",
-          nativeCommand: {
-            name: "compact",
-            provider: "codex",
-            sessionId: "replaced-session",
-            catalogRevision: 4,
-          },
-          redact: createSecretRedactor([]),
-        },
-      },
-    })).resolves.toEqual({
-      status: "failed",
-      summary: "The accepted native command identity is stale",
-    });
+    const { dependencies } = runtime(v2Snapshot(1));
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    await expect(reconcile(driver, "run-compact", [], {
+      name: "compact", provider: "codex", sessionId: "replaced-session", catalogRevision: 4,
+    })).resolves.toEqual({ status: "failed", summary: "The accepted native command identity is stale" });
   });
 
-  test("a continuation with no turn id on its message is matched by its request time", async () => {
-    const thread = (latestTurn: { turnId: string; requestedAt: string }, continuationStarted: boolean): RuntimeThreadSnapshot => ({
-      snapshotSequence: 3,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: { ...latestTurn, state: "completed", assistantMessageId: continuationStarted ? "assistant-b" : null },
-        messages: [
-          { id: "skynet-message-run-2", role: "user", text: "Original", turnId: null, streaming: false, createdAt: "2026-09-05T00:01:00.000Z" },
-          { id: "skynet-message-run-2-continue-2", role: "user", text: "Continue", turnId: null, streaming: false, createdAt: "2026-09-05T00:02:00.000Z" },
-          ...(continuationStarted
-            ? [{ id: "assistant-b", role: "assistant" as const, text: "The answer", turnId: "turn-b", streaming: false }]
-            : []),
-        ],
-        activities: [],
-        session: { status: "ready", lastError: null },
-      },
-    });
-    const request = (snapshot: RuntimeThreadSnapshot) => {
-      const driver = makeT3ProviderDriver("codex", {
-        resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-        requestEnvironment: async <T>() => snapshot as T,
-      });
-      return driver.reconcile!({
-        session: sessionFor(driver),
-        checkpoint: { sinceMs: 10, eventContext: { runId: "run-2", threadId: "thread-1", redact: createSecretRedactor([]) } },
-      });
-    };
-    // The original turn ended; the accepted continuation has not started: pending, not the original's empty answer.
-    expect((await request(thread({ turnId: "turn-a", requestedAt: "2026-09-05T00:01:00.000Z" }, false))).status).toBe("no_change");
-    // The continuation's turn completed: the run is done with its answer.
-    const done = await request(thread({ turnId: "turn-b", requestedAt: "2026-09-05T00:02:00.000Z" }, true));
-    expect(done.status).toBe("completed");
+  test("a continuation that is accepted but not yet answered leaves the run in progress", async () => {
+    const original = v2Run({ id: "run-a", ordinal: 1, userMessageId: "skynet-message-run-2" });
+    const continuation = v2Run({ id: "run-b", ordinal: 2, userMessageId: "skynet-message-run-2-continue-2", status: "queued", completedAt: null });
+    const messages = [
+      v2Message({ id: "skynet-message-run-2", role: "user", runId: "run-a" }),
+      v2Message({ id: "assistant-a", runId: "run-a", text: "", createdAt: at(1) }),
+      v2Message({ id: "skynet-message-run-2-continue-2", role: "user", runId: "run-b", createdAt: at(2) }),
+    ];
+    const pending = runtime(v2Snapshot(3, v2Projection({ runs: [original, continuation], messages })));
+    expect((await reconcile(makeT3ProviderDriver("codex", pending.dependencies), "run-2")).status).toBe("in_progress");
+
+    const done = runtime(v2Snapshot(4, v2Projection({
+      runs: [original, { ...continuation, status: "completed", completedAt: at(3) }],
+      messages: [...messages, v2Message({ id: "assistant-b", runId: "run-b", text: "The answer", createdAt: at(3) })],
+    })));
+    const result = await reconcile(makeT3ProviderDriver("codex", done.dependencies), "run-2");
+    expect(result).toMatchObject({ status: "completed", summary: "The answer" });
   });
 
-  test("reconciles only the latest turn through the live activity mapper", async () => {
+  test("reconciles only the run's own turns through the live activity mapper", async () => {
     const secret = "sk-recovery-secret-1234567890";
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 9,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: {
-          turnId: "turn-2",
-          state: "completed",
-          requestedAt: "2026-09-05T00:01:00.000Z",
-          assistantMessageId: "assistant-2",
-        },
-        messages: [
-          {
-            id: "skynet-message-run-2",
-            role: "user",
-            text: "Current request",
-            turnId: null,
-            streaming: false,
-            createdAt: "2026-09-05T00:01:00.000Z",
-          },
-          {
-            id: "assistant-2",
-            role: "assistant",
-            text: `Recovered with tail activity ${secret}`,
-            turnId: "turn-2",
-            streaming: false,
-          },
-        ],
-        activities: [
-          {
-            id: "prior-tool",
-            tone: "tool",
-            kind: "tool.completed",
-            summary: "Prior turn tool",
-            payload: { toolCallId: "prior-call" },
-            turnId: "turn-1",
-          },
-          {
-            id: "child-terminal",
-            tone: "tool",
-            kind: "task.completed",
-            summary: "Child complete",
-            payload: {
-              agentKind: "agent",
-              taskId: "child-session-1",
-              parentAgentId: "parent-session-1",
-              status: "completed",
-              summary: `safe ${secret}`,
-            },
-            turnId: "turn-2",
-          },
-        ],
-        session: { status: "ready", lastError: null },
-      },
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => snapshot as T,
-    });
-    const session = sessionFor(driver);
-    const request = {
-      session,
-      checkpoint: {
-        sinceMs: 10,
-        eventContext: {
-          runId: "run-2",
-          threadId: "thread-1",
-          redact: createSecretRedactor([secret]),
-        },
-      },
-    };
-    if (!driver.reconcile) throw new Error("T3 driver must own recovery");
-
-    const first = await driver.reconcile(request);
-    const second = await driver.reconcile(request);
+    const thread = v2Snapshot(9, v2Projection({
+      runs: [v2Run({ id: "turn-1", ordinal: 1, userMessageId: "skynet-message-run-1" }), v2Run({ id: "turn-2", ordinal: 2, userMessageId: "skynet-message-run-2" })],
+      messages: [
+        v2Message({ id: "skynet-message-run-2", role: "user", runId: "turn-2", text: "Current request" }),
+        v2Message({ id: "assistant-2", runId: "turn-2", text: `Recovered with tail activity ${secret}`, createdAt: at(1) }),
+      ],
+      turnItems: [
+        v2Item({ id: "prior-tool", type: "command_execution", runId: "turn-1", input: "ls" }),
+        v2Item({ id: "child-terminal", type: "subagent", runId: "turn-2", status: "completed", subagentId: "sa-1", childThreadId: "child-session-1", prompt: "look", result: `safe ${secret}` }),
+      ],
+    }));
+    const { dependencies } = runtime(thread);
+    const driver = makeT3ProviderDriver("codex", dependencies);
+    const first = await reconcile(driver, "run-2", [secret]);
+    const second = await reconcile(driver, "run-2", [secret]);
     expect(second).toEqual(first);
     expect(first).toMatchObject({
       status: "completed",
       summary: "Recovered with tail activity <redacted>",
       events: [
         { eventType: "t3.message.started", messageId: "assistant-2" },
-        { eventType: "t3.message.updated", messageId: "assistant-2",
-          payload: { text: "Recovered with tail activity <redacted>", final: true } },
+        { eventType: "t3.message.updated", messageId: "assistant-2", payload: { text: "Recovered with tail activity <redacted>", final: true } },
         {
-        id: "pe_run-2_t3_child-terminal",
-        runScopedId: true,
-        provider: "t3",
-        eventType: "t3.activity.task.completed",
-        sessionId: "child-session-1",
-        parentSessionId: "parent-session-1",
-        partId: "child-terminal",
-        callId: "child-session-1",
-      }],
+          id: "pe_run-2_t3_child-terminal:started",
+          eventType: "t3.activity.task.started",
+          sessionId: "child-session-1",
+          parentSessionId: THREAD,
+        },
+        {
+          id: "pe_run-2_t3_child-terminal:completed",
+          runScopedId: true,
+          provider: "t3",
+          eventType: "t3.activity.task.completed",
+          sessionId: "child-session-1",
+          callId: "child-session-1",
+        },
+      ],
     });
     expect(JSON.stringify(first)).not.toContain("prior-tool");
     expect(JSON.stringify(first)).not.toContain(secret);
     expect(JSON.stringify(first)).toContain("<redacted>");
   });
 
-  test("a running latest turn exposes its current mapped activities", async () => {
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 3,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: {
-          turnId: "turn-live",
-          state: "running",
-          requestedAt: "2026-09-05T00:02:00.000Z",
-          assistantMessageId: null,
-        },
-        messages: [{
-          id: "skynet-message-run-live",
-          role: "user",
-          text: "Current request",
-          turnId: "turn-live",
-          streaming: false,
-          createdAt: "2026-09-05T00:02:00.000Z",
-        }],
-        activities: [{
-          id: "tool-live",
-          tone: "tool",
-          kind: "tool.started",
-          summary: "Running tool",
-          payload: { toolCallId: "call-live", tool: "bash" },
-          turnId: "turn-live",
-        }],
-        session: { status: "busy", lastError: null },
-      },
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => snapshot as T,
-    });
-    if (!driver.reconcile) throw new Error("T3 driver must own recovery");
-    await expect(driver.reconcile({
-      session: sessionFor(driver),
-      checkpoint: {
-        eventContext: {
-          runId: "run-live",
-          threadId: "thread-live",
-          redact: createSecretRedactor([]),
-        },
-      },
-    })).resolves.toMatchObject({
+  test("a running run exposes its current mapped activities", async () => {
+    const thread = v2Snapshot(3, v2Projection({
+      runs: [v2Run({ id: "turn-live", userMessageId: "skynet-message-run-live", status: "running", completedAt: null })],
+      messages: [v2Message({ id: "skynet-message-run-live", role: "user", runId: "turn-live" })],
+      turnItems: [v2Item({ id: "call-live", type: "command_execution", runId: "turn-live", status: "running", input: "sleep 5" })],
+    }));
+    const { dependencies } = runtime(thread);
+    await expect(reconcile(makeT3ProviderDriver("codex", dependencies), "run-live")).resolves.toMatchObject({
       status: "in_progress",
-      events: [{
-        id: "pe_run-live_t3_tool-live",
-        callId: "call-live",
-      }],
+      events: [{ id: "pe_run-live_t3_call-live:updated", callId: "call-live" }],
     });
   });
 
-  test("does not adopt a previous completed turn before the current run was dispatched", async () => {
-    const snapshot: RuntimeThreadSnapshot = {
-      snapshotSequence: 4,
-      thread: {
-        id: "skynet-thread-thread-1",
-        latestTurn: {
-          turnId: "turn-previous",
-          state: "completed",
-          requestedAt: "2026-09-05T00:00:00.000Z",
-          assistantMessageId: "assistant-previous",
-        },
-        messages: [
-          {
-            id: "skynet-message-previous-run",
-            role: "user",
-            text: "Previous request",
-            turnId: null,
-            streaming: false,
-            createdAt: "2026-09-05T00:00:00.000Z",
-          },
-          {
-            id: "assistant-previous",
-            role: "assistant",
-            text: "Previous answer",
-            turnId: "turn-previous",
-            streaming: false,
-          },
-        ],
-        activities: [],
-        session: { status: "ready", lastError: null },
-      },
-    };
-    const driver = makeT3ProviderDriver("codex", {
-      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-      requestEnvironment: async <T>() => snapshot as T,
-    });
-    if (!driver.reconcile) throw new Error("T3 driver must own recovery");
-
-    await expect(driver.reconcile({
-      session: sessionFor(driver),
-      checkpoint: {
-        eventContext: {
-          runId: "new-run",
-          threadId: "thread-1",
-          redact: createSecretRedactor([]),
-        },
-      },
-    })).resolves.toEqual({ status: "no_change" });
+  test("does not adopt a previous completed run before the current run was dispatched", async () => {
+    const { dependencies } = runtime(answered("previous-run", "Previous answer"));
+    await expect(reconcile(makeT3ProviderDriver("codex", dependencies), "new-run")).resolves.toEqual({ status: "no_change" });
   });
 
-  test("returns redacted error and interruption reasons with their terminal events", async () => {
+  test("returns redacted failure and interruption reasons with their terminal events", async () => {
     const secret = "sk-failed-turn-secret-1234567890";
-    for (const state of ["error", "interrupted"] as const) {
-      const runId = `run-${state}`;
-      const turnId = `turn-${state}`;
-      const at = `2026-09-05T00:0${state === "error" ? "3" : "4"}:00.000Z`;
-      const snapshot: RuntimeThreadSnapshot = {
-        snapshotSequence: 5,
-        thread: {
-          id: "skynet-thread-thread-1",
-          latestTurn: { turnId, state, requestedAt: at, assistantMessageId: null },
-          messages: [{
-            id: `skynet-message-${runId}`,
-            role: "user",
-            text: "Current request",
-            turnId: null,
-            streaming: false,
-            createdAt: at,
-          }],
-          activities: [{
-            id: `terminal-${state}`,
-            tone: "error",
-            kind: "runtime.warning",
-            summary: `${state} activity`,
-            payload: { detail: secret },
-            turnId,
-          }],
-          session: { status: state, lastError: `Provider ${state}: ${secret}` },
-        },
-      };
-      const driver = makeT3ProviderDriver("codex", {
-        resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
-        requestEnvironment: async <T>() => snapshot as T,
-      });
-      if (!driver.reconcile) throw new Error("T3 driver must own recovery");
-      const result = await driver.reconcile({
-        session: sessionFor(driver),
-        checkpoint: {
-          eventContext: {
-            runId,
-            threadId: "thread-1",
-            redact: createSecretRedactor([secret]),
-          },
-        },
-      });
+    const failed = runtime(v2Snapshot(5, v2Projection({
+      runs: [v2Run({ id: "turn-error", userMessageId: "skynet-message-run-error", status: "failed" })],
+      messages: [v2Message({ id: "skynet-message-run-error", role: "user", runId: "turn-error" })],
+      turnItems: [v2Item({ id: "terminal-error", type: "error", runId: "turn-error", failure: { class: "provider_error", message: `Provider error: ${secret}` } })],
+    })));
+    const failedResult = await reconcile(makeT3ProviderDriver("codex", failed.dependencies), "run-error", [secret]);
+    expect(failedResult).toMatchObject({
+      status: "failed",
+      summary: "Provider error: <redacted>",
+      events: [{ id: "pe_run-error_t3_terminal-error:error" }],
+    });
+    expect(JSON.stringify(failedResult)).not.toContain(secret);
 
-      expect(result).toMatchObject({
-        status: "failed",
-        summary: `Provider ${state}: <redacted>`,
-        events: [{ id: `pe_${runId}_t3_terminal-${state}` }],
-      });
-      expect(JSON.stringify(result)).not.toContain(secret);
-    }
+    const interrupted = runtime(v2Snapshot(6, v2Projection({
+      runs: [v2Run({ id: "turn-interrupted", userMessageId: "skynet-message-run-interrupted", status: "interrupted" })],
+      messages: [v2Message({ id: "skynet-message-run-interrupted", role: "user", runId: "turn-interrupted" })],
+      turnItems: [v2Item({ id: "tool-cut", type: "command_execution", runId: "turn-interrupted", status: "interrupted", input: "make" })],
+      providerSessions: [v2Session({ lastError: `Provider interrupted: ${secret}` })],
+      providerThreads: [v2ProviderThread()],
+    })));
+    const interruptedResult = await reconcile(makeT3ProviderDriver("codex", interrupted.dependencies), "run-interrupted", [secret]);
+    expect(interruptedResult).toMatchObject({
+      status: "failed",
+      summary: "Provider interrupted: <redacted>",
+      events: [{ id: "pe_run-interrupted_t3_tool-cut:completed" }],
+    });
+    expect(JSON.stringify(interruptedResult)).not.toContain(secret);
   });
 });

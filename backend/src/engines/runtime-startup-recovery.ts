@@ -3,12 +3,9 @@ import { restartRuntimeEnvironment } from "./runtime-environment.js";
 import {
   invalidateRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
-  runtimeThreadSnapshotRequest,
 } from "./runtime-environment-client.js";
-import {
-  runtimeThreadId,
-  type RuntimeThreadSnapshot,
-} from "./runtime-orchestration.js";
+import { runtimeThreadId } from "./runtime-orchestration.js";
+import { readRuntimeThreadView } from "./runtime-thread-read.js";
 import type { RuntimeProviderBridgeLease } from "./runtime-provider-bridge.js";
 import type { EngineRunContext } from "./types.js";
 import {
@@ -20,7 +17,15 @@ const CODEX_STUCK_START_RECOVERY_MS = 30_000;
 
 interface RuntimeShellSnapshot {
   readonly projects: readonly { readonly id: string }[];
-  readonly threads: readonly { readonly id: string }[];
+  readonly threads: readonly {
+    readonly id: string;
+    readonly lineage?: { readonly rootThreadId?: string | null } | null;
+  }[];
+}
+
+/** Threads in the runtime other than `threadId` and its own subagent children. */
+export function otherRuntimeThreads(shell: RuntimeShellSnapshot, threadId: string): RuntimeShellSnapshot["threads"] {
+  return shell.threads.filter((thread) => thread.id !== threadId && thread.lineage?.rootThreadId !== threadId);
 }
 
 export class RuntimeFirstActivityTimeoutError extends Error {
@@ -85,11 +90,7 @@ export async function recoverStuckCodexSubscriptionStart(
         input.ctx.threadId ?? input.ctx.runId,
       );
     }
-    const snapshot = await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
-      sandbox,
-      runtimeThreadSnapshotRequest(threadId),
-      signal,
-    );
+    const snapshot = await readRuntimeThreadView(sandbox, threadId, signal, dependencies.requestEnvironment);
     if (
       snapshot.thread.id !== threadId ||
       (snapshot.thread.latestTurn?.turnId ?? null) !== input.priorTurnId ||
@@ -102,7 +103,7 @@ export async function recoverStuckCodexSubscriptionStart(
       { method: "GET", path: "/api/orchestration/shell" },
       signal,
     );
-    if (shell.threads.length !== 1 || shell.threads[0]?.id !== threadId) {
+    if (!shell.threads.some((thread) => thread.id === threadId) || otherRuntimeThreads(shell, threadId).length > 0) {
       return { error: input.error, stuckStartConfirmed: false };
     }
     stuckStartConfirmed = true;

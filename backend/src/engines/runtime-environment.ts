@@ -17,11 +17,12 @@ import {
 
 export const RUNTIME_ENVIRONMENT_PORT = 37_733;
 export const RUNTIME_GENERATION_LABEL = "useagent.runtime";
-// Native wire/session compatibility, not the application release number. The
-// nightly fork retains the v8 wire/session contract; exact distribution bytes
-// are verified separately. A future incompatible generation needs an explicit
-// workspace-preserving upgrade, never delete-and-recreate of retained threads.
-const DEFAULT_RUNTIME_GENERATION = "useagent-runtime-v8";
+// Native wire/session compatibility, not the application release number. v9 is
+// the runtime's orchestration protocol 2; exact distribution bytes are verified
+// separately. A sandbox of another generation fails closed with its workspace
+// kept (thread-sandbox.ts); the switch recreates retained sandboxes by hand,
+// never by delete-and-recreate here.
+const DEFAULT_RUNTIME_GENERATION = "useagent-runtime-v9";
 
 export function runtimeGeneration(
   env: Readonly<Record<string, string | undefined>> = process.env,

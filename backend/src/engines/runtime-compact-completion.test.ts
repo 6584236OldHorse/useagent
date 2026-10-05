@@ -12,54 +12,28 @@ import {
   compactRecoveryDeadlineMs,
   compactWaitTimeoutSummary,
 } from "./runtime-compact-contract";
-import {
-  buildRuntimeTurnStartCommand,
-  runtimeUserMessageId,
-  type RuntimeActivity,
-  type RuntimeThreadSnapshot,
-} from "./runtime-orchestration";
-import type { RuntimeThreadStreamItem } from "./runtime-event-stream";
+import type { FollowRuntimeThreadInput } from "./runtime-event-stream";
+import { buildRuntimeTurnStartCommand, runtimeUserMessageId } from "./runtime-orchestration";
+import { runtimeThreadView } from "./runtime-v2-view";
+import type { V2RunStatus, V2ThreadSnapshot, V2TurnItem } from "./runtime-v2-wire";
+import { v2Item, v2Projection, v2Run, v2Snapshot } from "./runtime-v2.test-support";
 import type { EngineRunContext } from "./types";
 
 const RUN_ID = "run-compact";
 const THREAD_ID = "skynet-thread-thread-1";
 const REQUEST_ID = runtimeUserMessageId(RUN_ID);
 
-function activity(
-  kind: string,
-  requestId: string,
-  payload: Readonly<Record<string, unknown>> = {},
-): RuntimeActivity {
-  return {
-    id: `${kind}-${requestId}`,
-    tone: kind === "provider.turn.start.failed" ? "error" : "info",
-    kind,
-    summary: kind === "context-compaction" ? "Context compacted" : "Compaction failed",
-    payload: { requestId, ...payload },
-    turnId: null,
-  };
+const prior = v2Run({ id: "prior", ordinal: 1 });
+const compactRun = (status: V2RunStatus, userMessageId = REQUEST_ID) =>
+  v2Run({ id: "compact", ordinal: 2, status, userMessageId, completedAt: status === "running" ? null : "x" });
+const compaction = (status: string, runId = "compact") =>
+  v2Item({ id: `compaction-${runId}`, type: "compaction", runId, status });
+
+function state(sequence: number, runs = [prior], turnItems: V2TurnItem[] = []): V2ThreadSnapshot {
+  return v2Snapshot(sequence, v2Projection({ runs, turnItems }));
 }
 
-function snapshot(
-  sequence: number,
-  activities: readonly RuntimeActivity[],
-  sessionStatus = "starting",
-): RuntimeThreadSnapshot {
-  return {
-    snapshotSequence: sequence,
-    thread: {
-      id: THREAD_ID,
-      latestTurn: {
-        turnId: "prior-turn",
-        state: "completed",
-        assistantMessageId: "prior-assistant",
-      },
-      messages: [],
-      activities,
-      session: { status: sessionStatus, lastError: null },
-    },
-  };
-}
+const baseline = runtimeThreadView(state(1));
 
 function context(signal = new AbortController().signal): EngineRunContext {
   return {
@@ -71,23 +45,16 @@ function context(signal = new AbortController().signal): EngineRunContext {
   } as unknown as EngineRunContext;
 }
 
+/** A follower whose script hands states over and checks whether the wait kept following. */
 function dependencies(input: {
-  subscribe: (
-    signal: AbortSignal,
-    onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-  ) => Promise<void>;
+  script: (apply: (state: V2ThreadSnapshot) => Promise<boolean>, follow: FollowRuntimeThreadInput) => Promise<void>;
   captured?: ProviderEventInput[];
-  readSnapshot?: () => Promise<RuntimeThreadSnapshot>;
 }) {
   return {
-    readThreadSnapshot: input.readSnapshot ?? (async () => { throw new Error("unexpected snapshot read"); }),
-    subscribeRuntimeThread: async (
-      _sandbox: SandboxHandle,
-      _threadId: string,
-      _after: number | undefined,
-      signal: AbortSignal,
-      onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-    ) => input.subscribe(signal, onItem),
+    followRuntimeThread: async (follow: FollowRuntimeThreadInput) => {
+      await follow.start?.();
+      await input.script((next) => follow.applySnapshot(runtimeThreadView(next), next), follow);
+    },
     recordProviderEvent: async (event: ProviderEventInput) => {
       input.captured?.push(event);
     },
@@ -95,18 +62,8 @@ function dependencies(input: {
 }
 
 test("compact dispatch and completion use the same accepted message identity", () => {
-  const command = buildRuntimeTurnStartCommand(
-    { runId: RUN_ID, threadId: "thread-1" },
-    "codex",
-    "/compact",
-    "2026-09-14T00:00:00.000Z",
-    false,
-  );
-
-  expect(command).toMatchObject({
-    type: "thread.turn.start",
-    message: { messageId: REQUEST_ID, text: "/compact" },
-  });
+  const command = buildRuntimeTurnStartCommand({ runId: RUN_ID, threadId: "thread-1" }, "codex", "/compact");
+  expect(command).toMatchObject({ type: "message.dispatch", messageId: REQUEST_ID, text: "/compact" });
 });
 
 test("Stop and timeout say only that UseAgent stopped waiting", () => {
@@ -131,135 +88,74 @@ test("restart recovery preserves the original compact deadline", () => {
   expect(compactRecoveryDeadlineMs(now - 20 * 60_000, now - 9 * 60_000)).toBe(now + 60_000);
 });
 
-test("compact completes from its exact request activity while latestTurn stays unchanged", async () => {
+test("compact completes from its own compaction while an unrelated one does not count", async () => {
   const captured: ProviderEventInput[] = [];
-  const unrelated = activity("context-compaction", "another-request", { state: "compacted" });
-  const completed = activity("context-compaction", REQUEST_ID, {
-    state: "compacted",
-    beforeTokens: 1000,
-    afterTokens: 400,
-  });
-
+  let started = 0;
   await expect(waitForRuntimeCompact(
     context(),
     {} as SandboxHandle,
-    snapshot(1, []),
+    baseline,
     createSecretRedactor([]),
     REQUEST_ID,
     dependencies({
       captured,
-      subscribe: async (_signal, onItem) => {
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(2, [unrelated]) })).toBe(true);
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(3, [unrelated, completed]) })).toBe(false);
+      script: async (apply) => {
+        const other = v2Run({ id: "other", ordinal: 2, userMessageId: "skynet-message-other" });
+        expect(await apply(state(2, [prior, other], [compaction("completed", "other")]))).toBe(true);
+        expect(await apply(state(3, [prior, other, { ...compactRun("running"), ordinal: 3 }], [compaction("completed", "other"), compaction("completed")])))
+          .toBe(false);
       },
     }),
+    async () => { started += 1; },
   )).resolves.toBe("Compacted");
+  expect(started).toBe(1);
   expect(captured).toHaveLength(1);
-  expect(captured[0]).toMatchObject({
-    eventType: "t3.activity.context-compaction",
-    nativeSessionId: THREAD_ID,
-  });
+  expect(captured[0]).toMatchObject({ eventType: "t3.activity.context-compaction", nativeSessionId: THREAD_ID });
 });
 
-test("an unrelated compact activity is not completion", async () => {
+test("a compact run that ends without its compaction still settles the wait", async () => {
   await expect(waitForRuntimeCompact(
-    context(),
-    {} as SandboxHandle,
-    snapshot(1, []),
-    createSecretRedactor([]),
-    REQUEST_ID,
+    context(), {} as SandboxHandle, baseline, createSecretRedactor([]), REQUEST_ID,
     dependencies({
-      subscribe: async (_signal, onItem) => {
-        expect(await onItem({
-          kind: "snapshot",
-          snapshot: snapshot(2, [activity("context-compaction", "other", { state: "compacted" })]),
-        })).toBe(true);
-      },
-    }),
-  )).rejects.toThrow("subscription ended before a terminal snapshot");
-});
-
-test("an event-only notification refreshes the authoritative compact snapshot", async () => {
-  const completed = activity("context-compaction", REQUEST_ID, { state: "compacted" });
-  let reads = 0;
-  await expect(waitForRuntimeCompact(
-    context(),
-    {} as SandboxHandle,
-    snapshot(1, []),
-    createSecretRedactor([]),
-    REQUEST_ID,
-    dependencies({
-      readSnapshot: async () => {
-        reads += 1;
-        return snapshot(2, [completed]);
-      },
-      subscribe: async (signal, onItem) => {
-        expect(await onItem({
-          kind: "event",
-          event: { sequence: 2, aggregateKind: "thread", aggregateId: THREAD_ID },
-        })).toBe(true);
-        if (!signal.aborted) {
-          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-        }
+      script: async (apply) => {
+        expect(await apply(state(2, [prior, compactRun("running")]))).toBe(true);
+        expect(await apply(state(3, [prior, compactRun("completed")]))).toBe(false);
       },
     }),
   )).resolves.toBe("Compacted");
-  expect(reads).toBe(1);
 });
 
-test("a slow compact may remain starting without entering ordinary turn-start recovery", async () => {
-  const completed = activity("context-compaction", REQUEST_ID, { state: "compacted" });
+test("a follow that ends before the compact settles is an error", async () => {
   await expect(waitForRuntimeCompact(
-    context(),
-    {} as SandboxHandle,
-    snapshot(1, []),
-    createSecretRedactor([]),
-    REQUEST_ID,
-    dependencies({
-      subscribe: async (_signal, onItem) => {
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(2, []) })).toBe(true);
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(3, []) })).toBe(true);
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(4, [completed]) })).toBe(false);
-      },
-    }),
-  )).resolves.toBe("Compacted");
+    context(), {} as SandboxHandle, baseline, createSecretRedactor([]), REQUEST_ID,
+    dependencies({ script: async (apply) => { expect(await apply(state(2, [prior, compactRun("running")]))).toBe(true); } }),
+  )).rejects.toThrow("subscription ended before compact completed");
 });
 
 test("compact cancellation preserves the caller's abort reason", async () => {
   const controller = new AbortController();
   const reason = new Error("compact cancelled");
   const waiting = waitForRuntimeCompact(
-    context(controller.signal),
-    {} as SandboxHandle,
-    snapshot(1, []),
-    createSecretRedactor([]),
-    REQUEST_ID,
+    context(controller.signal), {} as SandboxHandle, baseline, createSecretRedactor([]), REQUEST_ID,
     dependencies({
-      subscribe: async (signal) => {
-        if (!signal.aborted) {
-          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      script: async (_apply, follow) => {
+        if (!follow.signal.aborted) {
+          await new Promise<void>((resolve) => follow.signal.addEventListener("abort", () => resolve(), { once: true }));
         }
       },
     }),
   );
-
   controller.abort(reason);
   await expect(waiting).rejects.toBe(reason);
 });
 
-test("a correlated provider compact failure stays a failure", async () => {
+test("a failed compact run stays a failure with the runtime's reason", async () => {
   await expect(waitForRuntimeCompact(
-    context(),
-    {} as SandboxHandle,
-    snapshot(1, []),
-    createSecretRedactor([]),
-    REQUEST_ID,
+    context(), {} as SandboxHandle, baseline, createSecretRedactor([]), REQUEST_ID,
     dependencies({
-      subscribe: async (_signal, onItem) => {
-        expect(await onItem({
-          kind: "snapshot",
-          snapshot: snapshot(2, [activity("provider.turn.start.failed", REQUEST_ID, { detail: "Context limit unavailable" })]),
-        })).toBe(false);
+      script: async (apply) => {
+        const failed = v2Item({ id: "e1", type: "error", runId: "compact", failure: { class: "provider_error", message: "Context limit unavailable" } });
+        expect(await apply(state(2, [prior, compactRun("failed")], [failed]))).toBe(false);
       },
     }),
   )).rejects.toThrow("Context limit unavailable");

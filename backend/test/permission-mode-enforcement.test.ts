@@ -5,19 +5,19 @@ import { recordProviderEvent, threadHasSessionGrant } from "../src/runs/provider
 import { waitForRuntimeTurn } from "../src/engines/runtime-adapter";
 import { replyToRuntimeApproval, type RuntimeApprovalReplyDependencies } from "../src/engines/runtime-approval";
 import { assertReadOnlyTurnAllowed } from "../src/engines/runtime-thread-mode";
-import { runtimeThreadId, type RuntimeThreadSnapshot } from "../src/engines/runtime-orchestration";
-import type { RuntimeThreadStreamItem } from "../src/engines/runtime-event-stream";
+import { runtimeThreadId } from "../src/engines/runtime-orchestration";
+import type { FollowRuntimeThreadInput } from "../src/engines/runtime-event-stream";
+import { runtimeThreadView } from "../src/engines/runtime-v2-view";
+import type { V2ThreadSnapshot } from "../src/engines/runtime-v2-wire";
 import type { EmitStep, EngineRunContext } from "../src/engines/types";
 import type { SandboxHandle } from "../src/sandboxes/provider";
 import { createSecretRedactor } from "../src/secrets/redact";
 
 // Enforcement per permission mode at the runtime adapter boundary, against a
 // real accepted run so the projector's provider-event record lands. The
-// runtime's own approval requests arrive as thread snapshots; a read-only run
+// runtime's own approval requests arrive in the thread's state; a read-only run
 // must decline every command and file change itself, a Guard run must leave
 // them waiting for a person, and reads pass in both.
-
-type Activity = RuntimeThreadSnapshot["thread"]["activities"][number];
 
 async function acceptedRun(permissionMode: PermissionMode) {
   const { status, body } = await json<{ id: string }>("/api/runs", {
@@ -30,43 +30,28 @@ async function acceptedRun(permissionMode: PermissionMode) {
   return { runId: body.id, threadId: run.thread_id };
 }
 
-function requested(requestId: string, requestKind: string): Activity {
-  return {
-    id: `activity-${requestId}`,
-    tone: "approval",
-    kind: "approval.requested",
-    summary: "Approval requested",
-    payload: { requestId, requestKind, detail: "rm -rf build" },
-    turnId: "turn-1",
-  };
-}
-
-function resolved(requestId: string): Activity {
-  return {
-    id: `activity-${requestId}-resolved`,
-    tone: "approval",
-    kind: "approval.resolved",
-    summary: "Approval resolved",
-    payload: { requestId, decision: "decline" },
-    turnId: "turn-1",
-  };
-}
-
-function snapshot(
-  ctx: EngineRunContext,
+/** The thread with the plane's run `runId` in `status` and one approval request in `requestStatus`. */
+function thread(
+  ctx: Pick<EngineRunContext, "runId" | "threadId">,
   sequence: number,
-  turnId: string,
-  state: "running" | "completed",
-  activities: Activity[],
-): RuntimeThreadSnapshot {
+  runId: string,
+  status: "running" | "completed",
+  request: { readonly kind: string; readonly status: "pending" | "resolved" } | null,
+): V2ThreadSnapshot {
+  const threadId = runtimeThreadId(ctx);
   return {
     snapshotSequence: sequence,
-    thread: {
-      id: runtimeThreadId(ctx),
-      latestTurn: { turnId, state, assistantMessageId: "assistant-1" },
-      messages: [{ id: "assistant-1", role: "assistant", text: "Looked around.", turnId, streaming: state === "running" }],
-      activities,
-      session: null,
+    projection: {
+      thread: { id: threadId, runtimeMode: "approval-required", activeProviderThreadId: null },
+      runs: [{ id: runId, ordinal: runId === "turn-prior" ? 1 : 2, userMessageId: `skynet-message-${runId}`, status, providerThreadId: null, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: null, completedAt: null }],
+      messages: [{ id: "assistant-1", runId, role: "assistant", text: "Looked around.", streaming: status === "running", createdAt: "2026-10-03T00:00:01.000Z" }],
+      turnItems: request
+        ? [{ id: "item-approval-1", threadId, runId, type: "approval_request", status: request.status === "pending" ? "waiting" : "completed", title: null, updatedAt: "x", ordinal: 1, requestId: "approval-1", requestKind: request.kind, prompt: "rm -rf build" }]
+        : [],
+      providerSessions: [],
+      providerThreads: [],
+      runtimeRequests: request ? [{ id: "approval-1", kind: request.kind, status: request.status, ...(request.status === "resolved" ? { decision: "decline" } : {}) }] : [],
+      subagents: [],
     },
   };
 }
@@ -87,20 +72,14 @@ async function driveTurn(permissionMode: PermissionMode, requestKind: string) {
     setSummary() {},
     publishDelta() {},
   } as unknown as EngineRunContext;
-  const prior = snapshot(ctx, 10, "turn-prior", "completed", []);
-  const subscribe = async (
-    _sandbox: SandboxHandle,
-    _threadId: string,
-    _afterSequence: number | undefined,
-    _signal: AbortSignal,
-    onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-  ) => {
-    const request = requested("approval-1", requestKind);
-    expect(await onItem({ kind: "snapshot", snapshot: snapshot(ctx, 11, "turn-1", "running", [request]) })).toBe(true);
-    expect(await onItem({
-      kind: "snapshot",
-      snapshot: snapshot(ctx, 12, "turn-1", "completed", [request, resolved("approval-1")]),
-    })).toBe(false);
+  const prior = runtimeThreadView(thread(ctx, 10, "turn-prior", "completed", null));
+  const follow = async (input: FollowRuntimeThreadInput) => {
+    for (const state of [
+      thread(ctx, 11, "turn-1", "running", { kind: requestKind, status: "pending" }),
+      thread(ctx, 12, "turn-1", "completed", { kind: requestKind, status: "resolved" }),
+    ]) {
+      if (!(await input.applySnapshot(runtimeThreadView(state), state))) return;
+    }
   };
   const text = await waitForRuntimeTurn(
     ctx,
@@ -109,14 +88,15 @@ async function driveTurn(permissionMode: PermissionMode, requestKind: string) {
     prior,
     createSecretRedactor([]),
     {
-      subscribeRuntimeThread: subscribe,
+      followRuntimeThread: follow,
       readThreadSnapshot: async () => {
-        throw new Error("unexpected REST snapshot read");
+        throw new Error("unexpected HTTP thread read");
       },
       replyToRuntimeApproval: async (input) => {
         replies.push(input);
         return { alreadyAnswered: false };
       },
+      guardForeignRuns: () => async () => [],
     },
   );
   return { ctx, text, steps, replies };
@@ -164,23 +144,13 @@ describe("permission mode enforcement in the runtime adapter", () => {
   function grantHarness(run: { runId: string; threadId: string }, options: { readonly loseReceipt: boolean }) {
     const sessionId = runtimeThreadId({ runId: run.runId, threadId: run.threadId });
     const log: string[] = [];
-    const pendingSnapshot = (): RuntimeThreadSnapshot => ({
-      snapshotSequence: 3,
-      thread: {
-        id: sessionId,
-        latestTurn: { turnId: "turn-1", state: "running", assistantMessageId: null },
-        messages: [],
-        activities: [requested("approval-1", "command")],
-        session: null,
-      },
-    });
     const dependencies: Partial<RuntimeApprovalReplyDependencies> = {
       resolveSandbox: async () => ({} as SandboxHandle),
-      request: (async (_sandbox: SandboxHandle, req: { method: string; payload?: unknown }) => {
-        if (req.method === "GET") return pendingSnapshot();
-        log.push(`dispatch:${(req.payload as { decision?: string }).decision}`);
-        return {};
-      }) as unknown as RuntimeApprovalReplyDependencies["request"],
+      request: (async () => thread(run, 3, "turn-1", "running", { kind: "command", status: "pending" })) as unknown as RuntimeApprovalReplyDependencies["request"],
+      dispatch: async (_sandbox, command) => {
+        log.push(`dispatch:${String(command.decision)}`);
+        return { sequence: 4 };
+      },
       recordEvent: (async (input, opts) => {
         if (options.loseReceipt && input.eventType === "approval.responded") throw new Error("ledger unavailable");
         log.push(`record:${input.eventType}`);

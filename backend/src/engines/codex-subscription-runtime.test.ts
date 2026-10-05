@@ -121,7 +121,7 @@ describe("T3 Codex subscription lease", () => {
         connectionId: "connection-1",
         authEpoch: "credential-generation-123",
         sandboxId: "sandbox-1",
-        sandboxGeneration: "useagent-runtime-v8",
+        sandboxGeneration: "useagent-runtime-v9",
         environmentId: "skynet-sandbox-1-thread-1",
         cwd: "/root/work",
       },

@@ -18,8 +18,10 @@ import {
   isRuntimeEnvironmentMissingSessionError,
   requestRuntimeEnvironment,
   RuntimeEnvironmentRequestError,
-  runtimeThreadSnapshotRequest,
 } from "./runtime-environment-client";
+import { dispatchRuntimeCommand } from "./runtime-dispatch";
+import { readRuntimeThreadView } from "./runtime-thread-read";
+import { RuntimeRpcError } from "./runtime-v2-wire";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 import {
   assistantText,
@@ -49,9 +51,10 @@ import {
   type ExpectedSandboxBinding,
 } from "../sandboxes/expected-binding";
 
-// Bumped with the memory rules in the fresh-session prefix: a session bound before
-// them is stale, so its next turn starts fresh and reads them once.
-export const T3_SESSION_GENERATION = 3;
+// Bumped when a bound session can no longer be resumed as it is: 3 added the
+// memory rules to the fresh-session prefix, 4 is the runtime's orchestration
+// protocol 2. A session bound before is stale, so its next turn starts fresh.
+export const T3_SESSION_GENERATION = 4;
 
 interface RuntimeShellSnapshot {
   readonly projects: readonly { readonly id: string }[];
@@ -76,14 +79,6 @@ function isRuntimeMode(value: unknown): value is RuntimeMode {
     value === "auto-accept-edits" ||
     value === "auto" ||
     value === "full-access";
-}
-
-function steerRuntimeMode(metadata: Record<string, unknown> | undefined): RuntimeMode {
-  return isRuntimeMode(metadata?.runtimeMode) ? metadata.runtimeMode : "full-access";
-}
-
-function steerCreatedAt(metadata: Record<string, unknown> | undefined): string {
-  return typeof metadata?.createdAt === "string" ? metadata.createdAt : new Date().toISOString();
 }
 
 function t3StartMetadata(metadata: Record<string, unknown> | undefined): T3StartMetadata | null {
@@ -120,11 +115,13 @@ async function resolveRuntime(
 interface T3ProviderDriverDependencies {
   readonly resolveRuntime: typeof resolveRuntime;
   readonly requestEnvironment: typeof requestRuntimeEnvironment;
+  readonly dispatch: typeof dispatchRuntimeCommand;
 }
 
 const defaultT3ProviderDriverDependencies = {
   resolveRuntime,
   requestEnvironment: requestRuntimeEnvironment,
+  dispatch: dispatchRuntimeCommand,
 } satisfies T3ProviderDriverDependencies;
 
 async function resolveDriverRuntime(
@@ -163,7 +160,8 @@ async function resolveDriverRuntime(
  * handle this process already verified; one that fails before the runtime
  * answers is dropped and the operation runs once more on a full resolve. Every
  * operation here is safe to repeat: reads are reads, and T3 answers a repeated
- * command id with the receipt of the first.
+ * command id with the receipt of the first. An answer from the runtime itself
+ * (a refusal, a missing thread) stands.
  */
 async function withDriverRuntime<T>(
   dependencies: T3ProviderDriverDependencies,
@@ -178,7 +176,8 @@ async function withDriverRuntime<T>(
   try {
     return await operation(sandbox);
   } catch (error) {
-    if (signal.aborted || error instanceof RuntimeEnvironmentRequestError || !forgetLiveSandbox(sandbox)) throw error;
+    const answered = error instanceof RuntimeEnvironmentRequestError || error instanceof RuntimeRpcError;
+    if (signal.aborted || answered || !forgetLiveSandbox(sandbox)) throw error;
   }
   const fresh = await resolveDriverRuntime(dependencies, runtime, metadata, threadId);
   return fresh ? await operation(fresh) : null;
@@ -208,11 +207,7 @@ async function readThreadSnapshot(
 ): Promise<{ readonly sandbox: SandboxHandle; readonly snapshot: RuntimeThreadSnapshot } | null> {
   return await withDriverRuntime(dependencies, currentSession.runtime, metadata, threadId, signal, async (sandbox) => ({
     sandbox,
-    snapshot: await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
-      sandbox,
-      runtimeThreadSnapshotRequest(currentSession.nativeSessionId),
-      signal,
-    ),
+    snapshot: await readRuntimeThreadView(sandbox, currentSession.nativeSessionId, signal, dependencies.requestEnvironment),
   }));
 }
 
@@ -313,21 +308,16 @@ function compactReconciliation(
   const activity = snapshot.thread.activities.findLast((candidate) => {
     if (!candidate.payload || typeof candidate.payload !== "object") return false;
     const payload = candidate.payload as Readonly<Record<string, unknown>>;
-    return payload.requestId === requestId && (
-      (candidate.kind === "context-compaction" && payload.state === "compacted") ||
-      candidate.kind === "provider.turn.start.failed"
-    );
+    return payload.requestId === requestId && candidate.kind === "context-compaction" && payload.state === "compacted";
   });
-  if (!activity) return { status: "in_progress" };
-  const events = [reconciledRuntimeActivity(activity, currentSession, context)];
-  if (activity.kind === "context-compaction") {
-    return { status: "completed", summary: "Compacted", events };
+  if (activity) {
+    return { status: "completed", summary: "Compacted", events: [reconciledRuntimeActivity(activity, currentSession, context)] };
   }
-  const payload = activity.payload as Readonly<Record<string, unknown>>;
-  const summary = [payload.detail, payload.error, payload.message, payload.reason].find(
-    (value): value is string => typeof value === "string" && value.length > 0,
-  ) ?? "The provider runtime compact command failed";
-  return { status: "failed", summary: context.redact.text(summary), events };
+  const turn = snapshot.thread.latestTurn;
+  if (!turn || turn.userMessageId !== requestId || turn.state === "running") return { status: "in_progress" };
+  if (turn.state === "completed") return { status: "completed", summary: "Compacted" };
+  const summary = turn.error ?? snapshot.thread.session?.lastError ?? "The provider runtime compact command failed";
+  return { status: "failed", summary: context.redact.text(summary) };
 }
 
 export function makeT3ProviderDriver(
@@ -372,8 +362,8 @@ export function makeT3ProviderDriver(
       try {
         const projectId = runtimeProjectId(ctx);
         const threadId = runtimeThreadId(ctx);
-        // T3 projects a dispatched command inside the transaction that accepts
-        // it, so an accepted create is already in the shell: no read-back poll.
+        // The runtime projects a dispatched command inside the transaction that
+        // accepts it, so an accepted create is already in the shell: no read-back poll.
         const started = await withDriverRuntime(dependencies, request.runtime, request.metadata, request.threadId, signal, async (sandbox) => {
           const shell = metadata.shell ?? await dependencies.requestEnvironment<RuntimeShellSnapshot>(
             sandbox,
@@ -385,27 +375,14 @@ export function makeT3ProviderDriver(
               sandbox,
               {
                 method: "POST",
-                path: "/api/orchestration/dispatch",
-                payload: buildRuntimeProjectCreateCommand(ctx, metadata.workspaceRoot, metadata.createdAt),
+                path: "/api/projects/mutate",
+                payload: buildRuntimeProjectCreateCommand(ctx, metadata.workspaceRoot),
               },
               signal,
             );
           }
           if (!shell.threads.some((thread) => thread.id === threadId)) {
-            await dependencies.requestEnvironment(
-              sandbox,
-              {
-                method: "POST",
-                path: "/api/orchestration/dispatch",
-                payload: buildRuntimeThreadCreateCommand(
-                  ctx,
-                  engine,
-                  metadata.createdAt,
-                  metadata.runtimeMode,
-                ),
-              },
-              signal,
-            );
+            await dependencies.dispatch(sandbox, buildRuntimeThreadCreateCommand(ctx, engine, metadata.runtimeMode), signal);
           }
           return true;
         });
@@ -492,7 +469,7 @@ export function makeT3ProviderDriver(
             : "The provider runtime turn was interrupted";
           return {
             status: "failed",
-            summary: context.redact.text(snapshot.thread.session?.lastError?.trim() || fallback),
+            summary: context.redact.text(snapshot.thread.latestTurn?.error?.trim() || snapshot.thread.session?.lastError?.trim() || fallback),
             events,
           };
         }
@@ -520,27 +497,16 @@ export function makeT3ProviderDriver(
       try {
         const signal = request.signal ?? AbortSignal.timeout(30_000);
         const dispatched = await withDriverRuntime(dependencies, request.session.runtime, request.metadata, request.threadId, signal, async (sandbox) => {
-          await dependencies.requestEnvironment(
-            sandbox,
+          await dependencies.dispatch(sandbox, buildRuntimeTurnStartCommand(
             {
-              method: "POST",
-              path: "/api/orchestration/dispatch",
-              payload: buildRuntimeTurnStartCommand(
-                {
-                  runId: request.runId,
-                  threadId: request.threadId,
-                  model: input.model,
-                  reasoningEffort: input.reasoningEffort,
-                },
-                engine,
-                input.text,
-                steerCreatedAt(request.metadata),
-                false,
-                steerRuntimeMode(request.metadata),
-              ),
+              runId: request.runId,
+              threadId: request.threadId,
+              model: input.model,
+              reasoningEffort: input.reasoningEffort,
             },
-            signal,
-          );
+            engine,
+            input.text,
+          ), signal);
           return true;
         });
         if (!dispatched) {
@@ -570,16 +536,12 @@ export function makeT3ProviderDriver(
         );
         if (!result) return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         const { sandbox, snapshot } = result;
-        await dependencies.requestEnvironment(
+        // Only a run still going can be stopped; a settled thread has nothing to cancel.
+        const turn = snapshot.thread.latestTurn;
+        if (turn?.state !== "running") return { status: "ok" };
+        await dependencies.dispatch(
           sandbox,
-          {
-            method: "POST",
-            path: "/api/orchestration/dispatch",
-            payload: buildRuntimeTurnInterruptCommand(
-              currentSession.nativeSessionId,
-              snapshot.thread.latestTurn?.turnId,
-            ),
-          },
+          buildRuntimeTurnInterruptCommand(currentSession.nativeSessionId, turn.turnId),
           signal,
         );
         return { status: "ok" };

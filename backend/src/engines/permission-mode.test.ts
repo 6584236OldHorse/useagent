@@ -9,7 +9,7 @@ import {
   readOnlyRefusal,
   runtimeModeFor,
 } from "./permission-mode";
-import { buildRuntimeTurnStartCommand } from "./runtime-orchestration";
+import { buildRuntimeThreadCreateCommand, buildRuntimeTurnStartCommand } from "./runtime-orchestration";
 
 describe("permission modes", () => {
   test("the runtime is steered with the run's own mode; read only rides approval-required", () => {
@@ -18,17 +18,11 @@ describe("permission modes", () => {
     expect(runtimeModeFor("auto-accept-edits")).toBe("auto-accept-edits");
     expect(runtimeModeFor("auto")).toBe("auto");
     expect(runtimeModeFor("read-only")).toBe("approval-required");
-    // Full access reaches the runtime's turn start as full access: nothing waits.
-    const command = buildRuntimeTurnStartCommand(
-      { runId: "run-1", threadId: "thread-1", model: undefined },
-      "codex",
-      "hello",
-      "2026-09-13T00:00:00.000Z",
-      true,
-      runtimeModeFor("full-access"),
-    );
-    expect(command.runtimeMode).toBe("full-access");
-    expect((command.bootstrap as { createThread: { runtimeMode: string } }).createThread.runtimeMode).toBe("full-access");
+    // Full access reaches the runtime's thread as full access: nothing waits. The
+    // turn's own message carries no mode; the runtime runs the thread's.
+    const ctx = { runId: "run-1", threadId: "thread-1", model: undefined };
+    expect(buildRuntimeThreadCreateCommand(ctx, "codex", runtimeModeFor("full-access")).runtimeMode).toBe("full-access");
+    expect(buildRuntimeTurnStartCommand(ctx, "codex", "hello")).not.toHaveProperty("runtimeMode");
   });
 
   test("a read-only run refuses commands, file changes and unknown requests, and lets reads through", () => {

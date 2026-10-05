@@ -52,7 +52,7 @@ describe("outer run inactivity watchdog", () => {
   test("step, delta, native frame, and tool heartbeat feed the canonical touch signal", async () => {
     const [worker, runtime] = await Promise.all([
       readFile(new URL("../worker.ts", import.meta.url), "utf8"),
-      readFile(new URL("../engines/runtime-adapter.ts", import.meta.url), "utf8"),
+      readFile(new URL("../engines/runtime-turn-wait.ts", import.meta.url), "utf8"),
     ]);
     expect(worker).toContain("createSlidingInactivityWatchdog(");
     expect(worker).toContain("subscribeNative(runId, activity.touch)");

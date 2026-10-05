@@ -13,8 +13,8 @@ interface Dispatched {
   readonly modelSelection: unknown;
 }
 
-/** The runtime request payload, narrowed by its `type`; the selection is
- *  compared whole by the assertions. */
+/** The dispatched command, narrowed by its `type`; the selection is compared
+ *  whole by the assertions. */
 function recorded(payload: Readonly<Record<string, unknown>> | undefined): Dispatched {
   const type = payload?.type;
   if (typeof type !== "string") throw new Error("dispatch payload without a type");
@@ -26,16 +26,13 @@ function recordingDriver(engine: "codex" | "claude") {
   const driver = makeT3ProviderDriver(engine, {
     resolveRuntime: async () => ({ id: "cube-t3-effort" }) as SandboxHandle,
     requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest) => {
-      if (request.path === "/api/orchestration/shell") {
-        // No project or thread yet: start creates both.
-        return { projects: [], threads: [] } as T;
-      }
-      if (request.method === "POST") {
-        dispatched.push(recorded(request.payload));
-        // The shell poll after each create sees the created row.
-        return {} as T;
-      }
+      // No project or thread yet: start creates both.
+      if (request.path === "/api/orchestration/shell") return { projects: [], threads: [] } as T;
       return {} as T;
+    },
+    dispatch: async (_sandbox, command) => {
+      dispatched.push(recorded(command));
+      return { sequence: dispatched.length };
     },
   });
   const session: HarnessSession = {
@@ -60,7 +57,7 @@ describe("T3 driver reasoning effort dispatch", () => {
       metadata: { threadId: "thread-1" },
     });
     expect(result).toEqual({ status: "ok" });
-    expect(dispatched.map((command) => command.type)).toEqual(["thread.turn.start"]);
+    expect(dispatched.map((command) => command.type)).toEqual(["message.dispatch"]);
     expect(dispatched[0]?.modelSelection).toEqual({
       instanceId: "codex",
       model: "gpt-5.6-luna",

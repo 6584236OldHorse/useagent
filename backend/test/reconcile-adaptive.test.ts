@@ -6,7 +6,6 @@ import type { EngineId } from "../src/db/schema";
 import type { HarnessInterimEvent } from "../src/engines/types";
 import type { PermissionMode } from "@useagent/agent-client/wire";
 import { approvalEventId, type RuntimeApprovalReplyDependencies } from "../src/engines/runtime-approval";
-import type { RuntimeThreadSnapshot } from "../src/engines/runtime-orchestration";
 import type { SandboxHandle } from "../src/sandboxes/provider";
 import { acceptRunCommand } from "../src/commands";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../src/commands/cancel";
@@ -753,30 +752,26 @@ describe("read-only refusal across a restart", () => {
   /** The runtime as the reply path sees it: the request pending on the thread, and every dispatch it receives. */
   function fakeRuntime() {
     const dispatched: Record<string, unknown>[] = [];
-    const snapshot: RuntimeThreadSnapshot = {
+    const pending = {
       snapshotSequence: 1,
-      thread: {
-        id: "ses_x",
-        latestTurn: { turnId: "turn-1", state: "running", assistantMessageId: null },
+      projection: {
+        thread: { id: "ses_x", runtimeMode: "approval-required", activeProviderThreadId: null },
+        runs: [{ id: "turn-1", ordinal: 1, userMessageId: "skynet-message-turn-1", status: "running", providerThreadId: null, requestedAt: "x", startedAt: null, completedAt: null }],
         messages: [],
-        activities: [{
-          id: "activity-1",
-          tone: "approval",
-          kind: "approval.requested",
-          summary: "Approval requested",
-          payload: { requestId, requestKind: "file-change", detail: "write build/out" },
-          turnId: "turn-1",
-        }],
-        session: null,
+        turnItems: [{ id: "item-1", threadId: "ses_x", runId: "turn-1", type: "approval_request", status: "waiting", title: null, updatedAt: "x", ordinal: 1, requestId, requestKind: "file-change", prompt: "write build/out" }],
+        providerSessions: [],
+        providerThreads: [],
+        runtimeRequests: [{ id: requestId, kind: "file-change", status: "pending" }],
+        subagents: [],
       },
     };
     const approvals: Partial<RuntimeApprovalReplyDependencies> = {
       resolveSandbox: async () => ({} as SandboxHandle),
-      request: (async (_sandbox: SandboxHandle, req: { method: string; payload?: Record<string, unknown> }) => {
-        if (req.method === "GET") return snapshot;
-        dispatched.push({ ...req.payload });
-        return {};
-      }) as unknown as RuntimeApprovalReplyDependencies["request"],
+      request: (async () => pending) as unknown as RuntimeApprovalReplyDependencies["request"],
+      dispatch: async (_sandbox, command) => {
+        dispatched.push({ ...command });
+        return { sequence: 2 };
+      },
     };
     return { approvals, dispatched };
   }
@@ -800,7 +795,7 @@ describe("read-only refusal across a restart", () => {
     const first = await runDueReconciles(probe, async () => {}, approvals);
     expect(first.retried).toBe(1);
     expect(dispatched).toEqual([
-      expect.objectContaining({ type: "thread.approval.respond", threadId: "ses_x", requestId, decision: "decline" }),
+      expect.objectContaining({ type: "runtime-request.respond", threadId: "ses_x", requestId, decision: "decline" }),
     ]);
     const [receipt] = await db
       .select()

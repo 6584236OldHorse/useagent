@@ -1,290 +1,187 @@
 import { describe, expect, test } from "bun:test";
-import {
-  buildRuntimeThreadSubscriptionRequest,
-  decodeRuntimeThreadStreamItems,
-  followRuntimeThreadSnapshots,
-  type RuntimeThreadStreamItem,
-} from "./runtime-event-stream";
+import type { SandboxHandle } from "../sandboxes/provider";
+import { dispatchRuntimeCommand } from "./runtime-dispatch";
+import { buildRuntimeThreadSubscription, followRuntimeThread } from "./runtime-event-stream";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
+import type { RuntimeSocket } from "./runtime-rpc-socket";
+import { v2Message, v2Projection, v2Run } from "./runtime-v2.test-support";
 
-function snapshot(sequence: number): RuntimeThreadSnapshot {
-  return {
-    snapshotSequence: sequence,
-    thread: {
-      id: "skynet-thread-1",
-      latestTurn: null,
-      messages: [],
-      activities: [],
-      session: null,
-    },
-  };
+const THREAD = "skynet-thread-thread-1";
+const sandbox = { id: "sandbox-1" } as SandboxHandle;
+
+type Batch = readonly unknown[];
+
+interface ScriptedSocket {
+  /** The subscription payload each socket was opened with. */
+  readonly subscriptions: unknown[];
+  readonly calls: unknown[];
+  readonly open: Parameters<typeof followRuntimeThread>[0]["open"];
 }
 
-describe("T3 native thread event stream", () => {
-  test("builds the Effect RPC subscribe request with a replay watermark", () => {
-    expect(buildRuntimeThreadSubscriptionRequest("skynet-thread-1", 41)).toEqual({
-      _tag: "Request",
-      id: 1,
-      tag: "orchestration.subscribeThread",
-      payload: {
-        threadId: "skynet-thread-1",
-        afterSequence: 41,
-        turnLimit: 2,
-        requestCompletionMarker: true,
-      },
-      headers: [],
-    });
-  });
-
-  test("requests an authoritative websocket snapshot when no replay watermark is supplied", () => {
-    expect(buildRuntimeThreadSubscriptionRequest("skynet-thread-1")).toEqual({
-      _tag: "Request",
-      id: 1,
-      tag: "orchestration.subscribeThread",
-      payload: {
-        threadId: "skynet-thread-1",
-        turnLimit: 2,
-        requestCompletionMarker: true,
-      },
-      headers: [],
-    });
-  });
-
-  test("decodes only thread stream items from the matching RPC chunk", () => {
-    const items = decodeRuntimeThreadStreamItems(JSON.stringify({
-      _tag: "Chunk",
-      requestId: 1,
-      values: [
-        {
-          kind: "snapshot",
-          snapshot: {
-            snapshotSequence: 42,
-            thread: {
-              id: "skynet-thread-1",
-              latestTurn: null,
-              messages: [],
-              activities: [],
-              session: null,
-            },
-          },
-        },
-        {
-          kind: "event",
-          event: {
-            sequence: 43,
-            aggregateKind: "thread",
-            aggregateId: "skynet-thread-1",
-          },
-        },
-        { kind: "synchronized" },
-        { kind: "snapshot", snapshot: { snapshotSequence: 44 } },
-        { kind: "event", event: { sequence: 45, aggregateId: "skynet-thread-1" } },
-        { kind: "unrelated" },
-      ],
-    }));
-    expect(items.map(({ kind }) => kind)).toEqual([
-      "snapshot",
-      "event",
-      "synchronized",
-    ]);
-    expect(decodeRuntimeThreadStreamItems('{"_tag":"Exit","requestId":1,"exit":{"_tag":"Success"}}')).toEqual([]);
-  });
-
-  test("serializes a delayed refresh snapshot before a newer websocket snapshot", async () => {
-    const applied: number[] = [];
-    const lowerStarted = Promise.withResolvers<void>();
-    const releaseLower = Promise.withResolvers<void>();
-
-    await followRuntimeThreadSnapshots({
-      sandbox: {} as never,
-      threadId: "skynet-thread-1",
-      initialSequence: 0,
-      signal: new AbortController().signal,
-      readSnapshot: async () => snapshot(1),
-      applySnapshot: async (value) => {
-        if (value.snapshotSequence === 1) {
-          lowerStarted.resolve();
-          await releaseLower.promise;
+/** Each entry is one socket: the batches its subscription delivers, then how it ends. */
+function scriptedSockets(sockets: ReadonlyArray<{ readonly batches: readonly Batch[]; readonly end?: Error }>): ScriptedSocket {
+  const subscriptions: unknown[] = [];
+  const calls: unknown[] = [];
+  let index = 0;
+  const open = async () => {
+    const script = sockets[index++];
+    if (!script) throw new Error("no more sockets");
+    const socket: RuntimeSocket = {
+      async stream(_tag, payload, onValues) {
+        subscriptions.push(payload);
+        for (const batch of script.batches) {
+          if (!(await onValues(batch))) return;
         }
-        applied.push(value.snapshotSequence);
-        return value.snapshotSequence !== 2;
+        if (script.end) throw script.end;
       },
-      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
-        expect(await onItem({
-          kind: "event",
-          event: { sequence: 1, aggregateKind: "thread", aggregateId: "skynet-thread-1" },
-        })).toBe(true);
-        await lowerStarted.promise;
-        const newer = onItem({ kind: "snapshot", snapshot: snapshot(2) });
-        releaseLower.resolve();
-        expect(await newer).toBe(false);
+      async call(_tag, payload) {
+        calls.push(payload);
+        return { sequence: 99 };
       },
-    });
+      close() {},
+    };
+    return socket;
+  };
+  return { subscriptions, calls, open: open as never };
+}
 
-    expect(applied).toEqual([1, 2]);
+const snapshot = (sequence: number, runs = [v2Run({ id: "r0" })]) =>
+  ({ kind: "snapshot", snapshotSequence: sequence, projection: v2Projection({ runs }) });
+const event = (sequence: number, type: string, payload: unknown) =>
+  ({ kind: "event", sequence, event: { type, threadId: THREAD, payload } });
+const running = (id: string, ordinal: number) => v2Run({ id, ordinal, status: "running", completedAt: null });
+const settled = (id: string, ordinal: number) => v2Run({ id, ordinal, status: "completed" });
+
+describe("runtime thread follower", () => {
+  test("subscribes for a bounded snapshot with a completion marker, resuming after a cursor", () => {
+    expect(buildRuntimeThreadSubscription(THREAD)).toEqual({
+      threadId: THREAD, acceptBoundedSnapshot: true, requestCompletionMarker: true,
+    });
+    expect(buildRuntimeThreadSubscription(THREAD, 41)).toEqual({
+      threadId: THREAD, afterSequence: 41, acceptBoundedSnapshot: true, requestCompletionMarker: true,
+    });
   });
 
-  test("does not apply a queued snapshot after a terminal snapshot stops following", async () => {
-    const applied: number[] = [];
-    const terminalStarted = Promise.withResolvers<void>();
-    const releaseTerminal = Promise.withResolvers<void>();
-
-    await followRuntimeThreadSnapshots({
-      sandbox: {} as never,
-      threadId: "skynet-thread-1",
-      initialSequence: 0,
-      signal: new AbortController().signal,
-      readSnapshot: async () => {
-        throw new Error("unexpected refresh");
-      },
-      applySnapshot: async (value) => {
-        applied.push(value.snapshotSequence);
-        terminalStarted.resolve();
-        await releaseTerminal.promise;
-        return false;
-      },
-      subscribe: async (
-        _sandbox,
-        _threadId,
-        _after,
-        _signal,
-        onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-      ) => {
-        const terminal = onItem({ kind: "snapshot", snapshot: snapshot(1) });
-        await terminalStarted.promise;
-        const late = onItem({ kind: "snapshot", snapshot: snapshot(2) });
-        releaseTerminal.resolve();
-        expect(await terminal).toBe(false);
-        expect(await late).toBe(false);
-      },
-    });
-
-    expect(applied).toEqual([1]);
-  });
-
-  test.each([true, false])("settles a pending refresh before a socket failure (terminal=%s)", async (terminal) => {
-    const applied: number[] = [];
-    const readStarted = Promise.withResolvers<void>();
-    const releaseRead = Promise.withResolvers<void>();
-    const socketError = new Error("socket closed");
-    const following = followRuntimeThreadSnapshots({
-      sandbox: {} as never,
-      threadId: "skynet-thread-1",
-      initialSequence: 0,
-      signal: new AbortController().signal,
-      readSnapshot: async () => {
-        readStarted.resolve();
-        await releaseRead.promise;
-        return snapshot(1);
-      },
-      applySnapshot: async (value) => {
-        applied.push(value.snapshotSequence);
-        return !terminal;
-      },
-      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
-        await onItem({
-          kind: "event",
-          event: { sequence: 1, aggregateKind: "thread", aggregateId: "skynet-thread-1" },
+  test("dispatches the turn once caught up, on the subscribed socket, and follows it to the end", async () => {
+    const sockets = scriptedSockets([{ batches: [
+      [snapshot(10)],
+      [{ kind: "synchronized" }],
+      [event(44, "run.created", running("r1", 2))],
+      [event(57, "message.updated", v2Message({ id: "m1", runId: "r1", text: "Hi" }))],
+      [event(90, "run.updated", settled("r1", 2))],
+    ] }]);
+    const order: string[] = [];
+    const views: RuntimeThreadSnapshot[] = [];
+    await followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      start: async () => {
+        order.push("start");
+        await dispatchRuntimeCommand(sandbox, { type: "message.dispatch", commandId: "c1", threadId: THREAD }, new AbortController().signal, {
+          open: async () => { throw new Error("dispatch must reuse the turn socket"); },
         });
-        await readStarted.promise;
-        releaseRead.resolve();
-        throw socketError;
+      },
+      applySnapshot: async (view) => {
+        order.push(`view:${view.snapshotSequence}`);
+        views.push(view);
+        return !(view.thread.latestTurn?.turnId === "r1" && view.thread.latestTurn.state === "completed");
       },
     });
-
-    if (terminal) await expect(following).resolves.toBeUndefined();
-    else await expect(following).rejects.toBe(socketError);
-    expect(applied).toEqual([1]);
+    expect(order).toEqual(["view:10", "start", "view:44", "view:57", "view:90"]);
+    expect(sockets.calls).toEqual([{ type: "message.dispatch", commandId: "c1", threadId: THREAD }]);
+    expect(views.at(-1)?.thread.messages.map((message) => message.text)).toEqual(["Hi"]);
   });
 
-  test("rejects an unsolicited successful stream exit after only a running snapshot", async () => {
-    await expect(followRuntimeThreadSnapshots({
-      sandbox: {} as never,
-      threadId: "skynet-thread-1",
-      initialSequence: 0,
-      signal: new AbortController().signal,
-      readSnapshot: async () => {
-        throw new Error("unexpected refresh");
-      },
-      applySnapshot: async () => true,
-      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
-        expect(await onItem({ kind: "snapshot", snapshot: snapshot(1) })).toBe(true);
-        // Models an unsolicited Effect RPC Exit Success.
-      },
-    })).rejects.toThrow("ended before a terminal snapshot");
-  });
-
-  test("applies events in place and reads a full snapshot only across a gap or an event it cannot apply", async () => {
-    const activity = (id: string, kind = "tool.started") => ({
-      id, tone: "tool" as const, kind, summary: id, payload: {}, turnId: "turn-1",
-    });
-    const withActivities = (sequence: number, ids: readonly string[]): RuntimeThreadSnapshot => ({
-      ...snapshot(sequence),
-      thread: { ...snapshot(sequence).thread, activities: ids.map((id) => activity(id)) },
-    });
-    const appended = (sequence: number, id: string, kind?: string): RuntimeThreadStreamItem => ({
-      kind: "event",
-      event: {
-        sequence, aggregateKind: "thread", aggregateId: "skynet-thread-1",
-        type: "thread.activity-appended", payload: { threadId: "skynet-thread-1", activity: activity(id, kind) },
-      },
-    });
-    const applied: string[] = [];
-    const readStarted = Promise.withResolvers<void>();
-    const releaseRead = Promise.withResolvers<void>();
-    let reads = 0;
-    let readMs = 0;
-    const ended = Promise.withResolvers<void>();
-
-    await followRuntimeThreadSnapshots({
-      sandbox: {} as never,
-      threadId: "skynet-thread-1",
-      initialSequence: 9,
-      signal: new AbortController().signal,
-      readSnapshot: async () => {
-        reads += 1;
-        if (reads === 2) return { ...withActivities(17, ["a-11", "a-12", "a-13", "a-14", "a-16"]) };
-        readStarted.resolve();
-        await releaseRead.promise;
-        // The runtime's snapshot holds a-12, which the stream never delivered.
-        return withActivities(13, ["a-11", "a-12", "a-13"]);
-      },
-      onRead: (ms) => { readMs += ms; },
-      applySnapshot: async (value) => {
-        applied.push(`${value.snapshotSequence}:${value.thread.activities.map(({ id }) => id).join(",")}`);
-        if (value.snapshotSequence === 17) ended.resolve();
-        return value.snapshotSequence !== 17;
-      },
-      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
-        expect(await onItem({ kind: "snapshot", snapshot: withActivities(10, []) })).toBe(true);
-        await onItem(appended(11, "a-11"));
-        // 12 never arrives: a gap before anything but a tool update reads the thread.
-        await onItem(appended(13, "a-13"));
-        await readStarted.promise;
-        // Delivered while that read is in flight: it waits and applies on top of it.
-        await onItem(appended(14, "a-14"));
-        releaseRead.resolve();
-        await Bun.sleep(5);
-        // The runtime's stream drops superseded tool updates, so this jump is not a gap.
-        await onItem(appended(16, "a-16", "tool.updated"));
-        // A session change is not applied in place.
-        await onItem({ kind: "event", event: {
-          sequence: 17, aggregateKind: "thread", aggregateId: "skynet-thread-1",
-          type: "thread.session-set", payload: { threadId: "skynet-thread-1", session: { status: "ready" } },
-        } });
-        await ended.promise;
-      },
-    });
-
-    expect(reads).toBe(2);
-    expect(readMs).toBeGreaterThan(0);
-    expect(applied).toEqual([
-      "10:",
-      "11:a-11",
-      "13:a-11,a-12,a-13",
-      "14:a-11,a-12,a-13,a-14",
-      "16:a-11,a-12,a-13,a-14,a-16",
-      "17:a-11,a-12,a-13,a-14,a-16",
+  test("a dropped socket resumes from the applied sequence without repeating anything", async () => {
+    const sockets = scriptedSockets([
+      { batches: [[snapshot(10), { kind: "synchronized" }], [event(20, "run.created", running("r1", 2))]], end: new Error("socket lost") },
+      { batches: [[event(20, "run.created", running("r1", 2)), event(31, "run.updated", settled("r1", 2)), { kind: "synchronized" }]] },
     ]);
+    const sequences: number[] = [];
+    let starts = 0;
+    await followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      start: async () => { starts += 1; },
+      applySnapshot: async (view) => {
+        sequences.push(view.snapshotSequence);
+        return !(view.thread.latestTurn?.turnId === "r1" && view.thread.latestTurn.state === "completed");
+      },
+    });
+    expect(starts).toBe(1);
+    expect(sequences).toEqual([10, 20, 31]);
+    expect(sockets.subscriptions[1]).toMatchObject({ afterSequence: 20 });
+  });
+
+  test("a resume the runtime answers with a fresh snapshot replaces the state", async () => {
+    const sockets = scriptedSockets([
+      { batches: [[snapshot(10), { kind: "synchronized" }]], end: new Error("socket lost") },
+      { batches: [[snapshot(400, [settled("r1", 2)]), { kind: "synchronized" }]] },
+    ]);
+    const sequences: number[] = [];
+    await followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      applySnapshot: async (view) => {
+        sequences.push(view.snapshotSequence);
+        return view.thread.latestTurn?.turnId !== "r1";
+      },
+    });
+    expect(sequences).toEqual([10, 400]);
+  });
+
+  test("the turn's own dispatch failure ends the follow without a resume", async () => {
+    const sockets = scriptedSockets([{ batches: [[snapshot(10), { kind: "synchronized" }]] }]);
+    const failure = new Error("refused");
+    await expect(followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      start: async () => { throw failure; },
+      applySnapshot: async () => true,
+    })).rejects.toBe(failure);
+    expect(sockets.subscriptions).toHaveLength(1);
+  });
+
+  test("a projection failure ends the follow without a resume", async () => {
+    const sockets = scriptedSockets([{ batches: [[snapshot(10), { kind: "synchronized" }]] }]);
+    const failure = new Error("turn failed");
+    await expect(followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      applySnapshot: async () => { throw failure; },
+    })).rejects.toBe(failure);
+  });
+
+  test("gives up after repeated reconnects that make no progress", async () => {
+    const lost = new Error("socket lost");
+    const sockets = scriptedSockets([
+      { batches: [[snapshot(10), { kind: "synchronized" }]], end: lost },
+      { batches: [], end: lost },
+      { batches: [], end: lost },
+      { batches: [], end: lost },
+    ]);
+    await expect(followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      applySnapshot: async () => true,
+    })).rejects.toBe(lost);
+    expect(sockets.subscriptions).toHaveLength(4);
+  });
+
+  test("a reconnect that only resends the same snapshot is not progress", async () => {
+    const lost = new Error("socket lost");
+    const same = { batches: [[snapshot(10), { kind: "synchronized" }]], end: lost };
+    const sockets = scriptedSockets([same, same, same, same, same]);
+    await expect(followRuntimeThread({
+      sandbox, threadId: THREAD, signal: new AbortController().signal, open: sockets.open, resumeDelayMs: 0,
+      applySnapshot: async () => true,
+    })).rejects.toBe(lost);
+    expect(sockets.subscriptions).toHaveLength(4);
+  });
+
+  test("an aborted follow resolves quietly", async () => {
+    const controller = new AbortController();
+    const sockets = scriptedSockets([{ batches: [[snapshot(10), { kind: "synchronized" }]], end: new Error("socket lost") }]);
+    await followRuntimeThread({
+      sandbox, threadId: THREAD, signal: controller.signal, open: sockets.open, resumeDelayMs: 0,
+      applySnapshot: async () => {
+        controller.abort();
+        return true;
+      },
+    });
   });
 });

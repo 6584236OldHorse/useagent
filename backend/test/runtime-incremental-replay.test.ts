@@ -6,178 +6,115 @@ import { db } from "../src/db/client";
 import { providerEvents, runs } from "../src/db/schema";
 import { translateOpenCode, type OpenCodeFrame, type OpenCodeStep } from "../src/engines/opencode-canonical";
 import { waitForRuntimeTurn } from "../src/engines/runtime-adapter";
+import { followRuntimeThread } from "../src/engines/runtime-event-stream";
 import { activityRevisions } from "../src/engines/turn-projector";
-import type { RuntimeThreadStreamItem } from "../src/engines/runtime-event-stream";
-import {
-  runtimeThreadId,
-  runtimeUserMessageId,
-  type RuntimeActivity,
-  type RuntimeThreadSnapshot,
-} from "../src/engines/runtime-orchestration";
+import { runtimeThreadId, runtimeUserMessageId } from "../src/engines/runtime-orchestration";
+import type { RuntimeSocket } from "../src/engines/runtime-rpc-socket";
+import { runtimeThreadView } from "../src/engines/runtime-v2-view";
+import type { V2Projection, V2ThreadSnapshot } from "../src/engines/runtime-v2-wire";
 import type { EmitStep, EngineRunContext } from "../src/engines/types";
 import { getNativeFramesSince } from "../src/runs/native-events";
 import { drainProviderEvents } from "../src/runs/provider-events";
 import type { SandboxHandle } from "../src/sandboxes/provider";
 import { createSecretRedactor } from "../src/secrets/redact";
 
-// One Codex turn in the event shapes of the runtime's pinned contract
-// (packages/contracts/src/orchestration.ts at 90dc3ebbb74b): the user message,
-// the session coming alive, a command with streamed output, a usage frame, a
-// plan revised under its own id, the buffered answer, the checkpoint and the
-// session going idle. Sequence 12 (thread.turn-start-requested) is not a thread
-// detail event, so the stream never delivers it.
+// One Codex turn in the event shapes of the runtime's orchestration protocol 2
+// (packages/contracts/src/orchestrationV2.ts): the user message, the run, a
+// command running then done, the context in use, a plan revised under its own
+// id, the answer streaming then final, and the run completing. Sequences are
+// global across the runtime, so the thread's own are sparse.
 type Fields = Record<string, unknown>;
 interface StreamEvent {
   readonly sequence: number;
   readonly type: string;
-  readonly occurredAt: string;
   readonly payload: Fields;
-  readonly delivered: boolean;
 }
 
 const at = (second: number) => `2026-10-02T10:00:${String(second).padStart(2, "0")}.000Z`;
+const ARRAYS: Readonly<Record<string, keyof V2Projection>> = {
+  "run.created": "runs", "run.updated": "runs", "message.updated": "messages", "turn-item.updated": "turnItems",
+  "provider-thread.updated": "providerThreads", "provider-session.updated": "providerSessions",
+};
 
 function codexTurn(threadId: string, userMessageId: string) {
-  const session = (status: string, activeTurnId: string | null, second: number) => ({
-    threadId, status, providerName: "codex", runtimeMode: "full-access", activeTurnId, lastError: null, updatedAt: at(second),
+  const item = (id: string, type: string, status: string, second: number, ordinal: number, extra: Fields = {}) => ({
+    id, threadId, runId: "run-1", type, status, title: null, ordinal, updatedAt: at(second), startedAt: at(14), completedAt: null, ...extra,
   });
-  const tool = (id: string, kind: string, sequence: number, second: number, extra: Fields = {}): RuntimeActivity => ({
-    id, tone: "tool", kind, summary: kind === "tool.started" ? "Run command started" : "Run command",
-    payload: { itemType: "command_execution", toolCallId: "call-1", title: "Run command", detail: "ls", ...extra },
-    turnId: "turn-1", sequence, ...{ createdAt: at(second) },
+  const run = (status: string, second: number) => ({
+    id: "run-1", threadId, ordinal: 2, userMessageId, status, providerThreadId: "pt-1",
+    requestedAt: at(11), startedAt: at(13), completedAt: status === "completed" ? at(second) : null,
   });
-  const plan = (status: string, sequence: number, second: number): RuntimeActivity => ({
-    id: "evt-plan", tone: "info", kind: "turn.plan.updated", summary: "Plan updated",
-    payload: { plan: [{ step: "List the files", status }] }, turnId: "turn-1", sequence, ...{ createdAt: at(second) },
+  const answer = (text: string, streaming: boolean, second: number) => ({
+    id: "msg-1", threadId, runId: "run-1", role: "assistant", text, streaming, createdAt: at(20), updatedAt: at(second), attachments: [],
   });
-  const base: RuntimeThreadSnapshot = {
+  const base: V2ThreadSnapshot = {
     snapshotSequence: 10,
-    thread: {
-      id: threadId,
-      latestTurn: {
-        turnId: "turn-prior", state: "completed", requestedAt: at(1), startedAt: at(1), completedAt: at(3),
-        assistantMessageId: "msg-prior",
-      },
+    projection: {
+      thread: { id: threadId, runtimeMode: "full-access", activeProviderThreadId: "pt-1" },
+      runs: [{ id: "run-prior", threadId, ordinal: 1, userMessageId: "skynet-message-run-prior", status: "completed", providerThreadId: "pt-1", requestedAt: at(1), startedAt: at(1), completedAt: at(3) }],
       messages: [
-        { id: "skynet-message-run-prior", role: "user", text: "hello", turnId: null, streaming: false, createdAt: at(1) },
-        { id: "msg-prior", role: "assistant", text: "Hi there.", turnId: "turn-prior", streaming: false, createdAt: at(2) },
+        { id: "skynet-message-run-prior", threadId, runId: "run-prior", role: "user", text: "hello", streaming: false, createdAt: at(1), updatedAt: at(1), attachments: [] },
+        { id: "msg-prior", threadId, runId: "run-prior", role: "assistant", text: "Hi there.", streaming: false, createdAt: at(2), updatedAt: at(2), attachments: [] },
       ],
-      activities: [{ ...tool("evt-prior", "tool.completed", 1, 2), turnId: "turn-prior" }],
-      session: session("ready", null, 3),
+      turnItems: [{ ...item("i-prior", "command_execution", "completed", 2, 0, { input: "pwd" }), runId: "run-prior" }],
+      providerSessions: [{ id: "ps-1", status: "ready", lastError: null }],
+      providerThreads: [{ id: "pt-1", providerSessionId: "ps-1", appThreadId: threadId }],
+      runtimeRequests: [],
+      subagents: [],
     },
   };
-  const event = (sequence: number, type: string, payload: Fields, delivered = true): StreamEvent => ({
-    sequence, type, occurredAt: at(sequence), payload: { threadId, ...payload }, delivered,
-  });
-  const appended = (sequence: number, activity: RuntimeActivity) => event(sequence, "thread.activity-appended", { activity });
-  const message = (sequence: number, fields: Fields) => event(sequence, "thread.message-sent", {
-    messageId: "msg-1", role: "assistant", turnId: "turn-1", createdAt: at(sequence), updatedAt: at(sequence), ...fields,
-  });
   const events: StreamEvent[] = [
-    message(11, { messageId: userMessageId, role: "user", text: "List the files", turnId: null, streaming: false }),
-    event(12, "thread.turn-start-requested", { messageId: userMessageId, createdAt: at(11) }, false),
-    event(13, "thread.session-set", { session: session("running", "turn-1", 13) }),
-    appended(14, tool("evt-14", "tool.started", 2, 14, { status: "inProgress" })),
-    appended(15, tool("evt-15", "tool.updated", 3, 15, { status: "inProgress", data: { item: { aggregatedOutput: "a.ts\n" } } })),
-    appended(16, tool("evt-16", "tool.updated", 4, 16, { status: "inProgress", data: { item: { aggregatedOutput: "a.ts\nb.ts\nc.ts\n" } } })),
-    appended(17, tool("evt-17", "tool.completed", 5, 17, { status: "completed", data: { item: { aggregatedOutput: "a.ts\nb.ts\nc.ts\n", exitCode: 0 } } })),
-    appended(18, {
-      id: "evt-18", tone: "info", kind: "context-window.updated", summary: "Context window updated",
-      payload: { usedTokens: 18315, maxTokens: 258400, inputTokens: 18282, cachedInputTokens: 17152, outputTokens: 33 },
-      turnId: "turn-1", sequence: 6,
-    }),
-    appended(19, plan("inProgress", 7, 19)),
-    message(20, { text: "There are three files: ", streaming: true }),
-    appended(21, plan("completed", 8, 21)),
-    message(22, { text: "a.ts, b.ts and c.ts.", streaming: true }),
-    message(23, { text: "", streaming: false }),
-    event(24, "thread.turn-diff-completed", {
-      turnId: "turn-1", checkpointTurnCount: 2, checkpointRef: "refs/t3/2", status: "ready", files: [],
-      assistantMessageId: "msg-1", completedAt: at(24),
-    }),
-    event(25, "thread.session-set", { session: session("ready", null, 25) }),
+    { sequence: 11, type: "message.updated", payload: { id: userMessageId, threadId, runId: "run-1", role: "user", text: "List the files", streaming: false, createdAt: at(11), updatedAt: at(11), attachments: [] } },
+    { sequence: 13, type: "run.created", payload: run("running", 13) },
+    { sequence: 14, type: "provider-session.updated", payload: { id: "ps-1", status: "running", lastError: null } },
+    { sequence: 19, type: "turn-item.updated", payload: item("i-cmd", "command_execution", "running", 19, 1, { input: "ls" }) },
+    { sequence: 23, type: "turn-item.updated", payload: item("i-cmd", "command_execution", "completed", 23, 1, { input: "ls", exitCode: 0 }) },
+    { sequence: 31, type: "provider-thread.updated", payload: { id: "pt-1", providerSessionId: "ps-1", appThreadId: threadId, contextUsage: { usedTokens: 18315, maxTokens: 258400, inputTokens: 18282, cachedInputTokens: 17152, outputTokens: 33 } } },
+    { sequence: 32, type: "turn-item.updated", payload: item("i-plan", "todo_list", "running", 32, 2, { steps: [{ id: "1", text: "List the files", status: "running" }] }) },
+    { sequence: 40, type: "message.updated", payload: answer("There are three files: ", true, 40) },
+    { sequence: 41, type: "turn-item.updated", payload: item("i-plan", "todo_list", "completed", 41, 2, { steps: [{ id: "1", text: "List the files", status: "completed" }] }) },
+    { sequence: 47, type: "message.updated", payload: answer("There are three files: a.ts, b.ts and c.ts.", true, 47) },
+    { sequence: 48, type: "message.updated", payload: answer("There are three files: a.ts, b.ts and c.ts.", false, 48) },
+    { sequence: 52, type: "provider-session.updated", payload: { id: "ps-1", status: "ready", lastError: null } },
+    { sequence: 53, type: "run.updated", payload: run("completed", 53) },
   ];
   return { base, events };
 }
 
-/** The runtime's own thread snapshot after `through`: its projection rules, then its snapshot's row drops. */
-function runtimeSnapshot(base: RuntimeThreadSnapshot, events: readonly StreamEvent[], through: number): RuntimeThreadSnapshot {
-  type Turn = NonNullable<RuntimeThreadSnapshot["thread"]["latestTurn"]>;
-  const turns = new Map<string, Turn>([[base.thread.latestTurn!.turnId, base.thread.latestTurn!]]);
-  let latestTurnId = base.thread.latestTurn!.turnId;
-  let pendingRequestedAt: string | null = null;
-  let session = base.thread.session as Fields | null;
-  let messages = [...base.thread.messages] as Fields[];
-  let activities = [...base.thread.activities];
-  for (const { sequence, type, occurredAt, payload: p } of events) {
-    if (sequence > through) break;
-    if (type === "thread.turn-start-requested") pendingRequestedAt = p.createdAt as string;
-    if (type === "thread.activity-appended") {
-      const activity = p.activity as RuntimeActivity;
-      activities = [...activities.filter(({ id }) => id !== activity.id), activity];
-    }
-    if (type === "thread.message-sent") {
-      const existing = messages.find(({ id }) => id === p.messageId);
-      const next = {
-        id: p.messageId, role: p.role, turnId: p.turnId, streaming: p.streaming,
-        text: p.streaming ? `${existing?.text ?? ""}${p.text}` : (p.text as string) || (existing?.text ?? ""),
-        createdAt: existing?.createdAt ?? p.createdAt, updatedAt: p.updatedAt,
-      };
-      messages = existing ? messages.map((message) => message === existing ? next : message) : [...messages, next];
-      const turn = typeof p.turnId === "string" && p.role === "assistant" ? turns.get(p.turnId) : undefined;
-      if (turn) {
-        const settles = !p.streaming && !(session?.status === "running" && session.activeTurnId === p.turnId);
-        turns.set(turn.turnId, {
-          ...turn, assistantMessageId: p.messageId as string,
-          state: settles && turn.state === "running" ? "completed" : turn.state,
-          completedAt: settles ? turn.completedAt ?? (p.updatedAt as string) : turn.completedAt,
-        });
-      }
-    }
-    if (type === "thread.session-set") {
-      session = p.session as Fields;
-      const turnId = session.activeTurnId as string | null;
-      if (session.status === "running" && turnId) {
-        const requestedAt = pendingRequestedAt ?? occurredAt;
-        turns.set(turnId, turns.get(turnId) ?? {
-          turnId, state: "running", requestedAt, startedAt: requestedAt, completedAt: null, assistantMessageId: null,
-        });
-        pendingRequestedAt = null;
-        latestTurnId = turnId;
-      } else {
-        const settled = session.status === "ready" || session.status === "idle" ? "completed" : "interrupted";
-        for (const turn of turns.values()) {
-          if (turn.state === "running") turns.set(turn.turnId, { ...turn, state: settled, completedAt: session.updatedAt as string });
-        }
-      }
-    }
-    if (type === "thread.turn-diff-completed") {
-      const turn = turns.get(p.turnId as string)!;
-      const running = session?.status === "running" && session.activeTurnId === p.turnId;
-      turns.set(turn.turnId, {
-        ...turn, assistantMessageId: p.assistantMessageId as string, completedAt: p.completedAt as string,
-        state: running ? turn.state : "completed",
-      });
-      latestTurnId = turn.turnId;
-    }
+/** A reference reducer, independent of the plane's mirror: the thread after `through`. */
+function referenceSnapshot(base: V2ThreadSnapshot, events: readonly StreamEvent[], through: number): V2ThreadSnapshot {
+  const projection: Record<string, unknown> = structuredClone(base.projection);
+  for (const event of events) {
+    if (event.sequence > through) break;
+    const key = ARRAYS[event.type]!;
+    const list = projection[key] as Fields[];
+    const index = list.findIndex((entry) => entry.id === event.payload.id);
+    projection[key] = index === -1 ? [...list, event.payload] : list.with(index, event.payload);
   }
-  const createdAt = (value: object) => String((value as Fields).createdAt ?? "");
-  const order = (left: { id: string }, right: { id: string }) =>
-    createdAt(left).localeCompare(createdAt(right)) || left.id.localeCompare(right.id);
-  const call = (activity: RuntimeActivity) => `${activity.turnId}:${(activity.payload as Fields).toolCallId}`;
-  const completed = new Set(activities.filter(({ kind }) => kind === "tool.completed").map(call));
-  return {
-    snapshotSequence: through,
-    thread: {
-      ...base.thread,
-      latestTurn: turns.get(latestTurnId) ?? null,
-      messages: (messages as unknown as RuntimeThreadSnapshot["thread"]["messages"][number][]).toSorted(order),
-      activities: activities
-        .filter((activity) => activity.kind !== "tool.updated" || !completed.has(call(activity)))
-        .toSorted((left, right) => (left.sequence ?? -1) - (right.sequence ?? -1) || order(left, right)),
-      session: session as RuntimeThreadSnapshot["thread"]["session"],
-    },
-  };
+  return { snapshotSequence: through, projection: projection as unknown as V2Projection };
+}
+
+/** A socket that subscribes the follower and delivers the turn as `mode` says. */
+function scriptedOpen(base: V2ThreadSnapshot, events: readonly StreamEvent[], mode: "full-snapshots" | "incremental", threadId: string) {
+  return (async ({ signal }: { signal: AbortSignal }) => {
+    const socket: RuntimeSocket = {
+      async stream(_tag, _payload, onValues) {
+        if (!(await onValues([{ kind: "snapshot", ...base }, { kind: "synchronized" }]))) return;
+        for (const event of events) {
+          if (signal.aborted) return;
+          const value = mode === "incremental"
+            ? { kind: "event", sequence: event.sequence, event: { type: event.type, threadId, payload: event.payload } }
+            : { kind: "snapshot", ...referenceSnapshot(base, events, event.sequence) };
+          if (!(await onValues([value]))) return;
+          await Bun.sleep(1);
+        }
+        if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      },
+      async call() { return { sequence: 99 }; },
+      close() {},
+    };
+    return socket;
+  }) as unknown as NonNullable<Parameters<typeof followRuntimeThread>[0]["open"]>;
 }
 
 async function replay(mode: "full-snapshots" | "incremental", threadId: string) {
@@ -188,12 +125,10 @@ async function replay(mode: "full-snapshots" | "incremental", threadId: string) 
   });
   const runtimeThread = runtimeThreadId({ runId, threadId });
   const { base, events } = codexTurn(runtimeThread, runtimeUserMessageId(runId));
-  const delivered = events.filter((event) => event.delivered);
+  const prior = runtimeThreadView(base);
   const steps: OpenCodeStep[] = [];
   const deltas: string[] = [];
   let reads = 0;
-  let readTally = 0;
-  let deliveredThrough = base.snapshotSequence;
   const ctx = {
     runId,
     threadId,
@@ -208,30 +143,17 @@ async function replay(mode: "full-snapshots" | "incremental", threadId: string) 
     },
     publishDelta: (delta: string) => deltas.push(delta),
     setSummary() {},
-    timing: { begin: () => () => {}, mark() {}, add: () => { readTally += 1; } },
+    timing: { begin: () => () => {}, mark() {}, add() {} },
   } as unknown as EngineRunContext;
 
-  const summary = await waitForRuntimeTurn(ctx, {} as SandboxHandle, activityRevisions(base), base, createSecretRedactor([]), {
+  const summary = await waitForRuntimeTurn(ctx, { id: "sandbox-replay" } as SandboxHandle, activityRevisions(prior), prior, createSecretRedactor([]), {
     watchLiveness: () => ({ signal: new AbortController().signal, heard() {}, dispose() {} }),
     readThreadSnapshot: async () => {
       reads += 1;
-      return runtimeSnapshot(base, events, deliveredThrough);
+      throw new Error("a followed turn reads nothing over HTTP");
     },
-    subscribeRuntimeThread: async (_sandbox, _threadId, _after, signal, onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>) => {
-      await onItem({ kind: "snapshot", snapshot: base });
-      for (const event of delivered) {
-        if (signal.aborted) return;
-        deliveredThrough = event.sequence;
-        if (mode === "full-snapshots") {
-          // What a full thread read after every event would show.
-          if (!(await onItem({ kind: "snapshot", snapshot: runtimeSnapshot(base, events, event.sequence) }))) return;
-          continue;
-        }
-        await onItem({ kind: "event", event: { ...event, aggregateKind: "thread", aggregateId: runtimeThread } });
-        await Bun.sleep(1);
-      }
-      if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
-    },
+    followRuntimeThread: (input) => followRuntimeThread({ ...input, open: scriptedOpen(base, events, mode, runtimeThread) }),
+    guardForeignRuns: () => async () => [],
   }, "codex");
 
   await drainProviderEvents(runId);
@@ -241,18 +163,18 @@ async function replay(mode: "full-snapshots" | "incremental", threadId: string) 
   const normalized = (value: unknown) => JSON.stringify(value).replaceAll(runId, "RUN");
   return {
     reads,
-    readTally,
     summary,
     deltas,
     steps: normalized(steps),
     rows: normalized(rows.map(({ createdAt: _createdAt, runId: _runId, ...row }) => row)),
+    eventTypes: rows.map((row) => row.eventType),
     canonical: normalized(canonical.events),
-    canonicalCount: canonical.events.length,
+    canonicalKinds: canonical.events.map((event) => event.kind),
   };
 }
 
 describe("runtime turn replay", () => {
-  test("applying stream events in place records exactly what a full snapshot after every event records", async () => {
+  test("applying stream events records exactly what a full snapshot after every event records", async () => {
     const threadId = `thread-replay-${crypto.randomUUID()}`;
     const full = await replay("full-snapshots", threadId);
     const incremental = await replay("incremental", threadId);
@@ -260,16 +182,18 @@ describe("runtime turn replay", () => {
     expect(full.summary).toBe("There are three files: a.ts, b.ts and c.ts.");
     expect(incremental.summary).toBe(full.summary);
     expect(incremental.deltas).toEqual(full.deltas);
+    expect(full.deltas).toEqual(["There are three files: ", "a.ts, b.ts and c.ts."]);
     expect(incremental.steps).toBe(full.steps);
     expect(incremental.rows).toBe(full.rows);
     expect(incremental.canonical).toBe(full.canonical);
-    expect(full.canonicalCount).toBeGreaterThan(5);
-
-    // Fourteen delivered events were fourteen full thread reads before. In
-    // place, the thread is read only across the undelivered sequence 12 (with
-    // the session coming alive), at the checkpoint and when the session settles.
+    // The ledger keeps the vocabulary every reader of a runtime turn already knows.
+    expect(full.eventTypes).toEqual(expect.arrayContaining([
+      "t3.activity.tool.updated", "t3.activity.tool.completed", "t3.activity.turn.plan.updated",
+      "part.step-finish", "t3.message.started", "t3.message.updated",
+    ]));
+    expect(full.canonicalKinds).toEqual(expect.arrayContaining(["tool.started", "tool.completed", "plan.updated", "message.delta"]));
+    // A followed turn never reads the thread over HTTP.
     expect(full.reads).toBe(0);
-    expect(incremental.reads).toBe(3);
-    expect(incremental.readTally).toBe(3);
+    expect(incremental.reads).toBe(0);
   });
 });
