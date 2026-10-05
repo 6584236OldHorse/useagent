@@ -12,10 +12,10 @@ import { chatModelCatalog } from "./models";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
 import { chatModel, newChatAccount, streamChat, type ChatMessage } from "./stream";
-import { chargeChatTurn } from "./turn";
+import { chargeChatTurn, noteChatGeneration } from "./turn";
 import {
   assertSpendAllowance,
-  noteSpendGeneration,
+  discardSpendCharge,
   openSpendCharge,
   SpendAllowanceExceededError,
 } from "../runs/spend";
@@ -169,7 +169,13 @@ chatRoutes.post("/", async (c) => {
           /* already closed */
         }
       };
-      if (signal.aborted) return cleanup();
+      if (signal.aborted) {
+        // Gone before any model call: the open charge is dropped, not left pending.
+        if (charge) void discardSpendCharge(charge.key).catch((error) => {
+          console.error(`[spend] could not drop chat charge ${charge.key}:`, errorMessage(error));
+        });
+        return cleanup();
+      }
       signal.addEventListener("abort", cleanup);
       const account = newChatAccount();
       let completed = false;
@@ -208,12 +214,11 @@ chatRoutes.post("/", async (c) => {
           for await (const delta of streamChat(llmMessages, model, resolved.value, signal, account)) {
             if (closed) return;
             if (charge && !generationNoted && account.generationId) {
-              // Noted as soon as the stream names it, so a charge this process
+              // Noted as soon as the stream names it (retried, and remembered
+              // for the sweep if it will not land), so a charge this process
               // never completes can still be priced from the provider's record.
               generationNoted = true;
-              void noteSpendGeneration(charge.key, account.generationId).catch((error) => {
-                console.error(`[spend] could not note the generation on chat charge ${charge.key}:`, errorMessage(error));
-              });
+              void noteChatGeneration(charge, account.generationId);
             }
             answer += delta;
             sendEvent("delta", { delta });

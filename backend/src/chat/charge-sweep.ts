@@ -1,49 +1,70 @@
-import { chargeSpend, pendingSpendCharges } from "../runs/spend";
+import { chargeSpend, noteSpendGeneration, pendingSpendCharges, type SpendFigure } from "../runs/spend";
 import { errorMessage } from "../util/error-message";
 import { fetchGenerationCost } from "./stream";
+import { unsettledChatCharges } from "./turn";
 
 // Chat charges left pending: a stateless chat turn opens its charge before the
 // model call (routes.ts) and fills it in when the stream ends (turn.ts). What
-// the process never completed (a crash, a database failure past the retries)
-// is settled here from the provider's own record of the generation.
+// the ledger refused is retried here from the figure this process kept; what
+// a dead process left behind is settled from the figure it had stored, else
+// from the provider's own record of the generation; what nothing can price is
+// reported, every sweep, as a stuck charge.
 
 /** A charge still pending this long after it was opened is no longer a turn in flight. */
 const CHAT_CHARGE_SWEEP_GRACE_MS = 30 * 60_000;
-const CHAT_CHARGE_SWEEP_INTERVAL_MS = 10 * 60_000;
+const CHAT_CHARGE_SWEEP_INTERVAL_MS = 60_000;
 
-/**
- * Settle chat charges left pending by a completion that never wrote (a crash,
- * a database failure past the retries) from the provider's own record of the
- * generation, read with the deployment key; the stream's token count is gone
- * with the process, so the record's cost stands alone. A charge with no
- * generation id (a stream that never named one) or one whose record the
- * deployment key cannot read (a member's own key) stays pending: nothing can
- * price it, and the count is logged.
- */
-export async function settlePendingChatCharges(
-  graceMs = CHAT_CHARGE_SWEEP_GRACE_MS,
-): Promise<{ readonly settled: number; readonly pending: number }> {
-  const houseKey = process.env.OPENROUTER_API_KEY;
-  const rows = await pendingSpendCharges(new Date(Date.now() - graceMs));
-  let settled = 0;
-  for (const row of rows) {
-    if (!row.generationId || !houseKey) continue;
-    const cost = await fetchGenerationCost(row.generationId, houseKey);
-    if (cost === null) continue;
-    const charged = await chargeSpend({
-      key: row.key, orgId: row.orgId, userId: row.userId,
-      cost, tokens: 0, source: "provider_generation", generationId: row.generationId,
-    });
-    if (charged) settled += 1;
-  }
-  const pending = rows.length - settled;
-  if (rows.length > 0) {
-    console.warn(`[spend] chat charge sweep: ${settled} settled from the provider's record, ${pending} still pending`);
-  }
-  return { settled, pending };
+export interface ChatChargeSweep {
+  readonly settled: number;
+  readonly pending: number;
+  /** Pending charges nothing can price: no stored figure, no readable provider record. */
+  readonly stuck: readonly string[];
 }
 
-/** The sweep at boot (a restart is exactly when a charge was left behind) and every ten minutes after. */
+export async function settlePendingChatCharges(graceMs = CHAT_CHARGE_SWEEP_GRACE_MS): Promise<ChatChargeSweep> {
+  const houseKey = process.env.OPENROUTER_API_KEY;
+  let settled = 0;
+  // What this process could not write: retried with what it kept, until it lands.
+  for (const [key, owed] of unsettledChatCharges) {
+    try {
+      if (owed.figure) {
+        if (await chargeSpend({ key, orgId: owed.orgId, userId: owed.userId, ...owed.figure })) settled += 1;
+      } else if (owed.generationId) {
+        await noteSpendGeneration(key, owed.generationId);
+      }
+      unsettledChatCharges.delete(key);
+    } catch (error) {
+      console.error(`[spend] chat charge ${key} (${owed.orgId}/${owed.userId}) still cannot be written:`, errorMessage(error));
+    }
+  }
+  // What the ledger holds past the grace: from the stored figure, else the
+  // provider's record read with the deployment key, else reported.
+  const rows = await pendingSpendCharges(new Date(Date.now() - graceMs));
+  const stuck: string[] = [];
+  let settledRows = 0;
+  for (const row of rows) {
+    if (unsettledChatCharges.has(row.key)) continue; // still this process's to write
+    let figure: SpendFigure | null = row.figure;
+    if (!figure && row.generationId && houseKey) {
+      const cost = await fetchGenerationCost(row.generationId, houseKey);
+      if (cost !== null) figure = { cost, tokens: 0, source: "provider_generation", generationId: row.generationId };
+    }
+    if (!figure) {
+      stuck.push(row.key);
+      console.error(`[spend] chat charge ${row.key} (${row.orgId}/${row.userId}) is stuck: no figure was stored and no provider record prices it; settle it by hand`);
+      continue;
+    }
+    if (await chargeSpend({ key: row.key, orgId: row.orgId, userId: row.userId, ...figure })) settledRows += 1;
+  }
+  settled += settledRows;
+  const pending = rows.length - settledRows;
+  if (rows.length > 0 || unsettledChatCharges.size > 0) {
+    console.warn(`[spend] chat charge sweep: ${settled} settled, ${pending} still pending, ${stuck.length} stuck, ${unsettledChatCharges.size} kept by this process`);
+  }
+  return { settled, pending, stuck };
+}
+
+/** The sweep at boot (a restart is exactly when a charge was left behind) and every minute after. */
 export function startChatChargeSweep(): void {
   const tick = () => {
     settlePendingChatCharges().catch((error) => {

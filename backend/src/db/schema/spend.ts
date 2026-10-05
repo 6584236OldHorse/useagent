@@ -17,6 +17,8 @@ import { index, integer, numeric, pgTable, primaryKey, text, timestamp } from "d
  *  back after the turn, and `unpriced` means the events carried no cost
  *  figure (tokens, if any, are still recorded). */
 export type SpendSource = "pending" | "usage" | "provider_generation" | "unpriced";
+/** A charge's figure once settled: every source but `pending`. */
+export type SettledSpendSource = Exclude<SpendSource, "pending">;
 
 export const spendAccounts = pgTable(
   "spend_accounts",
@@ -47,6 +49,11 @@ export const spendEntries = pgTable(
      *  stream names it, so a charge left pending can be priced from the
      *  provider's own record. */
     generationId: text("generation_id"),
+    /** Set on a pending entry once its figure is known (the stream ended and
+     *  was priced) but before the account moved: the source the figure will
+     *  settle under, so a settlement the ledger refused can be completed from
+     *  the stored figure alone. */
+    figureSource: text("figure_source").$type<SettledSpendSource>(),
     /** When the charge was opened. */
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

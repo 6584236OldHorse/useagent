@@ -1,7 +1,7 @@
 import type { ResolvedProviderCredential } from "../provider-gateway/credentials";
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
 import { recordProviderEvent } from "../runs/provider-events";
-import { chargeSpend, discardSpendCharge } from "../runs/spend";
+import { chargeSpend, discardSpendCharge, noteSpendFigure, noteSpendGeneration, type SpendFigure } from "../runs/spend";
 import { errorMessage } from "../util/error-message";
 import {
   fetchGenerationCost,
@@ -85,21 +85,59 @@ export async function* chatTurnStream(
   }
 }
 
-/** A charge write is retried with its figure before it is left to the sweep. */
-const CHAT_CHARGE_ATTEMPTS = 3;
-const CHAT_CHARGE_RETRY_MS = 500;
+/** A ledger write is retried this often before it is left to the sweep. */
+const CHAT_WRITE_ATTEMPTS = 3;
+const CHAT_WRITE_RETRY_MS = 500;
 
 const usd = (n: number): string => `$${n.toFixed(4)}`;
 
+/** What this process still owes the ledger for a chat charge it could not
+ *  write: the generation the stream named and, once the stream ended, the
+ *  figure. The sweep (charge-sweep.ts) keeps retrying these until they land;
+ *  only a process death loses them, and the sweep then reports the entry. */
+export interface UnsettledChatCharge {
+  readonly orgId: string;
+  readonly userId: string;
+  readonly generationId: string | null;
+  readonly figure: SpendFigure | null;
+}
+export const unsettledChatCharges = new Map<string, UnsettledChatCharge>();
+
+/** One ledger write, retried; false once the attempts are spent (every failure logged). */
+async function persistChatWrite(what: string, write: () => Promise<unknown>): Promise<boolean> {
+  for (let attempt = 1; attempt <= CHAT_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      await write();
+      return true;
+    } catch (error) {
+      console.error(`[spend] ${what}: write ${attempt}/${CHAT_WRITE_ATTEMPTS} failed:`, errorMessage(error));
+      if (attempt < CHAT_WRITE_ATTEMPTS) await Bun.sleep(CHAT_WRITE_RETRY_MS * attempt);
+    }
+  }
+  return false;
+}
+
+/** Note the generation the stream named on the open charge, retried; a note
+ *  that never lands is remembered so the sweep can still write it. */
+export async function noteChatGeneration(charge: {
+  readonly key: string;
+  readonly orgId: string;
+  readonly userId: string;
+}, generationId: string): Promise<void> {
+  const landed = await persistChatWrite(`chat charge ${charge.key} generation`, () => noteSpendGeneration(charge.key, generationId));
+  if (!landed && !unsettledChatCharges.has(charge.key)) {
+    unsettledChatCharges.set(charge.key, { orgId: charge.orgId, userId: charge.userId, generationId, figure: null });
+  }
+}
+
 /**
  * Charge one stateless chat turn (POST /api/chat, which has no run row) to the
- * member it served: the entry opened under `key` before the model call is
- * filled in with the settled figure, and the account moved, in one
- * transaction. A write that fails is retried with the same figure and logged
- * each time; one that keeps failing leaves the entry pending, with the
- * generation the stream named, for the sweep (charge-sweep.ts) to price from
- * the provider's record. A stream that never named anything made no model call:
- * its open charge is dropped. Nothing here is thrown into the response stream.
+ * member it served. The entry opened under `key` before the model call first
+ * has its settled figure stored on it, then is settled (filled in and the
+ * account moved, in one transaction), each write retried. What still did not
+ * land is remembered, with its figure, for the sweep to write once the ledger
+ * answers again; nothing is thrown into the response stream. A stream that
+ * never named anything made no model call: its open charge is dropped.
  */
 export async function chargeChatTurn(input: {
   readonly key: string;
@@ -112,35 +150,34 @@ export async function chargeChatTurn(input: {
 }): Promise<void> {
   const where = `chat charge ${input.key} (${input.orgId}/${input.userId})`;
   if (!input.account.usage && !input.account.generationId && !input.completed) {
+    unsettledChatCharges.delete(input.key);
     await discardSpendCharge(input.key).catch((error) => {
       console.error(`[spend] ${where} was never billed and could not be dropped:`, errorMessage(error));
     });
     return;
   }
   const charge = await settleChatCharge(input.account, input.credential);
-  const write = {
-    key: input.key,
-    orgId: input.orgId,
-    userId: input.userId,
+  const figure: SpendFigure = {
     cost: charge.cost ?? 0,
     tokens: charge.tokens,
     source: charge.costSource === "provider_generation"
-      ? ("provider_generation" as const)
+      ? "provider_generation"
       : charge.cost === null
-        ? ("unpriced" as const)
-        : ("usage" as const),
+        ? "unpriced"
+        : "usage",
     generationId: input.account.generationId,
   };
-  for (let attempt = 1; attempt <= CHAT_CHARGE_ATTEMPTS; attempt += 1) {
-    try {
-      await chargeSpend(write);
-      return;
-    } catch (error) {
-      console.error(`[spend] ${where} write ${attempt}/${CHAT_CHARGE_ATTEMPTS} of ${usd(write.cost)} failed:`, errorMessage(error));
-      if (attempt < CHAT_CHARGE_ATTEMPTS) await Bun.sleep(CHAT_CHARGE_RETRY_MS * attempt);
-    }
+  // The figure first, on its own: a settlement the ledger refuses after this
+  // still leaves the sweep a stored figure, whichever key served the turn.
+  await persistChatWrite(`${where} figure`, () => noteSpendFigure(input.key, figure));
+  const settled = await persistChatWrite(`${where} settlement of ${usd(figure.cost)}`, () =>
+    chargeSpend({ key: input.key, orgId: input.orgId, userId: input.userId, ...figure }));
+  if (settled) {
+    unsettledChatCharges.delete(input.key);
+    return;
   }
-  console.error(`[spend] ${where} of ${usd(write.cost)} is left pending for the sweep`);
+  unsettledChatCharges.set(input.key, { orgId: input.orgId, userId: input.userId, generationId: figure.generationId, figure });
+  console.error(`[spend] ${where} of ${usd(figure.cost)} is left to the sweep`);
 }
 
 /** What a failed chat turn records: a spent provider key is named plainly; any

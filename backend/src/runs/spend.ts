@@ -1,6 +1,6 @@
 import { and, eq, like, lt, or, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { providerEvents, spendAccounts, spendEntries, type SpendSource } from "../db/schema";
+import { providerEvents, spendAccounts, spendEntries, type SettledSpendSource, type SpendSource } from "../db/schema";
 
 // ---------------------------------------------------------------------------
 // Spend allowance. Every organisation member may spend SPEND_ALLOWANCE_USD
@@ -178,8 +178,7 @@ function runtimeActivityFigure(stored: Record<string, unknown>): UsageFigure | n
   return { cost, tokens: usageTokens(usage) };
 }
 
-/** A charge's figure once settled: every source but `pending`. */
-export type SettledSpendSource = Exclude<SpendSource, "pending">;
+export type { SettledSpendSource };
 
 export interface RunCharge {
   readonly cost: number;
@@ -361,22 +360,53 @@ export async function noteSpendGeneration(key: string, generationId: string): Pr
     .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
 }
 
-/** Charges opened before `openedBefore` and never filled in. */
+/** One settled figure a charge is written with. */
+export interface SpendFigure {
+  readonly cost: number;
+  readonly tokens: number;
+  readonly source: SettledSpendSource;
+  readonly generationId: string | null;
+}
+
+/** Store a charge's figure on its open entry before the account moves, so a
+ *  settlement the ledger refuses afterwards can be completed from the stored
+ *  figure alone (chat/charge-sweep.ts). The entry stays pending. */
+export async function noteSpendFigure(key: string, figure: SpendFigure): Promise<void> {
+  await db
+    .update(spendEntries)
+    .set({
+      costUsd: boundedCost(figure.cost, `charge ${key}`) ?? 0,
+      tokens: Number.isFinite(figure.tokens) ? boundedTokens(figure.tokens) : 0,
+      figureSource: figure.source,
+      generationId: sql`coalesce(${figure.generationId}, ${spendEntries.generationId})`,
+    })
+    .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
+}
+
+/** Charges opened before `openedBefore` and never settled, with the figure each already holds, if any. */
 export async function pendingSpendCharges(openedBefore: Date): Promise<Array<{
   readonly key: string;
   readonly orgId: string;
   readonly userId: string;
   readonly generationId: string | null;
+  readonly figure: SpendFigure | null;
 }>> {
-  return db
+  const rows = await db
     .select({
       key: spendEntries.chargeKey,
       orgId: spendEntries.orgId,
       userId: spendEntries.userId,
       generationId: spendEntries.generationId,
+      cost: spendEntries.costUsd,
+      tokens: spendEntries.tokens,
+      figureSource: spendEntries.figureSource,
     })
     .from(spendEntries)
     .where(and(eq(spendEntries.source, "pending"), lt(spendEntries.createdAt, openedBefore)));
+  return rows.map(({ cost, tokens, figureSource, ...row }) => ({
+    ...row,
+    figure: figureSource ? { cost, tokens, source: figureSource, generationId: row.generationId } : null,
+  }));
 }
 
 /** Charge a settled run to its member from the usage it carries. Runs without

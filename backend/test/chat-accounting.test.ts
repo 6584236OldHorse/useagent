@@ -3,7 +3,8 @@ import { and, eq, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
 import { settlePendingChatCharges } from "../src/chat/charge-sweep";
-import { chatTurnStream } from "../src/chat/turn";
+import { chargeChatTurn, chatTurnStream, unsettledChatCharges } from "../src/chat/turn";
+import { noteSpendGeneration, openSpendCharge } from "../src/runs/spend";
 import { finalizeRun } from "../src/runs/finalize";
 import { drainProviderEvents } from "../src/runs/provider-events";
 import { createOrgSession, fetchApi, json, readSse, uid, waitFor, type OrgSession } from "./helpers";
@@ -163,22 +164,26 @@ const setSpent = (spentUsd: number) => db.insert(spendAccounts).values({ orgId: 
 const spent = async () => (await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)
   .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId))))[0]?.spent ?? 0;
 
-/** Fail this member's next `count` account writes with a trigger; the count lives
- *  in a sequence, so it survives the transactions it makes roll back. */
-async function failAccountWrites(count: number): Promise<() => Promise<void>> {
-  await db.execute(sql`create sequence if not exists spend_fail_seq`);
-  await db.execute(sql`select setval('spend_fail_seq', 1, false)`);
+/** Fail this member's next `count` writes to a ledger table with a trigger; the
+ *  count lives in a sequence, so it survives the transactions it makes roll
+ *  back. Accounts fail on every write; entries only on updates, so a charge
+ *  can still be opened. */
+async function failWrites(table: "spend_accounts" | "spend_entries", count: number): Promise<() => Promise<void>> {
+  const seq = `${table}_fail_seq`;
+  const fn = `${table}_fail_writes`;
+  await db.execute(sql.raw(`create sequence if not exists ${seq}`));
+  await db.execute(sql.raw(`select setval('${seq}', 1, false)`));
   await db.execute(sql.raw(`
-    create or replace function spend_fail_writes() returns trigger language plpgsql as $$
+    create or replace function ${fn}() returns trigger language plpgsql as $$
     begin
-      if nextval('spend_fail_seq') <= ${count} then raise exception 'synthetic account write failure'; end if;
+      if nextval('${seq}') <= ${count} then raise exception 'synthetic ${table} write failure'; end if;
       return new;
     end $$`));
   await db.execute(sql.raw(`
-    create or replace trigger spend_fail_writes before insert or update on spend_accounts
-    for each row when (new.user_id = '${userId}') execute function spend_fail_writes()`));
+    create or replace trigger ${fn} before ${table === "spend_accounts" ? "insert or update" : "update"} on ${table}
+    for each row when (new.user_id = '${userId}') execute function ${fn}()`));
   return async () => {
-    await db.execute(sql`drop trigger if exists spend_fail_writes on spend_accounts`);
+    await db.execute(sql.raw(`drop trigger if exists ${fn} on ${table}`));
   };
 }
 
@@ -256,7 +261,7 @@ describe("POST /api/chat accounting", () => {
     process.env.OPENROUTER_API_KEY = "house-key";
     await setSpent(99.9);
     const known = new Set((await chatEntries()).map((row) => row.chargeKey));
-    const restore = await failAccountWrites(1);
+    const restore = await failWrites("spend_accounts", 1);
     try {
       mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
       const res = await ask("retry me");
@@ -274,35 +279,125 @@ describe("POST /api/chat accounting", () => {
     expect(refused.status).toBe(402);
   });
 
-  test("a charge whose writes keep failing stays pending with its generation, and the sweep settles it from the provider's record", async () => {
+  test("a settlement the ledger keeps refusing leaves the figure on the entry, and a later sweep settles it from that figure without the provider", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
     await setSpent(99.9);
     const known = new Set((await chatEntries()).map((row) => row.chargeKey));
-    const restore = await failAccountWrites(1_000_000);
+    const restore = await failWrites("spend_accounts", 1_000_000);
     let key = "";
     try {
       mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
       const res = await ask("crash me");
       expect(res.status).toBe(200);
       expect((await readSse(res, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
-      // The intent was recorded before the model call and the generation noted
-      // as the stream named it; the retries all fail and the entry stays pending.
+      // The intent was recorded before the model call, the generation noted as
+      // the stream named it, and the settled figure stored before the account
+      // move the ledger refuses; the settlement retries all fail.
       const pending = await waitFor(async () =>
-        (await chatEntries()).find((row) => !known.has(row.chargeKey) && row.generationId !== null) ?? null,
+        (await chatEntries()).find((row) => !known.has(row.chargeKey) && row.figureSource !== null) ?? null,
       );
-      expect(pending).toMatchObject({ source: "pending", generationId: "gen-abc" });
+      expect(pending).toMatchObject({
+        source: "pending", figureSource: "provider_generation", costUsd: 0.25, tokens: 42, generationId: "gen-abc",
+      });
       key = pending.chargeKey;
-      await Bun.sleep(2_000); // past the last retry
+      await Bun.sleep(2_000); // past the last settlement retry
       expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ source: "pending" });
       expect(await spent()).toBeCloseTo(99.9, 6);
+      expect(unsettledChatCharges.get(key)?.figure).toMatchObject({ cost: 0.25, source: "provider_generation" });
     } finally {
       await restore();
     }
-    // The ledger is back: the sweep prices the charge from the provider's record.
+    // The process that kept the figure is gone: the sweep settles the entry
+    // from the stored figure alone, without asking the provider.
+    unsettledChatCharges.delete(key);
+    const calls = mockProvider([], null);
     await settlePendingChatCharges(0);
+    expect(calls.some((url) => url.includes("/generation"))).toBe(false);
     expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ costUsd: 0.25, source: "provider_generation" });
     expect(await spent()).toBeCloseTo(100.15, 6);
     const refused = await ask("again");
     expect(refused.status).toBe(402);
   }, 20_000);
+
+  test("a charge on the member's own key that the ledger refuses is settled by the sweep from the stored figure, never read back", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key"; // for the follow-up request's admission, not for this charge
+    await setSpent(99.9);
+    const key = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key, orgId: session.orgId, userId });
+    const restore = await failWrites("spend_accounts", 1_000_000);
+    const calls = mockProvider([], null);
+    try {
+      await chargeChatTurn({
+        key, orgId: session.orgId, userId, completed: true,
+        account: { generationId: "gen-member", usage: { totalTokens: 42, cost: 0.2 } },
+        credential: { value: "member-key", source: "user_connection" },
+      });
+      expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({
+        source: "pending", figureSource: "usage", costUsd: 0.2, tokens: 42, generationId: "gen-member",
+      });
+    } finally {
+      await restore();
+    }
+    unsettledChatCharges.delete(key); // a restart forgot it
+    await settlePendingChatCharges(0);
+    expect(calls.some((url) => url.includes("/generation"))).toBe(false);
+    expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ costUsd: 0.2, source: "usage" });
+    expect(await spent()).toBeCloseTo(100.1, 6);
+    const refused = await ask("again");
+    expect(refused.status).toBe(402);
+  }, 20_000);
+
+  test("with the ledger refusing every write, the generation and the figure are kept by this process and land on the next sweep", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(99.9);
+    const known = new Set((await chatEntries()).map((row) => row.chargeKey));
+    const restoreEntries = await failWrites("spend_entries", 1_000_000);
+    const restoreAccounts = await failWrites("spend_accounts", 1_000_000);
+    let key = "";
+    try {
+      mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
+      const res = await ask("outage");
+      expect(res.status).toBe(200);
+      expect((await readSse(res, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
+      const pending = await waitFor(async () => (await chatEntries()).find((row) => !known.has(row.chargeKey)) ?? null);
+      key = pending.chargeKey;
+      await Bun.sleep(3_600); // every retry of the note, the figure and the settlement is spent
+      expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ source: "pending", generationId: null, figureSource: null });
+      expect(await spent()).toBeCloseTo(99.9, 6);
+      expect(unsettledChatCharges.get(key)).toMatchObject({ generationId: "gen-abc", figure: { cost: 0.25, source: "provider_generation" } });
+    } finally {
+      await restoreEntries();
+      await restoreAccounts();
+    }
+    // The ledger is back: the next sweep writes what this process kept.
+    const calls = mockProvider([], null);
+    const swept = await settlePendingChatCharges(0);
+    expect(swept.stuck).not.toContain(key);
+    expect(calls.some((url) => url.includes("/generation"))).toBe(false);
+    expect(unsettledChatCharges.has(key)).toBe(false);
+    expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ costUsd: 0.25, source: "provider_generation" });
+    expect(await spent()).toBeCloseTo(100.15, 6);
+    const refused = await ask("again");
+    expect(refused.status).toBe(402);
+  }, 20_000);
+
+  test("what a dead process left without a figure is priced from the provider's record, and what has neither is reported stuck, not skipped", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    const priced = `chat:${crypto.randomUUID()}`;
+    const bare = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key: priced, orgId: session.orgId, userId });
+    await noteSpendGeneration(priced, "gen-crash");
+    await openSpendCharge({ key: bare, orgId: session.orgId, userId });
+    await Bun.sleep(10); // the sweep reads entries opened before its own clock, to the millisecond
+    const before = await spent();
+    const calls = mockProvider([], 0.25);
+    const swept = await settlePendingChatCharges(0);
+    expect(calls.some((url) => url.includes("/generation?id=gen-crash"))).toBe(true);
+    expect(swept.stuck).toContain(bare);
+    expect(swept.stuck).not.toContain(priced);
+    expect((await chatEntries()).find((row) => row.chargeKey === priced)).toMatchObject({ costUsd: 0.25, source: "provider_generation" });
+    expect((await chatEntries()).find((row) => row.chargeKey === bare)).toMatchObject({ source: "pending" });
+    expect(await spent()).toBeCloseTo(before + 0.25, 6);
+    await db.delete(spendEntries).where(eq(spendEntries.chargeKey, bare));
+  });
 });

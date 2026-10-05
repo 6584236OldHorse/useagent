@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS "spend_entries" (
 	"tokens" integer DEFAULT 0 NOT NULL,
 	"source" text NOT NULL,
 	"generation_id" text,
+	"figure_source" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
