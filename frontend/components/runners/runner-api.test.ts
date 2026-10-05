@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   canManageRunnerPolicy,
   enrolRunner,
+  fetchRunnerEnabled,
   fetchRunnerPolicy,
   fetchRunners,
   revokeRunner,
@@ -41,6 +42,7 @@ describe("runner API", () => {
         lastSeenAt: "2026-09-08T00:00:00.000Z",
         logins: ["codex", "claude"],
         imageDigest: "sha256:abc",
+        ownerUserId: "user_a",
       },
     ]);
   });
@@ -87,6 +89,12 @@ describe("runner API", () => {
     ]);
   });
 
+  test("reads the deployment runner kill switch from config", async () => {
+    expect(
+      await fetchRunnerEnabled(async () => Response.json({ runner: { enabled: true } })),
+    ).toBe(true);
+  });
+
   test("revokes only the encoded runner resource", async () => {
     const calls: Array<[string, RequestInit | undefined]> = [];
     await revokeRunner("rn/a", async (path, init) => {
@@ -96,23 +104,18 @@ describe("runner API", () => {
     expect(calls).toEqual([["/api/runners/rn%2Fa", { method: "DELETE" }]]);
   });
 
-  test("uses the Clerk-safe organization reads to identify an admin", async () => {
+  test("checks the Better Auth active organization membership for an admin", async () => {
     const calls: string[] = [];
-    const allowed = await canManageRunnerPolicy("user_a", async (path) => {
+    const allowed = await canManageRunnerPolicy("user_a", "org_active", async (path) => {
       calls.push(path);
-      return path === "/api/auth/organization/list"
-        ? Response.json([{ id: "org_active" }, { id: "org_other" }])
-        : Response.json({
-            members: [
-              { userId: "user_b", role: "member" },
-              { userId: "user_a", role: "admin" },
-            ],
-          });
+      return Response.json({
+        members: [
+          { userId: "user_b", role: "member" },
+          { userId: "user_a", role: "admin" },
+        ],
+      });
     });
     expect(allowed).toBe(true);
-    expect(calls).toEqual([
-      "/api/auth/organization/list",
-      "/api/auth/organization/list-members?organizationId=org_active",
-    ]);
+    expect(calls).toEqual(["/api/auth/organization/list-members?organizationId=org_active"]);
   });
 });

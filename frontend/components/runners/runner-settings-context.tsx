@@ -12,6 +12,7 @@ import {
 import { useSession } from "@/lib/auth";
 import {
   canManageRunnerPolicy,
+  fetchRunnerEnabled,
   fetchRunnerPolicy,
   fetchRunners,
   revokeRunner,
@@ -23,19 +24,24 @@ function useRunnerSettingsState() {
   const { loading: sessionLoading, session } = useSession();
   const [runners, setRunners] = useState<Runner[]>([]);
   const [policy, setPolicy] = useState<RunnerPolicy | null>(null);
+  const [runnerEnabled, setRunnerEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [canManagePolicy, setCanManagePolicy] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
-    const [runnersResult, policyResult] = await Promise.allSettled([
+    const [runnersResult, policyResult, enabledResult] = await Promise.allSettled([
       fetchRunners(),
       fetchRunnerPolicy(),
+      fetchRunnerEnabled(),
     ]);
-    if (runnersResult.status === "fulfilled") setRunners(runnersResult.value);
-    if (policyResult.status === "fulfilled") setPolicy(policyResult.value);
+    setRunners(runnersResult.status === "fulfilled" ? runnersResult.value : []);
+    setPolicy(policyResult.status === "fulfilled" ? policyResult.value : null);
+    setRunnerEnabled(enabledResult.status === "fulfilled" && enabledResult.value);
     setError(
-      runnersResult.status === "rejected" || policyResult.status === "rejected"
+      runnersResult.status === "rejected" ||
+        policyResult.status === "rejected" ||
+        enabledResult.status === "rejected"
         ? "Could not refresh local runner settings."
         : null,
     );
@@ -52,8 +58,13 @@ function useRunnerSettingsState() {
       setCanManagePolicy(false);
       return;
     }
+    const organizationId = session.session.activeOrganizationId;
+    if (!organizationId) {
+      setCanManagePolicy(false);
+      return;
+    }
     let cancelled = false;
-    void canManageRunnerPolicy(session.user.id)
+    void canManageRunnerPolicy(session.user.id, organizationId)
       .then((allowed) => {
         if (!cancelled) setCanManagePolicy(allowed);
       })
@@ -85,7 +96,18 @@ function useRunnerSettingsState() {
     }
   }, []);
 
-  return { canManagePolicy, error, load, loading, policy, revoke, runners, savePolicy };
+  return {
+    canManagePolicy,
+    error,
+    load,
+    loading,
+    policy,
+    revoke,
+    runners,
+    runnerEnabled,
+    savePolicy,
+    userId: session?.user.id ?? null,
+  };
 }
 
 type RunnerSettingsState = ReturnType<typeof useRunnerSettingsState>;
@@ -102,4 +124,8 @@ export function useRunnerSettings(): RunnerSettingsState {
   const value = useContext(RunnerSettingsContext);
   if (!value) throw new Error("useRunnerSettings requires RunnerSettingsProvider");
   return value;
+}
+
+export function useOptionalRunnerSettings(): RunnerSettingsState | null {
+  return useContext(RunnerSettingsContext);
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { DesktopRunnerOnboarding } from "@/components/runners/desktop-runner-onboarding";
+import { RunnerSettingsProvider } from "@/components/runners/runner-settings-context";
 import { AppShell } from "@/components/shell/app-shell";
 import { ThreadSidebar } from "@/components/shell/thread-sidebar";
 
@@ -12,9 +13,11 @@ import { ThreadSidebar } from "@/components/shell/thread-sidebar";
  */
 export default function WorkspaceLayout({ children }: { children: ReactNode }) {
   return (
-    <AppShell sidebar={<ThreadSidebar />}>
-      {children}
-      <DesktopRunnerOnboarding />
-    </AppShell>
+    <RunnerSettingsProvider>
+      <AppShell sidebar={<ThreadSidebar />}>
+        {children}
+        <DesktopRunnerOnboarding />
+      </AppShell>
+    </RunnerSettingsProvider>
   );
 }

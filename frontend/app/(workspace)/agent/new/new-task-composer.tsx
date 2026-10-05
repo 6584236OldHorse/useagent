@@ -352,13 +352,19 @@ export function NewTaskComposer({
               e.id,
               engineConfig.runtimes[e.id],
               engineConfig.readiness[e.id],
+              engineConfig.localLoginOffered.includes(e.id),
             ),
             icon: RiCpuLine,
           }),
         ),
       },
     ],
-    [enabledEngines, engineConfig.readiness, engineConfig.runtimes],
+    [
+      enabledEngines,
+      engineConfig.localLoginOffered,
+      engineConfig.readiness,
+      engineConfig.runtimes,
+    ],
   );
 
   // One combined picker over the shared substrate: an explicit "none" option, then
@@ -388,7 +394,11 @@ export function NewTaskComposer({
     const text = prompt.trim();
     if (!text) return;
     const readiness = engineConfig.readiness[engineId];
-    if (readiness && !readiness.ready) {
+    if (
+      readiness &&
+      !readiness.ready &&
+      !engineConfig.localLoginOffered.includes(engineId)
+    ) {
       setError(readiness.message ?? `${engineLabel(engineId)} is not ready. Check Settings and retry.`);
       return;
     }

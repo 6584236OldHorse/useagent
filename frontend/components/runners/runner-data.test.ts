@@ -16,6 +16,7 @@ const runner = {
   lastSeenAt: null,
   logins: ["codex"],
   imageDigest: "sha256:abc",
+  ownerUserId: "user_a",
 } satisfies Runner;
 
 describe("runner location", () => {
@@ -38,11 +39,36 @@ describe("runner location", () => {
 describe("runner login availability", () => {
   test("requires both an online report and the organization policy", () => {
     const allowed = { allowLocalExecution: true, allowLocalLogins: true };
-    expect(runnerLoginAvailable("codex", allowed, [runner])).toBe(true);
-    expect(runnerLoginAvailable("claude", allowed, [runner])).toBe(false);
-    expect(runnerLoginAvailable("codex", { ...allowed, allowLocalLogins: false }, [runner])).toBe(
-      false,
-    );
-    expect(runnerLoginAvailable("codex", allowed, [{ ...runner, status: "offline" }])).toBe(false);
+    expect(runnerLoginAvailable("codex", allowed, [runner], "user_a", true)).toBe(true);
+    expect(runnerLoginAvailable("claude", allowed, [runner], "user_a", true)).toBe(false);
+    expect(
+      runnerLoginAvailable(
+        "codex",
+        { ...allowed, allowLocalLogins: false },
+        [runner],
+        "user_a",
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      runnerLoginAvailable(
+        "codex",
+        { ...allowed, allowLocalExecution: false },
+        [runner],
+        "user_a",
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      runnerLoginAvailable(
+        "codex",
+        allowed,
+        [{ ...runner, status: "offline" }],
+        "user_a",
+        true,
+      ),
+    ).toBe(false);
+    expect(runnerLoginAvailable("codex", allowed, [runner], "user_b", true)).toBe(false);
+    expect(runnerLoginAvailable("codex", allowed, [runner], "user_a", false)).toBe(false);
   });
 });

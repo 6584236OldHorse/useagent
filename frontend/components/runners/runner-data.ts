@@ -20,6 +20,7 @@ export interface Runner {
   readonly lastSeenAt: string | null;
   readonly logins: string[];
   readonly imageDigest: string | null;
+  readonly ownerUserId: string;
 }
 
 export interface RunnerPolicy {
@@ -53,6 +54,7 @@ export function decodeRunner(value: unknown): Runner | null {
     version === undefined ||
     lastSeenAt === undefined ||
     imageDigest === undefined ||
+    typeof row.ownerUserId !== "string" ||
     !Array.isArray(row.logins) ||
     !row.logins.every((login) => typeof login === "string")
   ) {
@@ -68,6 +70,7 @@ export function decodeRunner(value: unknown): Runner | null {
     lastSeenAt,
     logins: [...new Set(row.logins)],
     imageDigest,
+    ownerUserId: row.ownerUserId,
   };
 }
 
@@ -111,9 +114,19 @@ export function runnerLoginAvailable(
   login: string,
   policy: RunnerPolicy | null,
   runners: readonly Runner[],
+  userId: string | null,
+  runnerEnabled: boolean,
 ): boolean {
   return (
+    runnerEnabled &&
+    userId !== null &&
+    policy?.allowLocalExecution === true &&
     policy?.allowLocalLogins === true &&
-    runners.some((runner) => runner.status === "online" && runner.logins.includes(login))
+    runners.some(
+      (runner) =>
+        runner.ownerUserId === userId &&
+        runner.status === "online" &&
+        runner.logins.includes(login),
+    )
   );
 }

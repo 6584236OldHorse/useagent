@@ -46,6 +46,14 @@ export async function fetchRunnerPolicy(fetcher: Fetcher = backendFetch): Promis
   return policy;
 }
 
+export async function fetchRunnerEnabled(fetcher: Fetcher = backendFetch): Promise<boolean> {
+  const response = await fetcher("/api/config", { cache: "no-store" });
+  if (!response.ok) throw new Error(`config ${response.status}`);
+  const value = (await response.json()) as { runner?: { enabled?: unknown } };
+  if (typeof value.runner?.enabled !== "boolean") throw new Error("config runner malformed response");
+  return value.runner.enabled;
+}
+
 export async function updateRunnerPolicy(
   patch: Partial<RunnerPolicy>,
   fetcher: Fetcher = backendFetch,
@@ -67,19 +75,9 @@ export async function updateRunnerPolicy(
 
 export async function canManageRunnerPolicy(
   userId: string,
+  organizationId: string,
   fetcher: Fetcher = backendFetch,
 ): Promise<boolean> {
-  const organizationsResponse = await fetcher("/api/auth/organization/list", {
-    cache: "no-store",
-  });
-  if (!organizationsResponse.ok) return false;
-  const organizations = (await organizationsResponse.json()) as unknown;
-  const first = Array.isArray(organizations) ? organizations[0] : null;
-  const organizationId =
-    first && typeof first === "object" && typeof (first as { id?: unknown }).id === "string"
-      ? (first as { id: string }).id
-      : null;
-  if (!organizationId) return false;
   const membersResponse = await fetcher(
     `/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`,
     { cache: "no-store" },

@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { Chip } from "@/components/base/badges/chip";
 import { LocalLoginAvailability } from "@/components/runners/local-login-availability";
 import { MachinesCard } from "@/components/runners/machines-card";
-import { RunnerSettingsProvider } from "@/components/runners/runner-settings-context";
 import { ApiKeysCard } from "./api-keys-card";
 import { ComputerConnectionsCard } from "./computer-connections-card";
 import { GeneralCard } from "./general-card";
@@ -82,7 +81,6 @@ export default function SettingsPage() {
 
           {/* Sections */}
           <ProviderConnectionsProvider>
-            <RunnerSettingsProvider>
             <div
               className="flex min-w-0 flex-1 flex-col gap-8"
               style={{ paddingBottom: `${SETTINGS_SCROLL_TAIL_RATIO * 100}vh` }}
@@ -178,7 +176,6 @@ export default function SettingsPage() {
                 <TeamCard />
               </Section>
             </div>
-            </RunnerSettingsProvider>
           </ProviderConnectionsProvider>
         </div>
       </div>
