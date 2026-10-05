@@ -27,7 +27,8 @@ test("a failed race check in the Slack watcher and the run feed never rejects un
       onDone: (status) => { done = status; },
     });
     await Bun.sleep(25);
-    expect(read).toHaveBeenCalledTimes(2);
+    // Background loops in the shared test process may read other runs; count this run's reads only.
+    expect(read.mock.calls.filter(([id]) => id === runId)).toHaveLength(2);
     raceWarnings = warned.mock.calls.filter(([message]) => String(message).includes("race check")).length;
     // The run's end event still settles both.
     bus.emit(channel(runId), { type: "end", status: "failed" } satisfies BusEvent);
