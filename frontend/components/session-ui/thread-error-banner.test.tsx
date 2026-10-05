@@ -95,14 +95,31 @@ test("shows the whole reason, never clamped, with a copy affordance", () => {
   expect(html).toContain('aria-label="Copy error"');
 });
 
-test("omits the Retry button when no retry action exists (the current product state)", () => {
+test("omits Resend when the caller supplies no resend action", () => {
   const html = renderToStaticMarkup(<ThreadErrorBanner error="Aborted" onDismiss={() => {}} />);
-  expect(html).not.toContain("Retry");
+  expect(html).not.toContain("Resend");
 });
 
-test("renders Retry only for a real supplied handler", () => {
-  const html = renderToStaticMarkup(<ThreadErrorBanner error="Aborted" onRetry={() => {}} />);
-  expect(html).toContain("Retry");
+test("offers Resend, disables it while a resend is in flight and shows a refusal", () => {
+  const idle = renderToStaticMarkup(
+    <ThreadErrorBanner error="Aborted" resend={{ onResend: () => {}, pending: false, error: null }} />,
+  );
+  expect(idle).toContain(">Resend<");
+  expect(idle).not.toContain('disabled=""');
+
+  const pending = renderToStaticMarkup(
+    <ThreadErrorBanner error="Aborted" resend={{ onResend: () => {}, pending: true, error: null }} />,
+  );
+  expect(pending).toContain(">Resending<");
+  expect(pending).toContain('disabled=""');
+
+  const refused = renderToStaticMarkup(
+    <ThreadErrorBanner
+      error="Aborted"
+      resend={{ onResend: () => {}, pending: false, error: "Spend allowance reached" }}
+    />,
+  );
+  expect(refused).toContain("Spend allowance reached");
 });
 
 test("renders nothing for a null error", () => {

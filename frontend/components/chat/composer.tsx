@@ -34,7 +34,7 @@ import { Loader } from "@/components/prompt-kit/loader";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { engineDisplayLabel, ProviderStatusBanner } from "@/components/session-ui/provider-status-banner";
-import { ThreadErrorBanner } from "@/components/session-ui/thread-error-banner";
+import { ThreadErrorBanner, type ThreadErrorResend } from "@/components/session-ui/thread-error-banner";
 import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
 import { composerPlaceholder, getComposerAction } from "@/components/chat/composer-model";
@@ -140,6 +140,8 @@ export type ComposerProps = {
   threadError?: string | null;
   /** Records the session-scoped dismissal at the call site; absent hides the X. */
   onDismissThreadError?: () => void;
+  /** Resend for the failed run behind `threadError`; absent hides the button. */
+  threadErrorResend?: ThreadErrorResend;
   /** A notice about the LAST accepted send (e.g. a mentioned bot that did not
    *  get the message). Rendered in the failure slot; the draft is NOT restored
    *  because the message itself went through. Editing dismisses it. */
@@ -207,6 +209,7 @@ export function Composer({
   runStartedAt,
   threadError,
   onDismissThreadError,
+  threadErrorResend,
   notice,
   onDismissNotice,
   engineUnavailable = false,
@@ -539,7 +542,7 @@ export function Composer({
       {(threadError || (engineUnavailable && !providerBannerDismissed) || (running && onStop)) && (
         <div className="mb-1.5 flex flex-col gap-1.5">
           {threadError && (
-            <ThreadErrorBanner error={threadError} onDismiss={onDismissThreadError} />
+            <ThreadErrorBanner error={threadError} onDismiss={onDismissThreadError} resend={threadErrorResend} />
           )}
           {engineUnavailable && !providerBannerDismissed && (
             <ProviderStatusBanner

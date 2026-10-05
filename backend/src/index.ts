@@ -46,6 +46,7 @@ import {
 } from "./fleet/reconciler";
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
+import { registerRunResendRoute } from "./runs/resend-route";
 import { terminalRoutes } from "./runs/terminal";
 import { runFeedbackRoutes } from "./runs/feedback-routes";
 import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
@@ -450,6 +451,7 @@ app.route("/api/chat", chatRoutes);
 app.route("/api/lab", labRoutes);
 app.route("/api/operator", operatorRoutes);
 
+registerRunResendRoute(runsRoutes); // Lives outside runs/routes.ts, which is at its size cap.
 app.route("/api/runs", runsRoutes);
 app.route("/api/spend", spendRoutes);
 spendAllowanceDefaultUsd(); // boot-time validation of SPEND_ALLOWANCE_USD against the ledger ceiling (logged once)

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import type { RunUpload } from "@useagent/agent-client/wire";
 import { db, type Executor } from "../db/client";
@@ -180,6 +181,42 @@ export async function listRunUploads(runId: string): Promise<UserUploadRecord[]>
     .from(userUploads)
     .where(eq(userUploads.runId, runId))
     .orderBy(asc(userUploads.createdAt));
+}
+
+/** Copy a run's claimed uploads into fresh, unclaimed uploads owned by `userId`,
+ * so a new run can claim the same files (an upload binds to one run). The copies
+ * share the stored bytes by storage key. Each copy id is derived from `seed`, so
+ * a retried request names the same uploads and inserts nothing new. */
+export async function copyRunUploadsForUser(input: {
+  readonly runId: string;
+  readonly orgId: string;
+  readonly userId: string;
+  readonly seed: string;
+  readonly expiresAt: Date;
+}): Promise<string[]> {
+  const sources = await listRunUploads(input.runId);
+  if (sources.length === 0) return [];
+  const copies = sources.map((source) => ({
+    id: derivedUploadId(input.seed, source.id),
+    orgId: input.orgId,
+    userId: input.userId,
+    name: source.name,
+    contentType: source.contentType,
+    sizeBytes: source.sizeBytes,
+    sha256: source.sha256,
+    storageKey: source.storageKey,
+    createdAt: source.createdAt,
+    expiresAt: input.expiresAt,
+  }));
+  await db.insert(userUploads).values(copies).onConflictDoNothing({ target: userUploads.id });
+  return copies.map((copy) => copy.id);
+}
+
+/** A stable UUID (version 5 layout) from a seed and a source upload id. */
+function derivedUploadId(seed: string, sourceId: string): string {
+  const hex = createHash("sha256").update(`${seed}\u0000${sourceId}`).digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** Inbound attachments for a SET of runs, batched into one query and grouped by

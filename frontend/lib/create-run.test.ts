@@ -3,6 +3,7 @@ import {
   continueNativeChildAsSession,
   createRun,
   createThreadMessage,
+  resendRun,
   runCreateFailureMessage,
   selectRunCreateAttempt,
 } from "./create-run";
@@ -95,6 +96,22 @@ describe("createThreadMessage", () => {
       text: "Add keyboard navigation",
       attachments: ["upload-1"],
     });
+  });
+});
+
+describe("resendRun", () => {
+  test("posts to the failed run's resend route and retries a transient failure with the same key", async () => {
+    responses.push(new Response(null, { status: 503 }), Response.json({ id: "run-2" }, { status: 201 }));
+
+    const response = await resendRun("run 1", "resend-key-1");
+
+    expect(response.status).toBe(201);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.input).toBe("/api/runs/run%201/resend");
+      expect(call.init?.method).toBe("POST");
+      expect(new Headers(call.init?.headers).get("Idempotency-Key")).toBe("resend-key-1");
+    }
   });
 });
 

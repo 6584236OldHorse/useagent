@@ -29,6 +29,7 @@ import {
 } from "@/components/pro/running-phase";
 import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
 import { useSpend } from "@/hooks/use-spend";
+import { useResendRun } from "@/components/chat/use-resend-run";
 
 /**
  * The reply composer of a thread plus everything that frames it: the running
@@ -196,6 +197,8 @@ export function ConversationComposer({
     });
   };
   const shownError = threadError ?? compactFailure;
+  // A thread error is always the newest turn's failure; Resend sends that turn again.
+  const resend = useResendRun(threadError ? (turns.at(-1)?.run.id ?? null) : null);
   const dismissShownError = () => {
     if (threadError) onDismissThreadError();
     else setCompactFailure(null);
@@ -232,6 +235,7 @@ export function ConversationComposer({
       stopError={stopError}
       threadError={shownError}
       onDismissThreadError={dismissShownError}
+      threadErrorResend={resend}
       notice={handoffNotice}
       onDismissNotice={onDismissHandoffNotice}
       engineUnavailable={engineUnavailable}
