@@ -162,6 +162,15 @@ describe("runCreateFailureMessage", () => {
     ).toBe("Anthropic reports insufficient credits. Add credits in Settings.");
   });
 
+  test("shows the backend's reason when a rejection carries no message", async () => {
+    expect(
+      await runCreateFailureMessage(
+        Response.json({ error: "invalid_command", reason: "unknown command" }, { status: 400 }),
+        "backend 400",
+      ),
+    ).toBe("unknown command");
+  });
+
   test("uses the fallback for an unstructured response", async () => {
     expect(await runCreateFailureMessage(new Response(null, { status: 503 }), "backend 503")).toBe(
       "backend 503",

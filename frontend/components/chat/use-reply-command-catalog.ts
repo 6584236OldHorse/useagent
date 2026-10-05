@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   type CanonicalCommandView,
   type CommandCatalogState,
-  resolveCommandCatalog,
+  intentCommands, resolveCommandCatalog,
   selectSessionCommands,
 } from "@/components/chat/canonical-timeline";
 import type { SlashCommand } from "@/components/chat/slash-command";
@@ -87,11 +87,10 @@ export function useReplyCommandCatalog(
     () => resolveCommandCatalog(durableCommands, fetchState, engine),
     [durableCommands, fetchState, engine],
   );
+  // Typed intents and the Compact action: the session's own catalog only. A primed (stale)
+  // catalog still lists in the picker through `catalogState`, and a pick sends the text verbatim.
   const commands: SlashCommand[] = useMemo(
-    () =>
-      catalogState.status === "ready"
-        ? catalogState.commands.map((c) => ({ name: c.name, description: c.description ?? null }))
-        : [],
+    () => intentCommands(catalogState).map((c) => ({ name: c.name, description: c.description ?? null })),
     [catalogState],
   );
   return { catalogState, commands };

@@ -4,7 +4,7 @@
 // showing stale commands. `resolveCommandCatalog` folds the durable catalog + fetch into one
 // honest state (loading / unavailable / error / ready[+stale]).
 import { describe, expect, test } from "bun:test";
-import { resolveCommandCatalog, selectSessionCommands, type StoredCanonicalEvent } from "./canonical-timeline";
+import { intentCommands, resolveCommandCatalog, selectSessionCommands, type StoredCanonicalEvent } from "./canonical-timeline";
 
 function cmds(over: {
   runId: string;
@@ -77,5 +77,11 @@ describe("resolveCommandCatalog (one honest command-picker state)", () => {
     expect(resolveCommandCatalog(null, done([{ name: "x" }]), "codex")).toEqual({ status: "ready", commands: [{ name: "x" }], source: "codex", stale: true });
     expect(resolveCommandCatalog(null, done([]), "codex")).toEqual({ status: "unavailable", source: "codex" });
     expect(resolveCommandCatalog(null, err, "codex")).toEqual({ status: "error" });
+  });
+
+  test("typed intents come only from the session's own catalog; a primed catalog is display only", () => {
+    expect(intentCommands(resolveCommandCatalog([{ name: "compact" }], loading, "codex"))).toEqual([{ name: "compact" }]);
+    expect(intentCommands(resolveCommandCatalog(null, done([{ name: "compact" }]), "codex"))).toEqual([]);
+    expect(intentCommands({ status: "loading" })).toEqual([]);
   });
 });
