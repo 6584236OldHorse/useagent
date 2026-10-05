@@ -96,7 +96,7 @@ import { cx } from "@/utils/cx";
  * A reply starts a child run in the same thread and arrives on the open stream -
  * never navigating away, never reconnecting.
  */
-export function SessionView({ initialThread, initialOutline = null, initialRelationshipHint = "legacy_or_off", assistantIdentity, readOnlyMessage, onNewestTurnChange }: {
+export function SessionView({ initialThread, initialOutline = null, initialRelationshipHint = "legacy_or_off", assistantIdentity, readOnlyMessage, onNewestTurnChange, railDefaultOpen = true }: {
   initialThread: ApiRun[];
   /** Windowed initial loading (long threads): the WHOLE thread's per-turn
    *  skeleton, while `initialThread` carries only the root + the fully-loaded
@@ -109,6 +109,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   /** The thread's newest run as the live stream sees it, for a header that
    *  renders outside this view (a bot header's per-turn model label). */
   onNewestTurnChange?: (run: ApiRun) => void;
+  /** Whether the runtime rail starts open on md+; a bot thread starts on its conversation. */
+  railDefaultOpen?: boolean;
 }) {
   const root = initialThread[0];
   if (!root) throw new Error("SessionView requires a non-empty thread");
@@ -497,19 +499,17 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   const hasRuntimeSurfaces = normalizeEngine(newest.engine) !== "chat";
   const [railOverride, setRailOverride] = useState<boolean | null>(null);
   const [railExpanded, setRailExpanded] = useState(false);
-  const railOpen = railOverride ?? hasRuntimeSurfaces;
-  // Below md the SAME rail renders as a bottom slide-over sheet and starts
-  // CLOSED (chat full-bleed): an explicit open - the thread bar's opener or a
-  // workpiece auto-open, both of which set railOverride - slides it up.
+  const railOpen = railOverride ?? (railDefaultOpen && hasRuntimeSurfaces);
+  // Below md the SAME rail renders as a bottom slide-over sheet and starts CLOSED (chat
+  // full-bleed): an explicit open (thread bar opener, workpiece auto-open) sets railOverride.
   const isMobile = useIsMobile();
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLElement>(null);
-  // The sheet's md+ trigger is INSUFFICIENT WIDTH, not a second breakpoint:
-  // when the split container cannot hold the conversation floor plus the rail
-  // minimum side by side (SPLIT_MIN, e.g. the sidebar re-expanded on a
-  // tablet-width window), the same slide-over takes over. Below md the
-  // max-md:* classes own first paint; the measurement only extends the
-  // trigger upward.
+  // The sheet's md+ trigger is INSUFFICIENT WIDTH, not a second breakpoint: when the
+  // split container cannot hold the conversation floor plus the rail minimum side by
+  // side (SPLIT_MIN, e.g. the sidebar re-expanded on a tablet-width window), the same
+  // slide-over takes over. Below md the max-md:* classes own first paint; the
+  // measurement only extends the trigger upward.
   const splitTooNarrow = useSplitTooNarrow(bodyRef);
   const surfacesSheet = isMobile || splitTooNarrow;
   const sheetSurfacesOpen = railOverride ?? false;

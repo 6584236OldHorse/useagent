@@ -152,7 +152,7 @@ describe("unified shell contract", () => {
     expect(sessionView).toContain(
       'const hasRuntimeSurfaces = normalizeEngine(newest.engine) !== "chat"',
     );
-    expect(sessionView).toContain("const railOpen = railOverride ?? hasRuntimeSurfaces");
+    expect(sessionView).toContain("const railOpen = railOverride ?? (railDefaultOpen && hasRuntimeSurfaces)");
   });
 
   test("uses authenticated repository data for project shortcuts", () => {

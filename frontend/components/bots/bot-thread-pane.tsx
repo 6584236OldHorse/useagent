@@ -87,6 +87,8 @@ export function BotThreadPane({ bot, thread }: { bot: ApiBot; thread: ThreadView
         assistantIdentity={botAssistantIdentity(liveBot)}
         readOnlyMessage={botReadOnlyMessage(liveBot) ?? undefined}
         onNewestTurnChange={onNewestTurnChange}
+        // A bot thread is read on its conversation; the rail opens on demand.
+        railDefaultOpen={false}
       />
     </>
   );
