@@ -172,7 +172,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("? { runtimeMode, createdAt, ...controlMetadata }");
     // Native activity projection lives with the turn projector the adapter drives.
     const projectorSource = readFileSync(new URL("./turn-projector.ts", import.meta.url), "utf8");
-    expect(projectorSource).toContain("activityStep(activity, threadId, engine)");
+    expect(projectorSource).toContain("activityStep(recordedRuntimeActivity(activity, redact), threadId, engine)");
     expect(projectorSource).toContain("ctx.publishDelta?.(projection.delta)");
     // The observer feeds the watchdog every activity and, for a read-only run, answers its write requests.
     expect(waitSource).toContain("projector.apply(snapshot, observe)");

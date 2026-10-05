@@ -10,6 +10,7 @@ import { type EngineRunContext } from "./types";
 import { appendOnlyMessageCapture, runtimeRootMessageBatches } from "./runtime-root-messages";
 import { turnRunIds } from "./turn-recovery";
 import { runtimeUsageSignature } from "./runtime-usage-frame";
+import { recordedRuntimeActivity } from "./runtime-v2-view";
 
 type RuntimeActivity = RuntimeThreadSnapshot["thread"]["activities"][number];
 
@@ -119,7 +120,7 @@ export function createTurnProjector(input: {
         }
         await observe?.(activity);
         if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
-        const step = redact.unknown(activityStep(activity, threadId, engine));
+        const step = redact.unknown(activityStep(recordedRuntimeActivity(activity, redact), threadId, engine));
         const key = runtimeActivityStepKey(activity);
         const priorStepId = steps.get(key);
         if (priorStepId && ctx.updateStep) {

@@ -8,8 +8,13 @@
 // Activity ids are `<item id>:<phase>` (started, updated, completed): each
 // lifecycle phase is its own ledger row, and a later revision of the same
 // phase replaces its row (the ledger upserts by id). Every payload carries the
-// runtime's own record under `v2`, bounded (boundedV2Record). Command output and file diffs
-// never reach the plane: the runtime strips them from its wire copy.
+// runtime's own record under `v2`. Command output and file diffs never reach
+// the plane: the runtime strips them from its wire copy.
+//
+// The view keeps every value whole. Only a record point cuts long values
+// (recordedRuntimeActivity), and a string is redacted whole before it is cut:
+// a cut first could leave part of a secret the redactor no longer recognizes.
+import type { SecretRedactor } from "../secrets/redact";
 import type { RuntimeActivity, RuntimeMessage, RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { v2RunSettled, type V2Projection, type V2Run, type V2ThreadSnapshot, type V2TurnItem } from "./runtime-v2-wire";
 
@@ -35,30 +40,62 @@ const time = (value: unknown): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-function boundedValue(value: unknown, depth: number, stringLimit = RECORD_STRING_LIMIT): unknown {
-  if (typeof value === "string") {
-    return value.length > stringLimit ? `${value.slice(0, stringLimit - 1)}…` : value;
-  }
+type Redact = Pick<SecretRedactor, "text">;
+
+/** A string within `limit`, redacted whole before it is cut. */
+function cut(value: string, limit: number, redact: Redact): string {
+  if (value.length <= limit) return value;
+  const safe = redact.text(value);
+  return safe.length > limit ? `${safe.slice(0, limit - 1)}…` : safe;
+}
+
+function boundedValue(value: unknown, depth: number, stringLimit: number, redact: Redact): unknown {
+  if (typeof value === "string") return cut(value, stringLimit, redact);
   if (value === null || typeof value !== "object") return value;
   if (depth >= RECORD_DEPTH_LIMIT) return "[nested]";
   if (Array.isArray(value)) {
-    const kept = value.slice(0, RECORD_ARRAY_LIMIT).map((entry) => boundedValue(entry, depth + 1, stringLimit));
+    const kept = value.slice(0, RECORD_ARRAY_LIMIT).map((entry) => boundedValue(entry, depth + 1, stringLimit, redact));
     return value.length > RECORD_ARRAY_LIMIT ? [...kept, `[${value.length - RECORD_ARRAY_LIMIT} more]`] : kept;
   }
   return Object.fromEntries(Object.entries(value)
     .filter(([key]) => !RECORD_OMITTED_KEYS.has(key))
-    .map(([key, entry]) => [key, boundedValue(entry, depth + 1, stringLimit)]));
+    .map(([key, entry]) => [key, boundedValue(entry, depth + 1, stringLimit, redact)]));
 }
-
-/** A tool's input as its step shows it: every string within the detail limit. */
-const boundedInput = (value: unknown): unknown => boundedValue(value, 0, DETAIL_LIMIT);
 
 /** The runtime's record as the payload carries it: long strings cut, long lists
  *  capped, context and attachments left out, and past the byte limit only its identity. */
-export function boundedV2Record(value: Rec): Rec {
-  const bounded = boundedValue(value, 0) as Rec;
+export function boundedV2Record(value: Rec, redact: Redact): Rec {
+  const bounded = boundedValue(value, 0, RECORD_STRING_LIMIT, redact) as Rec;
   if (new TextEncoder().encode(JSON.stringify(bounded)).byteLength <= RECORD_BYTE_LIMIT) return bounded;
   return { id: value.id, type: value.type, status: value.status, truncated: true };
+}
+
+/** The tool input a step shows (arguments, a command): every string within the detail limit. */
+const BOUNDED_DATA_KEYS = new Set(["arguments", "input", "item"]);
+
+/**
+ * An activity as the plane records it (ledger event and step): details and
+ * tool input within the detail limit, the runtime's record bounded
+ * (boundedV2Record). Everything else is left for the record's own redaction.
+ */
+export function recordedRuntimeActivity(activity: RuntimeActivity, redact: Redact): RuntimeActivity {
+  const payload = record(activity.payload);
+  if (!payload) return activity;
+  const data = record(payload.data);
+  const v2 = record(payload.v2);
+  return {
+    ...activity,
+    payload: {
+      ...payload,
+      ...(typeof payload.detail === "string" ? { detail: cut(payload.detail, DETAIL_LIMIT, redact) } : {}),
+      ...(typeof payload.summary === "string" ? { summary: cut(payload.summary, DETAIL_LIMIT, redact) } : {}),
+      ...(data ? {
+        data: Object.fromEntries(Object.entries(data).map(([key, value]) =>
+          [key, BOUNDED_DATA_KEYS.has(key) ? boundedValue(value, 0, DETAIL_LIMIT, redact) : value])),
+      } : {}),
+      ...(v2 ? { v2: boundedV2Record(v2, redact) } : {}),
+    },
+  };
 }
 
 /** The thread's latest run: the turn a V1 reader called `latestTurn`. */
@@ -124,11 +161,10 @@ function phaseOf(status: string): Phase {
   return "completed";
 }
 
-function bounded(value: unknown): string | undefined {
+/** A value as detail text: a string as it is, anything else as JSON, blank as absent. */
+function detailText(value: unknown): string | undefined {
   const raw = typeof value === "string" ? value : value === undefined || value === null ? undefined : JSON.stringify(value);
-  const trimmed = raw?.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > DETAIL_LIMIT ? `${trimmed.slice(0, DETAIL_LIMIT - 1)}…` : trimmed;
+  return raw?.trim() || undefined;
 }
 
 /** `server.tool` (Codex MCP) and `mcp__server__tool` (Claude) name a server; anything else is a bare tool. */
@@ -167,7 +203,7 @@ function activity(item: V2TurnItem, kind: string, phase: string, payload: Rec, t
     tone,
     kind,
     summary: summaryOf(item, payload),
-    payload: { ...payload, v2: boundedV2Record(item) },
+    payload: { ...payload, v2: item },
     turnId: item.runId,
   };
 }
@@ -183,8 +219,8 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "command_execution",
         data: {
-          input: { command: bounded(item.input) },
-          item: { id: item.id, command: bounded(item.input), ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}) },
+          input: { command: detailText(item.input) },
+          item: { id: item.id, command: detailText(item.input), ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}) },
         },
       }, tone);
     case "file_change": {
@@ -201,14 +237,14 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
     case "web_search":
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "web_search", toolName: "web_search",
-        data: { arguments: { query: Array.isArray(item.patterns) ? bounded(item.patterns.join(" ")) : undefined } },
-        detail: bounded(item.results),
+        data: { arguments: { query: Array.isArray(item.patterns) ? detailText(item.patterns.join(" ")) : undefined } },
+        detail: detailText(item.results),
       }, tone);
     case "file_search":
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "dynamic_tool_call", toolName: "file_search",
-        data: { arguments: { pattern: bounded(item.pattern) } },
-        detail: bounded(item.results),
+        data: { arguments: { pattern: detailText(item.pattern) } },
+        detail: detailText(item.results),
       }, tone);
     case "dynamic_tool": {
       const identity = v2ToolIdentity(text(item.toolName));
@@ -217,8 +253,8 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
         itemType: identity.server ? "mcp_tool_call" : "dynamic_tool_call",
         ...(identity.tool ? { toolName: identity.tool } : {}),
         ...(identity.server ? { server: identity.server } : {}),
-        data: { arguments: boundedInput(item.input) },
-        detail: bounded(item.output),
+        data: { arguments: item.input },
+        detail: detailText(item.output),
       }, tone);
     }
     default:
@@ -251,8 +287,8 @@ function subagentActivities(item: V2TurnItem, projection: V2Projection): Runtime
     title: text(subagent?.title) ?? item.title,
     ...(text(subagent?.model) ? { model: subagent!.model } : {}),
     status: SUBAGENT_STATUS[item.status] ?? item.status,
-    detail: bounded(item.prompt),
-    ...(bounded(item.result ?? item.progress) ? { summary: bounded(item.result ?? item.progress) } : {}),
+    detail: detailText(item.prompt),
+    ...(detailText(item.result ?? item.progress) ? { summary: detailText(item.result ?? item.progress) } : {}),
   };
   const tone = item.status === "failed" ? "error" : "info";
   const started = activity(item, "task.started", "started", { ...payload, status: "running" }, "info");
@@ -266,7 +302,7 @@ function requestActivities(item: V2TurnItem, projection: V2Projection): RuntimeA
   const question = item.type === "user_input_request";
   const requested = activity(item, question ? "user-input.requested" : "approval.requested", "requested", question
     ? { requestId: item.requestId, questions: item.questions }
-    : { requestId: item.requestId, requestKind: item.requestKind, ...(bounded(item.prompt) ? { detail: bounded(item.prompt) } : {}) },
+    : { requestId: item.requestId, requestKind: item.requestKind, ...(detailText(item.prompt) ? { detail: detailText(item.prompt) } : {}) },
   "approval");
   if (!resolved) return [requested];
   return [requested, activity(item, question ? "user-input.resolved" : "approval.resolved", "resolved", {
@@ -340,7 +376,7 @@ export function runtimeChildThreadActivities(snapshot: V2ThreadSnapshot, parentT
         text: message.text,
         status: message.streaming ? "running" : "completed",
         streamKind: "assistant_text",
-        v2: boundedV2Record(message),
+        v2: message,
       },
       turnId: message.runId,
     }));
@@ -359,7 +395,7 @@ function contextActivities(projection: V2Projection): RuntimeActivity[] {
       tone: "info" as const,
       kind: "context-window.updated",
       summary: "Context window",
-      payload: { ...usage, v2: boundedV2Record(thread) },
+      payload: { ...usage, v2: thread },
       turnId: run?.id ?? null,
     }];
   });

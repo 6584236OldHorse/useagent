@@ -21,6 +21,7 @@ import {
 } from "@useagent/agent-harness";
 import { toolServerDisplayName } from "@useagent/agent-harness/canonical";
 import { runtimeStepIo } from "./runtime-step-io";
+import { recordedRuntimeActivity } from "./runtime-v2-view";
 import {
   buildV2MessageDispatch,
   buildV2ProjectCreate,
@@ -711,9 +712,10 @@ export function runtimeQuestionRequest(
 export function runtimeActivityProviderEvent(
   ctx: Pick<EngineRunContext, "runId" | "threadId">,
   sessionId: string,
-  activity: RuntimeActivity,
+  source: RuntimeActivity,
   redact: Pick<SecretRedactor, "text" | "unknown">,
 ): ProviderEventInput {
+  const activity = recordedRuntimeActivity(source, redact);
   const question = runtimeQuestionRequest(activity, sessionId);
   const approval = runtimeApprovalRequest(activity, sessionId);
   const payload = record(activity.payload);
