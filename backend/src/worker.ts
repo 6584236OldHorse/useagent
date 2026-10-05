@@ -385,7 +385,7 @@ async function runWorker(runId: string): Promise<void> {
       ADAPTER_TIMEOUT_MS,
       () => ac.abort(),
     );
-    const ceiling = setTimeout(() => ac.abort(), ADAPTER_MAX_MS);
+    const ceiling = Number.isFinite(ADAPTER_MAX_MS) ? setTimeout(() => ac.abort(), ADAPTER_MAX_MS) : undefined;
     const onBusEvent = (event: BusEvent): void => {
       if (event.type === "step") activity.touch();
     };
@@ -588,18 +588,17 @@ async function runChat(
 export const RUNS_ROOT =
   process.env.RUNS_ROOT?.trim() || join(import.meta.dir, "..", ".runs");
 
-// INACTIVITY window on a single engine run: the abort fires only after this
-// much SILENCE on the run's event channel (every step/delta/native frame
-// resets it). Overridable (test/ops) like the mock's WORKER_STEP_DELAY_MS knob.
-const ADAPTER_TIMEOUT_MS = process.env.ENGINE_TIMEOUT_MS
-  ? Number(process.env.ENGINE_TIMEOUT_MS)
-  : 600_000; // 10min of silence = hung; long busy turns keep resetting this
-
-// Absolute ceiling regardless of activity — runaway protection only (an agent
-// looping forever WITH output would otherwise never time out).
-const ADAPTER_MAX_MS = process.env.ENGINE_MAX_MS
-  ? Number(process.env.ENGINE_MAX_MS)
-  : 4 * 60 * 60_000; // 4h
+// A turn runs until it finishes or someone stops it: no silence window and no
+// ceiling by default. An operator who wants either sets ENGINE_TIMEOUT_MS (the
+// abort fires after that much SILENCE on the run's event channel; every
+// step/delta/native frame resets it) or ENGINE_MAX_MS (absolute, regardless of
+// activity). Unset, empty or non-positive means off.
+function operatorWindowMs(raw: string | undefined): number {
+  const parsed = Number(raw?.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.POSITIVE_INFINITY;
+}
+const ADAPTER_TIMEOUT_MS = operatorWindowMs(process.env.ENGINE_TIMEOUT_MS);
+const ADAPTER_MAX_MS = operatorWindowMs(process.env.ENGINE_MAX_MS);
 
 async function runEngine(
   runId: string,

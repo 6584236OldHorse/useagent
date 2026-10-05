@@ -43,9 +43,11 @@ function fakeSandbox(options: {
   ptySendInput?: (pid: number, data: Uint8Array) => Promise<void>;
   ptyWait?: () => Promise<{ exitCode: number; error?: string; stdout: string; stderr: string }>;
   run?: (command: string, options?: unknown) => Promise<unknown>;
+  setTimeout?: (timeoutMs: number) => Promise<void>;
   write?: (path: string, data: string) => Promise<unknown>;
 } = {}): E2BSandbox {
   return {
+    setTimeout: options.setTimeout ?? (async () => {}),
     commands: {
       kill: options.kill ?? (async () => true),
       list: options.list ?? (async () => []),
@@ -215,6 +217,25 @@ describe("Cube sandbox provider", () => {
 
     create.mockRestore();
     getInfo.mockRestore();
+  });
+
+  test("keepAlive sets the sandbox lifetime again from the create option", async () => {
+    process.env.CUBE_API_URL = "http://127.0.0.1:3000";
+    process.env.CUBE_PROXY_SCHEME = "https";
+    process.env.CUBE_SANDBOX_DOMAIN = "sandbox.example.com";
+    const extended: number[] = [];
+    const sandbox = fakeSandbox({ setTimeout: async (timeoutMs) => { extended.push(timeoutMs); } });
+    const create = spyOn(E2BSandbox, "create").mockResolvedValue(sandbox);
+    const getInfo = spyOn(E2BSandbox, "getInfo").mockResolvedValue(sandboxInfo());
+    try {
+      const handle = await cubeSandboxProvider("cube-key", ready).create({ autoStopInterval: 15, snapshot: "agent-template" });
+      await handle.keepAlive?.();
+      await handle.keepAlive?.();
+      expect(extended).toEqual([15 * 60_000, 15 * 60_000]);
+    } finally {
+      create.mockRestore();
+      getInfo.mockRestore();
+    }
   });
 
   test("allows public Cube traffic only behind an explicitly trusted ingress", async () => {

@@ -472,6 +472,11 @@ class CubeFileSystem implements SandboxFileSystem {
   }
 }
 
+/** Minutes a sandbox lives from creation or from its last keepAlive; the create option wins over the env default. */
+function cubeLifetimeMinutes(autoStopInterval?: number): number {
+  return autoStopInterval && autoStopInterval > 0 ? autoStopInterval : positiveInteger(process.env.SANDBOX_AUTO_STOP_MIN, 30);
+}
+
 class CubeSandboxHandle implements SandboxHandle {
   readonly providerKind = "cube" as const;
   readonly id: string;
@@ -487,6 +492,7 @@ class CubeSandboxHandle implements SandboxHandle {
     info: SandboxInfo,
     private readonly connection: CubeConnectionOptions,
     sandbox: E2BSandbox | null,
+    private readonly lifetimeMinutes: number = cubeLifetimeMinutes(),
   ) {
     this.id = info.sandboxId;
     this.cpu = info.cpuCount;
@@ -510,6 +516,12 @@ class CubeSandboxHandle implements SandboxHandle {
 
   async start(): Promise<void> {
     await this.connected();
+  }
+
+  /** The lifetime is absolute from the last time it was set, so a long turn sets it again. */
+  async keepAlive(): Promise<void> {
+    const sandbox = await this.connected();
+    await sandbox.setTimeout(this.lifetimeMinutes * 60_000);
   }
 
   async delete(): Promise<void> {
@@ -549,9 +561,7 @@ class CubeProvider implements SandboxProvider {
   async create(options: SandboxCreateOptions = {}): Promise<SandboxHandle> {
     const template = options.snapshot?.trim() || process.env.CUBE_TEMPLATE_ID?.trim();
     if (!template) throw new Error("CUBE_TEMPLATE_ID is required when SANDBOX_PROVIDER=cube");
-    const timeoutMinutes = options.autoStopInterval && options.autoStopInterval > 0
-      ? options.autoStopInterval
-      : positiveInteger(process.env.SANDBOX_AUTO_STOP_MIN, 30);
+    const timeoutMinutes = cubeLifetimeMinutes(options.autoStopInterval);
     // Cube rejects shell bootstrap variables such as BASH_ENV at its API
     // boundary. useAgent explicitly sources the protected dotenv when each
     // engine boots, so this compatibility-only variable is unnecessary here.
@@ -578,7 +588,7 @@ class CubeProvider implements SandboxProvider {
     const sandbox = await E2BSandbox.create(template, createOptions);
     assertCubeConnectionCurrent(this.connection);
     const info = await E2BSandbox.getInfo(sandbox.sandboxId, this.connection);
-    const handle = new CubeSandboxHandle(info, this.connection, sandbox);
+    const handle = new CubeSandboxHandle(info, this.connection, sandbox, timeoutMinutes);
     try {
       await waitForCubeReadiness(
         handle,

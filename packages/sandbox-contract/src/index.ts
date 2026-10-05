@@ -177,6 +177,10 @@ export interface SandboxHandle {
   start(): Promise<void>;
   delete(): Promise<void>;
   getPreviewLink(port: number): Promise<SandboxPreviewLink>;
+  /** Push the provider's own lifetime clock out again, for a provider whose
+   * sandboxes stop at an absolute deadline; a turn that runs for days calls it
+   * on a timer. Absent when the provider counts inactivity instead. */
+  keepAlive?(): Promise<void>;
 }
 
 export interface SandboxCreateOptions {

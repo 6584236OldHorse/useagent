@@ -99,6 +99,8 @@ export { projectRuntimeAssistantText } from "./turn-projector";
 // settings.json, which T3 applies through an asynchronous settings-watch
 // reconcile. Wait for the reconcile to publish the remote instance before
 // steering; if it does not land in time, fall back to a deterministic restart.
+/** How often a running turn pushes out the sandbox's own lifetime clock (providers with an absolute deadline). */
+const SANDBOX_KEEPALIVE_MS = 5 * 60_000;
 const CODEX_BARRIER_DEADLINE_MS = 5_000;
 const CODEX_VERIFY_DEADLINE_MS = 8_000;
 // T3's authoritative Claude health check includes a 4s CLI version probe and
@@ -373,6 +375,12 @@ export async function waitForRuntimeTurn(
     }
   }, 15_000);
   toolHeartbeat.unref?.();
+  // A provider that stops sandboxes at an absolute deadline has its clock pushed
+  // out for as long as the turn runs; the turn, not the sandbox lifetime, decides when it ends.
+  const keepAlive = setInterval(() => {
+    void sandbox.keepAlive?.().catch(() => {});
+  }, SANDBOX_KEEPALIVE_MS);
+  keepAlive.unref?.();
   const threadId = runtimeThreadId(ctx);
   const priorTurnId = priorSnapshot.thread.latestTurn?.turnId ?? null;
   let currentTurnObserved = false;
@@ -423,6 +431,7 @@ export async function waitForRuntimeTurn(
   } finally {
     clearTimeout(firstActivityTimer);
     clearInterval(toolHeartbeat);
+    clearInterval(keepAlive);
     watchdog.dispose();
   }
   if (watchdog.signal.aborted) throw watchdog.signal.reason;
