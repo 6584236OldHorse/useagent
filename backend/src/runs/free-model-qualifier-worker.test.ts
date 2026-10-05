@@ -900,4 +900,26 @@ describe("free-model qualifier worker", () => {
     expect(probe.requests).toEqual([]);
     expect(records).toHaveLength(0);
   });
+  test("a probe-credential lookup that never answers costs the tick its probes, not its discovery", async () => {
+    const pending = candidate("vendor/pending:free");
+    const { repository, records } = fakeRepository({
+      state: registryState([]),
+      candidates: [pending],
+      claims: [claim(pending)],
+    });
+    const probe = driver({ classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null });
+    const started = Date.now();
+    const result = await runFreeModelQualifierTick({
+      driver: probe.driver,
+      probeCredential: () => new Promise<boolean>(() => {}),
+      repository,
+      discover: discovery("vendor/pending:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(Date.now() - started).toBeLessThan(QUALIFIER_ADMISSION_WAIT_MS + 3_000);
+    expect(result).toMatchObject({ status: "completed", discovered: 1, claimed: 0 });
+    expect(probe.requests).toEqual([]);
+    expect(records).toHaveLength(0);
+  }, 15_000);
 });

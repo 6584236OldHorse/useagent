@@ -327,9 +327,6 @@ export async function runFreeModelQualifierTick(
   const nowMs = deps.nowMs ?? Date.now;
   const driver = deps.driver;
   let maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
-  if (driver && deps.probeCredential && !(await deps.probeCredential().catch(() => false))) {
-    maxProbes = 0;
-  }
   const leaseMs = deps.leaseMs ?? QUALIFIER_LEASE_MS;
   // A read that cannot answer in time (a held lock, an exhausted connection
   // pool) answers "unknown", never "open". The deadline is the tick's own: it
@@ -355,6 +352,17 @@ export async function runFreeModelQualifierTick(
       systemFailure: false,
       publishOutcome: "unchanged",
     };
+  }
+
+  // The probe organisation's own key decides whether this tick probes at all.
+  // The read is a database lookup, so it runs on the tick's clock like the
+  // admission read: no answer in time means no probes this tick.
+  if (driver && deps.probeCredential) {
+    const holdsKey = await awaitWithSignal(
+      deps.probeCredential,
+      AbortSignal.timeout(QUALIFIER_ADMISSION_WAIT_MS + 1_000),
+    ).catch(() => false);
+    if (!holdsKey) maxProbes = 0;
   }
 
   const discovery = await (deps.discover ?? discoverFreeModelCandidates)();
