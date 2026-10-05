@@ -37,6 +37,8 @@ export interface LiveRunner {
   capacity: HeartbeatFrame["capacity"] | null;
   logins: readonly string[];
   imageDigest: string | null;
+  /** The image name and digest this machine was told to pull in its welcome. */
+  image: { readonly ref: string; readonly digest: string } | null;
   lastSeenAt: number;
   readonly forwarders: LoopbackForwarders;
 }
@@ -101,6 +103,7 @@ export class RunnerRegistry {
       logins: row.logins ?? [],
       imageDigest: row.imageDigest,
       lastSeenAt: 0,
+      image: null,
       forwarders: new LoopbackForwarders(),
     };
     this.live.set(row.id, runner);
@@ -260,6 +263,9 @@ export class RunnerRegistry {
       enrolledAt: runner.enrolledAt,
       get online() {
         return registry.isReady(runner);
+      },
+      get image() {
+        return runner.image ?? undefined;
       },
       call: (method, params, options) => requireMux().rpc(method, params, options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       openStream: (target) => requireMux().openStream(target) as Promise<MuxStream>,

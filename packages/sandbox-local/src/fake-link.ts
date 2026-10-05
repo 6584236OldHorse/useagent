@@ -101,6 +101,8 @@ export interface FakeLinkOptions {
   readonly fingerprint?: string;
   readonly enrolledAt?: string;
   readonly online?: boolean;
+  /** The image name the fake machine pulled under. */
+  readonly image?: { readonly ref: string; readonly digest: string };
   /** Answer a call, or throw an error carrying a `code`. */
   readonly onCall?: (method: string, params: unknown) => Promise<unknown> | unknown;
   /** Serve the far end of a stream the provider opened. */
@@ -122,6 +124,7 @@ export function fakeLink(spec: FakeLinkOptions): FakeLink {
     fingerprint: spec.fingerprint ?? "f".repeat(64),
     enrolledAt: spec.enrolledAt ?? "2026-09-08T00:00:00.000Z",
     online: spec.online ?? true,
+    ...(spec.image ? { image: spec.image } : {}),
     calls: [],
     forwards: [],
     released: [],

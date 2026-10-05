@@ -151,6 +151,8 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
         }
         runner = row;
         attached = true;
+        // What this machine pulls under is what a sandbox is created under.
+        live.image = { ref: welcome.image.ref, digest: welcome.image.digest };
         if (helloTimer) clearTimeout(helloTimer);
         mux.send(welcome);
       };

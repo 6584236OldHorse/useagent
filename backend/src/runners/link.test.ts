@@ -147,6 +147,8 @@ describe("runner link", () => {
     mux.send(hello());
     await until(() => welcomes.length === 1);
     expect(welcomes[0]).toMatchObject({ image: IMAGE, minProtocol: 1 });
+    // The directory link names the image the machine was told to pull.
+    expect(registry.directory.get("rn_a")?.image).toEqual({ ref: IMAGE.ref, digest: IMAGE.digest });
     const live = registry.runner("rn_a")!;
     expect(registry.isOnline(live)).toBe(true);
     expect(registry.onlineForUser("org-a", "user-1")?.id).toBe("rn_a");
