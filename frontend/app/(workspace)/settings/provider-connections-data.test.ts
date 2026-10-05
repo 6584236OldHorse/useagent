@@ -6,6 +6,8 @@ import {
   codexAuthStatusLabel,
   codexLoginUrl,
   type ProviderConnectionMeta,
+  MODEL_PROVIDER_CONNECTION_PROVIDERS,
+  offeredConnectionProviders,
   providerConnectionViews,
   safeCodexChatGptLogin,
   safeCodexChatGptStatus,
@@ -198,4 +200,13 @@ describe("provider connection presentation", () => {
       "codex",
     ]);
   });
+});
+
+test("a provider the server withholds from this account has no row", () => {
+  expect(offeredConnectionProviders(null)).toEqual([...MODEL_PROVIDER_CONNECTION_PROVIDERS]);
+  const offered = offeredConnectionProviders(["openrouter", "anthropic", "daytona"]);
+  expect(offered).not.toContain("cerebras");
+  expect(offered).toContain("openrouter");
+  expect(providerConnectionViews([], ["openrouter"]).map((view) => view.provider)).toEqual(["openrouter"]);
+  expect(providerConnectionViews([]).length).toBe(MODEL_PROVIDER_CONNECTION_PROVIDERS.length);
 });

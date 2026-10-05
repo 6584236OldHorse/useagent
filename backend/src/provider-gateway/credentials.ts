@@ -1,3 +1,4 @@
+import { providerOfferedToUser } from "./provider-accounts";
 import { decryptOrgSecretByName } from "../secrets/store";
 import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 import { resolveGatewayProviderApiKeyCredential } from "./api-key-credentials";
@@ -26,6 +27,8 @@ export interface ProviderCredentialResolvers {
   readonly resolveOrgSecret?: (orgId: string, name: string) => Promise<string | null>;
   readonly env?: Record<string, string | undefined>;
   readonly devModeEnabled?: (env?: Record<string, string | undefined>) => boolean;
+  /** Test seam for the PROVIDER_ACCOUNTS account read (default: the user table). */
+  readonly userEmail?: (userId: string) => Promise<string | null>;
 }
 
 /** How long a run waits for its credential reads before failing the turn. */
@@ -89,6 +92,9 @@ export async function resolveProviderCredentialForRun(
   deps: ProviderCredentialResolvers = {},
 ): Promise<ResolvedProviderCredential | null> {
   const resolveUserConnection = deps.resolveUserConnection ?? resolveGatewayProviderApiKeyCredential;
+  // A provider PROVIDER_ACCOUNTS withholds from this run's user has no key for
+  // it, whoever connected one: the gate and the gateway both resolve here.
+  if (!(await providerOfferedToUser(input.provider, input.userId, deps.env ?? process.env, deps.userEmail))) return null;
   // A Free-lane model on OpenCode Zen runs on the deployment's Zen account
   // only: its free marker is ours, so a model Zen reprices must meet the house
   // account's empty balance, never a tenant's funded key.

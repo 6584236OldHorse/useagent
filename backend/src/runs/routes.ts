@@ -65,7 +65,7 @@ import { completeCanonicalRuns } from "./canonicalization-outbox";
 import { subscribeThread } from "./thread-signals";
 import { registerRunChangesRoute } from "./changes-route";
 import type { ApiStep } from "./repo";
-import { defaultModelForEngine, isReplyModelAllowedForEngine } from "./model-policy";
+import { defaultModelForEngine, isReplyModelAllowedForEngine, replyModelAdmittedForUser } from "./model-policy";
 import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
@@ -349,7 +349,7 @@ export async function handleRunCreate(
       ? parentModel
       : defaultModelForEngine(engine);
   const model = requestedModel ?? inheritedModel;
-  if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
+  if (!(await replyModelAdmittedForUser(engine, model, parentModel, c.get("userId")))) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
   const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;

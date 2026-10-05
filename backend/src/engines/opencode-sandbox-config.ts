@@ -19,6 +19,7 @@ import {
   mergeOpenCodeProviderConfig,
   opencodeProviderGatewayOptions,
 } from "../provider-gateway/sandbox-config";
+import { providerOfferedToUser, restrictedProviders } from "../provider-gateway/provider-accounts";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
   THREAD_TOKEN_REUSE_WINDOW_MS,
@@ -121,7 +122,13 @@ export async function prepareOpencodeSandboxConfig(
   baseConfig?: Record<string, unknown>,
 ): Promise<PreparedOpenCodeConfig | null> {
   const gw = toolGatewayConfig();
-  const providerOptions = opencodeProviderGatewayOptions(ctx);
+  // A provider PROVIDER_ACCOUNTS withholds from this run's user gets no token,
+  // and a retained config loses the entry an earlier turn may have left.
+  const withheld = new Set<string>();
+  for (const provider of restrictedProviders().keys()) {
+    if (!(await providerOfferedToUser(provider, ctx.userId))) withheld.add(provider);
+  }
+  const providerOptions = opencodeProviderGatewayOptions(ctx, withheld);
   // GUI automation is provided by the trusted knowledge computer_* tools, so any
   // stale browser MCP entry in retained configuration is removed.
   const browser = null;
@@ -200,6 +207,7 @@ export async function prepareOpencodeSandboxConfig(
         options,
       );
     }
+    for (const provider of withheld) delete providers[provider];
     if (Object.keys(providerOptions).length > 0) cfg.provider = providers;
     console.log(
       `[opencode] sandbox gateways prepared for run ${ctx.runId} ` +

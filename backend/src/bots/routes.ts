@@ -4,6 +4,7 @@ import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
 import { engineResolutionErrorBody, resolveAcceptedEngine } from "../runs/engine-readiness";
 import { isModelAllowedForEngine } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { handleRunCreate } from "../runs/routes";
 import { type RunCreateBody, runCreateBodyLimit } from "../runs/run-create-policy";
 import { resolveSkillSelection } from "../skills/repo";
@@ -80,10 +81,10 @@ function nameTaken(name: string) {
 }
 
 /** Live-config checks a structurally valid preset still has to pass. */
-async function checkPreset(orgId: string, input: BotInput): Promise<PresetProblem | null> {
+async function checkPreset(orgId: string, input: BotInput, userId: string | null | undefined): Promise<PresetProblem | null> {
   const engine = resolveAcceptedEngine(input.engine);
   if (!engine.ok) return { status: engine.status, body: { ...engineResolutionErrorBody(engine), field: "engine" } };
-  if (input.model && !isModelAllowedForEngine(input.engine, input.model)) {
+  if (input.model && (!isModelAllowedForEngine(input.engine, input.model) || !(await modelOfferedToUser(input.engine, input.model, userId)))) {
     return { status: 400, body: { error: "model_not_allowed", field: "model", reason: `${input.model} is not offered for ${input.engine}` } };
   }
   const skillId = input.skillIds[0];
@@ -110,7 +111,7 @@ botsRoutes.post("/", async (c) => {
       409,
     );
   }
-  const problem = await checkPreset(c.get("orgId"), parsed.input);
+  const problem = await checkPreset(c.get("orgId"), parsed.input, c.get("userId"));
   if (problem) return c.json(problem.body, problem.status);
   const holder = await findBotByName(c.get("orgId"), parsed.input.name);
   if (holder) return c.json(nameTaken(holder.name), 409);
@@ -159,7 +160,7 @@ botsRoutes.patch("/:id", async (c) => {
   // Identity edits (name, title, rules, avatar) never touch live engine config:
   // a provider health dip must not block saving the standing rules.
   if (changed.length > 0) {
-    const problem = await checkPreset(c.get("orgId"), parsed.input);
+    const problem = await checkPreset(c.get("orgId"), parsed.input, c.get("userId"));
     if (problem) return c.json(problem.body, problem.status);
   }
   if (parsed.input.name !== base.name) {

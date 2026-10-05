@@ -11,6 +11,7 @@ import {
 } from "../resources/access-snapshot";
 import { captureChatExchange } from "./capture";
 import { chatModelCatalog } from "./models";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
 import { chatLlmEnabled, chatModel, streamChat, type ChatMessage } from "./stream";
@@ -53,7 +54,12 @@ function parseMessages(raw: unknown): RouteChatMessage[] | null {
 // GET /api/chat/models - the served model catalog + current default. Powers the
 // Chat page's real model picker (honest: the UI renders exactly what the key
 // serves). Harmless when the LLM is unconfigured; the list is informational.
-chatRoutes.get("/models", (c) => c.json(chatModelCatalog()));
+// A provider PROVIDER_ACCOUNTS withholds from the reader has no models to list.
+chatRoutes.get("/models", async (c) => {
+  const catalog = chatModelCatalog();
+  const offered = await modelOfferedToUser("chat", catalog.default, c.get("userId"));
+  return c.json(offered ? catalog : { ...catalog, models: [] });
+});
 
 // POST /api/chat - SSE. Body: { messages: [{role, content}], model?, memoryScope? }.
 // Emits `event: context` (citations) once, then a burst of `event: delta` text
@@ -78,7 +84,7 @@ chatRoutes.post("/", async (c) => {
 
   const model =
     typeof body.model === "string" && body.model.trim() ? body.model.trim() : chatModel();
-  if (!chatModelCatalog().models.some((candidate) => candidate.value === model)) {
+  if (!chatModelCatalog().models.some((candidate) => candidate.value === model) || !(await modelOfferedToUser("chat", model, c.get("userId")))) {
     return c.json({ error: "model_not_allowed" }, 400);
   }
   const memoryScope: MemoryScope = isMemoryScope(body.memoryScope) ? body.memoryScope : "org";

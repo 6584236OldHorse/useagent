@@ -18,6 +18,7 @@ import {
   defaultModelForEngine,
   isModelAllowedForEngine,
 } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
@@ -139,6 +140,7 @@ export function validateFleetBatchBody(body: unknown): FleetBatchValidationResul
 export async function resolveFleetBatchTasks(
   orgId: string,
   tasks: readonly FleetBatchTaskInput[],
+  actorId: string | null = null,
 ): Promise<FleetBatchResolveResult> {
   const resolved: ResolvedFleetBatchTask[] = [];
   for (const [index, task] of tasks.entries()) {
@@ -152,7 +154,7 @@ export async function resolveFleetBatchTasks(
     }
     const engine = engineResolution.engine;
     const model = task.model ?? defaultModelForEngine(engine);
-    if (!isModelAllowedForEngine(engine, model)) {
+    if (!isModelAllowedForEngine(engine, model) || !(await modelOfferedToUser(engine, model, actorId))) {
       return { ok: false, status: 400, body: { error: "model_not_allowed", engine, model, index } };
     }
     if (!modelProviderReadyForEngine(engine, model)) {

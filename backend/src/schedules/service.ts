@@ -16,6 +16,7 @@ import {
   USER_FACING_ENGINES,
 } from "../runs/engine-readiness";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { publishOrgChange, type OrgChange } from "../runs/org-signals";
 import { automationSlackConfigError } from "../slack/automation";
 import {
@@ -186,6 +187,13 @@ function assertModelAllowed(engine: EngineId, model: string): void {
   }
 }
 
+/** A provider PROVIDER_ACCOUNTS withholds from the schedule's owner is no model for it, the same answer as above. */
+async function assertModelOffered(engine: EngineId, model: string, userId: string | null): Promise<void> {
+  if (!(await modelOfferedToUser(engine, model, userId))) {
+    throw new ScheduleServiceError(400, { error: "model_not_allowed", engine, model });
+  }
+}
+
 function assertDispatchReady(engine: EngineId, model: string): void {
   assertModelAllowed(engine, model);
   if (!engineModelReadyForDispatch(engine, model)) {
@@ -257,6 +265,7 @@ export async function createScheduleForOrg(
   const engine = resolveDraftEngine(body.engine);
   const model = textField(body, "model") || defaultModelForEngine(engine);
   assertModelAllowed(engine, model);
+  await assertModelOffered(engine, model, identity.userId);
   const skill = await parseSkillPin(identity.orgId, body.skill);
   const repos = (await parseRepos(identity.orgId, body)) ?? [];
   const tags = stringArrayField(body, "tags") ?? [];
@@ -410,6 +419,7 @@ export async function updateScheduleForOrg(
     const engine = patch.engine ?? current.engine;
     const model = patch.model ?? current.model;
     assertModelAllowed(engine, model);
+    await assertModelOffered(engine, model, current.userId);
     const remainsEnabled = patch.enabled ?? current.enabled;
     if (remainsEnabled) {
       assertDispatchReady(engine, model);

@@ -22,6 +22,7 @@ import { boundedRunPrompt, runCreateBodyLimit } from "../runs/run-create-policy"
 import { SpendAllowanceExceededError } from "../runs/spend";
 import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import {
   engineResolutionErrorBody,
   modelProviderReadyForEngine,
@@ -287,7 +288,7 @@ skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
     typeof body.model === "string" && body.model.trim()
       ? body.model.trim()
       : defaultModelForEngine(engine);
-  if (!isModelAllowedForEngine(engine, model)) {
+  if (!isModelAllowedForEngine(engine, model) || !(await modelOfferedToUser(engine, model, c.get("userId")))) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
 

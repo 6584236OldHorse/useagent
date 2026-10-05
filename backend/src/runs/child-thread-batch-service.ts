@@ -11,6 +11,7 @@ import { getRunForOrg } from "./repo";
 import { ensureEligiblePublicRootThreadRelationship, getThreadRelationship } from "./thread-relationship-repo";
 import { isInternalRunOrigin } from "./origin";
 import { isModelAllowedForEngine } from "./model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { engineModelReadyForDispatch } from "./engine-readiness";
 import { boundedChildTitle, CHILD_BATCH_LIMIT, CHILD_PROMPT_MAX_CHARS } from "./child-session-policy";
 import { publishRunLifecycleChange, publishThreadRelationshipChange } from "./org-signals";
@@ -137,7 +138,7 @@ export async function acceptProductChildBatch(input: {
   if (preflight) return classifyReplay(preflight);
 
   for (const child of normalized) {
-    if (!isModelAllowedForEngine(child.engine, child.model) || !engineModelReadyForDispatch(child.engine, child.model)) {
+    if (!isModelAllowedForEngine(child.engine, child.model) || !engineModelReadyForDispatch(child.engine, child.model) || !(await modelOfferedToUser(child.engine, child.model, input.actorId))) {
       throw new Error(`engine/model not ready: ${child.engine}/${child.model}`);
     }
   }

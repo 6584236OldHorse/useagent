@@ -309,12 +309,15 @@ export function claudeProviderGatewayEnvironment(model?: string): Record<string,
 /** OpenCode providers are pre-wired so a warm thread can switch models. */
 export function opencodeProviderGatewayOptions(
   ctx: EngineRunContext,
+  /** Providers PROVIDER_ACCOUNTS withholds from this run's user: no token is minted for them. */
+  withheld: ReadonlySet<string> = new Set(),
 ): Partial<Record<ProviderId, OpenCodeProviderOptions>> {
-  const anthropicToken = mintResidentThreadToken(ctx, "opencode", "anthropic");
-  const openaiToken = mintResidentThreadToken(ctx, "opencode", "openai");
-  const openrouterToken = mintResidentThreadToken(ctx, "opencode", "openrouter");
-  const cerebrasToken = mintResidentThreadToken(ctx, "opencode", "cerebras");
-  const zenToken = mintResidentThreadToken(ctx, "opencode", "opencode");
+  const mint = (provider: ProviderId) => withheld.has(provider) ? null : mintResidentThreadToken(ctx, "opencode", provider);
+  const anthropicToken = mint("anthropic");
+  const openaiToken = mint("openai");
+  const openrouterToken = mint("openrouter");
+  const cerebrasToken = mint("cerebras");
+  const zenToken = mint("opencode");
   // OpenCode passes provider options directly to the AI SDK; provider baseURLs
   // include `/v1` for the SDK-specific endpoint suffixes. Claude Code's
   // ANTHROPIC_BASE_URL seam differs and appends `/v1/messages` itself.

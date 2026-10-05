@@ -199,10 +199,20 @@ export const PROVIDER_LABELS: Record<
   },
 };
 
+/** One row per provider this account is offered: every provider unless the
+ *  server's manifest names the offered ones (a restricted provider has no row). */
+export function offeredConnectionProviders(
+  offered: readonly string[] | null | undefined,
+): ProviderConnectionProvider[] {
+  if (!offered) return [...MODEL_PROVIDER_CONNECTION_PROVIDERS];
+  return MODEL_PROVIDER_CONNECTION_PROVIDERS.filter((provider) => offered.includes(provider));
+}
+
 export function providerConnectionViews(
   connections: ProviderConnectionMeta[],
+  offered: readonly string[] | null = null,
 ): ProviderConnectionView[] {
-  return MODEL_PROVIDER_CONNECTION_PROVIDERS.map((provider) => {
+  return offeredConnectionProviders(offered).map((provider) => {
     const providerConnections = connections.filter((item) => item.provider === provider);
     return {
       provider,

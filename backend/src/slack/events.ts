@@ -47,6 +47,7 @@ import { WORKING_PHRASES } from "./streaming";
 import { enqueueSlackTerminalDeliveryForRunTx } from "../runs/finalize";
 import { eq } from "drizzle-orm";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
+import { catalogAccount, modelOfferedTo } from "../provider-gateway/provider-accounts";
 import {
   isSlackSwitchableEngine,
   modelCatalogLine,
@@ -537,6 +538,7 @@ export async function handleSlackEvent(
       text,
       threadTs: slackThreadTs,
     });
+  const account = await catalogAccount(userId);
   if (directives.engine || directives.model) {
     if (rest) {
       prompt = rest;
@@ -560,15 +562,15 @@ export async function handleSlackEvent(
       }
     }
     if (directives.model) {
-      const resolved = resolveModelToken(engine, directives.model);
+      const resolved = resolveModelToken(engine, directives.model, account);
       if (!resolved) {
-        await guide(`Unknown model \`${directives.model}\` for \`${engine}\`. Available: ${modelCatalogLine(engine)}.`);
+        await guide(`Unknown model \`${directives.model}\` for \`${engine}\`. Available: ${modelCatalogLine(engine, account)}.`);
         return { status: "permanent_noop", reason: "unknown_model_directive" };
       }
       model = resolved;
     }
   }
-  if (!isModelAllowedForEngine(engine, model)) {
+  if (!isModelAllowedForEngine(engine, model) || !modelOfferedTo(engine, model, account)) {
     model = defaultModelForEngine(engine);
   }
 

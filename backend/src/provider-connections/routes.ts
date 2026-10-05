@@ -1,6 +1,7 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { catalogAccount, providerOfferedTo, providerOfferedToUser } from "../provider-gateway/provider-accounts";
 import {
   cancelManagedCodexChatGptLogin,
   readManagedCodexChatGptStatus,
@@ -94,10 +95,15 @@ export function createProviderConnectionsRoutes(input: {
   providerConnectionsRoutes.get("/", async (c) => {
     const scope = requireUserScope(c);
     if (!scope) return c.json({ error: "user_required" }, 403);
+    // A provider PROVIDER_ACCOUNTS withholds from this account has no card here.
     const connections = await listCurrentUserProviderConnections(scope);
     const operator = await requestFromOperator(c);
+    const account = await catalogAccount(scope.userId);
     return c.json({
-      connections: operator ? connections : connections.filter((item) => !computerKinds.includes(item.provider)),
+      connections: connections.filter(
+        (item) =>
+          (operator || !computerKinds.includes(item.provider)) && providerOfferedTo(item.provider, account),
+      ),
     });
   });
 
@@ -154,6 +160,9 @@ export function createProviderConnectionsRoutes(input: {
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
     }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
+    }
     const authMethod = c.req.query("authMethod");
     let parsedAuthMethod: ProviderConnectionAuthMethod | undefined;
     if (authMethod !== undefined) {
@@ -177,6 +186,9 @@ export function createProviderConnectionsRoutes(input: {
     const provider = c.req.param("provider");
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
+    }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
     }
 
     let body: Record<string, unknown>;
@@ -227,6 +239,9 @@ export function createProviderConnectionsRoutes(input: {
     const provider = c.req.param("provider");
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
+    }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
     }
     const authMethod = c.req.query("authMethod");
     let parsedAuthMethod: ProviderConnectionAuthMethod | undefined;

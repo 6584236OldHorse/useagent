@@ -125,7 +125,9 @@ import {
   setRunAdmission,
 } from "./commands/admission";
 import { getRunWithSteps } from "./runs/repo";
+import { resolveSession } from "./auth/session";
 import { deploymentProvidedProviders } from "./provider-gateway/provider";
+import { catalogAccount, modelOfferedTo, providersOfferedTo, restrictedProviders } from "./provider-gateway/provider-accounts";
 import { uploadRoutes } from "./uploads/routes";
 import { startUploadCleanup } from "./uploads/cleanup";
 import { internalAutomationRoutes } from "./schedules/internal-routes";
@@ -362,15 +364,21 @@ app.route(
 // lets the UI reflect that unauthenticated dev access is currently open.
 // `capabilities` are honest config-gated booleans (a name is NOT a secret) so
 // surfaces like /agent/plugins can show what is actually wired vs not.
-app.get("/api/config", (c) => {
+app.get("/api/config", async (c) => {
   // Configured engines stay discoverable even while a provider needs attention;
   // the additive readiness map explains why without weakening the fail-closed
   // POST /api/runs dispatch gate. mock/daytona/claude-sdk remain internal aliases.
   const engines = readyUserFacingEngines();
   const configuredEngines = configuredUserFacingEngines();
   const engineReadiness = configuredEngineReadiness();
-  const models = engineModelsForReadyEngines();
-  const configuredModels = engineModelsForConfiguredEngines();
+  // This route is public, so the reader is whoever the session says, or nobody:
+  // a provider PROVIDER_ACCOUNTS restricts shows only to the accounts it lists.
+  const account = restrictedProviders().size > 0
+    ? (await resolveSession(c.req.raw.headers).catch(() => null))?.user.email ?? null
+    : null;
+  const offered = new Set<string>(providersOfferedTo(account));
+  const models = engineModelsForReadyEngines(process.env, account);
+  const configuredModels = engineModelsForConfiguredEngines(process.env, account);
   return c.json({
     auth: "better-auth",
     allowDevOrg: allowDevOrg(),
@@ -385,8 +393,9 @@ app.get("/api/config", (c) => {
     sandbox: { userComputers: userComputersEnabled() },
     // What a runner must speak and boot to lend this deployment a machine.
     runner: runnerConfigBlock(),
-    // Per model provider: served from this deployment's own key (a name, never a value).
-    providers: deploymentProvidedProviders(),
+    // Per model provider this reader is offered: served from this deployment's own key (a name, never a value).
+    providers: Object.fromEntries(Object.entries(deploymentProvidedProviders()).filter(([provider]) => offered.has(provider))),
+    offeredProviders: [...offered],
     // The product tool families a gateway process advertises follow this
     // answer, so a gateway booted with different flags cannot silently drop
     // child-session or bot-handoff tools (knowledge/gateway/product-flags).
@@ -415,11 +424,12 @@ app.get("/api/config", (c) => {
 let freeModelQualifier: FreeModelQualifier | null = null;
 app.post("/api/config/models/refresh", async (c) => {
   const response = await respondToManualRefresh(freeModelQualifier);
+  const account = await catalogAccount(c.get("userId"));
   return c.json({
     ...response.body,
-    free: freeModelLane(),
-    models: engineModelsForReadyEngines(),
-    configuredModels: engineModelsForConfiguredEngines(),
+    free: freeModelLane().filter((model) => modelOfferedTo("opencode", model, account)),
+    models: engineModelsForReadyEngines(process.env, account),
+    configuredModels: engineModelsForConfiguredEngines(process.env, account),
   }, response.status);
 });
 
