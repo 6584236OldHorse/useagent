@@ -6,6 +6,7 @@ import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
 import type { AppEnv } from "../http";
+import { withOrgLock } from "../org-lock";
 
 /** Session reads are renderer-reachable (the desktop copies the HttpOnly
  *  cookie into Chromium), so every token-like field leaves the JSON here. */
@@ -95,21 +96,6 @@ async function managerFor(request: Request, body: Record<string, unknown>, least
   }
   if (!membership) return { status: 403, message: "You are not a member of this workspace" };
   return { session, organizationId, roles: mine };
-}
-
-// ponytail: process-local, which matches the documented one-backend deployment; a database lock if replicas ever appear.
-const orgLocks = new Map<string, Promise<unknown>>();
-/** Changes that can reduce an organisation's owners run one at a time per
- *  organisation, so two owners demoting each other at once cannot both succeed. */
-function withOrgLock<T>(orgId: string, work: () => Promise<T>): Promise<T> {
-  const previous = orgLocks.get(orgId) ?? Promise.resolve();
-  const run = previous.then(work, work);
-  const settled = run.then(() => undefined, () => undefined);
-  orgLocks.set(orgId, settled);
-  void settled.then(() => {
-    if (orgLocks.get(orgId) === settled) orgLocks.delete(orgId);
-  });
-  return run;
 }
 
 /** The request the library sees names the organisation that was locked, so a
