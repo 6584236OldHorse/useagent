@@ -4040,14 +4040,25 @@ html {
   border-radius: 5px;
 }
 /* Anything selected or active is the main blue with black text and a stroke:
- * pill tabs, segmented controls, toggles. */
-.neobrutal :is(button, [role="tab"], [role="radio"], [role="option"])[aria-selected="true"],
+ * pill tabs, segmented controls, toggles. The session tab strip is the
+ * exception: its tab role sits on the title link inside a pill, so the pill
+ * takes the fill and the link stays plain. */
+.neobrutal :is(button, [role="tab"], [role="radio"], [role="option"])[aria-selected="true"]:not([role="presentation"] > a),
 .neobrutal :is(button, [role="tab"], [role="radio"])[data-selected="true"],
 .neobrutal [role="radio"][aria-checked="true"] {
   background: var(--neo-main);
   color: #000;
   box-shadow: var(--neo-stroke);
   border-radius: 5px;
+}
+.neobrutal [role="tablist"] > [role="presentation"].rounded-full {
+  border-radius: 5px;
+  box-shadow: var(--neo-stroke);
+}
+.neobrutal [role="tablist"] > [role="presentation"]:has(> a[role="tab"][aria-selected="true"]) {
+  background: var(--neo-main);
+  color: #000;
+  box-shadow: var(--neo-lift-2);
 }
 /* Fields: the base Input's frame, white with an inset stroke. */
 .neobrutal .rounded-2lg.bg-background-tertiary-default {
