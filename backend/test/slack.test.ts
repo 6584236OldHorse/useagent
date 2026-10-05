@@ -2759,6 +2759,9 @@ describe("slack workspace identity (fail closed)", () => {
     expect(request.email).toBe(email);
     const allowed = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: {} });
     expect(allowed.body.status).toBe("allowed");
+    // A brand-new account gets what a sign-up gives: this workspace and one of its own.
+    const [created] = await db.execute(sql`select id from "user" where email = ${email}`);
+    expect(await db.select({ id: member.id }).from(member).where(eq(member.userId, (created as { id: string }).id))).toHaveLength(2);
     // The event that was in flight before the decision lands now: nothing reopens.
     expect(await ask()).toBe("already_in");
     const [row] = await db.execute(sql`select status from slack_access_requests where id = ${request.id}`);

@@ -13,6 +13,7 @@
  */
 import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
+import { createPersonalOrgForUser } from "../auth-hooks";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
@@ -527,11 +528,18 @@ async function provenIdentity(tx: Executor, row: Request): Promise<string | null
   const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
   if (known) return known.id;
   // Another organisation may be creating this very address at the same moment;
-  // whoever lands first owns the row, and both admissions use it.
-  await tx
+  // whoever lands first owns the row, and both admissions use it. The winner
+  // also gets what a sign-up gives: a workspace of their own, so that being
+  // removed from this one later never leaves them with nowhere to stand.
+  const [won] = await tx
     .insert(user)
     .values({ id: crypto.randomUUID(), name: row.name, email: row.email, emailVerified: false, image: row.image })
-    .onConflictDoNothing({ target: user.email });
+    .onConflictDoNothing({ target: user.email })
+    .returning({ id: user.id });
+  if (won) {
+    await createPersonalOrgForUser({ id: won.id, name: row.name, email: row.email }, tx);
+    return won.id;
+  }
   const [created] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
   return created?.id ?? null;
 }
