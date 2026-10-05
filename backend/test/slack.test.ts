@@ -2935,6 +2935,17 @@ describe("slack workspace identity (fail closed)", () => {
     expect(await db.execute(sql`select 1 from slack_users where team_id = ${TEAM} and slack_user_id = ${orphan}`)).toHaveLength(0);
   });
 
+  test("the requests list and the decisions are pinned to an organisation the caller manages", async () => {
+    const elsewhere = await createOrgSession("elsewhere");
+    const foreign = await json("/api/team/access-requests?organizationId=" + encodeURIComponent(elsewhere.orgId));
+    expect(foreign.status).toBe(403); // the dev user manages the dev org, not this one
+    const own = await json<{ organizationId: string }>("/api/team/access-requests?organizationId=" + encodeURIComponent(DEV_ORG_ID));
+    expect(own.status).toBe(200);
+    expect(own.body.organizationId).toBe(DEV_ORG_ID);
+    const decide = await json(`/api/team/access-requests/${crypto.randomUUID()}/deny`, { method: "POST", body: { organizationId: elsewhere.orgId } });
+    expect(decide.status).toBe(403);
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;

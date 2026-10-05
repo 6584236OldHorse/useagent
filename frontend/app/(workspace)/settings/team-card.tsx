@@ -208,8 +208,10 @@ export function TeamCard() {
                 key={row.id}
                 request={row}
                 busy={busy === row.id}
-                onAllow={(email) => act(row.id, () => allowAccessRequest(row.id, email))}
-                onDeny={() => act(row.id, () => denyAccessRequest(row.id))}
+                onAllow={(email) =>
+                  act(row.id, () => allowAccessRequest(team.organizationId, row.id, email))
+                }
+                onDeny={() => act(row.id, () => denyAccessRequest(team.organizationId, row.id))}
               />
             ))}
           </div>

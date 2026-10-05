@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { db } from "../db/client";
 import { invitation, member, user } from "../db/auth-schema";
 import { NO_WAY_IN } from "../auth-invitations";
+import { withOrgLock } from "../org-lock";
 import { decideAccessRequest, listAccessRequests } from "../slack/access-requests";
 import type { AppEnv } from "../http";
 
@@ -47,38 +48,46 @@ teamRoutes.get("/invitations", async (c) => {
   });
 });
 
-/** Slack senders waiting to be let in, and the admin's answer. Owners and admins only. */
-async function managerId(c: { get(key: "orgId"): string | undefined; get(key: "userId"): string | undefined }): Promise<{ orgId: string; userId: string } | null> {
-  const orgId = c.get("orgId");
-  const userId = c.get("userId");
-  if (!orgId || !userId) return null;
+/** Slack senders waiting to be let in, and the admin's answer. Owners and admins
+ *  of the organisation the caller names (else the request's scope); a decision
+ *  is authorised and made inside the organisation's turn, so a manager whose
+ *  rank was just taken away gets nothing done, and mail goes out afterwards. */
+async function managerOf(organizationId: string, userId: string): Promise<boolean> {
   const [row] = await db
     .select({ role: member.role })
     .from(member)
-    .where(and(eq(member.organizationId, orgId), eq(member.userId, userId)))
+    .where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)))
     .limit(1);
   const roles = (row?.role ?? "").split(",").map((role) => role.trim());
-  return roles.includes("owner") || roles.includes("admin") ? { orgId, userId } : null;
+  return roles.includes("owner") || roles.includes("admin");
 }
 
 teamRoutes.get("/access-requests", async (c) => {
-  const manager = await managerId(c);
-  if (!manager) return c.json({ error: "forbidden" }, 403);
-  return c.json({ requests: await listAccessRequests(manager.orgId) });
+  const organizationId = c.req.query("organizationId")?.trim() || c.get("orgId");
+  const userId = c.get("userId");
+  if (!organizationId || !userId || !(await managerOf(organizationId, userId))) return c.json({ error: "forbidden" }, 403);
+  return c.json({ organizationId, requests: await listAccessRequests(organizationId) });
 });
 
 teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
-  const manager = await managerId(c);
-  if (!manager) return c.json({ error: "forbidden" }, 403);
-  const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
-  const [who] = await db.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, manager.userId)).limit(1);
-  const outcome = await decideAccessRequest({
-    id: c.req.param("id"),
-    orgId: manager.orgId,
-    decidedBy: { id: manager.userId, name: who?.name ?? "", email: who?.email ?? "" },
-    allow: c.req.param("answer") === "allow",
-    email: typeof body.email === "string" ? body.email : null,
+  const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; organizationId?: unknown };
+  const organizationId = (typeof body.organizationId === "string" && body.organizationId.trim()) || c.get("orgId");
+  const userId = c.get("userId");
+  if (!organizationId || !userId) return c.json({ error: "forbidden" }, 403);
+  const decision = await withOrgLock(organizationId, async () => {
+    if (!(await managerOf(organizationId, userId))) return null;
+    const [who] = await db.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
+    return decideAccessRequest({
+      id: c.req.param("id"),
+      orgId: organizationId,
+      decidedBy: { id: userId, name: who?.name ?? "", email: who?.email ?? "" },
+      allow: c.req.param("answer") === "allow",
+      email: typeof body.email === "string" ? body.email : null,
+    });
   });
+  if (!decision) return c.json({ error: "forbidden" }, 403);
+  await decision.deliver?.();
+  const { outcome } = decision;
   if (outcome === "not_found") return c.json({ message: "That request is no longer open" }, 404);
   if (outcome === "email_required") return c.json({ message: "Enter the email address they will sign in with" }, 400);
   if (outcome === "email_invalid") return c.json({ message: "That does not look like an email address" }, 400);

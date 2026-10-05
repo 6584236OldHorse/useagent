@@ -11,7 +11,7 @@
  * made when the person who owns that address accepts it on the web, so a typed
  * address can never claim somebody else's identity. Deny is remembered.
  */
-import { and, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
 import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
@@ -161,6 +161,14 @@ async function settleAccepted(orgId: string, invitationId: string): Promise<Acce
   // The organisation's turn: acceptance holds it from the library's write to
   // the binding, so by the time this runs the membership is there or truly gone.
   return withOrgLock(orgId, async () => {
+    // Read again under the turn: the library restores pending when its own
+    // membership write fails, and that invitation is still live.
+    const state = await invitationState(invitationId, db);
+    if (state === "open") return "invited";
+    if (state === "gone") {
+      await reopenInvitedRequest(invitationId);
+      return "waiting";
+    }
     const acceptor = await acceptorOf(invitationId);
     const bound = acceptor ? await bindInvitedSlackSender(invitationId, acceptor) : "no_membership";
     if (bound === "bound") return "already_in";
@@ -198,11 +206,18 @@ export async function listAccessRequests(orgId: string): Promise<AccessRequestRo
           or(isNull(invitation.id), and(ne(invitation.status, "accepted"), or(ne(invitation.status, "pending"), lte(invitation.expiresAt, new Date())))),
         ),
       );
-    if (stale.length) {
+    for (const row of stale) {
+      // Only the link that was inspected: a replacement attached meanwhile stays.
       await db
         .update(slackAccessRequests)
         .set({ status: "pending", invitationId: null, decidedBy: null, decidedAt: null })
-        .where(and(inArray(slackAccessRequests.id, stale.map((row) => row.id)), eq(slackAccessRequests.status, "invited")));
+        .where(
+          and(
+            eq(slackAccessRequests.id, row.id),
+            eq(slackAccessRequests.status, "invited"),
+            row.invitationId === null ? isNull(slackAccessRequests.invitationId) : eq(slackAccessRequests.invitationId, row.invitationId),
+          ),
+        );
     }
   });
   const rows = await db
@@ -233,15 +248,24 @@ export type AccessDecision = "allowed" | "invited" | "denied" | "not_found" | "e
 
 /** Allow or deny a pending request, in one transaction on a locked row, so two
  *  admins answering at once cannot leave a denied sender bound. */
+export interface Decision {
+  outcome: AccessDecision;
+  /** Mail to send once the caller has released the organisation's turn. */
+  deliver?: () => Promise<void>;
+}
+
 export async function decideAccessRequest(input: {
   id: string;
   orgId: string;
   decidedBy: { id: string; name: string; email: string };
   allow: boolean;
   email?: string | null;
-}): Promise<AccessDecision> {
+}): Promise<Decision> {
   const typed = (input.email ?? "").trim().toLowerCase();
-  if (typed && !validEmail(typed)) return "email_invalid";
+  if (typed && !validEmail(typed)) return { outcome: "email_invalid" };
+  // Checked before the transaction: inside it, with rows locked, a second
+  // pool connection for this read could wait on the first and stall everyone.
+  const typedCanSignIn = typed ? await canSignIn(typed) : false;
   let invited: { id: string; email: string; expiresAt: Date } | null = null;
   const outcome = await db.transaction(async (tx): Promise<AccessDecision> => {
     const [pending] = await tx
@@ -275,7 +299,7 @@ export async function decideAccessRequest(input: {
       // Only the admin's word about the address: an invitation, which binds the
       // sender when the address's owner accepts it on the web.
       if (!typed) return "email_required";
-      if (!(await canSignIn(typed))) return "no_way_in";
+      if (!typedCanSignIn) return "no_way_in";
       invited = { id: crypto.randomUUID(), email: typed, expiresAt: new Date(Date.now() + INVITATION_EXPIRES_IN_SECONDS * 1000) };
       await tx.insert(invitation).values({ ...invited, organizationId: input.orgId, role: "member", status: "pending", inviterId: input.decidedBy.id });
       // The typed address stays on the invitation; the request keeps only what
@@ -289,25 +313,30 @@ export async function decideAccessRequest(input: {
   });
   if (outcome === "allowed") {
     kickSlackOutbox();
-    await welcome(input.orgId, input.id);
+    return { outcome, deliver: () => welcome(input.orgId, input.id) };
   }
   if (outcome === "invited" && invited) {
     const sent: { id: string; email: string; expiresAt: Date } = invited;
-    const [org] = await db.select({ name: organization.name }).from(organization).where(eq(organization.id, input.orgId)).limit(1);
-    try {
-      await deliverInvitation({
-        id: sent.id,
-        email: sent.email,
-        role: "member",
-        organization: { name: org?.name ?? "" },
-        invitation: { expiresAt: sent.expiresAt },
-        inviter: { user: { name: input.decidedBy.name, email: input.decidedBy.email } },
-      });
-    } catch (error) {
-      console.error(`[slack] invitation ${sent.id} could not be sent:`, (error as Error).message);
-    }
+    return {
+      outcome,
+      deliver: async () => {
+        const [org] = await db.select({ name: organization.name }).from(organization).where(eq(organization.id, input.orgId)).limit(1);
+        try {
+          await deliverInvitation({
+            id: sent.id,
+            email: sent.email,
+            role: "member",
+            organization: { name: org?.name ?? "" },
+            invitation: { expiresAt: sent.expiresAt },
+            inviter: { user: { name: input.decidedBy.name, email: input.decidedBy.email } },
+          });
+        } catch (error) {
+          console.error(`[slack] invitation ${sent.id} could not be sent:`, (error as Error).message);
+        }
+      },
+    };
   }
-  return outcome;
+  return { outcome };
 }
 
 /** The person who accepted an invitation an admin sent on a Slack sender's

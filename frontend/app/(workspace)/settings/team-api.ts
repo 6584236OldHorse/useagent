@@ -133,13 +133,19 @@ export async function fetchTeam(input: { readonly userId: string | null }): Prom
     organizationId,
     members,
     invitations,
-    requests: await fetchAccessRequests(),
+    requests: await fetchAccessRequests(organizationId),
     myRole: mine?.role ?? null,
   };
 }
 
-async function fetchAccessRequests(): Promise<AccessRequest[]> {
-  const res = await backendFetch("/api/team/access-requests", { cache: "no-store" });
+/** Pinned to the same organisation as the members, whatever another tab switched to meanwhile. */
+async function fetchAccessRequests(organizationId: string): Promise<AccessRequest[]> {
+  const res = await backendFetch(
+    `/api/team/access-requests?organizationId=${encodeURIComponent(organizationId)}`,
+    {
+      cache: "no-store",
+    },
+  );
   if (res.status === 403) return []; // not a manager
   if (!res.ok) throw new Error(`access-requests ${res.status}`);
   const body = (await res.json()) as { requests?: AccessRequest[] };
@@ -147,18 +153,22 @@ async function fetchAccessRequests(): Promise<AccessRequest[]> {
 }
 
 /** Let a Slack sender in as a member; the email is where they sign in on the web. */
-export async function allowAccessRequest(id: string, email: string | null): Promise<void> {
+export async function allowAccessRequest(
+  organizationId: string,
+  id: string,
+  email: string | null,
+): Promise<void> {
   await post(
     `/api/team/access-requests/${encodeURIComponent(id)}/allow`,
-    email ? { email } : {},
+    email ? { organizationId, email } : { organizationId },
     "Could not let them in.",
   );
 }
 
-export async function denyAccessRequest(id: string): Promise<void> {
+export async function denyAccessRequest(organizationId: string, id: string): Promise<void> {
   await post(
     `/api/team/access-requests/${encodeURIComponent(id)}/deny`,
-    {},
+    { organizationId },
     "Could not record the answer.",
   );
 }
