@@ -34,8 +34,10 @@ export { stopSlackSocketMode } from "./socket-mode";
 export { syncSlackWorkspaceBindings } from "./workspaces";
 
 /** Process one durably accepted inbox claim: verify the ingress-time identity,
- *  hand the event to the run mapper, then stamp an accepted (or replayed) run
- *  with who sent it and where, so the web can show the sender and link back. */
+ *  hand the event to the run mapper, then start the stamp of an accepted (or
+ *  replayed) run with who sent it and where, so the web can show the sender and
+ *  link back. The stamp is best effort and not awaited: the inbox processes
+ *  events serially, so a Slack lookup must never hold the next event. */
 export async function handleSlackInboxClaim({
   payload,
   checkpointStagedAttachmentIds,
@@ -54,7 +56,7 @@ export async function handleSlackInboxClaim({
   if (outcome.status === "accepted" || outcome.status === "replayed") {
     const { teamId, channel, messageTs, slackUserId } = payload.identity;
     if (teamId && channel && messageTs) {
-      await stampSlackTurnIdentity({
+      void stampSlackTurnIdentity({
         runId: outcome.runId,
         orgId: identity.orgId,
         teamId,

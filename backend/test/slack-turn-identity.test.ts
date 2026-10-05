@@ -20,7 +20,7 @@ import {
 } from "../src/slack/inbox";
 import { stampSlackTurnIdentity } from "../src/slack/turn-identity";
 import { upsertSlackUser, upsertSlackWorkspace } from "../src/slack/workspaces";
-import { createOrgSession, json, uid, type OrgSession } from "./helpers";
+import { createOrgSession, json, uid, waitFor, type OrgSession } from "./helpers";
 
 setDefaultTimeout(15_000);
 
@@ -29,6 +29,8 @@ const BOT = "U0BOTBOT";
 const SUNDAR = "U-SUNDAR";
 const PRIYA = "U-PRIYA";
 const GHOST = "U-GHOST";
+/** A member whose users.info never completes; the lookup ends only when aborted. */
+const STUCK = "U-STUCK";
 const PROFILES: Record<string, { name: string; email: string | null; image: string | null }> = {
   [SUNDAR]: { name: "Sundar", email: null, image: "https://avatars.example/sundar-192.png" },
   [PRIYA]: { name: "Priya", email: null, image: null },
@@ -41,10 +43,12 @@ const SLACK_ENV_OVERRIDES: Record<string, string | undefined> = {
   SLACK_APP_TOKEN: undefined,
   SLACK_CHANNEL_ALLOWLIST: undefined,
   SLACK_DEFAULT_ENGINE: "mock",
+  SLACK_IDENTITY_LOOKUP_MS: "300",
 };
 const savedEnv: Record<string, string | undefined> = {};
 
 const calls = { userInfo: [] as string[], permalinks: [] as string[] };
+let stuckAborted = false;
 function permalinkFor(channel: string, ts: string): string {
   return `https://example.slack.com/archives/${channel}/p${ts.replace(".", "")}`;
 }
@@ -59,9 +63,17 @@ const client: SlackClient = {
   startStream: ok,
   appendStream: ok,
   stopStream: ok,
-  userInfo: async ({ user: id }) => {
+  userInfo: ({ user: id, signal }) => {
     calls.userInfo.push(id);
-    return PROFILES[id] ?? null;
+    if (id === STUCK) {
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => {
+          stuckAborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      });
+    }
+    return Promise.resolve(PROFILES[id] ?? null);
   },
   getPermalink: async ({ channel, messageTs }) => {
     calls.permalinks.push(`${channel}:${messageTs}`);
@@ -98,6 +110,14 @@ async function runRow(id: string) {
   return row;
 }
 
+/** The run once its stamp landed: the claim never waits for it, so tests do. */
+function stampedRow(id: string) {
+  return waitFor(async () => {
+    const row = await runRow(id);
+    return row.connector ? row : null;
+  });
+}
+
 beforeAll(async () => {
   // The boot pump is kicked by every persisted event; this suite drives the
   // same claim handler explicitly so each assertion follows a finished claim.
@@ -112,7 +132,7 @@ beforeAll(async () => {
   if (!me) throw new Error("session user missing");
   userId = me.id;
   await upsertSlackWorkspace({ teamId: TEAM, orgId: org.orgId, userId });
-  for (const slackUserId of [SUNDAR, PRIYA, GHOST]) {
+  for (const slackUserId of [SUNDAR, PRIYA, GHOST, STUCK]) {
     await upsertSlackUser({ teamId: TEAM, slackUserId, orgId: org.orgId, userId });
   }
   setSlackClientForTest(client);
@@ -144,7 +164,7 @@ describe("slack turn identity", () => {
     expect(await persistSlackInboxEvent(mention)).toBe("created");
     await processSlackInbox(handleSlackInboxClaim);
     const runId = await runIdForMessage(channel, rootTs);
-    const row = await runRow(runId);
+    const row = await stampedRow(runId);
     expect(row.connector).toEqual({
       source: "slack",
       sender_name: "Sundar",
@@ -184,7 +204,7 @@ describe("slack turn identity", () => {
     }));
     await processSlackInbox(handleSlackInboxClaim);
     const rootId = await runIdForMessage(channel, rootTs);
-    const reply = await runRow(await runIdForMessage(channel, replyTs));
+    const reply = await stampedRow(await runIdForMessage(channel, replyTs));
     expect(reply.parentRunId).toBe(rootId);
     expect(reply.threadId).toBe(rootId);
     expect(reply.connector).toEqual({
@@ -205,13 +225,48 @@ describe("slack turn identity", () => {
       thread_ts: rootTs,
     }));
     await processSlackInbox(handleSlackInboxClaim);
-    const row = await runRow(await runIdForMessage(channel, ghostTs));
+    const row = await stampedRow(await runIdForMessage(channel, ghostTs));
     expect(row.connector).toEqual({
       source: "slack",
       sender_name: null,
       sender_avatar_url: null,
       permalink: permalinkFor(channel, ghostTs),
     });
+  });
+
+  test("a lookup that never completes neither holds the inbox nor loses the turn", async () => {
+    const stuckTs = "1700000000.000400";
+    const afterTs = "1700000000.000500";
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel,
+      user: STUCK,
+      text: "still there?",
+      ts: stuckTs,
+      thread_ts: rootTs,
+    }));
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel,
+      user: PRIYA,
+      text: "and after that",
+      ts: afterTs,
+      thread_ts: rootTs,
+    }));
+    // The pass finishes without the stuck lookup: both claims are done and both
+    // runs accepted before any stamp resolved.
+    await processSlackInbox(handleSlackInboxClaim);
+    const stuckId = await runIdForMessage(channel, stuckTs);
+    const afterId = await runIdForMessage(channel, afterTs);
+    const stuck = await stampedRow(stuckId);
+    expect(stuck.connector).toEqual({
+      source: "slack",
+      sender_name: null,
+      sender_avatar_url: null,
+      permalink: permalinkFor(channel, stuckTs),
+    });
+    expect(stuckAborted).toBe(true);
+    expect((await stampedRow(afterId)).connector?.sender_name).toBe("Priya");
   });
 
   test("a turn typed in the product carries no connector", async () => {

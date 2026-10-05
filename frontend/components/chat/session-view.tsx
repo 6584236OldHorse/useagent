@@ -675,7 +675,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
               />
               {/* Git identity and origin are thread-level: both read the ROOT run's durable wire row. */}
               <GitChips refs={runGitRefs(root)} />
-              <OriginLink connector={root.connector} />
+              <OriginLink connector={snapshot.byId.get(root.id)?.run.connector ?? root.connector} />
               <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">

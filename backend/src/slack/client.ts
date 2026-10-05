@@ -52,10 +52,10 @@ export interface SlackClient {
   /** A workspace member's profile (users.info): name, avatar, and the email when
    *  the users:read.email scope was granted. Optional so recording stubs need not
    *  provide it; a missing method means the profile is unknown. */
-  userInfo?(args: { user: string }): Promise<SlackUserProfile | null>;
+  userInfo?(args: { user: string; signal?: AbortSignal }): Promise<SlackUserProfile | null>;
   /** The permanent link to one message (chat.getPermalink; no extra scope). Optional
    *  like userInfo; a missing method or a failed call means no link is known. */
-  getPermalink?(args: { channel: string; messageTs: string }): Promise<string | null>;
+  getPermalink?(args: { channel: string; messageTs: string; signal?: AbortSignal }): Promise<string | null>;
   /**
    * Upload a file into a thread. Ported from the QM bot (files.uploadV2,
    * a reference implementation src/slack/attachments.ts:189) and a reference bot (files_upload_v2,
@@ -213,10 +213,11 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
       }),
     addReaction: ({ channel, timestamp, name }) =>
       call("reactions.add", { channel, timestamp, name }),
-    userInfo: async ({ user }) => {
+    userInfo: async ({ user, signal }) => {
       try {
         const res = await fetch(`${config.apiUrl}users.info?user=${encodeURIComponent(user)}`, {
           headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
         });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
@@ -329,11 +330,12 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         return { ok: false, class: "transient", message: (err as Error).message };
       }
     },
-    getPermalink: async ({ channel, messageTs }) => {
+    getPermalink: async ({ channel, messageTs, signal }) => {
       try {
         const query = new URLSearchParams({ channel, message_ts: messageTs });
         const res = await fetch(`${config.apiUrl}chat.getPermalink?${query}`, {
           headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; permalink?: string };
         return data.ok && typeof data.permalink === "string" ? data.permalink : null;
