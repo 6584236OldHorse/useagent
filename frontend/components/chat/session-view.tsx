@@ -42,7 +42,7 @@ import {
   RAIL_ICON_BUTTON,
   railTabLabelFor,
   type SurfaceChoice,
-  SurfaceChooser,
+  SurfaceChooser, threadFacts,
 } from "@/components/chat/surface-chooser";
 import { useAgentsRailDeepLink } from "@/components/chat/use-agents-rail-deep-link";
 import { terminalRunIdForThread } from "@/components/chat/terminal-run-state";
@@ -934,8 +934,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     ) : (
                       <SurfaceChooser
                         agentsAvailable={hasSubagents}
-                        diffAvailable={hasFiles}
-                        facts={threadFacts(allSteps)}
+                        diffAvailable={hasFiles} facts={threadFacts(allSteps)}
                         onSelect={setRailTabOverride}
                       />
                     )
@@ -999,14 +998,4 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       </ComposerPrefillProvider>
     </WorkspaceOpenProvider>
   );
-}
-
-/** The chooser's live facts: commands run and files touched in this thread. */
-function threadFacts(steps: readonly { readonly kind: string }[]): string[] {
-  const commands = steps.filter((step) => step.kind === "command").length;
-  const files = steps.filter((step) => step.kind === "file").length;
-  return [
-    ...(commands > 0 ? [`${commands} command${commands === 1 ? "" : "s"} run`] : []),
-    ...(files > 0 ? [`${files} file change${files === 1 ? "" : "s"}`] : []),
-  ];
 }

@@ -183,3 +183,13 @@ function SurfaceRows({
     </div>
   );
 }
+
+/** The chooser's live facts: commands run and files touched in this thread. */
+export function threadFacts(steps: readonly { readonly kind: string }[]): string[] {
+  const commands = steps.filter((step) => step.kind === "command").length;
+  const files = steps.filter((step) => step.kind === "file").length;
+  return [
+    ...(commands > 0 ? [`${commands} command${commands === 1 ? "" : "s"} run`] : []),
+    ...(files > 0 ? [`${files} file change${files === 1 ? "" : "s"}`] : []),
+  ];
+}
