@@ -18,7 +18,7 @@ ARG CLAUDE_CODE_VERSION=2.1.226
 ARG OPENCODE_VERSION=1.18.7
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PATH=/usr/local/bin:/usr/bin:/bin
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
