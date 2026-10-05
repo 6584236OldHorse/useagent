@@ -708,6 +708,13 @@
       "when": 1792800000016,
       "tag": "0106_runs_run_location",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1792800000017,
+      "tag": "0107_session_command_catalogs",
+      "breakpoints": true
     }
   ]
 }

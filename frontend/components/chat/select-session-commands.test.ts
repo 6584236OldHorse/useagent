@@ -79,6 +79,14 @@ describe("resolveCommandCatalog (one honest command-picker state)", () => {
     expect(resolveCommandCatalog(null, err, "codex")).toEqual({ status: "error" });
   });
 
+  test("a fetched catalog carrying the session's revision is the session's own: ready, not stale", () => {
+    const own = { phase: "done" as const, commands: [{ name: "compact" }], revision: 3 };
+    expect(resolveCommandCatalog(null, own, "codex")).toEqual({ status: "ready", commands: [{ name: "compact" }], source: "codex" });
+    expect(intentCommands(resolveCommandCatalog(null, own, "codex"))).toEqual([{ name: "compact" }]);
+    expect(resolveCommandCatalog(null, { ...own, commands: [] }, "codex")).toEqual({ status: "unavailable", source: "codex" });
+    expect(resolveCommandCatalog(null, { ...own, revision: null }, "codex")).toEqual({ status: "ready", commands: [{ name: "compact" }], source: "codex", stale: true });
+  });
+
   test("typed intents come only from the session's own catalog; a primed catalog is display only", () => {
     expect(intentCommands(resolveCommandCatalog([{ name: "compact" }], loading, "codex"))).toEqual([{ name: "compact" }]);
     expect(intentCommands(resolveCommandCatalog(null, done([{ name: "compact" }]), "codex"))).toEqual([]);

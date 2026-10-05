@@ -1,0 +1,11 @@
+{
+  "instanceId": "opencode",
+  "driver": "opencode",
+  "checkedAt": "2026-09-13T20:50:10.585Z",
+  "slashCommands": [
+    {
+      "name": "compact",
+      "description": "Summarize the conversation and reduce context usage"
+    }
+  ]
+}

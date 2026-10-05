@@ -145,7 +145,7 @@ function lineCount(text: string): number {
 const FRONTEND_SIZE_BASELINE: Record<string, number> = {
   "app/(library)/agent/artifacts/[id]/artifact-editor-surfaces.tsx": 1076,
   "components/agent-ui/rich-approval-card.tsx": 880,
-  "components/chat/session-view.tsx": 1010,
+  "components/chat/session-view.tsx": 1004,
 };
 
 describe("file-size ratchet (frontend)", () => {

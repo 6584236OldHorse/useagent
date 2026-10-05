@@ -109,7 +109,7 @@ export function intentCommands(state: CommandCatalogState): readonly CanonicalCo
 
 export function resolveCommandCatalog(
   durable: readonly CanonicalCommandView[] | null,
-  fetchState: { phase: "loading" | "done" | "error"; commands: readonly CanonicalCommandView[] },
+  fetchState: { phase: "loading" | "done" | "error"; commands: readonly CanonicalCommandView[]; revision?: number | null },
   source?: string,
 ): CommandCatalogState {
   if (durable !== null) {
@@ -119,7 +119,11 @@ export function resolveCommandCatalog(
   }
   if (fetchState.phase === "loading") return { status: "loading" };
   if (fetchState.phase === "error") return { status: "error" };
-  return fetchState.commands.length > 0
-    ? { status: "ready", commands: fetchState.commands, source, stale: true }
-    : { status: "unavailable", source };
+  if (fetchState.commands.length === 0) return { status: "unavailable", source };
+  // A fetched catalog that carries a revision is the session's own record (the
+  // runtime engines keep it in the session catalog table, not the canonical
+  // stream); one without is the pre-session priming snapshot, display only.
+  return fetchState.revision != null
+    ? { status: "ready", commands: fetchState.commands, source }
+    : { status: "ready", commands: fetchState.commands, source, stale: true };
 }
