@@ -6,12 +6,12 @@ import {
   configuredRuntimeMode,
   createRuntimeTerminalSessionCleanup,
   drainRuntimeTerminalOutput,
-  ensureRuntimeProviderReadyForTurn,
   projectRuntimeAssistantText,
   readRuntimeTerminalSnapshot,
   RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR,
   waitForRuntimeTurn,
 } from "./runtime-adapter";
+import { ensureRuntimeProviderReadyForTurn } from "./runtime-provider-barrier";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -764,6 +764,78 @@ describe("T3 run adapter gate", () => {
     });
     expect(waits).toBe(1);
     expect(restarts).toBe(0);
+  });
+
+  test("asks T3 to re-check Claude when the cache is not ready, and restarts nothing once it is", async () => {
+    const calls: string[] = [];
+    const looks = [false, true];
+    await ensureRuntimeProviderReadyForTurn({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      readiness: {
+        instanceId: "claudeAgent",
+        driver: "claudeAgent",
+        displayName: "UseAgent Claude gateway current",
+      },
+      barrierDeadlineMs: 35_000,
+      verifyDeadlineMs: 35_000,
+      providerLabel: "Claude",
+      dependencies: {
+        awaitReady: async (_sandbox, _signal, deadlineMs) => {
+          calls.push(`look:${deadlineMs <= 1_500 ? "quick" : "rest"}`);
+          return looks.shift() ?? false;
+        },
+        refresh: async (_sandbox, instanceId, _signal, timeoutMs) => {
+          calls.push(`refresh:${instanceId}:${timeoutMs > 30_000 ? "within-deadline" : "short"}`);
+          return true;
+        },
+        restart: async () => {
+          calls.push("restart");
+          return {} as never;
+        },
+        invalidateAccess: () => {
+          calls.push("invalidate");
+        },
+      },
+    });
+    // A pooled sandbox's cache predates the run's capability: one quick look,
+    // a targeted re-check, and the rest of the same deadline. No restart.
+    expect(calls).toEqual(["look:quick", "refresh:claudeAgent:within-deadline", "look:rest"]);
+  });
+
+  test("still restarts once when the re-check does not make Claude ready", async () => {
+    const calls: string[] = [];
+    const looks = [false, false, true];
+    await ensureRuntimeProviderReadyForTurn({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      readiness: {
+        instanceId: "claudeAgent",
+        driver: "claudeAgent",
+        displayName: "UseAgent Claude gateway current",
+      },
+      barrierDeadlineMs: 10,
+      verifyDeadlineMs: 10,
+      providerLabel: "Claude",
+      dependencies: {
+        awaitReady: async () => {
+          calls.push("look");
+          return looks.shift() ?? false;
+        },
+        refresh: async () => {
+          calls.push("refresh");
+          throw new Error("socket closed");
+        },
+        restart: async () => {
+          calls.push("restart");
+          return {} as never;
+        },
+        invalidateAccess: () => {
+          calls.push("invalidate");
+        },
+      },
+    });
+    expect(calls).toEqual(["look", "refresh", "look", "restart", "invalidate", "look"]);
   });
 
   test("restarts Claude exactly once after a readiness timeout", async () => {
