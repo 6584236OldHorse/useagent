@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -36,6 +36,7 @@ import {
   codexSubscriptionRelayPublicOrigin,
   codexSubscriptionRelayRoutes,
   issueCodexSubscriptionRelayCapability,
+  openCodexRelaySession,
   setCodexSubscriptionRelayDependenciesForTest,
   type CodexSubscriptionRelayBinding,
 } from "./codex-subscription-relay";
@@ -60,20 +61,14 @@ describe("Codex subscription relay public origin", () => {
       "tools.update_plan.enabled=true",
       ...HOST_EXECUTION_OFF,
     ]);
-    expect(codexSubscriptionAppServerArgs({
+    const toolGateway = {
       serverName: "useagent",
       url: "https://useagent.example.test/api/internal/tool-gateway",
-      bearerToken: "secret",
-      authorizationHeader: "Bearer secret",
-      expiresAt: 1,
-      binding: {
-        orgId: "org-1",
-        userId: "user-1",
-        threadId: "thread-1",
-        runId: "run-1",
-        scope: "run",
-      },
-    }, "http://127.0.0.1:43112")).toEqual([
+      headersFile: "/var/lib/useagent/codex-app-server/h/useagent-relay/s.json",
+    };
+    expect(() => codexSubscriptionAppServerArgs({ ...toolGateway, headersFile: "/tmp/a b.json" }, "http://127.0.0.1:43112"))
+      .toThrow("whitespace");
+    expect(codexSubscriptionAppServerArgs(toolGateway, "http://127.0.0.1:43112")).toEqual([
       "app-server",
       "--stdio",
       "--code-mode-host",
@@ -84,7 +79,7 @@ describe("Codex subscription relay public origin", () => {
       "-c",
       'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
       "-c",
-      'mcp_servers.useagent.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"',
+      'mcp_servers.useagent.http_headers_helper="/bin/cat /var/lib/useagent/codex-app-server/h/useagent-relay/s.json"',
     ]);
   });
 
@@ -201,6 +196,8 @@ describe("Codex subscription run relay", () => {
     const authorization = Promise.withResolvers<CodexSubscriptionRuntimeSelection | null>();
     let authorizationCalls = 0;
     let spawnInput: unknown;
+    const headersRoot = await mkdtemp(join(tmpdir(), "useagent-relay-headers-"));
+    tempRoots.push(headersRoot);
     setCodexSubscriptionRelayDependenciesForTest({
       selectRuntime: async () => {
         authorizationCalls += 1;
@@ -212,6 +209,7 @@ describe("Codex subscription run relay", () => {
         spawnInput = input;
         return child.process;
       },
+      headersDirectory: () => headersRoot,
     });
     const capability = issueCodexSubscriptionRelayCapability({
       binding: binding(),
@@ -257,18 +255,13 @@ describe("Codex subscription run relay", () => {
       toolGateway: {
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
-        bearerToken: "mcp-bearer-secret",
-        authorizationHeader: "Bearer mcp-bearer-secret",
-        expiresAt: 999_999,
-        binding: {
-          orgId: "org-1",
-          userId: "user-1",
-          threadId: "thread-1",
-          runId: "run-1",
-          scope: "run",
-        },
+        headersFile: expect.stringContaining(headersRoot),
       },
     });
+    // The bearer reaches the app-server's MCP client only through a private file.
+    const headersFile = (spawnInput as { toolGateway: { headersFile: string } }).toolGateway.headersFile;
+    expect(JSON.parse(await Bun.file(headersFile).text())).toEqual({ Authorization: "Bearer mcp-bearer-secret" });
+    expect((await stat(headersFile)).mode & 0o777).toBe(0o600);
     await finishRelayInitialization(socket, child, 1);
     child.received.splice(0);
 
@@ -996,6 +989,206 @@ describe("Codex subscription run relay", () => {
 });
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+
+describe("Codex relay sessions across runs", () => {
+  const EXEC = "ws://127.0.0.1:43111/opaque-exec-grant";
+  const CODE_MODE = "http://127.0.0.1:43112";
+  const scope = () => {
+    const { runId: _runId, model: _model, ...rest } = binding();
+    return rest;
+  };
+  const resume = async (socket: WebSocket, child: ReturnType<typeof fakeAppServer>, id: number, model: string) => {
+    const frame = JSON.stringify({ id, method: "thread/resume", params: { threadId: "provider-thread-1", cwd: "/root/work", model } });
+    socket.send(frame);
+    await eventually(() => expect(child.received).toContain(frame));
+    const reply = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ id, result: { thread: { id: "provider-thread-1" } } })}\n`);
+    await reply;
+  };
+  const turnStart = (id: number, model: string) => JSON.stringify({
+    id,
+    method: "turn/start",
+    params: {
+      model,
+      threadId: "provider-thread-1",
+      environments: [{ environmentId: "skynet-sandbox-1-run-1", cwd: "/root/work", runtimeWorkspaceRoots: ["/root/work"] }],
+    },
+  });
+
+  test("a reusable session takes a new connection after the last closed, never two at once", async () => {
+    const server = startRelayServer();
+    const children = [fakeAppServer(), fakeAppServer()];
+    let spawned = 0;
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => children[spawned++]!.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
+
+    const first = await opened(session.url);
+    sockets.push(first);
+    await eventually(() => expect(session.connected).toBe(true));
+    const concurrent = new WebSocket(session.url);
+    const concurrentClosed = socketClosed(concurrent);
+    await opened(concurrent);
+    expect(await concurrentClosed).toMatchObject({ code: 1008 });
+
+    const firstClosed = socketClosed(first);
+    first.close();
+    await firstClosed;
+    await eventually(() => expect(session.connected).toBe(false));
+    const second = await opened(session.url);
+    sockets.push(second);
+    await initializeRelay(second, children[1]!, 1);
+    expect(spawned).toBe(2);
+    expect(children[0]!.wasKilled()).toBe(true);
+
+    // Closing the session ends its live connection and app-server too.
+    const secondClosed = socketClosed(second);
+    session.close();
+    await secondClosed;
+    expect(children[1]!.wasKilled()).toBe(true);
+    const late = new WebSocket(session.url);
+    const lateClosed = socketClosed(late);
+    await opened(late).catch(() => {});
+    expect((await lateClosed).code).toBe(1008);
+  });
+
+  test("a run starts at most its turn and one continuation", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    for (const id of [3, 4]) {
+      socket.send(turnStart(id, "gpt-5.5"));
+      await eventually(() => expect(child.received.some((frame) => frame.includes(`"id":${id}`))).toBe(true));
+    }
+    const closed = socketClosed(socket);
+    socket.send(turnStart(5, "gpt-5.5"));
+    expect(await closed).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":5'))).toBe(false);
+    session.close();
+  });
+
+  test("between runs a turn is refused and the gateway bearer withdrawn; the next run brings its own model and bearer", async () => {
+    const server = startRelayServer();
+    const children = [fakeAppServer(), fakeAppServer()];
+    let spawned = 0;
+    const headersRoot = await mkdtemp(join(tmpdir(), "useagent-relay-session-"));
+    tempRoots.push(headersRoot);
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => children[spawned++]!.process,
+      headersDirectory: () => headersRoot,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: { serverName: "useagent", url: "https://useagent.example.test/api/internal/tool-gateway" },
+      reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    const headers = async () => {
+      const [file] = await readdir(headersRoot);
+      return JSON.parse(await Bun.file(join(headersRoot, file!)).text()) as Record<string, string>;
+    };
+    expect(await headers()).toEqual({});
+    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: "bearer-one" });
+    expect(await headers()).toEqual({ Authorization: "Bearer bearer-one" });
+
+    const first = await opened(session.url);
+    sockets.push(first);
+    await initializeRelay(first, children[0]!, 1);
+    await resume(first, children[0]!, 2, "gpt-5.5");
+    session.deactivate();
+    expect(await headers()).toEqual({});
+    const refused = socketClosed(first);
+    first.send(turnStart(3, "gpt-5.5"));
+    expect(await refused).toMatchObject({ code: 1008 });
+    expect(children[0]!.received.some((frame) => frame.includes('"id":3'))).toBe(false);
+
+    session.activate({ runId: "run-2", model: "gpt-5.6-luna", toolGatewayBearer: "bearer-two" });
+    expect(await headers()).toEqual({ Authorization: "Bearer bearer-two" });
+    await eventually(() => expect(session.connected).toBe(false));
+    const second = await opened(session.url);
+    sockets.push(second);
+    await initializeRelay(second, children[1]!, 1);
+    await resume(second, children[1]!, 2, "gpt-5.6-luna");
+    second.send(turnStart(3, "gpt-5.6-luna"));
+    await eventually(() => expect(children[1]!.received.some((frame) => frame.includes('"id":3'))).toBe(true));
+    const mismatched = socketClosed(second);
+    second.send(turnStart(4, "gpt-5.5"));
+    expect(await mismatched).toMatchObject({ code: 1008 });
+    session.close();
+  });
+
+  test("native output belongs to the run whose turn produced it, never to the run active when it lands", async () => {
+    process.env.FINISHED_WORK_ROLLOUT = "shadow";
+    const storage = new InMemoryArtifactStorage();
+    setArtifactStorageForTest(storage);
+    const fixture = await nativeOutputFixture();
+    const nextRunId = crypto.randomUUID();
+    await createRun({
+      id: nextRunId, prompt: "next turn", model: "gpt-5.5", engine: "codex", orgId: "org-skynet-dev",
+      userId: null, parentRunId: null, threadId: fixture.runId, repos: [], memoryScope: "org",
+    });
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    const selected = { ...runtime(), codexHome: fixture.codexHome };
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => selected,
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: { ...scope(), orgId: "org-skynet-dev", threadId: fixture.runId },
+      runtime: selected, execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: fixture.runId, model: "gpt-5.5", toolGatewayBearer: null });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 800);
+    await resume(socket, child, 801, "gpt-5.5");
+    const started = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ method: "turn/started", params: { threadId: "provider-thread-1", turn: { id: "turn-1" } } })}\n`);
+    await started;
+
+    // The next run is active by the time the first turn's image lands.
+    session.deactivate();
+    session.activate({ runId: nextRunId, model: "gpt-5.5", toolGatewayBearer: null });
+    const imagePath = join(fixture.generatedImages, "late.png");
+    await writeFile(imagePath, PNG);
+    const forwarded = collectMessages(socket, 1);
+    child.stdout.write(`${nativeImageFrame(imagePath)}\n`);
+    await forwarded;
+
+    let attributed = 0;
+    for (let attempt = 0; attempt < 100 && attributed === 0; attempt += 1) {
+      attributed = (await db.select().from(artifacts).where(eq(artifacts.runId, fixture.runId))).length;
+      if (attributed === 0) await Bun.sleep(20);
+    }
+    expect(attributed).toBe(1);
+    expect(await db.select().from(artifacts).where(eq(artifacts.runId, nextRunId))).toHaveLength(0);
+    session.close();
+  });
+});
 
 async function nativeOutputFixture() {
   const root = await mkdtemp(join(await realpath(tmpdir()), "codex-relay-output-"));

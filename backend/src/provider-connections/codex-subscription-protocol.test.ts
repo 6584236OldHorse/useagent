@@ -132,7 +132,7 @@ describe("CodexSubscriptionProtocol", () => {
   test("starts a fresh native thread when the current auth epoch has no binding", async () => {
     let providerThreadId: string | null = null;
     const bound: string[] = [];
-    const protocol = new CodexSubscriptionProtocol(binding(), {
+    const protocol = new CodexSubscriptionProtocol(() => binding(), {
       loadThreadBinding: async () => providerThreadId,
       bindThread: async (value) => {
         bound.push(value);
@@ -557,7 +557,7 @@ describe("CodexSubscriptionProtocol", () => {
 
   test("fails closed when start and resume responses race a changed durable binding", async () => {
     let providerThreadId: string | null = null;
-    const protocol = new CodexSubscriptionProtocol(binding(), {
+    const protocol = new CodexSubscriptionProtocol(() => binding(), {
       loadThreadBinding: async () => providerThreadId,
       bindThread: async (value) => {
         providerThreadId = value;
@@ -574,7 +574,7 @@ describe("CodexSubscriptionProtocol", () => {
       result: { thread: { id: "provider-thread-race-loser" } },
     }))).rejects.toThrow("start response changed concurrently bound thread");
 
-    const resumed = new CodexSubscriptionProtocol(binding(), {
+    const resumed = new CodexSubscriptionProtocol(() => binding(), {
       loadThreadBinding: async () => providerThreadId,
       bindThread: async () => {},
     });
@@ -621,7 +621,7 @@ async function confirmResume(
 }
 
 function makeProtocol(input: { readonly providerThreadId?: string } = {}) {
-  return new CodexSubscriptionProtocol(binding(), {
+  return new CodexSubscriptionProtocol(() => binding(), {
     loadThreadBinding: async () => input.providerThreadId ?? null,
     bindThread: async () => {},
   });

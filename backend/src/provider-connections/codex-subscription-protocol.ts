@@ -58,7 +58,8 @@ interface PendingServerFrame {
 }
 
 export class CodexSubscriptionProtocol {
-  readonly #binding: CodexSubscriptionRelayBinding;
+  /** The binding of the run the relay currently serves; it throws when none is active. */
+  readonly #binding: () => CodexSubscriptionRelayBinding;
   readonly #dependencies: ProtocolDependencies;
   readonly #pendingClientRequests = new Map<JsonRpcId, {
     readonly method: string;
@@ -73,7 +74,7 @@ export class CodexSubscriptionProtocol {
   #pendingServerBytes = 0;
   #nextServerFrameOrder = 0;
 
-  constructor(binding: CodexSubscriptionRelayBinding, dependencies: ProtocolDependencies) {
+  constructor(binding: () => CodexSubscriptionRelayBinding, dependencies: ProtocolDependencies) {
     this.#binding = binding;
     this.#dependencies = dependencies;
   }
@@ -103,7 +104,7 @@ export class CodexSubscriptionProtocol {
     let expectedThreadId: string | null = null;
     if (method === "thread/start") {
       const values = frame.params ?? {};
-      assertModelAndCwd(values, this.#binding);
+      assertModelAndCwd(values, this.#binding());
       assertHostOwnedThreadFields(values);
       const bound = await this.#dependencies.loadThreadBinding();
       if (bound) {
@@ -116,7 +117,7 @@ export class CodexSubscriptionProtocol {
       }
     } else if (method === "thread/resume") {
       const values = frame.params ?? {};
-      assertModelAndCwd(values, this.#binding);
+      assertModelAndCwd(values, this.#binding());
       assertHostOwnedThreadFields(values);
       const bound = await this.#dependencies.loadThreadBinding();
       if (bound) {
@@ -247,7 +248,7 @@ export class CodexSubscriptionProtocol {
       // "thread/start" is validated (and rewritten to a resume when the thread
       // is already bound) inline in acceptClientFrame - it never reaches here.
       case "thread/resume": {
-        assertModelAndCwd(values, this.#binding);
+        assertModelAndCwd(values, this.#binding());
         assertHostOwnedThreadFields(values);
         const expected = await this.#dependencies.loadThreadBinding();
         if (!expected || values.threadId !== expected) {
@@ -256,11 +257,11 @@ export class CodexSubscriptionProtocol {
         return;
       }
       case "turn/start":
-        if (values.model !== this.#binding.model) throw new Error("model binding mismatch");
-        if (values.cwd !== undefined && values.cwd !== this.#binding.cwd) {
+        if (values.model !== this.#binding().model) throw new Error("model binding mismatch");
+        if (values.cwd !== undefined && values.cwd !== this.#binding().cwd) {
           throw new Error("workspace binding mismatch");
         }
-        assertTurnEnvironments(values.environments, this.#binding);
+        assertTurnEnvironments(values.environments, this.#binding());
         await this.#assertKnownThread(values.threadId);
         return;
       case "mcpServerStatus/list":
