@@ -4087,6 +4087,18 @@ html {
 .neobrutal [role="switch"][aria-checked="true"] {
   background: var(--neo-main);
 }
+/* Floating panels: every menu, listbox and popover frame takes the stroke
+ * and the offset whatever radius or shadow class it was built with. */
+.neobrutal :is([role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], [data-slot="popover"]):is(.bg-background-primary-default, .bg-background-secondary-default, .bg-bg-white-0, .bg-white),
+.neobrutal .rounded-\[14px\].border {
+  border: 2px solid var(--neo-ink);
+  border-radius: 5px;
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+}
+.neobrutal [role="menu"] button.rounded-2lg:is(:hover, :focus-visible) {
+  background: var(--neo-main);
+  color: #000;
+}
 /* Command bar and menus: items carry a transparent stroke so the selected
  * one can take a black one without moving; the selected item is main blue. */
 .neobrutal [cmdk-item],
