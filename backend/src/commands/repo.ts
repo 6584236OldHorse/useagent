@@ -95,6 +95,7 @@ export async function insertCommandWithRun(
         id: cmd.run.id,
         prompt: cmd.run.prompt,
         model: cmd.run.model,
+        reasoningEffort: cmd.run.reasoningEffort ?? null,
         engine: cmd.run.engine,
         orgId: cmd.orgId,
         userId: cmd.actorId,

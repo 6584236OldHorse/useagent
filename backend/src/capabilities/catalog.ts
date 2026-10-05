@@ -17,6 +17,7 @@ import {
   type UserFacingEngineId,
 } from "../runs/engine-readiness";
 import { allowedModelsForEngine, defaultModelForEngine } from "../runs/model-policy";
+import { reasoningEffortSupport } from "../runs/reasoning-effort";
 import type { NativeCodexModelCatalog } from "../provider-connections/codex-model-catalog";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 
@@ -172,6 +173,9 @@ function buildEngine(
     const dispatchable = policyAllowed &&
       readiness.ready &&
       engineModelReadyForDispatch(engine as EngineId, id, env);
+    // The effort seam the picker may offer: the native Codex catalog's own list
+    // when it knows the model, the engine's policy set otherwise, none elsewhere.
+    const effort = reasoningEffortSupport(engine as EngineId, nativeModel);
     return {
       id,
       default: id === defaultModel,
@@ -179,12 +183,8 @@ function buildEngine(
       policyAllowed,
       ...(nativeModel?.displayName ? { displayName: nativeModel.displayName } : {}),
       ...(nativeModel ? { nativeAvailable: true as const } : {}),
-      ...(nativeModel?.defaultReasoningEffort
-        ? { defaultReasoningEffort: nativeModel.defaultReasoningEffort }
-        : {}),
-      ...(nativeModel?.supportedReasoningEfforts.length
-        ? { supportedReasoningEfforts: nativeModel.supportedReasoningEfforts }
-        : {}),
+      ...(effort.defaultEffort ? { defaultReasoningEffort: effort.defaultEffort } : {}),
+      ...(effort.efforts.length ? { supportedReasoningEfforts: effort.efforts } : {}),
       ...(!dispatchable
         ? {
             degradationReason: !policyAllowed

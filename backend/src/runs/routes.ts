@@ -6,7 +6,6 @@ import {
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
-import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
@@ -82,9 +81,9 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, type RunCreateBody } from "./run-create-policy";
+import { reasoningEffortSupportForRun, resolveReasoningEffort } from "./reasoning-effort";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
-import { SpendAllowanceExceededError } from "./spend";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
 runsRoutes.use("*", orgScope);
@@ -152,6 +151,7 @@ export async function handleRunCreate(
   let inheritedResources: readonly RunResource[] = [];
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
+  let parentReasoningEffort: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
@@ -175,6 +175,7 @@ export async function handleRunCreate(
         : legacyParentResources(parent.repos, "web");
     parentScope = parent.memoryScope;
     parentModel = parent.model;
+    parentReasoningEffort = parent.reasoningEffort;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
@@ -218,16 +219,13 @@ export async function handleRunCreate(
   }
 
   // Memory scope: an explicit choice from the authenticated user (validated) wins;
-  // otherwise a reply INHERITS its parent's and a root run defaults to "org".
-  // Permission mode: only an explicit choice is taken here; an omitted mode is
-  // resolved at the insert, under the thread lock, so an older parent or a read
-  // made before a narrowing reply cannot widen the thread.
-  const scope = runMemoryScope(body.memory_scope, parentScope);
+  // otherwise a reply INHERITS its parent's scope and a root run defaults to "org".
+  // ONLY the scope enum is read from the body — never any identity (org/user is
+  // always server-resolved). An unknown value is a client error, not a fallback.
+  const scope = runMemoryScope(body.memory_scope);
   if (!scope.ok) return c.json({ error: scope.error }, 400);
-  const { memoryScope, requestedMemoryScope } = scope;
-  const permission = runPermissionMode(body.permission_mode);
-  if (!permission.ok) return c.json({ error: permission.error }, 400);
-  const { permissionMode } = permission;
+  const requestedMemoryScope = scope.scope;
+  const memoryScope: MemoryScope = requestedMemoryScope ?? parentScope ?? "org";
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -293,13 +291,13 @@ export async function handleRunCreate(
   const intent: RunCommandIntent = {
     prompt: finalPrompt,
     model: requestedModel,
+    reasoningEffort: typeof body.reasoning_effort === "string" ? body.reasoning_effort : null,
     engine: requestedEngine,
     parentRunId,
     requestedRepos,
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
-    permissionMode: permissionMode ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -358,6 +356,9 @@ export async function handleRunCreate(
   if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
+  const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;
+  const effort = resolveReasoningEffort(body.reasoning_effort, await reasoningEffortSupportForRun(engine, model, actor), parentReasoningEffort);
+  if (!effort.ok) return c.json({ error: effort.error, engine, efforts: effort.efforts }, 400);
   if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
@@ -435,7 +436,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId
@@ -447,8 +448,9 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
-    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
-    if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
+    if (error instanceof UploadClaimError) {
+      return c.json({ error: "upload_unavailable" }, 409);
+    }
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
@@ -458,7 +460,7 @@ export async function handleRunCreate(
       );
     }
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
-    if (error instanceof SpendAllowanceExceededError || error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);

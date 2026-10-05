@@ -24,6 +24,7 @@ import { engineMarkFor } from "@/components/foundations/icons/vendor-marks";
 import {
   ModelPicker,
   type ModelPickerProvider,
+  type ModelPickerRow,
   type ModelPickerSection,
 } from "@/components/pro/model-picker";
 import { cx } from "@/utils/cx";
@@ -73,25 +74,35 @@ export function engineProvider(
     catalog.models[engine] ?? [],
     catalog.modelDetails[engine] ?? [],
   );
+  // The manifest's per-model effort seam rides on the row (none for OpenCode/Pi/Chat).
+  const details = catalog.modelDetails[engine] ?? [];
+  const withEfforts = (rows: readonly ModelPickerRow[]): ModelPickerRow[] =>
+    rows.map((row) => {
+      const detail = details.find((entry) => entry.id === row.value);
+      return detail?.supportedReasoningEfforts?.length
+        ? { ...row, efforts: detail.supportedReasoningEfforts, defaultEffort: detail.defaultReasoningEffort }
+        : row;
+    });
   const { paid, free } = partitionModelOptions(options);
-  const discovered = unavailableModelOptions(engine, catalog.modelDetails[engine] ?? []);
-  const codexRefresh = engine === "codex" && refresh
-    ? <RefreshModelsAction label="Refresh Codex models" refresh={refresh} />
-    : undefined;
+  const discovered = unavailableModelOptions(engine, details);
   const sections: ModelPickerSection[] = [
-    { label: "Models", action: codexRefresh, rows: paid },
+    { label: "", rows: withEfforts(paid) },
     {
       label: "Free",
       action: refresh ? <RefreshModelsAction label="Refresh free models" refresh={refresh} /> : undefined,
       rows: free,
     },
-    { label: "Discovered", action: codexRefresh, rows: discovered },
+    { label: "Discovered", rows: discovered },
   ];
   return {
     id: engine,
     label: engineLabel(engine),
     caption,
     mark: engineMarkFor(engine),
+    // This actor's native Codex catalog refreshes from the panel header.
+    ...(engine === "codex" && refresh
+      ? { action: <RefreshModelsAction label="Refresh Codex models" refresh={refresh} /> }
+      : {}),
     sections,
   };
 }
@@ -107,12 +118,17 @@ export function CatalogModelPicker({
   model,
   onChange,
   onAvailabilityChange,
+  reasoningEffort,
+  onReasoningEffortChange,
   className,
 }: {
   engine: EngineId;
   model: string;
   onChange: (model: string) => void;
   onAvailabilityChange?: (available: boolean) => void;
+  /** The thread's reasoning effort; null shows the model's default. */
+  reasoningEffort?: string | null;
+  onReasoningEffortChange?: (effort: string) => void;
   className?: string;
 }) {
   const [refreshing, setRefreshing] = useState(false);
@@ -139,6 +155,8 @@ export function CatalogModelPicker({
       providerId={engine}
       onChange={onChange}
       notice={engine === "codex" ? modelCatalogNotice(modelCatalogStatuses.codex) : null}
+      effort={reasoningEffort}
+      onEffortChange={onReasoningEffortChange}
       className={className}
     />
   );

@@ -115,6 +115,9 @@ export interface EngineRunContext {
    *  Adapters map it to their provider format and fall back to their own
    *  default when absent/unsupported. */
   model?: string;
+  /** The run's reasoning effort where the engine has the seam (Codex, Claude
+   *  Code); absent runs on the runtime's default. See runs/reasoning-effort.ts. */
+  reasoningEffort?: string;
   /** The GitHub repos this thread works in (each "owner/name"); [] for a bare
    *  workdir. Set on EVERY run in the thread (inherited from the root run) so an
    *  adapter can ensure each clone exists in the workspace before the turn —

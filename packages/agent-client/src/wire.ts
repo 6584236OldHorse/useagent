@@ -214,6 +214,9 @@ export interface ApiRun {
   project_id?: string | null;
   prompt: string;
   model: string;
+  /** The reasoning effort the run was accepted with; null runs on the runtime's
+   *  default. Tolerant: an older backend omits it. */
+  reasoning_effort?: string | null;
   engine: EngineId;
   status: RunStatus;
   summary: string | null;

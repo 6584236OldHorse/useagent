@@ -64,7 +64,7 @@ import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
-  type MemoryScope, type PermissionMode,
+  type MemoryScope,
   normalizeEngine,
   type RunStatus,
   supportsPreSessionModelSelection,
@@ -361,7 +361,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       command?: { name: string; args: string } | null,
       attachmentIds: readonly string[] = [],
       resources: readonly RunResourceSelection[] = [],
-      botMentions: readonly string[] = [], permissionMode?: PermissionMode,
+      botMentions: readonly string[] = [], reasoningEffort: string | null = null,
     ) => {
       // Native-question replies resume the blocked provider turn instead of enqueueing a run.
       if (activeQuestion && composerCanAnswerQuestion) {
@@ -380,12 +380,12 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
         }
         const res = submissionLane === "child"
           ? await createThreadMessage(rootId, {
-                text, ...(permissionMode ? { permission_mode: permissionMode } : {}),
+                text,
                 ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
               }, idempotencyKey)
           : await createRun(replyRunBody({
             text, engine, model: modelSelection ? model : null, parentRunId: newest.id, memoryScope,
-            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision, permissionMode,
+            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision, reasoningEffort,
           }), idempotencyKey);
         if (!res.ok) throw new Error(await runCreateFailureMessage(res, `backend ${res.status}`));
         // Keep the accepted run visible until SSE/reconcile observes its durable id.
@@ -718,7 +718,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
           <Conversation
             turns={turns}
             defaultEngine={normalizeEngine(newest.engine)}
-            defaultModel={newest.model}
+            defaultModel={newest.model} defaultReasoningEffort={newest.reasoning_effort ?? null}
             // A reply inherits the thread's current scope (its newest run); the
             // composer lets the user change it. Legacy runs w/o a scope → "org".
             defaultMemoryScope={newest.memory_scope ?? "org"}

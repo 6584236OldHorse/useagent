@@ -94,6 +94,7 @@ function toRun(
     project_id: r.projectId,
     prompt: r.prompt,
     model: r.model,
+    reasoning_effort: r.reasoningEffort,
     engine: r.engine,
     status: r.status,
     summary: r.summary,
@@ -207,6 +208,8 @@ export async function createRun(
     id: string;
     prompt: string;
     model: string;
+    /** Resolved at the run-creation boundary (see runs/reasoning-effort.ts). */
+    reasoningEffort?: string | null;
     engine: EngineId;
     orgId: string | null;
     userId: string | null;
@@ -258,6 +261,7 @@ export async function createRun(
     id: input.id,
     prompt: input.prompt,
     model: input.model,
+    reasoningEffort: input.reasoningEffort ?? null,
     engine: input.engine,
     status: "queued",
     // The insert's own clock time, not the transaction's start (`now()`): the

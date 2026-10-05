@@ -11,7 +11,14 @@ const CATALOG: ProviderCatalog = {
   },
   modelDetails: {
     codex: [
-      { id: "gpt-5.6-luna", default: true, dispatchable: true, policyAllowed: true },
+      {
+        id: "gpt-5.6-luna",
+        default: true,
+        dispatchable: true,
+        policyAllowed: true,
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+        defaultReasoningEffort: "medium",
+      },
       { id: "gpt-6-astra", default: false, dispatchable: true, policyAllowed: true, displayName: "GPT-6 Astra" },
       {
         id: "gpt-future",
@@ -34,10 +41,20 @@ describe("engine rail entries", () => {
     expect(provider.id).toBe("codex");
     expect(provider.label).toBe("Codex");
     expect(provider.caption).toBe("OpenAI agent · cloud");
-    const sections = Object.fromEntries(provider.sections.map((s) => [s.label, s.rows]));
-    expect(sections.Models?.map((row) => row.value)).toEqual(["gpt-5.6-luna", "gpt-6-astra"]);
-    expect(sections.Free).toEqual([]);
-    expect(sections.Discovered).toEqual([
+    const [lineup, free, discovered] = provider.sections;
+    // The plain lineup has no heading of its own: it follows the panel's Models title.
+    expect(lineup?.label).toBe("");
+    expect(lineup?.rows.map((row) => row.value)).toEqual(["gpt-5.6-luna", "gpt-6-astra"]);
+    // The manifest's effort seam rides on the row; a model without one carries none.
+    expect(lineup?.rows[0]).toMatchObject({
+      efforts: ["low", "medium", "high", "xhigh"],
+      defaultEffort: "medium",
+    });
+    expect(lineup?.rows[1]?.efforts).toBeUndefined();
+    expect(free?.label).toBe("Free");
+    expect(free?.rows).toEqual([]);
+    expect(discovered?.label).toBe("Discovered");
+    expect(discovered?.rows).toEqual([
       {
         value: "gpt-future",
         label: "Future",
@@ -45,19 +62,18 @@ describe("engine rail entries", () => {
         description: "Discovered for this account; blocked by deployment policy",
       },
     ]);
-    // The native-catalog refresh sits on the Models and Discovered headings.
-    const actions = provider.sections.map((s) => (s.action ? renderToStaticMarkup(<>{s.action}</>) : ""));
-    expect(actions[0]).toContain('aria-label="Refresh Codex models"');
-    expect(actions[2]).toContain('aria-label="Refresh Codex models"');
+    // The native-catalog refresh sits in the panel header, not on a section.
+    expect(renderToStaticMarkup(<>{provider.action}</>)).toContain('aria-label="Refresh Codex models"');
+    expect(provider.sections.every((s) => s.label === "Free" || s.action === undefined)).toBe(true);
   });
 
   test("an OpenCode entry keeps the Free lane as its own section with the shared refresh", () => {
     const provider = engineProvider("opencode", CATALOG, { ...refresh, refreshing: true });
-    const sections = Object.fromEntries(provider.sections.map((s) => [s.label, s]));
-    expect(sections.Models?.rows.map((row) => row.value)).toEqual(["openai/gpt-5.6-luna"]);
-    expect(sections.Free?.rows.map((row) => row.value)).toEqual(["minimax/minimax-m3:free"]);
-    expect(sections.Models?.action).toBeUndefined();
-    const free = renderToStaticMarkup(<>{sections.Free?.action}</>);
+    const [lineup, freeSection] = provider.sections;
+    expect(lineup?.rows.map((row) => row.value)).toEqual(["openai/gpt-5.6-luna"]);
+    expect(freeSection?.rows.map((row) => row.value)).toEqual(["minimax/minimax-m3:free"]);
+    expect(provider.action).toBeUndefined();
+    const free = renderToStaticMarkup(<>{freeSection?.action}</>);
     expect(free).toContain('aria-label="Refresh free models"');
     expect(free).toContain("animate-spin");
     expect(free).toContain("disabled");

@@ -1,5 +1,5 @@
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
-import type { EngineId, MemoryScope, PermissionMode } from "@/components/chat/types";
+import type { EngineId, MemoryScope } from "@/components/chat/types";
 
 export type ReplyCommand = { name: string; args: string };
 
@@ -23,16 +23,16 @@ export function replyRunBody(input: {
   readonly command?: ReplyCommand | null;
   readonly engineSessionId: string | null | undefined;
   readonly commandCatalogRevision: number | null | undefined;
-  /** The chip's choice; absent lets the backend keep the thread's current mode. */
-  readonly permissionMode?: PermissionMode;
+  /** The picker's reasoning effort; null or absent inherits the thread's. */
+  readonly reasoningEffort?: string | null;
 }): Record<string, unknown> {
   return {
     prompt: input.text,
     engine: input.engine,
     ...(input.model !== null ? { model: input.model } : {}),
+    ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
     parent_run_id: input.parentRunId,
     memory_scope: input.memoryScope,
-    ...(input.permissionMode ? { permission_mode: input.permissionMode } : {}),
     ...(input.attachmentIds.length > 0 ? { attachments: input.attachmentIds } : {}),
     ...(input.resources.length > 0 ? { resources: input.resources } : {}),
     ...(input.botMentions.length > 0 ? { bot_mentions: input.botMentions } : {}),

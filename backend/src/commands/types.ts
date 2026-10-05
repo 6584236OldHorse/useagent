@@ -19,6 +19,8 @@ export interface RunCommandIntent {
   /** Normalized caller-supplied selectors. Null means the caller delegated to
    * the server/parent default; later config changes must not alter a replay. */
   readonly model: string | null;
+  /** The requested reasoning effort, validated at acceptance; absent inherits. */
+  readonly reasoningEffort?: string | null;
   readonly engine: EngineId | null;
   readonly parentRunId: string | null;
   /** Only repositories explicitly selected by the caller. Inherited and
@@ -93,6 +95,8 @@ export interface RunCommandInput {
     readonly id: string;
     readonly prompt: string;
     readonly model: string;
+    /** Resolved reasoning effort (explicit or inherited), null for the runtime's default. */
+    readonly reasoningEffort?: string | null;
     readonly engine: EngineId;
     readonly parentRunId: string | null;
     readonly threadId: string;

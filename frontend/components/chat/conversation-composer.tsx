@@ -45,6 +45,7 @@ export function ConversationComposer({
   turns,
   defaultEngine,
   defaultModel,
+  defaultReasoningEffort,
   defaultMemoryScope,
   pendingReply,
   commands,
@@ -80,6 +81,8 @@ export function ConversationComposer({
   turns: readonly Turn[];
   defaultEngine: EngineId;
   defaultModel: string;
+  /** The thread's current reasoning effort (its newest run); null is the runtime's default. */
+  defaultReasoningEffort?: string | null;
   defaultMemoryScope: MemoryScope;
   pendingReply: string | null;
   commands?: SlashCommand[];
@@ -202,6 +205,7 @@ export function ConversationComposer({
     <ReplyComposer
       engine={defaultEngine}
       model={defaultModel}
+      reasoningEffort={defaultReasoningEffort}
       memoryScope={defaultMemoryScope}
       pending={pendingReply !== null}
       commands={commands}

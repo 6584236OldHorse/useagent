@@ -88,6 +88,8 @@ export function NewTaskComposer({
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
+  // A reasoning level from the picker; null runs on the runtime's default.
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [engine, setEngine] = useState<string>("codex");
   // The "+" action shelf under the composer holds the add-context controls
   // (upload, repos, skills, GitHub, branches) so the toolbar row never overflows.
@@ -391,6 +393,7 @@ export function NewTaskComposer({
       engine,
       memory_scope: "org",
       ...(selectableModels.length > 0 ? { model } : {}),
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
       ...(mentionResources.length ? { resources: mentionResources } : {}),
@@ -577,7 +580,10 @@ export function NewTaskComposer({
                     onChange={(nextModel, nextEngine) => {
                       setEngine(nextEngine);
                       setModel(nextModel);
+                      setReasoningEffort(null); // another model, its own levels and default
                     }}
+                    effort={reasoningEffort}
+                    onEffortChange={setReasoningEffort}
                     placement="bottom end"
                     className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
                   />

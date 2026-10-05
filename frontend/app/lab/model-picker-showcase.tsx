@@ -4,8 +4,12 @@ import { useState } from "react";
 import { ModelPicker, type ModelPickerProvider } from "@/components/pro/model-picker";
 import { engineMarkFor } from "@/components/foundations/icons/vendor-marks";
 
+const CODEX_EFFORTS = { efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium" };
+const CLAUDE_EFFORTS = { efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high" };
+
 /** Fixture rail: three engines with a lineup each, one free row, one
- *  discovered-but-blocked row, plus an engine no mark is drawn for. */
+ *  discovered-but-blocked row, plus an engine no mark is drawn for. The Codex
+ *  and Claude rows carry their effort levels; OpenCode's carry none. */
 export const SAMPLE_PROVIDERS: ModelPickerProvider[] = [
   {
     id: "codex",
@@ -14,11 +18,11 @@ export const SAMPLE_PROVIDERS: ModelPickerProvider[] = [
     mark: engineMarkFor("codex"),
     sections: [
       {
-        label: "Models",
+        label: "",
         rows: [
-          { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
-          { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-          { value: "gpt-6-astra", label: "GPT-6 Astra" },
+          { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast", ...CODEX_EFFORTS },
+          { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...CODEX_EFFORTS },
+          { value: "gpt-6-astra", label: "GPT-6 Astra", efforts: ["low", "high", "max"], defaultEffort: "high" },
         ],
       },
       {
@@ -41,11 +45,11 @@ export const SAMPLE_PROVIDERS: ModelPickerProvider[] = [
     mark: engineMarkFor("claude"),
     sections: [
       {
-        label: "Models",
+        label: "",
         rows: [
-          { value: "claude-opus-5", label: "Opus 5" },
-          { value: "claude-sonnet-5", label: "Sonnet 5" },
-          { value: "claude-haiku-4-5", label: "Haiku 4.5" },
+          { value: "claude-opus-5", label: "Opus 5", ...CLAUDE_EFFORTS },
+          { value: "claude-sonnet-5", label: "Sonnet 5", ...CLAUDE_EFFORTS },
+          { value: "claude-haiku-4-5", label: "Haiku 4.5", ...CLAUDE_EFFORTS },
         ],
       },
     ],
@@ -57,7 +61,7 @@ export const SAMPLE_PROVIDERS: ModelPickerProvider[] = [
     mark: engineMarkFor("opencode"),
     sections: [
       {
-        label: "Models",
+        label: "",
         rows: [
           { value: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
           { value: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash · Fast" },
@@ -71,12 +75,13 @@ export const SAMPLE_PROVIDERS: ModelPickerProvider[] = [
     id: "lab-engine",
     label: "Lab engine",
     mark: engineMarkFor("lab-engine"),
-    sections: [{ label: "Models", rows: [{ value: "lab/sample-1", label: "Sample 1" }] }],
+    sections: [{ label: "", rows: [{ value: "lab/sample-1", label: "Sample 1" }] }],
   },
 ];
 
 export function ModelPickerShowcase() {
   const [selection, setSelection] = useState({ model: "gpt-5.6-terra", provider: "codex" });
+  const [effort, setEffort] = useState<string | null>(null);
   return (
     <section className="flex flex-col gap-4 border-t border-border-button-default py-8">
       <p className="text-mono-label text-text-tertiary">
@@ -90,12 +95,17 @@ export function ModelPickerShowcase() {
           providers={SAMPLE_PROVIDERS}
           value={selection.model}
           providerId={selection.provider}
-          onChange={(model, provider) => setSelection({ model, provider })}
+          onChange={(model, provider) => {
+            setSelection({ model, provider });
+            setEffort(null);
+          }}
+          effort={effort}
+          onEffortChange={setEffort}
           placement="bottom end"
         />
       </div>
       <p className="text-caption-1-regular text-text-tertiary">
-        Selected: {selection.provider} / {selection.model}
+        Selected: {selection.provider} / {selection.model} / effort {effort ?? "default"}
       </p>
     </section>
   );

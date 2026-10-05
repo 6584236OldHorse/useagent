@@ -53,6 +53,10 @@ export const runs = pgTable(
     userId: text("user_id"),
     prompt: text("prompt").notNull(),
     model: text("model").notNull(),
+    // The reasoning effort the run was accepted with (see runs/reasoning-effort.ts):
+    // the levels are an engine seam, null runs on the runtime's default, and a
+    // reply inherits its parent's value the way it inherits the model.
+    reasoningEffort: text("reasoning_effort"),
     engine: text("engine").$type<EngineId>().notNull().default("mock"),
     status: text("status").$type<RunStatus>().notNull(),
     summary: text("summary"),

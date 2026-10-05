@@ -34,6 +34,7 @@ export interface EstablishProviderSessionInput {
     | "providerSession"
     | "expectedSandbox"
     | "model"
+    | "reasoningEffort"
     | "signal"
     | "timing"
   >;
@@ -200,6 +201,7 @@ export async function establishProviderSession(
       threadId: input.ctx.threadId ?? input.ctx.runId,
       runtime: input.runtime,
       model: input.ctx.model,
+      reasoningEffort: input.ctx.reasoningEffort,
       metadata,
       signal: input.ctx.signal,
     });

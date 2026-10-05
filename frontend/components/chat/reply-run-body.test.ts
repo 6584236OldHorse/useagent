@@ -16,13 +16,9 @@ describe("replyRunBody", () => {
       commandCatalogRevision: null,
     };
     expect(replyRunBody(base)).toEqual({ prompt: "Do it", engine: "opencode", parent_run_id: "run-1", memory_scope: "org" });
-    expect(replyRunBody({ ...base, permissionMode: "read-only" })).toEqual({
-      prompt: "Do it",
-      engine: "opencode",
-      parent_run_id: "run-1",
-      memory_scope: "org",
-      permission_mode: "read-only",
-    });
+    // A reasoning effort rides only when the picker chose one; null inherits the thread's.
+    expect(replyRunBody({ ...base, reasoningEffort: null })).not.toHaveProperty("reasoning_effort");
+    expect(replyRunBody({ ...base, reasoningEffort: "xhigh" })).toMatchObject({ reasoning_effort: "xhigh" });
 
     expect(
       replyRunBody({
