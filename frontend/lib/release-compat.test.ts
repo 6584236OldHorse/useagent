@@ -3,6 +3,7 @@ import {
   CLIENT_RELEASE_FINGERPRINT,
   FrontendReleaseMismatchError,
   handleReleaseMismatch,
+  resetReleaseReloadStateForTest,
   withClientReleaseHeader,
 } from "./release-compat";
 
@@ -35,6 +36,7 @@ function responseWithFingerprint(fingerprint: string): Response {
 }
 
 afterEach(() => {
+  resetReleaseReloadStateForTest();
   if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
   else Reflect.deleteProperty(globalThis, "window");
 });
@@ -80,8 +82,21 @@ describe("release compatibility boundary", () => {
     }
     expect(caught).toBeInstanceOf(FrontendReleaseMismatchError);
     expect((caught as FrontendReleaseMismatchError).reloadedAlready).toBe(true);
-    expect((caught as Error).message).toContain("a reload did not change that");
+    expect((caught as Error).message).toContain("reload and try again");
     expect(win.reloaded()).toBe(false);
+  });
+
+  test("a second mutation in the same page load sees the reload as pending, not failed", () => {
+    installWindow();
+    const errors: FrontendReleaseMismatchError[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        handleReleaseMismatch(responseWithFingerprint("run-events-v1:eeeeeeee"), { method: "POST" });
+      } catch (error) {
+        errors.push(error as FrontendReleaseMismatchError);
+      }
+    }
+    expect(errors.map((e) => e.reloadedAlready)).toEqual([false, false]);
   });
 });
 

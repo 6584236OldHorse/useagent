@@ -15,7 +15,7 @@ export class FrontendReleaseMismatchError extends Error {
   ) {
     super(
       reloadedAlready
-        ? "This page is older than the server and a reload did not change that. The deployment is still finishing; try again in a minute."
+        ? "This page is older than the server, and reloading once did not change that. Wait a minute, then reload and try again."
         : "Frontend was updated. Reload before retrying this action.",
     );
     this.name = "FrontendReleaseMismatchError";
@@ -41,18 +41,32 @@ export function withClientReleaseHeader(path: string, init?: RequestInit): Reque
   return { ...init, headers };
 }
 
-/** Schedule one reload per client release; returns false when this tab already
- *  reloaded for it, which means reloading again cannot change the bundle. */
-export function scheduleReleaseReload(): boolean {
-  if (!isBrowser()) return false;
+/** Whether this page load already queued its reload (the marker alone cannot
+ *  tell a queued reload from one that ran in an earlier page load). */
+let reloadQueuedThisLoad = false;
+
+/** Tests run many page loads in one module instance. */
+export function resetReleaseReloadStateForTest(): void {
+  reloadQueuedThisLoad = false;
+}
+
+export type ReleaseReloadOutcome = "scheduled" | "pending" | "exhausted";
+
+/** Schedule one reload per client release. "pending" means this page load
+ *  already queued it; "exhausted" means an earlier page load reloaded for this
+ *  release and the server still differs, so the served bundle is behind. */
+export function scheduleReleaseReload(): ReleaseReloadOutcome {
+  if (!isBrowser()) return "exhausted";
+  if (reloadQueuedThisLoad) return "pending";
   try {
-    if (window.sessionStorage.getItem(RELOAD_MARKER) === CLIENT_RELEASE_FINGERPRINT) return false;
+    if (window.sessionStorage.getItem(RELOAD_MARKER) === CLIENT_RELEASE_FINGERPRINT) return "exhausted";
     window.sessionStorage.setItem(RELOAD_MARKER, CLIENT_RELEASE_FINGERPRINT);
   } catch {
     // Storage can be unavailable in hardened browsers; the reload is still safe.
   }
+  reloadQueuedThisLoad = true;
   window.setTimeout(() => window.location.reload(), 0);
-  return true;
+  return "scheduled";
 }
 
 export function handleReleaseMismatch(response: Response, init?: RequestInit): void {
@@ -61,6 +75,6 @@ export function handleReleaseMismatch(response: Response, init?: RequestInit): v
     response.headers.get("x-skynet-release-fingerprint");
   if (!serverFingerprint || serverFingerprint === CLIENT_RELEASE_FINGERPRINT) return;
   if (serverFingerprint.endsWith(":dev")) return;
-  const reloading = scheduleReleaseReload();
-  if (isMutating(init?.method)) throw new FrontendReleaseMismatchError(serverFingerprint, !reloading);
+  const outcome = scheduleReleaseReload();
+  if (isMutating(init?.method)) throw new FrontendReleaseMismatchError(serverFingerprint, outcome === "exhausted");
 }
