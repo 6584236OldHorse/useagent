@@ -30,7 +30,7 @@ const workbook: Workbook = {
         B2: { v: 1200000, fmt: { numFmt: "currency" } },
         A3: { v: "EMEA" },
         B3: { v: 980000 },
-        A4: { v: "Total", fmt: { bold: true } },
+        A4: { v: "Total", fmt: { bold: true, color: "#222222", fill: "#ffffff" } },
         B4: { v: 2180000, f: "=SUM(B2:B3)" },
       },
     },
@@ -59,6 +59,9 @@ describe("the records grid's view of a sheet", () => {
     expect(records[0]!.cells[1]!.numeric).toBe(true);
     expect(records[2]!.cells[1]!.value).toBe(2180000);
     expect(records[2]!.cells[0]!.style.fontWeight).toBe(600);
+    // Colours the workbook carries never reach the grid; the theme owns them.
+    expect(records[2]!.cells[0]!.style.color).toBeUndefined();
+    expect(records[2]!.cells[0]!.style.background).toBeUndefined();
     expect(filledRecordCount(records)).toBe(3);
   });
 
