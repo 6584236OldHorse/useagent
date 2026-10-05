@@ -1,7 +1,13 @@
 "use client";
 
 import { useMachineRunsWork } from "@/components/runners/local-login-availability";
-import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine, RiRefreshLine } from "@remixicon/react";
+import {
+  RiAddLine,
+  RiArrowUpLine,
+  RiBookMarkedLine,
+  RiCloseLine,
+  RiFlashlightLine,
+} from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -18,14 +24,14 @@ import {
   GithubConnectedRow,
 } from "@/components/chat/composer-add-menu";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
+import { engineProvider } from "@/components/chat/catalog-model-picker";
 import {
   engineRuntimeCaption,
   pickerEngineOptions,
   resolveEnabledEngine,
   useEnabledEngineConfig,
 } from "@/components/chat/engine-picker";
-import { engineMarkFor, vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
-import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
+import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
   filterCommands,
@@ -33,20 +39,11 @@ import {
   SlashCommandPopover,
   slashInsertText,
 } from "@/components/chat/slash-command";
-import {
-  type EngineId,
-  engineLabel,
-  modelOptionsForEngine,
-  partitionModelOptions,
-  type PermissionMode,
-} from "@/components/chat/types";
-import { permissionModeFor } from "@/components/chat/permission-mode";
-import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
+import { type EngineId, engineLabel, modelOptionsForEngine } from "@/components/chat/types";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
-import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
-import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
+import { ModelPicker } from "@/components/pro/model-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { backendFetch } from "@/lib/backend-fetch";
 import {
@@ -88,15 +85,10 @@ export function NewTaskComposer({
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repos, setRepos] = useState<RepoItem[]>([]);
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
-  // A new thread starts in Full access unless the person picks a mode before sending.
-  const [chosenMode, setChosenMode] = useState<PermissionMode>("full-access");
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
   const [engine, setEngine] = useState<string>("codex");
-  // What actually rides POST /api/runs: the pick, unless the selected engine
-  // cannot honour it (admission would refuse the run), then Full access.
-  const permissionMode = permissionModeFor(engine, chosenMode);
   // The "+" action shelf under the composer holds the add-context controls
   // (upload, repos, skills, GitHub, branches) so the toolbar row never overflows.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -128,39 +120,26 @@ export function NewTaskComposer({
     },
     [engineId, refreshModels],
   );
-  const modelGroups: PickerGroup[] = useMemo(() => {
-    const toOption = (m: (typeof selectableModels)[number]) => ({
-      value: m.value,
-      label: m.label,
-      icon: vendorMarkForModel(m.value),
-    });
-    // Zero-cost OpenRouter ":free" variants (OpenCode only) get their own
-    // section; membership is manifest-driven via the shared partition.
-    const { paid, free } = partitionModelOptions(selectableModels);
-    const groups: PickerGroup[] = [{ label: "Models", options: paid.map(toOption) }];
-    if (free.length > 0) {
-      groups.push({
-        label: "Free",
-        action: (
-          <button
-            type="button"
-            aria-label="Refresh free models"
-            title="Refresh"
-            disabled={refreshingModels}
-            onClick={() => void refreshFreeModels(model)}
-            className="rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary disabled:opacity-50"
-          >
-            <RiRefreshLine
-              className={cx("size-3.5", refreshingModels && "animate-spin")}
-              aria-hidden
-            />
-          </button>
+  // The rail: one entry per engine the server configured, each with its manifest
+  // lineup. Readiness decorates an engine's title instead of hiding it.
+  const providers = useMemo(
+    () =>
+      pickerEngineOptions(enabledEngines).map((candidate) =>
+        engineProvider(
+          candidate.id,
+          engineConfig,
+          { refreshing: refreshingModels, onRefresh: () => void refreshFreeModels(model) },
+          engineRuntimeCaption(
+            candidate.id,
+            engineConfig.runtimes[candidate.id],
+            engineConfig.readiness[candidate.id],
+            engineConfig.localLoginOffered.includes(candidate.id),
+            machineRunsWork,
+          ),
         ),
-        options: free.map(toOption),
-      });
-    }
-    return groups;
-  }, [selectableModels, refreshingModels, refreshFreeModels, model]);
+      ),
+    [enabledEngines, engineConfig, machineRunsWork, model, refreshFreeModels, refreshingModels],
+  );
   // Per-repo branch overrides (repo full_name -> branch). An absent entry means
   // "clone the repo's default branch"; only overrides are sent to the backend.
   const [branches, setBranches] = useState<Record<string, string>>({});
@@ -343,36 +322,6 @@ export function NewTaskComposer({
     if (preskill && skills.some((s) => s.id === preskill)) setPlaybook(preskill);
   }, [skills]);
 
-  // Keep configured engines discoverable; readiness decorates an engine with
-  // actionable status instead of deleting it from the picker.
-  const engineGroups: PickerGroup[] = useMemo(
-    () => [
-      {
-        label: "Engines",
-        options: pickerEngineOptions(enabledEngines).map(
-          (e) => ({
-            value: e.id,
-            label: e.label,
-            caption: engineRuntimeCaption(
-              e.id,
-              engineConfig.runtimes[e.id],
-              engineConfig.readiness[e.id],
-              engineConfig.localLoginOffered.includes(e.id),
-              machineRunsWork,
-            ),
-            icon: engineMarkFor(e.id),
-          }),
-        ),
-      },
-    ],
-    [
-      enabledEngines,
-      engineConfig.localLoginOffered,
-      engineConfig.readiness,
-      engineConfig.runtimes,
-    ],
-  );
-
   // One combined picker over the shared substrate: an explicit "none" option, then
   // Skills and Playbooks as separate groups (a run pins exactly one, either kind).
   const skillGroups: PickerGroup[] = useMemo(() => {
@@ -441,7 +390,6 @@ export function NewTaskComposer({
       prompt: text,
       engine,
       memory_scope: "org",
-      permission_mode: permissionMode,
       ...(selectableModels.length > 0 ? { model } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
@@ -514,8 +462,7 @@ export function NewTaskComposer({
               event.target.value = "";
             }}
           />
-          {/* Files dropped on the card or pasted into the field become attachments. */}
-          <div className="relative" ref={composerRef} {...attachmentIntake(runUploads.addFiles, !submitting)}>
+          <div className="relative" ref={composerRef}>
             {cmdActive && (
               <div className="absolute left-0 top-full z-30 mt-2 w-full">
                 <SlashCommandPopover
@@ -529,11 +476,14 @@ export function NewTaskComposer({
             )}
             {/* The "@" mention popover carries its own placement (below the composer). */}
             {mentions.popover}
-            <ComposerAttachmentRow
-              uploads={runUploads.uploads}
-              onRemove={(upload) => void runUploads.remove(upload)}
-              className="px-3 pt-3"
-            />
+            {runUploads.uploads.length > 0 ? (
+              <div className="px-3 pt-3">
+                <RunUploadChips
+                  uploads={runUploads.uploads}
+                  onRemove={(upload) => void runUploads.remove(upload)}
+                />
+              </div>
+            ) : null}
             {/* Structured "@" mentions render as removable chips above the input. */}
             {mentions.mentions.length > 0 ? <div className="px-3 pt-3">{mentions.chips}</div> : null}
             <PromptInputTextarea
@@ -554,11 +504,23 @@ export function NewTaskComposer({
                 repo chips live in the sub-bar below the card. */}
             <div className="flex items-center gap-2 px-3 pb-3 pt-1">
               <div className="relative shrink-0">
-                <ComposerAddButton
+                <button
+                  type="button"
                   aria-label="Add context"
-                  open={addMenuOpen}
-                  onToggle={() => setAddMenuOpen((o) => !o)}
-                />
+                  aria-haspopup="menu"
+                  aria-expanded={addMenuOpen}
+                  onClick={() => setAddMenuOpen((o) => !o)}
+                  className={cx(
+                    "grid size-9 cursor-pointer place-items-center rounded-full bg-background-secondary-default outline-none transition-colors hover:bg-background-secondary-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-focus-ring",
+                    addMenuOpen ? "text-text-primary" : "text-text-secondary",
+                  )}
+                >
+                  {addMenuOpen ? (
+                    <RiCloseLine className="size-[18px]" aria-hidden />
+                  ) : (
+                    <RiAddLine className="size-[18px]" aria-hidden />
+                  )}
+                </button>
 
                 {/* Floating add-context popover (upload, Create seeds, GitHub
                     status). It floats above the "+" instead of an attached shelf;
@@ -597,9 +559,6 @@ export function NewTaskComposer({
                 ) : null}
               </div>
 
-              {/* Permission for the new thread, the panel's faces over the run's mode
-                  (Auto, Manual, Plan mode, Bypass all); rides POST /api/runs as permission_mode. */}
-              <PermissionModeChip mode={permissionMode} onChange={setChosenMode} engine={engine} />
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes
@@ -608,37 +567,20 @@ export function NewTaskComposer({
                   <AgentThinking variant="wave" label="Starting the run" showTimer={false} />
                 </div>
               ) : (
-                /* Engine and model read as one compact quiet chip on the right:
-                   the engine name, a dot, then the model, with a single chevron. */
-                <div className="ml-auto flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden">
-                  <SearchablePicker
-                    ariaLabel="Select engine"
-                    triggerLabel="Engine"
-                    searchPlaceholder="Search engines..."
-                    groups={engineGroups}
-                    value={engine}
-                    onChange={setEngine}
-                    hideChevron={selectableModels.length > 0}
-                    triggerClassName="h-8 shrink-0 rounded-full px-2 text-caption-1-medium text-text-secondary"
+                /* Engine and model read as one quiet chip on the right: the rail
+                   inside the picker chooses the engine, the rows its model. */
+                <div className="ml-auto flex min-w-0 flex-nowrap items-center overflow-hidden">
+                  <ModelPicker
+                    providers={providers}
+                    value={model}
+                    providerId={engine}
+                    onChange={(nextModel, nextEngine) => {
+                      setEngine(nextEngine);
+                      setModel(nextModel);
+                    }}
+                    placement="bottom end"
+                    className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
                   />
-                  {/* Model is shown only for engines whose backend policy accepts an
-                      explicit user choice (OpenCode and Codex). */}
-                  {selectableModels.length > 0 ? (
-                    <>
-                      <span aria-hidden className="shrink-0 select-none text-text-tertiary">
-                        ·
-                      </span>
-                      <SearchablePicker
-                        ariaLabel="Select model"
-                        triggerLabel="Model"
-                        searchPlaceholder="Search models..."
-                        groups={modelGroups}
-                        value={model}
-                        onChange={setModel}
-                        triggerClassName="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
-                      />
-                    </>
-                  ) : null}
                 </div>
               )}
               {/* Compact dark circular send (ai-kit reference): disabled only while
