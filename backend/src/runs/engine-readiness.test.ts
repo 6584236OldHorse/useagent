@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { freeModelLaneCache } from "./free-model-lane";
 import {
   configuredEngineReadiness,
   configuredUserFacingEngines,
@@ -21,6 +22,11 @@ const PROD = {
   GATEWAY_PUBLIC_URL: "https://gateway.example.test",
   PROVIDER_GATEWAY_SECRET: "readiness-test-provider-gateway-secret-0123456789",
 } as const;
+
+
+// These tests read the Free lane's cold boot state (the seed). Other suites in the
+// same process adopt published lanes into the shared cache, so start from the seed.
+beforeEach(() => freeModelLaneCache.reset());
 
 describe("engine readiness advertisement", () => {
   test("a sandbox engine is not ready without a wired provider gateway", () => {
