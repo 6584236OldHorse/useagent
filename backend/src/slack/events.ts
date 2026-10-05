@@ -30,11 +30,10 @@ import { SpendAllowanceExceededError } from "../runs/spend";
 import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { pumpThread } from "../worker";
 import { stageInboundSlackFiles, type SlackInboundFileMeta } from "./inbound-files";
-import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread, setSlackThreadMuted, slackThreadCardBase } from "./repo";
-import { slackThreadControl } from "./asides";
+import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread, slackThreadCardBase } from "./repo";
+import { settleThreadControl, slackThreadControl } from "./asides";
 import { watchSlackRun } from "./watcher";
 import {
-  enqueueAddReaction,
   enqueueAddReactionTx,
   enqueuePostCardTx,
   enqueuePostMessage,
@@ -386,8 +385,8 @@ export async function handleSlackEvent(
     if (!isThreadReply) return { status: "permanent_noop", reason: "untargeted_channel_message" };
   }
 
-  // An aside is for the people in the thread, never for the bot: no run, no
-  // reply, no reaction, and the message settles so a redelivery stays quiet.
+  // An aside is for the people in the thread, never for the bot: it settles
+  // here with no run, reply or reaction, so a redelivery stays quiet.
   const control = slackThreadControl(ingressText(rawText, botUserId));
   if (control === "aside") {
     console.log(`[slack] aside ignored: ${teamId}:${channel}:${ts}`);
@@ -455,24 +454,7 @@ export async function handleSlackEvent(
   }
 
   if (control) {
-    // "mute" or "unmute" from a linked member inside a thread the bot roots:
-    // flip the thread, react once (keyed by the message, so a redelivery never
-    // reacts twice), and settle. Outside a rooted thread the word has nothing
-    // to act on, and it is not a prompt either.
-    if (link) {
-      await setSlackThreadMuted({ teamId, channel, threadTs: slackThreadTs, orgId }, control === "mute");
-      await enqueueAddReaction({
-        idempotencyKey: `slack-ack:${teamId}:${channel}:${ts}`,
-        orgId,
-        teamId,
-        channel,
-        timestamp: ts,
-        name: control === "mute" ? "no_bell" : "bell",
-      });
-    } else {
-      console.log(`[slack] ${control} outside a rooted thread ignored: ${teamId}:${channel}:${ts}`);
-    }
-    return { status: "permanent_noop", reason: link ? `thread_${control}` : `${control}_without_thread` };
+    return settleThreadControl(control, { teamId, channel, ts, orgId, threadTs: slackThreadTs, rooted: Boolean(link) });
   }
 
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;
