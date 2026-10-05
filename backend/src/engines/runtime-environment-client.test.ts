@@ -49,6 +49,8 @@ describe("T3 environment client", () => {
     expect(command).toContain("/api/auth/browser-session");
     expect(command).toContain("chmod 600");
     expect(command).toContain('rm -f "$PAIRING"');
+    // The pairing replaces the jar in one rename; a concurrent pairing never sees it missing.
+    expect(command).not.toContain('rm -f "$COOKIE"');
     expect(command).not.toContain("echo $PAIRING");
     expect(command).not.toContain("0.0.0.0");
     expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
@@ -325,6 +327,8 @@ describe("T3 environment client", () => {
       buildRuntimeEnvironmentAuthenticationCommand(),
       expect.stringContaining("/api/orchestration/shell"),
     ]);
+    // The warm-up gets the boot script's budget, not a running runtime's.
+    expect(commands[4]).toContain("-m 60");
   });
 
   test("revalidates cached access and retries once when a request fails", async () => {

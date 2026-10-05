@@ -33,6 +33,7 @@ export const RUN_TIMING_STAGES = {
 
 export const RUN_TIMING_OUTCOMES = {
   aborted: "aborted",
+  booted: "booted",
   disabled: "disabled",
   failure: "failure",
   hit: "hit",

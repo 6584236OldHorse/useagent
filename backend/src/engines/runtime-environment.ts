@@ -9,6 +9,7 @@ import {
 } from "./native-runtime-artifact";
 import {
   RUN_TIMING_OUTCOMES,
+  type RunTimingOutcome,
   RUN_TIMING_STAGES,
   type RunStageTimer,
 } from "../runs/run-timing";
@@ -44,6 +45,8 @@ export const RUNTIME_SANDBOX_HOME = "/root";
 const RUNTIME_MCP_SERVER_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-required-mcp`;
 /** What the running runtime was launched with; readiness compares it with what the plane wants now. */
 const RUNTIME_FLAGS_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-flags`;
+/** Present while the image's boot entrypoint is still bringing the runtime up. */
+export const RUNTIME_BOOT_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-booting`;
 
 export function runtimeEnvironmentFlags(env: Readonly<Record<string, string | undefined>> = process.env): string {
   return `child-forwarding=${runtimeCodexChildForwardingEnabled(env) ? "on" : "off"}`;
@@ -101,6 +104,10 @@ export function buildRuntimeEnvironmentReadinessCommand(
     `test "$(cat \"${RUNTIME_ENVIRONMENT_HOME}/.useagent-native-runtime\" 2>/dev/null)" = "${NATIVE_RUNTIME_ARTIFACT.archiveSha256}:${NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256}"`,
     `curl -fsS -m 3 -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/auth/session`,
   ].join(" && ");
+}
+
+export function buildRuntimeEnvironmentBootingProbe(): string {
+  return `test -f "${RUNTIME_BOOT_MARKER}"`;
 }
 
 export function buildRuntimeIdentityPreflightCommand(
@@ -231,6 +238,15 @@ export async function runtimeEnvironmentHealthy(sandbox: RuntimeEnvironmentSandb
   }
 }
 
+async function runtimeEnvironmentBooting(sandbox: RuntimeEnvironmentSandbox): Promise<boolean> {
+  try {
+    const probe = await sandbox.process.executeCommand(buildRuntimeEnvironmentBootingProbe(), undefined, undefined, 5);
+    return probe.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function deleteRuntimeEnvironmentSessionIfPresent(sandbox: RuntimeEnvironmentSandbox): Promise<void> {
   try {
     await sandbox.process.deleteSession(RUNTIME_ENVIRONMENT_PROCESS_SESSION);
@@ -249,8 +265,21 @@ async function provisionRuntimeEnvironment(
     const layout = runtimeEnvironmentLayout(sandbox);
     if (signal.aborted) throw new Error("Provider runtime start aborted");
     await ensureNativeRuntimeArtifact(sandbox, layout, signal);
-    const alreadyHealthy = await runtimeEnvironmentHealthy(sandbox);
-    if (!alreadyHealthy) {
+    let healthy = await runtimeEnvironmentHealthy(sandbox);
+    let outcome: RunTimingOutcome = healthy ? RUN_TIMING_OUTCOMES.ready : RUN_TIMING_OUTCOMES.repaired;
+    if (!healthy && (await runtimeEnvironmentBooting(sandbox))) {
+      // The image's boot entrypoint is still bringing the runtime up. Killing it
+      // now would pay the whole start again, so wait for it as long as a launch may take.
+      const deadline = Date.now() + RUNTIME_READINESS_DEADLINE_MS;
+      while (!signal.aborted && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, RUNTIME_READINESS_DELAY_MS));
+        healthy = await runtimeEnvironmentHealthy(sandbox);
+        if (healthy || !(await runtimeEnvironmentBooting(sandbox))) break;
+      }
+      if (signal.aborted) throw new Error("Provider runtime start aborted");
+      if (healthy) outcome = RUN_TIMING_OUTCOMES.booted;
+    }
+    if (!healthy) {
       // A healthy old binary can still own the port even when provenance fails.
       await stopRuntimeEnvironment(sandbox, signal);
       await deleteRuntimeEnvironmentSessionIfPresent(sandbox);
@@ -281,7 +310,7 @@ async function provisionRuntimeEnvironment(
       }
     }
 
-    endReadiness?.(alreadyHealthy ? RUN_TIMING_OUTCOMES.ready : RUN_TIMING_OUTCOMES.repaired);
+    endReadiness?.(outcome);
     return {
       sandboxId: sandbox.id,
       port: RUNTIME_ENVIRONMENT_PORT,

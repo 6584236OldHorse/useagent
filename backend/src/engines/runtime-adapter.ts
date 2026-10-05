@@ -132,10 +132,11 @@ export async function ensureRuntimeProviderReadyForTurn(input: {
   readonly dependencies?: RuntimeProviderBarrierDependencies;
 }): Promise<void> {
   const dependencies = input.dependencies ?? runtimeProviderBarrierDependencies;
-  // A fresh sandbox has no runtime server yet, so its status cache cannot fill
-  // no matter how long the barrier waits. Boot straight away instead of
-  // burning the whole barrier deadline first; the boot reads the settings
-  // written just before it, which is the deterministic path anyway.
+  // A sandbox whose runtime is down cannot fill its status cache no matter how
+  // long the barrier waits. Boot straight away instead of burning the whole
+  // barrier deadline first; the boot reads the settings written just before it.
+  // The baked image usually has the runtime up already; it then takes the
+  // settings through its settings watch, and the barrier below covers that.
   const up = dependencies.healthy ? await dependencies.healthy(input.sandbox) : true;
   if (
     up &&
@@ -524,10 +525,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         if (providerBridgeLease?.authPath === "subscription") {
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
-            // A fresh sandbox has no runtime server yet: nothing can publish the
-            // status cache, so polling it only spends the barrier deadline. Boot
-            // now (timed as runtime.readiness); the boot reads the relay config
-            // written above synchronously.
+            // A sandbox whose runtime is down cannot publish the status cache,
+            // so polling it only spends the barrier deadline. Boot now (timed as
+            // runtime.readiness); the boot reads the relay config written above.
+            // A runtime the image booted already is up and takes the relay
+            // config through its settings watch; the barrier below waits for it.
             const up = await runtimeEnvironmentHealthy(sandbox);
             // (B) Barrier: wait for the reconcile to publish the subscription
             // (relay-backed) codex instance into its status cache. Content, not

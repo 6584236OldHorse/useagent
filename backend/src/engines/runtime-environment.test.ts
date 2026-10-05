@@ -19,6 +19,7 @@ import {
   prewarmRuntimeEnvironment,
   RUNTIME_CUBE_WARM_POOL_NAME,
   RUNTIME_ENVIRONMENT_PORT,
+  buildRuntimeEnvironmentBootingProbe,
   RUNTIME_GENERATION,
   RUNTIME_GENERATION_LABEL,
   runtimeFirstActivityTimeoutMs,
@@ -50,6 +51,8 @@ function runtimeSandbox(
         if (args[0].includes("# native-runtime-verified")) return { exitCode: 0, result: "" };
         if (args[0].startsWith("curl -fsS -m 3 -o /dev/null")) return { exitCode: 1, result: "" };
         if (args[0].includes("[t]3 serve") && !id.includes("restart")) return { exitCode: 0, result: "" };
+        // No boot in progress unless the test says so.
+        if (args[0] === buildRuntimeEnvironmentBootingProbe() && !id.includes("booting")) return { exitCode: 1, result: "" };
         return process.executeCommand(...args);
       },
     },
@@ -280,6 +283,31 @@ describe("T3 Cube environment", () => {
     expect(launched).toHaveLength(1);
     expect(launched[0]).toContain('/bin/t3" serve');
     expect(probes).toBe(2);
+  });
+
+  test("waits for the image's boot entrypoint instead of restarting a runtime still coming up", async () => {
+    const launched: string[] = [];
+    const created: string[] = [];
+    let probes = 0;
+    const sandbox = runtimeSandbox("cube-t3-booting", {
+      executeCommand: async (command: string) => {
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: 0, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: probes++ < 2 ? 1 : 0, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+      createSession: async (name: string) => created.push(name),
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(
+      ensureRuntimeEnvironment(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ sandboxId: "cube-t3-booting", port: RUNTIME_ENVIRONMENT_PORT });
+    expect(probes).toBe(3);
+    expect(launched).toEqual([]);
+    expect(created).toEqual([]);
   });
 
   test("derives a non-root launch layout from the sandbox provider handle", async () => {

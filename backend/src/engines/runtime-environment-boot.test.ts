@@ -14,7 +14,10 @@ describe("sandbox boot entrypoint", () => {
     expect(script).toContain(`until sh -c ${single(buildRuntimeEnvironmentReadinessCommand(env))}; do`);
     expect(script).toContain(`sh -c ${single(buildRuntimeEnvironmentAuthenticationCommand())} >>"/root/.skynet/t3/boot.log" 2>&1 || true`);
     expect(script).toContain("http://127.0.0.1:37733/api/orchestration/shell || true");
-    expect(script.trimEnd().endsWith("exec sleep infinity")).toBe(true);
+    expect(script.trimEnd().endsWith('[ "$#" -gt 0 ] && exec "$@"\nexec sleep infinity')).toBe(true);
+    // The plane sees the boot in progress from the moment before the launch until readiness passed or the wait gave up.
+    expect(script.indexOf('touch "$HOME/.skynet/t3/.useagent-runtime-booting"')).toBeLessThan(script.indexOf("nohup sh -c"));
+    expect(script.indexOf('rm -f "$HOME/.skynet/t3/.useagent-runtime-booting"')).toBeGreaterThan(script.indexOf("done\n"));
     // The wait is bounded: a runtime that never comes up leaves the sandbox idle for the plane to repair.
     expect(script).toContain('[ "$i" -ge 600 ] && break');
   });
