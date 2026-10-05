@@ -23,7 +23,9 @@ const FRONTEND_ROOT = resolve(import.meta.dir, "..", "..");
 const MAX_LINES = 800;
 const EM_DASH = String.fromCharCode(0x2014); // U+2014, built so this file authors no em dash glyph
 
-const SKIP_DIRS = new Set(["node_modules", ".next", "dist"]);
+// Build output is never source: `.next-build` (what `bun run build` writes, with
+// standalone copies of first-party files under it) is skipped like the dev `.next`.
+const SKIP_DIRS = new Set(["node_modules", ".next", ".next-build", "dist"]);
 
 /** Every first-party .ts/.tsx under frontend/, excluding vendored trees
  *  (vendor/, the AlignUI kit components/ui/), build output and .d.ts shims.
