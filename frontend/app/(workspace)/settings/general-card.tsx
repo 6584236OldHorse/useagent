@@ -1,15 +1,18 @@
 "use client";
 
-import { useSession } from "@/lib/auth";
+import { useEffect, useState } from "react";
+import { listWorkspaces, useSession } from "@/lib/auth";
 import { cx } from "@/utils/cx";
 import { ThemeToggle } from "./theme-toggle";
 import { SettingsCard, SettingsRow } from "./settings-rows";
 
 /**
- * General card - profile and workspace details read from the live better-auth
- * session. Nothing here is editable yet, so the values render as text ("Not
- * set" when the session carries none) rather than as inputs that ignore
- * typing. Client component because ThemeToggle can't cross the server boundary.
+ * General card - profile details read from the live better-auth session and
+ * the workspace's name from the same workspace list the user menu reads, so a
+ * rename (the welcome page) shows here. Nothing here is editable, so the
+ * values render as text ("Not set" when there is none) rather than as inputs
+ * that ignore typing. Client component because ThemeToggle can't cross the
+ * server boundary.
  */
 
 export const AVATAR_GRADIENT = "bg-gradient-to-br from-purple-400 to-blue-500 text-white";
@@ -24,10 +27,28 @@ function Value({ value }: { value: string | null }) {
   );
 }
 
-export function GeneralCard() {
+export function GeneralCard({ initialWorkspaceName }: { initialWorkspaceName?: string } = {}) {
   const { session, loading } = useSession();
   const name = loading ? null : (session?.user.name?.trim() ?? "");
   const email = loading ? null : (session?.user.email ?? "");
+  /** The active workspace's name; null while it loads. */
+  const [workspaceName, setWorkspaceName] = useState<string | null>(initialWorkspaceName ?? null);
+  const [workspaceFailed, setWorkspaceFailed] = useState(false);
+
+  useEffect(() => {
+    if (initialWorkspaceName !== undefined) return;
+    let cancelled = false;
+    listWorkspaces()
+      .then((workspaces) => {
+        if (!cancelled) setWorkspaceName(workspaces.find((row) => row.active)?.name ?? "");
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialWorkspaceName]);
 
   return (
     <SettingsCard>
@@ -38,7 +59,11 @@ export function GeneralCard() {
         <Value value={email} />
       </SettingsRow>
       <SettingsRow label="Workspace name">
-        <Value value="useAgent" />
+        {workspaceFailed ? (
+          <p className="text-body-2-regular text-text-error-primary">Could not load the workspace.</p>
+        ) : (
+          <Value value={workspaceName} />
+        )}
       </SettingsRow>
       <SettingsRow label="Theme" description="Choose your interface theme.">
         <ThemeToggle />
