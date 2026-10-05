@@ -72,6 +72,9 @@ describe("control frames", () => {
     expect(parseControlFrame(JSON.stringify({ t: "heartbeat" }))).toBeNull();
     expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: null, kind: "x", detail: 1 }))).not.toBeNull();
     expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: 5, kind: "x" }))).toBeNull();
+    // detail is part of the frame, even when it is null.
+    expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: null, kind: "x", detail: null }))).not.toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: null, kind: "x" }))).toBeNull();
   });
 
   test("credit must be a positive safe integer", () => {

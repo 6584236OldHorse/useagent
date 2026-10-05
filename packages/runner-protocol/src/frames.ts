@@ -273,7 +273,7 @@ export function parseControlFrame(text: string): ControlFrame | null {
         ? (value as unknown as HeartbeatFrame)
         : null;
     case "event":
-      return typeof value.kind === "string" && (value.sandboxId === null || typeof value.sandboxId === "string")
+      return typeof value.kind === "string" && (value.sandboxId === null || typeof value.sandboxId === "string") && "detail" in value
         ? (value as unknown as EventFrame)
         : null;
     default:
