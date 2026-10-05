@@ -20,7 +20,7 @@ const app = createGatewayApp();
 // The gateway reaches a developer's machine through the backend's bridge; it
 // knows the enrolled machines from the database so a run's sandbox resolves.
 const { remoteRunnerDirectory } = await import("./runners/remote-directory");
-const knownRunners = await remoteRunnerDirectory.load();
+const knownRunners = await remoteRunnerDirectory.refresh();
 if (knownRunners > 0) console.log(`[useagent] gateway knows ${knownRunners} enrolled runner${knownRunners === 1 ? "" : "s"}`);
 const port = Number(process.env.GATEWAY_PORT ?? 3202);
 

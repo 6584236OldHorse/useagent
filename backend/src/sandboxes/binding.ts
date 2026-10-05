@@ -68,6 +68,7 @@ export interface SandboxBindingDeps {
     readonly onlineForUser: (orgId: string, userId: string) => BoundRunner | null;
     readonly runner: (runnerId: string) => BoundRunner | null;
     readonly policy: (orgId: string) => Promise<{ allowLocalExecution: boolean; allowLocalLogins: boolean }>;
+    readonly refresh?: () => Promise<void>;
   };
 }
 
@@ -83,7 +84,7 @@ export interface BoundRunner {
 function runnerSeam(deps: SandboxBindingDeps): NonNullable<SandboxBindingDeps["runners"]> {
   if (deps.runners) return deps.runners;
   const seam = activeRunnerSeam();
-  return { onlineForUser: seam.onlineForUser, runner: seam.runner, policy: getRunnerPolicy };
+  return { onlineForUser: seam.onlineForUser, runner: seam.runner, policy: getRunnerPolicy, refresh: seam.refresh };
 }
 
 function localBinding(runner: BoundRunner, logins: readonly string[], deps: SandboxBindingDeps): SandboxBinding {
@@ -399,6 +400,7 @@ export async function resolveRunSandbox(run: {
   return withRunnerBridgeContext(
     { orgId: run.orgId ?? "", userId: run.userId ?? "", runId: run.id ?? "", threadId: run.threadId },
     async () => {
+      if (run.sandboxId && parseLocalSandboxId(run.sandboxId)) await runnerSeam({}).refresh?.();
       const expected = parseExpectedSandboxBinding(run.expectedSandbox) ??
         (run.orgId ? await getThreadExpectedSandbox(run.orgId, run.threadId) : null);
       if (expected) {

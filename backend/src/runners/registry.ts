@@ -55,6 +55,8 @@ const dbPersistence: RunnerPersistence = {
 
 export class RunnerRegistry {
   private readonly live = new Map<string, LiveRunner>();
+  /** The most recent attach per runner, so an older hello that finishes recording later cannot win. */
+  private readonly attaching = new Map<string, number>();
   private sweeper: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
   private readonly persist: RunnerPersistence;
@@ -109,8 +111,14 @@ export class RunnerRegistry {
    * which case nothing is attached and the caller closes the socket.
    */
   async attach(row: RunnerRow, mux: Mux, hello: HelloFrame): Promise<LiveRunner | null> {
+    const ticket = (this.attaching.get(row.id) ?? 0) + 1;
+    this.attaching.set(row.id, ticket);
     if (row.status === "revoked" || !(await this.persist.hello(row.id, hello))) {
       this.forget(row.id);
+      return null;
+    }
+    if (mux.isClosed || this.attaching.get(row.id) !== ticket) {
+      mux.close("superseded by a newer link");
       return null;
     }
     const runner = this.know(row);

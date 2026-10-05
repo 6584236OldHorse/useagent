@@ -19,6 +19,8 @@ export function activeRunnerDirectory(): SandboxLinkDirectory {
 export interface RunnerSeam {
   readonly onlineForUser: (orgId: string, userId: string) => LiveRunner | KnownRunner | null;
   readonly runner: (runnerId: string) => LiveRunner | KnownRunner | null;
+  /** Bring this process's view of machines up to date before a local sandbox resolves. */
+  readonly refresh: () => Promise<void>;
 }
 
 export function activeRunnerSeam(): RunnerSeam {
@@ -27,10 +29,15 @@ export function activeRunnerSeam(): RunnerSeam {
       // New runs are bound in the backend process; the gateway only serves existing ones.
       onlineForUser: () => null,
       runner: (runnerId) => remoteRunnerDirectory.runner(runnerId),
+      // Machines enrol and reconnect after the gateway booted; the backend records each change.
+      refresh: async () => {
+        await remoteRunnerDirectory.refresh();
+      },
     };
   }
   return {
     onlineForUser: (orgId, userId) => runnerRegistry.onlineForUser(orgId, userId),
     runner: (runnerId) => runnerRegistry.runner(runnerId),
+    refresh: async () => {},
   };
 }
