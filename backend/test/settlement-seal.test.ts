@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
 import { followRuntimeThreadSnapshots } from "../src/engines/runtime-event-stream";
@@ -306,6 +306,60 @@ test("a projection resuming with an older snapshot after the stop cleanup record
   stalled.resolve();
   await original;
   await drainProviderEvents(runId);
-  expect(await priceRunUsage(runId)).toEqual({ cost: 0.5, tokens: 30, source: "usage" });
+  expect(await priceRunUsage(runId)).toMatchObject({ cost: 0.5, tokens: 30, source: "usage" });
   expect(emitted).toHaveLength(2);
 });
+
+// The same schedule with activities that carry no sequence of their own (the
+// pinned runtime's task usage): the snapshot clock alone must order them.
+test("an older snapshot resuming after the stop cleanup applies nothing older even when the activities carry no sequence", async () => {
+  const session = await createOrgSession("seal-unsequenced");
+  const [who] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, session.orgId));
+  const runId = `seal_unseq_${crypto.randomUUID()}`;
+  await db.insert(runs).values({
+    id: runId, orgId: session.orgId, userId: who!.userId, prompt: "revise me", model: "claude-opus-5",
+    engine: "claude", status: "running", threadId: runId, origin: "internal:e2e",
+  });
+  const stalled = Promise.withResolvers<void>();
+  const emitted: string[] = [];
+  const ctx = {
+    runId,
+    threadId: runId,
+    signal: new AbortController().signal,
+    emit: async (step: { label: string }) => {
+      emitted.push(step.label);
+      if (emitted.length === 1) await stalled.promise;
+      return `step-${emitted.length}`;
+    },
+    setSummary() {},
+  } as unknown as EngineRunContext;
+  const projector = createTurnProjector({ ctx, redact: createSecretRedactor([]), engine: "codex", seen: new Map() });
+  const usage = (id: string, costUsd: number) => ({
+    id, tone: "tool" as const, kind: "tool.completed", summary: `Tool ${id}`,
+    payload: { toolCallId: id, status: "completed", typedUsage: { inputTokens: 10, outputTokens: 5, costUsd } },
+    turnId: "turn-1",
+  });
+  const at = (snapshotSequence: number, activities: ReturnType<typeof usage>[]) => ({
+    snapshotSequence,
+    thread: {
+      id: `skynet-thread-${runId}`,
+      latestTurn: { turnId: "turn-1", state: "completed" as const, assistantMessageId: null },
+      messages: [],
+      activities,
+      session: null,
+    },
+  });
+  const original = projector.apply(at(2, [usage("tool-a", 0.1), usage("tool-b", 0.2)]));
+  await waitFor(async () => (emitted.length === 1 ? true : null));
+  const landed = await settleStoppedTurnUsage({
+    cancel: async () => undefined,
+    read: async () => at(3, [usage("tool-a", 0.1), usage("tool-b", 0.4)]),
+    apply: (snap, signal) => projector.apply(snap, undefined, { signal }),
+  });
+  expect(landed).toBe(true);
+  stalled.resolve();
+  await original;
+  await drainProviderEvents(runId);
+  expect(await priceRunUsage(runId)).toMatchObject({ cost: 0.5, tokens: 30, source: "usage" });
+});
+

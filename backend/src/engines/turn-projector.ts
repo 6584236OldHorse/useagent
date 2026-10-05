@@ -27,8 +27,8 @@ export interface TurnProjector {
     observe?: (activity: RuntimeActivity) => void,
     options?: { readonly signal?: AbortSignal },
   ): Promise<AppliedSnapshot>;
-  /** Activity revisions applied so far, or handed in as already seen. */
-  seen(): ReadonlyMap<string, string>;
+  /** Activity revisions applied so far, or handed in as already seen, each with the snapshot that carried it. */
+  seen(): ReadonlyMap<string, SeenRevision>;
   /** The step each activity key was recorded under, so a later revision updates it instead of adding another. */
   steps(): ReadonlyMap<string, string>;
   readonly publishedText: string;
@@ -38,21 +38,19 @@ export interface TurnProjector {
   readonly settled: boolean;
 }
 
-/** Whether `next` is a newer revision of an activity than `recorded`: runtime
- *  sequences compare as numbers; a revision without one is newer only when it
- *  differs. A projection resuming with an older snapshot after a newer one
- *  landed (a stalled step write released after Stop's cleanup) applies nothing
- *  older, so a later figure is never overwritten by an earlier one. */
-export function revisionIsNewer(next: string, recorded: string | undefined): boolean {
-  if (recorded === undefined) return true;
-  const a = Number(next);
-  const b = Number(recorded);
-  return Number.isFinite(a) && Number.isFinite(b) ? a > b : next !== recorded;
+/** What a projector knows of an activity: the revision recorded and the
+ *  snapshot sequence (the runtime's own thread clock) that carried it. */
+export interface SeenRevision {
+  readonly revision: string;
+  readonly at: number;
 }
 
 /** The revisions a thread already holds before a turn is dispatched. */
-export function activityRevisions(snapshot: RuntimeThreadSnapshot): Map<string, string> {
-  return new Map(snapshot.thread.activities.map((activity) => [activity.id, runtimeActivityRevision(activity)]));
+export function activityRevisions(snapshot: RuntimeThreadSnapshot): Map<string, SeenRevision> {
+  return new Map(snapshot.thread.activities.map((activity) => [
+    activity.id,
+    { revision: runtimeActivityRevision(activity), at: snapshot.snapshotSequence },
+  ]));
 }
 
 export function projectRuntimeAssistantText(
@@ -72,7 +70,7 @@ export function createTurnProjector(input: {
   readonly ctx: EngineRunContext;
   readonly redact: ReturnType<typeof createSecretRedactor>;
   readonly engine: RuntimeEngineId | null;
-  readonly seen: ReadonlyMap<string, string>;
+  readonly seen: ReadonlyMap<string, SeenRevision>;
   readonly steps?: ReadonlyMap<string, string>;
 }): TurnProjector {
   const { ctx, redact, engine } = input;
@@ -96,9 +94,16 @@ export function createTurnProjector(input: {
         // Checked before the revision is marked, so an activity fenced out here
         // is still unseen for a later projection instead of silently lost.
         if (signal?.aborted || sealed) break;
+        // A revision applies only from a snapshot newer than the one that
+        // recorded the activity, and only when it differs. The snapshot
+        // sequence is the runtime's thread clock, so it orders the record even
+        // for activities that carry no sequence of their own: a replay adds
+        // nothing, and a projection resuming with an older snapshot after the
+        // stop cleanup landed a newer one applies nothing older.
         const revision = runtimeActivityRevision(activity);
-        if (!revisionIsNewer(revision, revisions.get(activity.id))) continue;
-        revisions.set(activity.id, revision);
+        const known = revisions.get(activity.id);
+        if (known && (known.revision === revision || snapshot.snapshotSequence <= known.at)) continue;
+        revisions.set(activity.id, { revision, at: snapshot.snapshotSequence });
         try {
           // Fenced by the settlement seal: once the run is settled (whichever
           // path settled it), a capture still in flight writes nothing.

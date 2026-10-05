@@ -62,7 +62,7 @@ import {
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
 import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
-import { activityRevisions, createTurnProjector, type TurnProjector } from "./turn-projector";
+import { activityRevisions, createTurnProjector, type SeenRevision, type TurnProjector } from "./turn-projector";
 import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { operatorEnv } from "./runtime-env";
@@ -306,7 +306,7 @@ const runtimeTurnWaitDependencies: RuntimeTurnWaitDependencies = {
 export async function waitForRuntimeTurn(
   ctx: EngineRunContext,
   sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  preExistingActivities: ReadonlyMap<string, string>,
+  preExistingActivities: ReadonlyMap<string, SeenRevision>,
   priorSnapshot: RuntimeThreadSnapshot,
   redact: ReturnType<typeof createSecretRedactor>,
   dependencies: RuntimeTurnWaitDependencies = runtimeTurnWaitDependencies,
