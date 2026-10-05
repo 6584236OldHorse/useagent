@@ -84,7 +84,7 @@ export function openSignupConfig(
 
 export const SIGNUP_DISABLED_MESSAGE = "Account creation is disabled";
 
-function sameSecret(given: string, expected: string): boolean {
+export function sameSecret(given: string, expected: string): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);

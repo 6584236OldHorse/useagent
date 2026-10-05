@@ -20,10 +20,13 @@ Object.assign(process.env, OPEN);
 const { createAuthServer } = await import("../src/auth");
 const { handleAuthRequest } = await import("../src/auth/routes");
 const { SIGNUP_ATTEMPTS_PER_ADDRESS, SIGNUP_ATTEMPTS_PER_CLIENT, createSignupRoutes, fixedWindow } = await import("../src/auth/signup-routes");
-const { createEmailVerificationToken } = await import("better-auth/api");
+const { CONFIRMATION_TTL_MS, confirmationToken } = await import("../src/auth-invitations");
 const { db } = await import("../src/db/client");
 const { env } = await import("../src/env");
 const { account, member, organization, user } = await import("../src/db/auth-schema");
+const { slackAccessRequests, slackWorkspaces } = await import("../src/db/schema");
+const { decideAccessRequest } = await import("../src/slack/access-requests");
+const { setSlackClientForTest } = await import("../src/slack");
 
 const auth = createAuthServer();
 const routes = createSignupRoutes(auth);
@@ -35,12 +38,14 @@ google.getUserInfo = async ({ idToken }) => ({ user: { id: `google-${idToken}`, 
 const prefix = `open-signup-${crypto.randomUUID().slice(0, 8)}`;
 const PASSWORD = "password-1234";
 const CODE = "feedback-2026";
+const teamId = `T-${prefix}`;
 
 afterAll(async () => {
   for (const [name, value] of Object.entries(prior)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
+  await db.delete(slackWorkspaces).where(eq(slackWorkspaces.teamId, teamId));
   await db.delete(user).where(like(user.email, `${prefix}%`));
   await db.delete(organization).where(like(organization.slug, `${prefix}%`));
 });
@@ -69,13 +74,9 @@ const signIn = (email: string) =>
       body: JSON.stringify({ email, password: PASSWORD }),
     }),
   );
-async function openLink(email: string, account: string): Promise<Response> {
-  const token = await createEmailVerificationToken(env.BETTER_AUTH_SECRET, email);
-  const callbackURL = encodeURIComponent(`${env.FRONTEND_ORIGIN}/login?verified=1`);
-  return routes.fetch(
-    new Request(`${BASE}/api/auth/verify-email?token=${token}&callbackURL=${callbackURL}&account=${encodeURIComponent(account)}`),
-  );
-}
+const confirm = (token: string) => routes.fetch(new Request(`${BASE}/api/auth/confirm-signup?token=${encodeURIComponent(token)}`));
+const openLink = (email: string, account: string, at = Date.now()) =>
+  confirm(confirmationToken({ id: account, email }, env.BETTER_AUTH_SECRET, at));
 const row = async (email: string) => (await db.select().from(user).where(eq(user.email, email)))[0];
 const memberships = (userId: string) => db.select().from(member).where(eq(member.userId, userId));
 const sessionCookie = (res: Response) => res.headers.getSetCookie().some((cookie) => /session_token=[^;]/.test(cookie));
@@ -175,6 +176,94 @@ describe("open sign-up", () => {
 
     expect((await openLink(email, second!.id)).headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?verified=1`);
     expect(await row(email)).toMatchObject({ id: second!.id, emailVerified: true });
+  });
+
+  test("a link is judged by its signature before anything is looked up", async () => {
+    const known = address("waits"); // confirmed above
+    const pending = await row(known);
+    const forged = (email: string, id: string) => {
+      const [payload] = confirmationToken({ id, email }).split(".");
+      return confirm(`${payload}.${confirmationToken({ id: "someone", email: "else@example.test" }).split(".")[1]}`);
+    };
+    for (const res of [await forged(known, pending!.id), await forged(address("nobody"), "user_none")]) {
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?error=link_invalid`);
+    }
+    const expired = await openLink(known, pending!.id, Date.now() - CONFIRMATION_TTL_MS - 1000);
+    expect(expired.headers.get("location")).toBe(`${env.FRONTEND_ORIGIN}/login?error=link_expired`);
+    // The library's own route, keyed by the address alone, is closed.
+    expect((await routes.fetch(new Request(`${BASE}/api/auth/verify-email?token=x`))).status).toBe(404);
+  });
+
+  test("only a JSON body passes the door, whatever the address", async () => {
+    const form = (email: string) =>
+      routes.fetch(
+        new Request(`${BASE}/api/auth/sign-up/email`, {
+          method: "POST",
+          headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ name: prefix, email, password: PASSWORD, inviteCode: "guess" }).toString(),
+        }),
+        { requestIP: () => ({ address: "127.0.0.1" }) },
+      );
+    for (const res of [await form(address("waits")), await form(address("form-new"))]) {
+      expect(res.status).toBe(400);
+      expect((await res.json()).message).toBe("Send the sign-up as JSON");
+    }
+    expect(await row(address("form-new"))).toBeUndefined();
+    expect((await signUp(address("form-new"), { email: 5 })).status).toBe(400);
+  });
+
+  test("closing sign-up after a claim was made does not let its password in", async () => {
+    const email = address("closed-later");
+    expect((await signUp(email)).status).toBe(200);
+    const before = { SIGNUP_OPEN: process.env.SIGNUP_OPEN, NODE_ENV: process.env.NODE_ENV, BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET };
+    delete process.env.SIGNUP_OPEN;
+    process.env.NODE_ENV = "production";
+    process.env.BETTER_AUTH_SECRET = "closed-signup-test-secret-0123456789abcdef";
+    try {
+      const closed = createAuthServer(); // a restart with the switch off
+      expect(closed.options.emailAndPassword).toMatchObject({ disableSignUp: true, requireEmailVerification: false });
+      const refused = await closed.handler(
+        new Request(`${BASE}/api/auth/sign-in/email`, {
+          method: "POST",
+          headers: { origin: ORIGIN, "content-type": "application/json" },
+          body: JSON.stringify({ email, password: PASSWORD }),
+        }),
+      );
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).code).toBe("EMAIL_NOT_VERIFIED");
+      expect(sessionCookie(refused)).toBe(false);
+    } finally {
+      process.env.SIGNUP_OPEN = before.SIGNUP_OPEN;
+      for (const name of ["NODE_ENV", "BETTER_AUTH_SECRET"] as const) {
+        if (before[name] === undefined) delete process.env[name];
+        else process.env[name] = before[name];
+      }
+    }
+    expect(await row(email)).toMatchObject({ emailVerified: false });
+  });
+
+  test("Slack admission releases a claim on the address instead of adopting it", async () => {
+    const email = address("slack");
+    expect((await signUp(email)).status).toBe(200); // a stranger's claim, password included
+    const claim = await row(email);
+    const orgId = `org_${crypto.randomUUID()}`;
+    await db.insert(organization).values({ id: orgId, name: prefix, slug: `${prefix}-slack`, createdAt: new Date() });
+    await db.insert(slackWorkspaces).values({ teamId, orgId, userId: "user_slack_operator" });
+    const requestId = crypto.randomUUID();
+    await db.insert(slackAccessRequests).values({ id: requestId, teamId, slackUserId: "U-OWNER", orgId, name: "Owner", email, status: "pending" });
+    setSlackClientForTest({ postMessage: async () => ({ ok: true }) } as unknown as Parameters<typeof setSlackClientForTest>[0]);
+    try {
+      const decision = await decideAccessRequest({ id: requestId, orgId, decidedBy: { id: "user_admin", name: "Admin", email: "admin@example.test" }, allow: true });
+      expect(decision.outcome).toBe("allowed");
+    } finally {
+      setSlackClientForTest(null);
+    }
+    const admitted = await row(email);
+    expect(admitted).toMatchObject({ emailVerified: false });
+    expect(admitted!.id).not.toBe(claim!.id);
+    expect(await db.select().from(account).where(eq(account.userId, claim!.id))).toEqual([]); // the stranger's password is gone
+    expect((await memberships(admitted!.id)).map((row) => row.organizationId)).toContain(orgId);
   });
 
   test("an unverified account that already belongs somewhere is a person, not a claim", async () => {

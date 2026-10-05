@@ -3,13 +3,14 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
-import { createPersonalOrgForUser, ensurePersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
+import { createPersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
 import {
   INVITATION_EXPIRES_IN_SECONDS,
+  confirmationLink,
+  confirmationToken,
   deliverInvitation,
   deliverVerification,
   invitedSignupAllowed,
-  verificationLink,
 } from "./auth-invitations";
 import { fixedWindow } from "./auth/signup-routes";
 import { db } from "./db/client";
@@ -65,18 +66,17 @@ export function createAuthServer() {
     emailVerification: open
       ? {
           sendOnSignIn: true,
-          sendVerificationEmail: async ({ user, url }) => {
+          // The library's own link (keyed by address alone) is not mailed; the
+          // signed one names the registration (auth/signup-routes.ts confirms it).
+          sendVerificationEmail: async ({ user }) => {
             if (!mailAllowed(user.email)) {
               console.warn(`[auth] confirmation mail for ${user.email} held: ${VERIFICATION_MAILS_PER_ADDRESS} already sent this hour`);
               return;
             }
             // The account exists whatever the mail does; the card can ask again.
-            void deliverVerification(user.email, verificationLink(url, user.id)).catch((error: unknown) => {
+            void deliverVerification(user.email, confirmationLink(confirmationToken(user))).catch((error: unknown) => {
               console.error(`[auth] verification mail for ${user.email} could not be sent:`, (error as Error).message);
             });
-          },
-          afterEmailVerification: async (user) => {
-            await ensurePersonalOrgForUser(user);
           },
         }
       : undefined,
@@ -128,6 +128,22 @@ export function createAuthServer() {
             // An open sign-up gets its organisation once the address is verified
             // (afterEmailVerification above); everyone else on creation.
             if (user.emailVerified || !open) await createPersonalOrgForUser(user);
+          },
+        },
+      },
+      session: {
+        create: {
+          before: async (session, context) => {
+            // A claim (never confirmed, belongs nowhere) gets no session whatever
+            // the switch says now: closing sign-up after such an account was
+            // created must not let its password in. A claim can only sign in;
+            // the session a sign-up makes for itself (development, where nothing
+            // is confirmed and the organisation follows once the request's
+            // transaction has committed) is not one.
+            if (context?.path === "/sign-up/email") return;
+            if (await unverifiedClaim(session.userId)) {
+              throw APIError.from("FORBIDDEN", { code: "EMAIL_NOT_VERIFIED", message: "Confirm your email address first" });
+            }
           },
         },
       },

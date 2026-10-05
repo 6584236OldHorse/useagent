@@ -1,7 +1,7 @@
 /**
  * What the login card says about a confirmation link that landed here. The
- * backend sends every verifying click to `/login?verified=1`, and the auth
- * library appends `error=<code>` when the link was not good.
+ * backend sends every confirming click to `/login?verified=1`, or to
+ * `/login?error=<code>` when the link was not good.
  */
 export interface VerificationNotice {
   readonly tone: "ok" | "problem";
@@ -19,7 +19,7 @@ export function verificationNotice(params: {
       text: "That confirmation link is from an earlier sign-up that a newer one replaced. Sign up again to get a fresh link.",
     };
   }
-  if (error === "TOKEN_EXPIRED") {
+  if (error === "link_expired") {
     return {
       tone: "problem",
       text: "That confirmation link has expired. Sign in with your password and we will send a new one.",

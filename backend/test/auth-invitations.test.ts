@@ -6,13 +6,16 @@ const { db } = await import("../src/db/client");
 const { env, invitationMailConfig } = await import("../src/env");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
+  CONFIRMATION_TTL_MS,
+  confirmationLink,
+  confirmationToken,
   deliverInvitation,
   deliverVerification,
   headerSafe,
   invitationLink,
   invitationMessage,
   invitedSignupAllowed,
-  verificationLink,
+  readConfirmationToken,
   verificationMessage,
 } = await import("../src/auth-invitations");
 
@@ -103,9 +106,24 @@ describe("invitation mail configuration", () => {
 });
 
 describe("sign-up verification mail", () => {
-  test("binds the link to the account, says what to do when it was not you, and needs a transport", async () => {
-    const link = verificationLink("http://localhost:3211/api/auth/verify-email?token=t&callbackURL=x", "user 1");
-    expect(link).toBe("http://localhost:3211/api/auth/verify-email?token=t&callbackURL=x&account=user%201");
+  test("the token names one registration, expires, and cannot be forged or retargeted", () => {
+    const token = confirmationToken({ id: "user 1", email: "New@Example.test" }, "secret", 1_000);
+    expect(readConfirmationToken(token, "secret", 2_000)).toEqual({ id: "user 1", email: "new@example.test" });
+    expect(readConfirmationToken(token, "secret", 1_000 + CONFIRMATION_TTL_MS + 1)).toBe("expired");
+    expect(readConfirmationToken(token, "other-secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken(`${token}x`, "secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken("", "secret", 2_000)).toBe("invalid");
+    const [payload, signature] = token.split(".");
+    const other = Buffer.from(JSON.stringify({ id: "user 2", email: "new@example.test", until: 9e15 })).toString("base64url");
+    expect(readConfirmationToken(`${other}.${signature}`, "secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken(`${payload}.`, "secret", 2_000)).toBe("invalid");
+    expect(confirmationLink(token, "https://app.example.test")).toBe(
+      `https://app.example.test/api/auth/confirm-signup?token=${encodeURIComponent(token)}`,
+    );
+  });
+
+  test("the mail says what to do when it was not you, and needs a transport", async () => {
+    const link = confirmationLink("t.s", "https://app.example.test");
     const message = verificationMessage(link);
     expect(message.subject).toBe("Confirm your useAgent sign-up");
     expect(message.text).toContain(link);

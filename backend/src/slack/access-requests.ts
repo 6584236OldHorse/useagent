@@ -13,7 +13,7 @@
  */
 import { and, eq, gt, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe } from "../auth-invitations";
-import { createPersonalOrgForUser } from "../auth-hooks";
+import { claimCondition, createPersonalOrgForUser } from "../auth-hooks";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
@@ -552,6 +552,10 @@ async function provenIdentity(tx: Executor, row: Request): Promise<string | null
     .limit(1);
   if (bound) return bound.userId; // the account this sender already owns here
   if (!validEmail(row.email)) return null; // nothing from Slack about the address
+  // A claim on this address (an open sign-up that never confirmed it) is
+  // nobody's: released here, so the person admitted gets a fresh account and
+  // not a stranger's password.
+  await tx.delete(user).where(and(eq(user.email, row.email), claimCondition));
   const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
   if (known) return known.id;
   // Another organisation may be creating this very address at the same moment;

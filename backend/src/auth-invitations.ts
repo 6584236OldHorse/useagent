@@ -1,8 +1,9 @@
+import { createHmac } from "node:crypto";
 import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { sendSmtp } from "./connectors/email/smtp";
 import { db, type Executor } from "./db/client";
 import { account, invitation, user } from "./db/auth-schema";
-import { env, googleAuthEnabled, type InvitationMailConfig, invitationMailConfig, selfSignupEnabled } from "./env";
+import { env, googleAuthEnabled, type InvitationMailConfig, invitationMailConfig, sameSecret, selfSignupEnabled } from "./env";
 
 /**
  * Organisation invitations, and the sign-up verification mail that shares
@@ -118,11 +119,51 @@ export async function deliverInvitation(
   return "sent";
 }
 
-/** The library's link names the address; the account id binds it to the
- *  registration that asked for it, so a link from a claim that a later sign-up
- *  replaced cannot verify the newer claim (auth/signup-routes.ts checks it). */
-export function verificationLink(url: string, userId: string): string {
-  return `${url}&account=${encodeURIComponent(userId)}`;
+/** How long a confirmation link works. */
+export const CONFIRMATION_TTL_MS = 60 * 60 * 1000;
+
+function digest(payload: string, secret: string): string {
+  return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+/** A signed, expiring statement that this registration (account id and
+ *  address) asked to be confirmed. The id is under the signature, so a link
+ *  confirms only the registration it was mailed for: a later sign-up for the
+ *  same address is another registration, and its predecessor's link is dead
+ *  (auth/signup-routes.ts). */
+export function confirmationToken(
+  account: { id: string; email: string },
+  secret: string = env.BETTER_AUTH_SECRET,
+  now: number = Date.now(),
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({ id: account.id, email: account.email.toLowerCase(), until: now + CONFIRMATION_TTL_MS }),
+  ).toString("base64url");
+  return `${payload}.${digest(payload, secret)}`;
+}
+
+export type ConfirmationClaim = { id: string; email: string } | "expired" | "invalid";
+
+/** The registration a token names, decided before anything is looked up. */
+export function readConfirmationToken(
+  token: string,
+  secret: string = env.BETTER_AUTH_SECRET,
+  now: number = Date.now(),
+): ConfirmationClaim {
+  const [payload = "", signature = ""] = token.split(".");
+  if (!payload || !sameSecret(signature, digest(payload, secret))) return "invalid";
+  try {
+    const claim = JSON.parse(Buffer.from(payload, "base64url").toString()) as { id?: unknown; email?: unknown; until?: unknown };
+    if (typeof claim.id !== "string" || typeof claim.email !== "string" || typeof claim.until !== "number") return "invalid";
+    return claim.until < now ? "expired" : { id: claim.id, email: claim.email };
+  } catch {
+    return "invalid";
+  }
+}
+
+/** The link in the mail: the backend confirms and sends the person to the login card. */
+export function confirmationLink(token: string, origin: string = env.BETTER_AUTH_URL): string {
+  return new URL(`/api/auth/confirm-signup?token=${encodeURIComponent(token)}`, origin).toString();
 }
 
 export function verificationMessage(link: string): { subject: string; text: string } {
