@@ -60,8 +60,8 @@ describe("POST /api/chat admission", () => {
 
   test("a member at the allowance is refused with the figures before any model call", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
-    await db.insert(spendAccounts).values({ orgId: session.orgId, userId, spentUsd: 100 })
-      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 100 } });
+    await db.insert(spendAccounts).values({ orgId: session.orgId, userId, spentUsd: 50 })
+      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 50 } });
     const calls = mockProvider();
     try {
       const refused = await json<{ error: string; message: string }>("/api/chat", {
@@ -69,7 +69,7 @@ describe("POST /api/chat admission", () => {
       });
       expect(refused.status).toBe(402);
       expect(refused.body.error).toBe("spend_allowance_exceeded");
-      expect(refused.body.message).toContain("$100.00 of your $100.00");
+      expect(refused.body.message).toContain("$50.00 of your $50.00");
       expect(calls.some((url) => url.includes("/chat/completions"))).toBe(false);
     } finally {
       await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId)));
