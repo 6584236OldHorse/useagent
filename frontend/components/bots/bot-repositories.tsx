@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   RepoMultiPicker,
   type RepoItem,
-} from "@/app/agent/new/repo-multi-picker";
+} from "@/app/(workspace)/agent/new/repo-multi-picker";
 import { backendFetch } from "@/lib/backend-fetch";
 
 interface RepositoryResponse {

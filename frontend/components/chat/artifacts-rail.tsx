@@ -2,7 +2,7 @@
 
 import { RiFileList2Line, RiRefreshLine } from "@remixicon/react";
 import { useCallback, useEffect, useState } from "react";
-import { ArtifactCard } from "@/app/agent/artifacts/artifact-card";
+import { ArtifactCard } from "@/app/(library)/agent/artifacts/artifact-card";
 import { type ArtifactDescriptor, extractArtifacts } from "@/components/artifacts/model";
 import { IconButton } from "@/components/base/buttons/icon-button";
 import { useOrgChanges } from "@/hooks/use-org-changes";

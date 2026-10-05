@@ -69,7 +69,7 @@ describe("new-thread engine picker", () => {
 
   test("the composer reads its options from the manifest-driven helper", () => {
     const composer = readFileSync(
-      new URL("../../app/agent/new/new-task-composer.tsx", import.meta.url),
+      new URL("../../app/(workspace)/agent/new/new-task-composer.tsx", import.meta.url),
       "utf8",
     );
     expect(composer).toContain("pickerEngineOptions(enabledEngines)");

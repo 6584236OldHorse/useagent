@@ -69,10 +69,21 @@ function CollapsedThreads() {
  * folders, nested delegated children, status dots, per-project actions and the
  * "Show N more" disclosures - because it is the same component.
  */
+/** The rail item a pathname belongs to; undefined for pages without one (threads, lab). */
+export function threadSidebarActiveFor(pathname: string | null): ThreadSidebarActive | undefined {
+  if (!pathname) return undefined;
+  if (pathname === "/agent/new") return "new";
+  if (pathname === "/dashboard") return "dashboard";
+  if (pathname === "/bots" || pathname.startsWith("/bots/")) return "bots";
+  if (pathname === "/settings") return "settings";
+  return undefined;
+}
+
 export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
   const { catalog } = useCapabilityCatalog();
   const isCollapsed = useRailFolded();
   const pathname = usePathname();
+  const current = active ?? threadSidebarActiveFor(pathname);
 
   const routes: Route[] = [
     {
@@ -81,7 +92,7 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
       icon: RiAddLine,
       tone: "primary",
       href: "/agent/new",
-      active: active === "new",
+      active: current === "new",
     },
     {
       id: "dashboard",
@@ -89,7 +100,7 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
       icon: RiDashboardLine,
       tone: "purple",
       href: "/dashboard",
-      active: active === "dashboard",
+      active: current === "dashboard",
       trailing: <WorkingProjectStatus />,
     },
     ...(catalog?.bots
@@ -100,7 +111,7 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
             icon: RiRobot2Line,
             tone: "blue" as const,
             href: "/bots",
-            active: active === "bots",
+            active: current === "bots",
           },
         ]
       : []),
@@ -110,7 +121,7 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
       icon: RiBookShelfLine,
       tone: "green",
       href: "/skills",
-      active: active === "library",
+      active: current === "library",
     },
     {
       id: "library",

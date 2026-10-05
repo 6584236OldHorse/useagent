@@ -277,7 +277,7 @@ describe("shared theme tokens", () => {
     // selected sidebar and settings-rail rows use accent-600 to accent-700.
     expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
     expect(contrast("#ffffff", "#1447e6")).toBeGreaterThanOrEqual(4.5);
-    for (const rel of ["components/shell/sidebar-nav.tsx", "app/settings/settings-rail.tsx"]) {
+    for (const rel of ["components/shell/sidebar-nav.tsx", "app/(workspace)/settings/settings-rail.tsx"]) {
       const source = readSource(rel);
       expect(source).toContain("from-accent-600 to-accent-700 text-white");
       expect(source).not.toContain("from-accent-500 to-accent-600");

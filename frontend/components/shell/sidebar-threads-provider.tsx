@@ -2,7 +2,7 @@
 
 import type { ThreadRelationship } from "@useagent/agent-client";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
-import { fetchSidebarRuns } from "@/app/agent/runs/runs-data";
+import { fetchSidebarRuns } from "@/app/(workspace)/agent/runs/runs-data";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import type { OrgChange } from "@/lib/org-changes";
 import { fetchThreadRelationshipIndex } from "@/lib/thread-relationships-data";

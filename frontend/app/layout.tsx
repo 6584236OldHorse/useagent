@@ -3,6 +3,7 @@ import { Inter, Inter_Tight, JetBrains_Mono } from 'next/font/google';
 
 import { cx } from '@/utils/cx';
 import { Providers } from '@/app/providers';
+import { RoutePrefetch } from '@/components/shell/route-prefetch';
 
 import './globals.css';
 
@@ -56,6 +57,7 @@ export default function RootLayout({
     >
       <body className='bg-background-primary-default text-text-primary'>
         <Providers>{children}</Providers>
+        <RoutePrefetch />
       </body>
     </html>
   );

@@ -99,7 +99,7 @@ describe("unified shell contract", () => {
   });
 
   test("lets Settings use the full application canvas", () => {
-    const settings = readFromFrontend("app/settings/page.tsx");
+    const settings = readFromFrontend("app/(workspace)/settings/page.tsx");
 
     expect(settings).toContain('className="w-full min-w-0 px-6 py-8 lg:px-10"');
     expect(settings).not.toContain("max-w-4xl");
@@ -153,7 +153,7 @@ describe("unified shell contract", () => {
     const projects = read("./sidebar-projects.tsx");
     // The per-project actions menu owns the "start a thread in this repo" route.
     const projectMenu = read("./sidebar-project-menu.tsx");
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
     expect(projects).toContain('backendFetch("/api/repos"');
     expect(projectMenu).toContain("encodeURIComponent(group.fullName");
@@ -194,15 +194,15 @@ describe("unified shell contract", () => {
   });
 
   test("names the optional skill and playbook control when nothing is selected", () => {
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
     expect(composer).toContain('triggerLabel="Playbook or skills"');
     expect(composer).toContain('label: "Playbook or skills"');
   });
 
   test("keeps context actions expandable and the primary action inline", () => {
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
-    const newThreadPage = readFromFrontend("app/agent/new/page.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
+    const newThreadPage = readFromFrontend("app/(workspace)/agent/new/page.tsx");
     // The add-context rows (upload, Create, GitHub) live in a shared module
     // consumed by BOTH the new-thread shelf and the reply composer popover.
     const addMenu = readFromFrontend("components/chat/composer-add-menu.tsx");

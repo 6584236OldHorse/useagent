@@ -17,6 +17,7 @@ import {
   RiPlugLine,
   RiStackLine,
 } from "@remixicon/react";
+import { usePathname } from "next/navigation";
 import { useRailFolded } from "@/components/shell/rail-folded";
 
 import { AppSidebarFrame, NavRoutes, type Route } from "./app-sidebar-frame";
@@ -64,9 +65,21 @@ const LIBRARY_ITEMS: {
   { key: "secrets", href: "/secrets", icon: RiKey2Line, label: "Secrets" },
 ];
 
+/** The rail item a pathname belongs to: the longest item href that prefixes it.
+ * The legacy /artifacts page belongs to the artifacts item. */
+export function librarySidebarActiveFor(pathname: string | null): LibrarySidebarActive | undefined {
+  if (!pathname) return undefined;
+  if (pathname === "/artifacts" || pathname.startsWith("/artifacts/")) return "artifacts";
+  const hit = LIBRARY_ITEMS.filter(
+    (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
+  ).toSorted((a, b) => b.href.length - a.href.length)[0];
+  return hit?.key;
+}
+
 /** The Customize rail, in the same frame as the thread rail. */
 export function LibrarySidebar({ active }: { active?: LibrarySidebarActive }) {
   const isCollapsed = useRailFolded();
+  const current = active ?? librarySidebarActiveFor(usePathname());
 
   const back: Route[] = [
     { id: "all-threads", title: "All threads", icon: RiStackLine, href: "/agent/runs" },
@@ -76,7 +89,7 @@ export function LibrarySidebar({ active }: { active?: LibrarySidebarActive }) {
     title: item.label,
     icon: item.icon,
     href: item.href,
-    active: active === item.key,
+    active: current === item.key,
   }));
 
   return (

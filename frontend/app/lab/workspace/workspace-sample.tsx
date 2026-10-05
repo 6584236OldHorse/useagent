@@ -26,7 +26,7 @@ import {
   RichDocumentSurface,
   SheetGridSurface,
   WorkpieceCodeView,
-} from "@/app/agent/artifacts/[id]/artifact-editor-surfaces";
+} from "@/app/(library)/agent/artifacts/[id]/artifact-editor-surfaces";
 import { ComposerPrefillProvider } from "@/components/chat/composer-prefill-context";
 import { Timeline } from "@/components/chat/conversation";
 import type { TimelineNode } from "@/components/chat/timeline";

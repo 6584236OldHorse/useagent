@@ -1,6 +1,6 @@
 import type { ChipProps } from "@/components/base/badges/chip";
 import { Label } from "@/components/base/input/label";
-import type { ChipColor } from "@/app/knowledge/knowledge-data";
+import type { ChipColor } from "@/app/(library)/knowledge/knowledge-data";
 
 /**
  * Shared BoardUI recipes used across the skills / playbooks / knowledge pages.
