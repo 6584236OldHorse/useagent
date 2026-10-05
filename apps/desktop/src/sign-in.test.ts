@@ -34,9 +34,10 @@ test("browser sign-in uses the official exchange, writes only to the app session
   await expect(login.complete("useagent://auth/callback#token=valid&token=replay")).rejects.toThrow("Invalid");
   expect(tokens).toEqual([]);
 
-  await login.complete("useagent://auth/callback#token=official_token");
+  // The plugin encodes the token as base64url with padding, so a trailing "=" is the real shape.
+  await login.complete("useagent://auth/callback#token=official_token=");
   expect(requested).toBe(1);
-  expect(tokens).toEqual(["official_token"]);
+  expect(tokens).toEqual(["official_token="]);
   expect(activated).toEqual(["org-one"]);
   expect(set).toEqual([{ url: "https://plane.example/", name: "__Secure-better-auth.session_token", value: "app-session", path: "/", httpOnly: true, secure: true, sameSite: "lax" }]);
   expect(loaded).toEqual(["https://plane.example/"]);

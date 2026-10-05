@@ -24,7 +24,7 @@ function callbackToken(value: string): string {
   try { url = new URL(value); }
   catch { throw new Error("Invalid desktop sign-in callback."); }
   if (url.protocol !== "useagent:" || url.hostname !== "auth" || url.pathname !== "/callback"
-    || url.port || url.search || url.username || url.password || !/^#token=[A-Za-z0-9_-]+$/.test(url.hash)) {
+    || url.port || url.search || url.username || url.password || !/^#token=[A-Za-z0-9_-]+={0,2}$/.test(url.hash)) {
     throw new Error("Invalid desktop sign-in callback.");
   }
   return url.hash.slice(7);
