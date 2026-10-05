@@ -664,17 +664,21 @@ export const Conversation = memo(function Conversation({
     newestFailed?.summary ?? null,
   );
   const [, bumpDismissTick] = useState(0);
+  // A compaction request that the backend refused: shown in the same banner as
+  // a failed turn, so the failure is visible and Compact now can be tried again.
+  const [compactFailure, setCompactFailure] = useState<string | null>(null);
   const threadError =
-    newestFailed &&
+    (newestFailed &&
     shouldShowThreadErrorBanner(
       newestFailed.run.id,
       newestFailed.summary,
       isThreadErrorBannerDismissedForSession(threadErrorKey),
     )
       ? newestFailed.summary
-      : null;
+      : null) ?? compactFailure;
   const handleDismissThreadError = () => {
     dismissThreadErrorBannerForSession(threadErrorKey);
+    setCompactFailure(null);
     bumpDismissTick((t) => t + 1);
   };
 
@@ -810,15 +814,25 @@ export const Conversation = memo(function Conversation({
               !running && pendingReply === null && !turns.some((turn) => turn.status === "queued") &&
               !pendingQuestion && !pendingApproval && !controlLocksComposer && !composerLocked &&
               commands?.some((c) => c.name === "compact")
-                ? () =>
-                    void onReply(
-                      "/compact",
-                      defaultEngine,
-                      defaultModel,
-                      crypto.randomUUID(),
-                      defaultMemoryScope,
-                      { name: "compact", args: "" },
-                    )
+                ? () => {
+                    setCompactFailure(null);
+                    Promise.resolve(
+                      onReply(
+                        "/compact",
+                        defaultEngine,
+                        defaultModel,
+                        crypto.randomUUID(),
+                        defaultMemoryScope,
+                        { name: "compact", args: "" },
+                      ),
+                    ).catch((error: unknown) => {
+                      setCompactFailure(
+                        error instanceof Error && error.message
+                          ? error.message
+                          : "Compaction could not be sent. Try again.",
+                      );
+                    });
+                  }
                 : undefined
             }
           />
