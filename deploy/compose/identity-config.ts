@@ -3,7 +3,7 @@ function quote(value: string): string {
 }
 
 export function frontendEnvironmentPreparationCommand(backendEnv: string, frontendEnv: string): string {
-  return `set -eu; set -a; . ${quote(backendEnv)}; set +a; ` +
+  return `set -eu; unset AUTH CLERK_SECRET_KEY; set -a; . ${quote(backendEnv)}; set +a; ` +
     `tmp=$(mktemp ${quote(`${frontendEnv}.XXXXXX`)}); trap 'rm -f -- "$tmp"' EXIT; ` +
     `printf '%s\\n' "AUTH=\${AUTH:-clerk}" "CLERK_SECRET_KEY=\${CLERK_SECRET_KEY:-}" > "$tmp"; ` +
     `chmod 600 "$tmp"; mv -f -- "$tmp" ${quote(frontendEnv)}; trap - EXIT`;
@@ -20,7 +20,7 @@ export function rollbackIdentityPreparationCommand(frontendEnv: string, backendI
 
 /** Validate the immutable images before warming the edge or closing admission. */
 export function identityReleaseValidationCommand(backendEnv: string, backendImage: string, frontendImage: string): string {
-  return `set -eu; . ${quote(backendEnv)}; ` +
+  return `set -eu; unset AUTH CLERK_SECRET_KEY; . ${quote(backendEnv)}; ` +
     `backend_default=$(docker image inspect --format '{{ index .Config.Labels "io.useagent.auth.default" }}' ${quote(backendImage)}); ` +
     `frontend_auth=$(docker image inspect --format '{{ index .Config.Labels "io.useagent.auth" }}' ${quote(frontendImage)}); ` +
     // Pre-Clerk releases have neither label and use Better Auth unconditionally.

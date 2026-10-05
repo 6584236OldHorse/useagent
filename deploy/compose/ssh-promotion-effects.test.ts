@@ -81,6 +81,12 @@ describe("SSH promotion transport", () => {
 				});
 				expect(result.exitCode === 0).toBe(pass);
 			}
+			await writeFile(backendEnv, "AUTH=clerk\n");
+			const missingSecret = Bun.spawnSync(["bash", "-c", identityReleaseValidationCommand(backendEnv, "backend-image", "frontend-image")], {
+				env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, BACKEND_AUTH: "clerk", FRONTEND_AUTH: "clerk", CLERK_SECRET_KEY: "unrelated-parent-key" },
+				stdout: "pipe", stderr: "pipe",
+			});
+			expect(missingSecret.exitCode).not.toBe(0);
 		} finally { await rm(directory, { recursive: true }); }
 	});
 	test("captures release auth so compensation ignores later host changes", async () => {
@@ -102,7 +108,7 @@ describe("SSH promotion transport", () => {
 					"-c",
 					frontendEnvironmentPreparationCommand(backendEnv, frontendEnv),
 				],
-				{ stdout: "pipe", stderr: "pipe" },
+				{ stdout: "pipe", stderr: "pipe", env: { ...process.env, AUTH: "better-auth", CLERK_SECRET_KEY: "unrelated-parent-key" } },
 			);
 			expect(result.exitCode).toBe(0);
 			expect(await readFile(frontendEnv, "utf8")).toBe(
@@ -119,7 +125,7 @@ describe("SSH promotion transport", () => {
 					"-c",
 					frontendEnvironmentPreparationCommand(backendEnv, frontendEnv),
 				],
-				{ stdout: "pipe", stderr: "pipe" },
+				{ stdout: "pipe", stderr: "pipe", env: { ...process.env, AUTH: "clerk", CLERK_SECRET_KEY: "unrelated-parent-key" } },
 			);
 			expect(legacyResult.exitCode).toBe(0);
       expect(await readFile(frontendEnv, "utf8")).toBe("AUTH=better-auth\nCLERK_SECRET_KEY=\n");

@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SidebarProvider } from "@/components/sidebar-kit/sidebar";
 import { TooltipProvider } from "@/components/sidebar-kit/tooltip";
+import { legacyAuthEnabled } from "@/lib/auth-mode";
 import { AppShell } from "./app-shell";
 import { AppSidebarFrame, NavRoutes } from "./app-sidebar-frame";
 import { SidebarThreadsProvider } from "./sidebar-threads-provider";
@@ -97,8 +98,13 @@ describe("collapsed application sidebar", () => {
     });
 
     const loadingHtml = renderSidebar(<AppSidebarFrame>Navigation</AppSidebarFrame>, true);
-    expect(loadingHtml).toContain("Account");
-    expect(loadingHtml).toContain("Loading account...");
-    expect(loadingHtml).not.toContain("Guest");
+    if (legacyAuthEnabled) {
+      expect(loadingHtml).toContain("Guest");
+      expect(loadingHtml).toContain("Not signed in");
+    } else {
+      expect(loadingHtml).toContain("Account");
+      expect(loadingHtml).toContain("Loading account...");
+      expect(loadingHtml).not.toContain("Guest");
+    }
   });
 });
