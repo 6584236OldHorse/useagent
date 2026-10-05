@@ -445,7 +445,7 @@ describe("artifact native formats", () => {
     pptx.addSlide().addText("Readable text", { x: 1, y: 1, w: 8, h: 2, fontSize: 20 });
     const written = await pptx.write({ outputType: "nodebuffer" });
 
-    for (const height of ["0", "9".repeat(400)]) {
+    for (const height of ["0", "1", "9".repeat(400), "9007199254740991"]) {
       const zip = await JSZip.loadAsync(written);
       const path = "ppt/presentation.xml";
       const presentation = await zip.file(path)?.async("string") ?? "";
@@ -455,6 +455,25 @@ describe("artifact native formats", () => {
       expect(fontSize).toBe(53);
       expect(Number.isFinite(fontSize ?? Number.NaN)).toBe(true);
     }
+  });
+
+  test("a bad slide width sends both edges back to the canonical size", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "WIDE_75", width: 13.333, height: 7.5 });
+    pptx.layout = "WIDE_75";
+    pptx.addSlide().addText("Placed text", { x: 1, y: 1, w: 8, h: 2, fontSize: 20 });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+    const zip = await JSZip.loadAsync(written);
+    const path = "ppt/presentation.xml";
+    const presentation = await zip.file(path)?.async("string") ?? "";
+    zip.file(path, presentation.replace(/\bcx="\d+"/, 'cx="0"'));
+    const imported = await extractPptxDeck(await zip.generateAsync({ type: "uint8array" }));
+    const block = imported?.deck.slides[0]?.blocks[0];
+    // Canonical 10 by 5.625 inch fallback for both edges: the font scale and the
+    // vertical placement follow the same size the horizontal placement uses.
+    expect(block?.style?.fontSize).toBe(53);
+    expect(block?.y).toBeCloseTo((1 / 5.625) * 100, 1);
+    expect(block?.x).toBeCloseTo(10, 1);
   });
 
   test("skips import when a PPTX has no parsable text (behaves as download-only)", async () => {

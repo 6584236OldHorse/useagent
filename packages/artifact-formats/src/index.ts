@@ -1180,9 +1180,12 @@ function importClamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
 }
 
-function importSlideDimension(value: string | undefined, fallback: number): number {
+/** A declared slide edge in EMU, or null when it is missing, malformed or
+ * outside PowerPoint's own 1 to 56 inch range (a 1 EMU height would turn a
+ * 20 point run into a 274 million pixel font). */
+function importSlideDimension(value: string | undefined): number | null {
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed >= 914_400 && parsed <= 51_206_400 ? parsed : null;
 }
 
 function importXfrm(
@@ -1397,8 +1400,13 @@ export async function extractPptxDeck(bytes: Uint8Array): Promise<PptxImportResu
   const sldSz = presentation
     ? /<p:sldSz[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(presentation)
     : null;
-  const slideWidth = importSlideDimension(sldSz?.[1], DEFAULT_SLIDE_WIDTH_EMU);
-  const slideHeight = importSlideDimension(sldSz?.[2], DEFAULT_SLIDE_HEIGHT_EMU);
+  // Both edges come from one declaration, so a bad one sends both back to the
+  // canonical size; mixing a real width with a default height would skew every
+  // shape on the slide.
+  const declaredWidth = importSlideDimension(sldSz?.[1]);
+  const declaredHeight = importSlideDimension(sldSz?.[2]);
+  const slideWidth = declaredWidth !== null && declaredHeight !== null ? declaredWidth : DEFAULT_SLIDE_WIDTH_EMU;
+  const slideHeight = declaredWidth !== null && declaredHeight !== null ? declaredHeight : DEFAULT_SLIDE_HEIGHT_EMU;
 
   const slideFiles = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
