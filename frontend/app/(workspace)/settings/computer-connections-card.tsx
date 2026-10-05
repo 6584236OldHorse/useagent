@@ -268,7 +268,7 @@ export function ComputerConnectionsCard() {
         if (!cancelled) setSandboxConfig(config);
       })
       .catch(() => {
-        if (!cancelled) setSandboxConfig({ provider: null, userComputers: false });
+        if (!cancelled) setSandboxConfig({ provider: null, host: null, userComputers: false });
       });
     return () => {
       cancelled = true;
@@ -285,10 +285,12 @@ export function ComputerConnectionsCard() {
           <RiCloudLine aria-hidden className="size-5 shrink-0 text-foreground-icon-tertiary" />
           <div className="min-w-0">
             <p className="text-body-2-medium text-text-primary">
-              {sandboxConfig?.provider === "box" ? "Managed Box" : sandboxConfig?.provider === "daytona" ? "Managed Daytona" : "Managed Cube"}
+              Managed sandboxes
             </p>
             <p className="text-caption-1-regular text-text-tertiary">
-              The server's computer provider, used unless a personal one runs your work.
+              {sandboxConfig?.host
+                ? `The server's sandboxes on ${sandboxConfig.host}, used unless a personal one runs your work.`
+                : "The server's computer provider, used unless a personal one runs your work."}
             </p>
           </div>
         </div>

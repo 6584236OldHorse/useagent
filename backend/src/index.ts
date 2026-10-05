@@ -51,6 +51,12 @@ import { startCaptureDelivery } from "./memory/capture-outbox";
 import { resetStuckLearning, startLearningOutbox } from "./learning/learning-outbox";
 import { sandboxProvider, sandboxProviderApiKey, sandboxProviderKind } from "./sandboxes/provider";
 import { userComputersEnabled } from "./sandboxes/binding";
+
+/** Where the managed sandboxes run, for the settings page; only the E2B-protocol plugin has a configurable host. */
+function managedSandboxHost(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  if (sandboxProviderKind(env) !== "cube") return null;
+  return env.CUBE_SANDBOX_DOMAIN?.trim().toLowerCase() || null;
+}
 import { botsEnabled } from "./bots/rollout";
 import {
   resetStuckCanonicalization,
@@ -375,7 +381,8 @@ app.get("/api/config", (c) => {
     engineReadiness,
     models,
     configuredModels,
-    sandbox: { provider: sandboxProviderKind(), userComputers: userComputersEnabled() },
+    // The host the managed sandboxes live on (the E2B-protocol plugin serves several).
+    sandbox: { provider: sandboxProviderKind(), host: managedSandboxHost(), userComputers: userComputersEnabled() },
     // What a runner must speak and boot to lend this deployment a machine.
     runner: runnerConfigBlock(),
     // Per model provider: served from this deployment's own key (a name, never a value).
