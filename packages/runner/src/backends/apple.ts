@@ -76,39 +76,61 @@ export class AppleContainerBackend implements LocalBackend {
   }
 
   async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void> {
-    // The container tool keeps logins in the keychain: log in for this pull and out again after.
-    if (login) {
-      const result = await runCli(["container", "registry", "login", login.registry, "--username", login.username, "--password-stdin"], {
-        stdin: new TextEncoder().encode(login.password),
-        timeoutMs: 30_000,
-      });
-      if (result.exitCode !== 0) throw new BackendError("internal", `container registry login ${login.registry} failed: ${result.stderr.trim()}`);
-    }
+    // The container tool keeps logins in the keychain, and macOS asks the person
+    // before its image service may read one; the answer sticks to that item. So
+    // a login is written once and kept: rewriting it around every pull would ask
+    // again each time, and removing it afterwards would throw the answer away.
+    const fresh = login ? !(await this.hasLogin(login)) : false;
+    if (login && fresh) await this.login(login);
     try {
-      if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
-      const proc = Bun.spawn(["container", "image", "pull", ref], { stdout: "pipe", stderr: "pipe" });
-      const abort = () => proc.kill();
-      signal?.addEventListener("abort", abort, { once: true });
-      let last = "";
-      const relay = async (stream: ReadableStream<Uint8Array>) => {
-        const decoder = new TextDecoder();
-        for await (const chunk of stream) {
-          for (const line of decoder.decode(chunk, { stream: true }).split(/\r?\n/)) {
-            if (line.trim()) {
-              last = line.trim();
-              onProgress?.(last);
-            }
+      await this.pull(ref, onProgress, signal);
+    } catch (error) {
+      // A kept login can be stale (the runner was enrolled again): write it once more and retry.
+      if (!login || fresh || signal?.aborted) throw error;
+      await this.login(login);
+      await this.pull(ref, onProgress, signal);
+    }
+  }
+
+  private async hasLogin(login: RegistryLogin): Promise<boolean> {
+    const result = await runCli(["container", "registry", "list"], { timeoutMs: 30_000 });
+    if (result.exitCode !== 0) return false;
+    return result.stdout.split("\n").some((line) => {
+      const [host, user] = line.trim().split(/\s+/);
+      return host === login.registry && user === login.username;
+    });
+  }
+
+  private async login(login: RegistryLogin): Promise<void> {
+    const result = await runCli(["container", "registry", "login", login.registry, "--username", login.username, "--password-stdin"], {
+      stdin: new TextEncoder().encode(login.password),
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) throw new BackendError("internal", `container registry login ${login.registry} failed: ${result.stderr.trim()}`);
+  }
+
+  private async pull(ref: string, onProgress?: (line: string) => void, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
+    const proc = Bun.spawn(["container", "image", "pull", ref], { stdout: "pipe", stderr: "pipe" });
+    const abort = () => proc.kill();
+    signal?.addEventListener("abort", abort, { once: true });
+    let last = "";
+    const relay = async (stream: ReadableStream<Uint8Array>) => {
+      const decoder = new TextDecoder();
+      for await (const chunk of stream) {
+        for (const line of decoder.decode(chunk, { stream: true }).split(/\r?\n/)) {
+          if (line.trim()) {
+            last = line.trim();
+            onProgress?.(last);
           }
         }
-      };
-      await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-      const code = await proc.exited;
-      signal?.removeEventListener("abort", abort);
-      if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
-      if (code !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
-    } finally {
-      if (login) await runCli(["container", "registry", "logout", login.registry], { timeoutMs: 30_000 }).catch(() => undefined);
-    }
+      }
+    };
+    await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
+    const code = await proc.exited;
+    signal?.removeEventListener("abort", abort);
+    if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
+    if (code !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
   }
 
   async imageDigest(ref: string): Promise<string | null> {
