@@ -31,8 +31,8 @@ function row(overrides: Partial<RunnerRow> = {}): RunnerRow {
 function harness(options: { user?: string; admin?: boolean; rows?: RunnerRow[]; bearer?: boolean } = {}) {
   const rows = new Map((options.rows ?? [row()]).map((r) => [r.id, r] as const));
   let policy: RunnerPolicy = { ...DEFAULT_RUNNER_POLICY };
-  const registry = new RunnerRegistry({ persist: { hello: async () => {}, heartbeat: async () => {}, offline: async () => {}, markStale: async () => 0 } });
-  for (const r of rows.values()) registry.know(r);
+  const registry = new RunnerRegistry({ persist: { hello: async () => true, heartbeat: async () => true, offline: async () => {}, markStale: async () => 0 } });
+  for (const r of rows.values()) if (r.status !== "revoked") registry.know(r);
   const scope: MiddlewareHandler<AppEnv> = async (c, next) => {
     c.set("orgId", "org-a");
     c.set("userId", options.user ?? "user-1");
@@ -103,7 +103,7 @@ describe("runner routes", () => {
   });
 
   test("the view reports online only while the registry holds a live link", () => {
-    const registry = new RunnerRegistry({ persist: { hello: async () => {}, heartbeat: async () => {}, offline: async () => {}, markStale: async () => 0 } });
+    const registry = new RunnerRegistry({ persist: { hello: async () => true, heartbeat: async () => true, offline: async () => {}, markStale: async () => 0 } });
     const seen = row({ status: "online", lastSeenAt: new Date() });
     registry.know(seen);
     expect(runnerView(seen, registry).status).toBe("offline");

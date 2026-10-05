@@ -38,8 +38,10 @@ function fingerprintOf(row: Pick<RunnerRow, "id" | "tokenHash">): string {
 
 /** What the registry writes through to the runners table; tests keep it in memory. */
 export interface RunnerPersistence {
-  hello(runnerId: string, hello: HelloFrame): Promise<void>;
-  heartbeat(runnerId: string, capacity: HeartbeatFrame["capacity"], logins: readonly string[], imageDigest: string | null): Promise<void>;
+  /** False when the runner is revoked: the link must not attach. */
+  hello(runnerId: string, hello: HelloFrame): Promise<boolean>;
+  /** False once the runner is revoked: the link is detached. */
+  heartbeat(runnerId: string, capacity: HeartbeatFrame["capacity"], logins: readonly string[], imageDigest: string | null): Promise<boolean>;
   offline(runnerId: string): Promise<void>;
   markStale(exceptIds: readonly string[]): Promise<number>;
 }
@@ -73,6 +75,7 @@ export class RunnerRegistry {
   know(row: RunnerRow): LiveRunner {
     const existing = this.live.get(row.id);
     if (existing) return existing;
+    if (row.status === "revoked") throw new Error(`runner ${row.id} is revoked`);
     const runner: LiveRunner = {
       id: row.id,
       orgId: row.orgId,
@@ -100,8 +103,16 @@ export class RunnerRegistry {
     this.live.delete(runnerId);
   }
 
-  /** A link authenticated and said hello: replace any older link for the same runner. */
-  async attach(row: RunnerRow, mux: Mux, hello: HelloFrame): Promise<LiveRunner> {
+  /**
+   * A link authenticated and said hello: replace any older link for the same
+   * runner. Null when the runner was revoked after its token resolved, in
+   * which case nothing is attached and the caller closes the socket.
+   */
+  async attach(row: RunnerRow, mux: Mux, hello: HelloFrame): Promise<LiveRunner | null> {
+    if (row.status === "revoked" || !(await this.persist.hello(row.id, hello))) {
+      this.forget(row.id);
+      return null;
+    }
     const runner = this.know(row);
     if (runner.mux && runner.mux !== mux) runner.mux.close("replaced by a newer link");
     runner.mux = mux;
@@ -110,18 +121,22 @@ export class RunnerRegistry {
     runner.logins = hello.logins;
     runner.imageDigest = hello.imageDigest;
     runner.lastSeenAt = this.now();
-    await this.persist.hello(runner.id, hello);
     return runner;
   }
 
-  async heartbeat(runnerId: string, mux: Mux, frame: HeartbeatFrame): Promise<void> {
+  /** False once the runner is revoked; the link is detached and forgotten. */
+  async heartbeat(runnerId: string, mux: Mux, frame: HeartbeatFrame): Promise<boolean> {
     const runner = this.live.get(runnerId);
-    if (!runner || runner.mux !== mux) return;
+    if (!runner || runner.mux !== mux) return false;
+    if (!(await this.persist.heartbeat(runnerId, frame.capacity, frame.logins, frame.imageDigest))) {
+      this.forget(runnerId);
+      return false;
+    }
     runner.capacity = frame.capacity;
     runner.logins = frame.logins;
     runner.imageDigest = frame.imageDigest;
     runner.lastSeenAt = this.now();
-    await this.persist.heartbeat(runnerId, frame.capacity, frame.logins, frame.imageDigest);
+    return true;
   }
 
   async detach(runnerId: string, mux: Mux, reason: string): Promise<void> {
@@ -151,10 +166,11 @@ export class RunnerRegistry {
     return this.live.get(runnerId) ?? null;
   }
 
-  /** Mark runners whose heartbeats stopped as offline; called on a timer. */
+  /** Mark runners whose heartbeats stopped as offline and close idle forwarders; called on a timer. */
   async sweep(): Promise<string[]> {
     const gone: string[] = [];
     for (const runner of this.live.values()) {
+      runner.forwarders.sweep();
       if (runner.mux && !this.isOnline(runner)) {
         const mux = runner.mux;
         await this.detach(runner.id, mux, "heartbeats stopped");
@@ -203,9 +219,11 @@ export class RunnerRegistry {
       get online() {
         return registry.isOnline(runner);
       },
-      call: (method, params) => requireMux().rpc(method, params),
+      call: (method, params, options) => requireMux().rpc(method, params, options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       openStream: (target) => requireMux().openStream(target) as Promise<MuxStream>,
       async forward(sandboxId, port) {
+        // Connectivity first: a machine that is away gets no listener allocated for it.
+        requireMux();
         const forwarder = runner.forwarders.address(sandboxId, port, () =>
           requireMux().openStream({ kind: "port", sandboxId, port } satisfies StreamTarget),
         );

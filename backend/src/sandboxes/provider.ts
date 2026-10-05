@@ -9,7 +9,7 @@ import { type DaytonaApiConfig, daytonaApiConfig as daytonaApiConfigFor } from "
 import { buildRuntimeIdentityPreflightCommand } from "../engines/runtime-environment";
 import { SANDBOX_PROVIDER_KINDS, isSandboxProviderKind, sandboxPlugin } from "./plugins";
 import { dbSandboxLabelStore } from "./sandbox-labels";
-import { runnerRegistry } from "../runners/registry";
+import { activeRunnerDirectory } from "../runners/directory";
 
 // The provider-neutral sandbox contract lives in @useagent/sandbox-contract and
 // every vendor is a plugin package (see ./plugins). This module is the
@@ -98,7 +98,7 @@ export function sandboxTemplate(templateEnv: string, env: SandboxEnv = process.e
 export function sandboxProviderPorts(kind: SandboxProviderKind): SandboxProviderPorts {
   return {
     labels: dbSandboxLabelStore(kind),
-    links: runnerRegistry.directory,
+    links: activeRunnerDirectory(),
     identityPreflightCommand: buildRuntimeIdentityPreflightCommand(sandboxRuntimeLayout(kind)),
   };
 }

@@ -34,15 +34,15 @@ export async function getRunnerPolicy(orgId: string): Promise<RunnerPolicy> {
   return row ? { allowLocalExecution: row.allowLocalExecution, allowLocalLogins: row.allowLocalLogins } : DEFAULT_RUNNER_POLICY;
 }
 
+/** One statement that writes only the supplied fields, so two concurrent patches cannot undo each other. */
 export async function setRunnerPolicy(orgId: string, policy: Partial<RunnerPolicy>): Promise<RunnerPolicy> {
-  const current = await getRunnerPolicy(orgId);
-  const next = { ...current, ...policy };
-  await db
+  const set: { allowLocalExecution?: boolean; allowLocalLogins?: boolean; updatedAt: Date } = { updatedAt: new Date() };
+  if (policy.allowLocalExecution !== undefined) set.allowLocalExecution = policy.allowLocalExecution;
+  if (policy.allowLocalLogins !== undefined) set.allowLocalLogins = policy.allowLocalLogins;
+  const [row] = await db
     .insert(runnerPolicies)
-    .values({ orgId, allowLocalExecution: next.allowLocalExecution, allowLocalLogins: next.allowLocalLogins })
-    .onConflictDoUpdate({
-      target: runnerPolicies.orgId,
-      set: { allowLocalExecution: next.allowLocalExecution, allowLocalLogins: next.allowLocalLogins, updatedAt: new Date() },
-    });
-  return next;
+    .values({ orgId, ...DEFAULT_RUNNER_POLICY, ...policy })
+    .onConflictDoUpdate({ target: runnerPolicies.orgId, set })
+    .returning();
+  return { allowLocalExecution: row!.allowLocalExecution, allowLocalLogins: row!.allowLocalLogins };
 }

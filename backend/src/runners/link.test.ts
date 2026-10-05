@@ -42,14 +42,26 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
 });
 
-function plane(options: { enabled?: boolean; image?: typeof IMAGE | null; minProtocol?: number; now?: () => number } = {}) {
+function plane(options: {
+  enabled?: boolean;
+  image?: typeof IMAGE | null;
+  minProtocol?: number;
+  now?: () => number;
+  /** What the store answers for hello and heartbeat: false means revoked. */
+  alive?: () => boolean;
+  runnerForToken?: (token: string) => Promise<RunnerRow | null>;
+  helloTimeoutMs?: number;
+} = {}) {
   const persisted: string[] = [];
+  const alive = options.alive ?? (() => true);
   const persist: RunnerPersistence = {
     hello: async (id) => {
       persisted.push(`hello:${id}`);
+      return alive();
     },
     heartbeat: async (id) => {
       persisted.push(`heartbeat:${id}`);
+      return alive();
     },
     offline: async (id) => {
       persisted.push(`offline:${id}`);
@@ -58,16 +70,19 @@ function plane(options: { enabled?: boolean; image?: typeof IMAGE | null; minPro
   };
   const registry = new RunnerRegistry({ persist, now: options.now });
   registry.know(row());
+  const logged: string[] = [];
   const routes = createRunnerLinkRoutes({
     registry,
-    runnerForToken: async (token) => (token === TOKEN ? row() : null),
+    runnerForToken: options.runnerForToken ?? (async (token) => (token === TOKEN ? row() : null)),
     config: () => ({ enabled: options.enabled ?? true, minProtocol: options.minProtocol ?? 1, image: options.image === undefined ? IMAGE : options.image }),
     release: () => "run-events-v1:abc",
+    helloTimeoutMs: options.helloTimeoutMs,
+    log: (message) => logged.push(message),
   });
   const app = new Hono<AppEnv>().route("/api/internal/runners", routes);
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch, websocket });
   servers.push(server);
-  return { registry, persisted, url: `ws://127.0.0.1:${server.port}/api/internal/runners/link` };
+  return { registry, persisted, logged, url: `ws://127.0.0.1:${server.port}/api/internal/runners/link` };
 }
 
 function hello(overrides: Partial<HelloFrame> = {}): HelloFrame {
@@ -206,6 +221,53 @@ describe("runner link", () => {
     expect(same.url).toBe(preview.url);
     await registry.directory.get("rn_a")!.release("c1");
     await expect(fetch(`${preview.url}/`)).rejects.toThrow();
+  });
+
+  test("a runner revoked after its token resolved is refused, and one revoked mid-link is dropped", async () => {
+    let revoked = false;
+    const first = plane({ alive: () => !revoked });
+    revoked = true;
+    const a = await connect(first.url, TOKEN);
+    a.mux.send(hello());
+    expect((await a.closed).code).toBe(CLOSE_TOKEN_REJECTED);
+    expect(first.registry.runner("rn_a")).toBeNull();
+
+    revoked = false;
+    const second = plane({ alive: () => !revoked });
+    const welcomes: unknown[] = [];
+    const b = await connect(second.url, TOKEN, { onWelcome: (frame) => welcomes.push(frame) });
+    b.mux.send(hello());
+    await until(() => welcomes.length === 1);
+    revoked = true;
+    b.mux.send({ t: "heartbeat", capacity: { cpu: 1, memoryMb: 1024, sandboxes: 0 }, logins: [], imageDigest: null });
+    expect((await b.closed).code).toBe(CLOSE_TOKEN_REJECTED);
+    expect(second.registry.runner("rn_a")).toBeNull();
+  });
+
+  test("a silent link is dropped, and a failing token lookup rejects instead of crashing", async () => {
+    const quiet = plane({ helloTimeoutMs: 100 });
+    const a = await connect(quiet.url, TOKEN);
+    const close = await a.closed;
+    expect(close.code).toBe(4400);
+    expect(close.reason).toMatch(/no hello/);
+    const broken = plane({ runnerForToken: async () => { throw new Error("database away"); } });
+    const b = await connect(broken.url, TOKEN);
+    b.mux.send(hello());
+    expect((await b.closed).code).toBe(CLOSE_TOKEN_REJECTED);
+    expect(broken.logged.some((m) => m.includes("database away"))).toBe(true);
+  });
+
+  test("a hello that arrives before the token resolves is not lost", async () => {
+    let release!: (row: RunnerRow | null) => void;
+    const slow = plane({ runnerForToken: () => new Promise((resolve) => { release = resolve; }) });
+    const welcomes: unknown[] = [];
+    const a = await connect(slow.url, TOKEN, { onWelcome: (frame) => welcomes.push(frame) });
+    a.mux.send(hello());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release(row());
+    await until(() => welcomes.length === 1);
+    expect(slow.registry.onlineForUser("org-a", "user-1")?.id).toBe("rn_a");
+    a.socket.close();
   });
 
   test("a stream opened while the runner is away fails at once", async () => {

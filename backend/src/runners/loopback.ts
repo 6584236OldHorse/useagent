@@ -3,15 +3,20 @@
 // links point at these, so the port, desktop and runtime proxies keep fetching
 // plain HTTP and WebSockets without knowing a runner exists.
 //
-// Only this process can reach the listener (loopback, single-backend host).
+// Only this process can reach a listener (loopback, single-backend host). The
+// set is bounded per machine and idle listeners are closed, so a user cannot
+// grow the plane's descriptor table by asking for port after port.
 
 import type { MuxStream } from "@useagent/runner-protocol";
-import { pipeToStream } from "@useagent/runner-protocol";
 
 type Socket = Bun.Socket<{ stream: MuxStream | null; queue: Uint8Array[]; writing: boolean; closed: boolean }>;
 
 /** Bytes a slow link may leave queued from one browser connection before it is dropped. */
 const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+/** Listeners one machine may hold at once (every retained thread's runtime, terminal, desktop and a few previews). */
+export const MAX_FORWARDERS_PER_RUNNER = 64;
+/** A listener with no connection for this long is closed; the next preview re-resolves it. */
+export const FORWARDER_IDLE_MS = 10 * 60 * 1000;
 
 export interface Forwarder {
   readonly host: string;
@@ -19,21 +24,52 @@ export interface Forwarder {
   close(): void;
 }
 
+interface Entry {
+  forwarder: Forwarder;
+  connections: number;
+  lastActivity: number;
+}
+
 export class LoopbackForwarders {
-  private readonly listeners = new Map<string, Forwarder>();
+  private readonly listeners = new Map<string, Entry>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number; readonly max?: number } = {}) {
+    this.now = options.now ?? Date.now;
+    this.max = options.max ?? MAX_FORWARDERS_PER_RUNNER;
+  }
+
+  private readonly max: number;
 
   /** The loopback address for `sandboxId:port`, listening from now on. */
   address(sandboxId: string, port: number, open: () => Promise<MuxStream>): Forwarder {
     const key = `${sandboxId}:${port}`;
     const existing = this.listeners.get(key);
-    if (existing) return existing;
+    if (existing) {
+      existing.lastActivity = this.now();
+      return existing.forwarder;
+    }
+    this.sweep();
+    if (this.listeners.size >= this.max) {
+      throw new Error(`this machine already serves ${this.max} preview ports; close some before opening more`);
+    }
+    const entry: Entry = { forwarder: null as unknown as Forwarder, connections: 0, lastActivity: this.now() };
+    const forwarders = this;
     const listener = Bun.listen<Socket["data"]>({
       hostname: "127.0.0.1",
       port: 0,
       socket: {
         open(socket) {
           socket.data = { stream: null, queue: [], writing: false, closed: false };
-          void open().then(
+          entry.connections += 1;
+          entry.lastActivity = forwarders.now();
+          let opening: Promise<MuxStream>;
+          try {
+            opening = open();
+          } catch (error) {
+            opening = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+          }
+          void opening.then(
             (stream) => {
               if (socket.data.closed) {
                 stream.reset("browser side closed before the link answered");
@@ -46,12 +82,15 @@ export class LoopbackForwarders {
                 if (!socket.data.closed) socket.end();
               });
             },
-            () => socket.end(),
+            () => {
+              if (!socket.data.closed) socket.end();
+            },
           );
         },
         data(socket, bytes) {
           const data = socket.data;
           if (data.closed) return;
+          entry.lastActivity = forwarders.now();
           data.queue.push(new Uint8Array(bytes));
           if (data.queue.reduce((n, chunk) => n + chunk.byteLength, 0) > MAX_QUEUED_BYTES) {
             data.stream?.reset("browser side outran the link");
@@ -64,6 +103,8 @@ export class LoopbackForwarders {
           const data = socket.data;
           if (data.closed) return;
           data.closed = true;
+          entry.connections = Math.max(0, entry.connections - 1);
+          entry.lastActivity = forwarders.now();
           data.stream?.end();
         },
         error(socket) {
@@ -75,7 +116,7 @@ export class LoopbackForwarders {
         },
       },
     });
-    const forwarder: Forwarder = {
+    entry.forwarder = {
       host: "127.0.0.1",
       port: listener.port,
       close: () => {
@@ -83,18 +124,30 @@ export class LoopbackForwarders {
         this.listeners.delete(key);
       },
     };
-    this.listeners.set(key, forwarder);
-    return forwarder;
+    this.listeners.set(key, entry);
+    return entry.forwarder;
+  }
+
+  /** Close listeners that have had no connection for FORWARDER_IDLE_MS. */
+  sweep(): number {
+    let closed = 0;
+    for (const entry of [...this.listeners.values()]) {
+      if (entry.connections === 0 && this.now() - entry.lastActivity >= FORWARDER_IDLE_MS) {
+        entry.forwarder.close();
+        closed += 1;
+      }
+    }
+    return closed;
   }
 
   release(sandboxId: string): void {
-    for (const [key, forwarder] of this.listeners) {
-      if (key.startsWith(`${sandboxId}:`)) forwarder.close();
+    for (const [key, entry] of this.listeners) {
+      if (key.startsWith(`${sandboxId}:`)) entry.forwarder.close();
     }
   }
 
   closeAll(): void {
-    for (const forwarder of [...this.listeners.values()]) forwarder.close();
+    for (const entry of [...this.listeners.values()]) entry.forwarder.close();
   }
 
   get size(): number {
@@ -136,5 +189,3 @@ async function pipeToSocket(stream: MuxStream, socket: Socket): Promise<void> {
     if (!socket.data.closed) socket.end();
   }
 }
-
-export { pipeToStream };

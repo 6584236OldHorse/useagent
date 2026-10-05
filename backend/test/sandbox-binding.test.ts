@@ -82,6 +82,10 @@ describe("local runner binding", () => {
     // A machine that was un-enrolled cannot be resolved; nothing falls back to the server's account.
     const gone = { ...deps, runners: { ...seam, runner: () => null } };
     await expect(resolveSandboxBindingForSandbox("local:rn_test:c1", gone)).rejects.toThrow(/no longer enrolled/);
+    // The switches apply to retained sandboxes too; the record stays, nothing falls back.
+    await expect(resolveSandboxBindingForSandbox("local:rn_test:c1", { ...deps, env: { LOCAL_RUNNERS: "off" } })).rejects.toThrow(/switched off/);
+    const forbidden = { ...deps, runners: { ...seam, policy: async () => ({ allowLocalExecution: false, allowLocalLogins: true }) } };
+    await expect(resolveSandboxBindingForThread(orgId, created.body.id, forbidden)).rejects.toThrow(/switched off/);
   });
 });
 

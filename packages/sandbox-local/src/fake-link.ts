@@ -109,31 +109,32 @@ export interface FakeLinkOptions {
 
 export interface FakeLink extends SandboxLink {
   online: boolean;
-  readonly calls: Array<{ method: string; params: unknown }>;
+  readonly calls: Array<{ method: string; params: unknown; timeoutMs?: number }>;
   readonly forwards: Array<{ sandboxId: string; port: number }>;
   readonly released: string[];
 }
 
-export function fakeLink(options: FakeLinkOptions): FakeLink {
+export function fakeLink(spec: FakeLinkOptions): FakeLink {
   const link: FakeLink = {
-    id: options.id,
-    userId: options.userId ?? "user-1",
-    orgId: options.orgId ?? "org-1",
-    fingerprint: options.fingerprint ?? "f".repeat(64),
-    enrolledAt: options.enrolledAt ?? "2026-09-08T00:00:00.000Z",
-    online: options.online ?? true,
+    id: spec.id,
+    userId: spec.userId ?? "user-1",
+    orgId: spec.orgId ?? "org-1",
+    fingerprint: spec.fingerprint ?? "f".repeat(64),
+    enrolledAt: spec.enrolledAt ?? "2026-09-08T00:00:00.000Z",
+    online: spec.online ?? true,
     calls: [],
     forwards: [],
     released: [],
-    async call(method, params) {
-      link.calls.push({ method, params });
-      if (!options.onCall) throw Object.assign(new Error(`no handler for ${method}`), { code: "unsupported" });
-      return options.onCall(method, params);
+    async call(method, params, options) {
+      const timeoutMs = options?.timeoutMs;
+      link.calls.push({ method, params, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
+      if (!spec.onCall) throw Object.assign(new Error(`no handler for ${method}`), { code: "unsupported" });
+      return spec.onCall(method, params);
     },
     async openStream(target) {
       const pair = linkStreamPair();
-      if (!options.onStream) throw Object.assign(new Error("no stream handler"), { code: "unsupported" });
-      await options.onStream(target, pair.far);
+      if (!spec.onStream) throw Object.assign(new Error("no stream handler"), { code: "unsupported" });
+      await spec.onStream(target, pair.far);
       return pair.near;
     },
     async forward(sandboxId, port) {

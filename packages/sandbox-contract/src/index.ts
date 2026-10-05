@@ -329,7 +329,8 @@ export interface SandboxLink {
   /** When the link was established; the plane's view of "connected since". */
   readonly enrolledAt: string;
   readonly online: boolean;
-  call(method: string, params: unknown): Promise<unknown>;
+  /** One call over the link; `timeoutMs` bounds the wait for its answer. */
+  call(method: string, params: unknown, options?: { readonly timeoutMs?: number }): Promise<unknown>;
   openStream(target: unknown): Promise<SandboxLinkStream>;
   /** A loopback address on the control plane that reaches `port` inside `sandboxId`. */
   forward(sandboxId: string, port: number): Promise<{ readonly host: string; readonly port: number }>;

@@ -2,7 +2,7 @@
 // with, and the status the API lists. The live link lives in ./registry.ts.
 
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import type { HelloFrame, RunnerCapacity } from "@useagent/runner-protocol";
 import { db } from "../db/client";
 import { runners } from "../db/schema";
@@ -74,8 +74,9 @@ export async function revokeRunner(orgId: string, runnerId: string): Promise<Run
   return row ?? null;
 }
 
-export async function recordHello(runnerId: string, hello: HelloFrame): Promise<void> {
-  await db
+/** False when the runner was revoked in the meantime: the link must not attach. */
+export async function recordHello(runnerId: string, hello: HelloFrame): Promise<boolean> {
+  const updated = await db
     .update(runners)
     .set({
       status: "online",
@@ -87,14 +88,19 @@ export async function recordHello(runnerId: string, hello: HelloFrame): Promise<
       imageDigest: hello.imageDigest,
       lastSeenAt: new Date(),
     })
-    .where(eq(runners.id, runnerId));
+    .where(and(eq(runners.id, runnerId), ne(runners.status, "revoked")))
+    .returning({ id: runners.id });
+  return updated.length > 0;
 }
 
-export async function recordHeartbeat(runnerId: string, capacity: RunnerCapacity, logins: readonly string[], imageDigest: string | null): Promise<void> {
-  await db
+/** False once the runner was revoked: the registry detaches the link. */
+export async function recordHeartbeat(runnerId: string, capacity: RunnerCapacity, logins: readonly string[], imageDigest: string | null): Promise<boolean> {
+  const updated = await db
     .update(runners)
     .set({ status: "online", capacity, logins: [...logins], imageDigest, lastSeenAt: new Date() })
-    .where(eq(runners.id, runnerId));
+    .where(and(eq(runners.id, runnerId), ne(runners.status, "revoked")))
+    .returning({ id: runners.id });
+  return updated.length > 0;
 }
 
 export async function recordOffline(runnerId: string): Promise<void> {

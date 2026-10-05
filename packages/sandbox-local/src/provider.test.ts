@@ -66,6 +66,7 @@ describe("local provider", () => {
     expect(link.calls[0]).toEqual({
       method: "sandbox.create",
       params: { image: IMAGE, env: { A: "1" }, labels: { "useagent.thread": "t1" }, cpu: 2, memoryMb: 4096, logins: ["codex"], autoStopMinutes: 30 },
+      timeoutMs: 600_000,
     });
     expect((await labels.read(["local:rn1:c1"])).get("local:rn1:c1")).toEqual({ "useagent.thread": "t1" });
     expect(provider.connectionFingerprint).toMatch(/^[0-9a-f]{64}$/);
@@ -91,11 +92,33 @@ describe("local provider", () => {
     await expect(provider.get("local:rn2:c1")).rejects.toBeInstanceOf(RunnerOfflineError);
   });
 
-  test("list walks every connected runner", async () => {
-    const provider = new LocalProvider(localProviderConfig(ENV), { links: fakeLinkDirectory([runner(), runner({ id: "rn2", online: false })]) });
+  test("list is complete or it fails: a bound provider lists its machine, an unbound one every machine", async () => {
+    const bound = new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([runner(), runner({ id: "rn2", online: false })]) });
     const ids: string[] = [];
-    for await (const handle of provider.list()) ids.push(`${handle.id}:${handle.state}`);
+    for await (const handle of bound.list()) ids.push(`${handle.id}:${handle.state}`);
     expect(ids).toEqual(["local:rn1:c1:started", "local:rn1:c2:stopped"]);
+    const away = new LocalProvider(localProviderConfig(ENV, { runnerId: "rn2" }), { links: fakeLinkDirectory([runner(), runner({ id: "rn2", online: false })]) });
+    await expect((async () => { for await (const _ of away.list()) { /* drain */ } })()).rejects.toBeInstanceOf(RunnerOfflineError);
+    const unbound = new LocalProvider(localProviderConfig(ENV), { links: fakeLinkDirectory([runner(), runner({ id: "rn2", online: false })]) });
+    await expect((async () => { for await (const _ of unbound.list()) { /* drain */ } })()).rejects.toBeInstanceOf(RunnerOfflineError);
+  });
+
+  test("calls carry deadlines that outlast the command they ask for", async () => {
+    const link = runner();
+    const provider = new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([link]) });
+    const handle = await provider.create();
+    await handle.process.executeCommand("sleep 200", undefined, undefined, 300);
+    await handle.process.executeSessionCommand("s", { command: "x" }, 45);
+    await handle.process.executeSessionCommand("s", { command: "x", runAsync: true }, 45);
+    await handle.start();
+    await handle.delete();
+    const byMethod = Object.fromEntries(link.calls.map((c) => [c.method + (c.params && (c.params as { runAsync?: boolean }).runAsync ? ":async" : ""), c.timeoutMs]));
+    expect(byMethod["sandbox.create"]).toBe(600_000);
+    expect(byMethod["process.execute"]).toBe(305_000);
+    expect(byMethod["session.execute"]).toBe(50_000);
+    expect(byMethod["session.execute:async"]).toBeUndefined();
+    expect(byMethod["sandbox.start"]).toBe(180_000);
+    expect(byMethod["sandbox.delete"]).toBe(120_000);
   });
 
   test("start, delete and preview links go through the link", async () => {

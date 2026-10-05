@@ -65,8 +65,24 @@ function rpcCode(error: unknown): string | null {
     : null;
 }
 
-async function call<M extends RunnerRpcMethod>(link: SandboxLink, method: M, params: RunnerRpcParams<M>): Promise<RunnerRpcResult<M>> {
-  return (await link.call(method, params)) as RunnerRpcResult<M>;
+/** Extra wait beyond a command's own timeout, for the runner to collect output and answer. */
+const ANSWER_GRACE_MS = 5000;
+const DEFAULT_COMMAND_SECONDS = 600;
+const CREATE_TIMEOUT_MS = 600_000;
+const START_TIMEOUT_MS = 180_000;
+const DELETE_TIMEOUT_MS = 120_000;
+
+async function call<M extends RunnerRpcMethod>(
+  link: SandboxLink,
+  method: M,
+  params: RunnerRpcParams<M>,
+  timeoutMs?: number,
+): Promise<RunnerRpcResult<M>> {
+  return (await link.call(method, params, timeoutMs === undefined ? undefined : { timeoutMs })) as RunnerRpcResult<M>;
+}
+
+function commandTimeoutMs(timeoutSeconds: number | undefined): number {
+  return (timeoutSeconds ?? DEFAULT_COMMAND_SECONDS) * 1000 + ANSWER_GRACE_MS;
 }
 
 async function readAll(stream: SandboxLinkStream): Promise<Buffer> {
@@ -113,7 +129,12 @@ class LocalProcess implements SandboxProcess {
   ) {}
 
   async executeCommand(command: string, cwd?: string, env?: Record<string, string>, timeoutSeconds?: number) {
-    const result = await call(this.link, "process.execute", { sandboxId: this.containerId, command, cwd, env, timeoutSeconds });
+    const result = await call(
+      this.link,
+      "process.execute",
+      { sandboxId: this.containerId, command, cwd, env, timeoutSeconds },
+      commandTimeoutMs(timeoutSeconds),
+    );
     return { result: result.result, exitCode: result.exitCode };
   }
 
@@ -140,13 +161,12 @@ class LocalProcess implements SandboxProcess {
     request: { command: string; runAsync?: boolean; suppressInputEcho?: boolean },
     timeoutSeconds?: number,
   ) {
-    const result: LocalSessionExecuteResult = await call(this.link, "session.execute", {
-      sandboxId: this.containerId,
-      sessionId,
-      command: request.command,
-      runAsync: request.runAsync,
-      timeoutSeconds,
-    });
+    const result: LocalSessionExecuteResult = await call(
+      this.link,
+      "session.execute",
+      { sandboxId: this.containerId, sessionId, command: request.command, runAsync: request.runAsync, timeoutSeconds },
+      request.runAsync ? undefined : commandTimeoutMs(timeoutSeconds),
+    );
     return { cmdId: result.cmdId, output: result.output, stdout: result.output, stderr: "", exitCode: result.exitCode };
   }
 
@@ -236,12 +256,12 @@ class LocalHandle implements SandboxHandle {
   }
 
   async start(): Promise<void> {
-    const info = await call(this.link, "sandbox.start", { sandboxId: this.containerId });
+    const info = await call(this.link, "sandbox.start", { sandboxId: this.containerId }, START_TIMEOUT_MS);
     this.state = stateOf(info);
   }
 
   async delete(): Promise<void> {
-    await call(this.link, "sandbox.delete", { sandboxId: this.containerId });
+    await call(this.link, "sandbox.delete", { sandboxId: this.containerId }, DELETE_TIMEOUT_MS);
     await this.link.release(this.containerId);
     await this.labelStore?.remove(this.id);
     this.state = "deleted";
@@ -290,7 +310,7 @@ export class LocalProvider implements SandboxProvider {
       logins: this.config.logins,
       autoStopMinutes: options.autoStopInterval ?? 0,
     };
-    const info = await call(link, "sandbox.create", params);
+    const info = await call(link, "sandbox.create", params, CREATE_TIMEOUT_MS);
     const handle = new LocalHandle(link, info.id, info, this.ports.labels);
     if (options.labels) await this.ports.labels?.write(handle.id, options.labels);
     return handle;
@@ -313,10 +333,17 @@ export class LocalProvider implements SandboxProvider {
     return handle;
   }
 
+  /**
+   * Inventory is only complete when every machine it covers answered: a
+   * provider bound to one runner lists that runner and fails while it is away;
+   * an unbound provider fails if any enrolled machine is away, so a caller that
+   * treats absence as deletion never sees a partial list.
+   */
   async *list(): AsyncIterable<SandboxHandle> {
-    for (const link of this.directory.list()) {
-      if (!link.online) continue;
-      const infos = await call(link, "sandbox.list", {}).catch(() => [] as readonly LocalSandboxInfo[]);
+    const links = this.config.runnerId ? [this.onlineLink(this.config.runnerId)] : this.directory.list();
+    for (const link of links) {
+      if (!link.online) throw new RunnerOfflineError(link.id);
+      const infos = await call(link, "sandbox.list", {});
       for (const info of infos) yield new LocalHandle(link, info.id, info, this.ports.labels);
     }
   }

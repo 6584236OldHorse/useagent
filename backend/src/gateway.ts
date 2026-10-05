@@ -17,6 +17,11 @@ await assertArtifactStorageWritable();
 console.log(`[useagent] gateway artifact storage at ${artifactStorageRoot()}`);
 
 const app = createGatewayApp();
+// The gateway reaches a developer's machine through the backend's bridge; it
+// knows the enrolled machines from the database so a run's sandbox resolves.
+const { remoteRunnerDirectory } = await import("./runners/remote-directory");
+const knownRunners = await remoteRunnerDirectory.load();
+if (knownRunners > 0) console.log(`[useagent] gateway knows ${knownRunners} enrolled runner${knownRunners === 1 ? "" : "s"}`);
 const port = Number(process.env.GATEWAY_PORT ?? 3202);
 
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
