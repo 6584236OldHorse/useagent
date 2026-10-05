@@ -21,6 +21,15 @@ describe("authentication proxy", () => {
     ).toBe(false);
   });
 
+  test("keeps download-prefixed private routes behind authentication", () => {
+    const url = "https://useagent.example.com/download-private";
+
+    expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
+    expect(proxy(new NextRequest(url)).headers.get("location")).toBe(
+      "https://useagent.example.com/login",
+    );
+  });
+
   test("redirects anonymous navigation to login", () => {
     const response = proxy(new NextRequest("https://useagent.example.com/agent/new"));
 

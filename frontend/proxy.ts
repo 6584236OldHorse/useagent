@@ -37,6 +37,6 @@ export function proxy(request: NextRequest): NextResponse {
 
 export const config = {
   matcher: [
-    "/((?!api|healthz|login|signup|download|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
+    "/((?!api|healthz|login|signup|download$|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
   ],
 };
