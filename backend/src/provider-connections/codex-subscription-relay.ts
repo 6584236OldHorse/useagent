@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
 import { env } from "../env";
@@ -65,8 +63,6 @@ export type CodexRelaySessionScope = Omit<CodexSubscriptionRelayBinding, "runId"
 export interface CodexRelayRun {
   readonly runId: string;
   readonly model: string;
-  /** This run's tool-gateway bearer, handed to the app-server's MCP client per connection. */
-  readonly toolGatewayBearer: string | null;
 }
 
 export interface CodexSubscriptionRelayCapability {
@@ -78,9 +74,9 @@ export interface CodexSubscriptionRelayCapability {
  * runs and accept a new connection after the last one closed; single-use ones
  * accept exactly one connection, within the capability window. */
 export interface CodexRelaySession extends CodexSubscriptionRelayCapability {
-  /** Serve `run` from now on: its model, its gateway bearer. */
+  /** Serve `run` from now on, with its model. */
   activate(run: CodexRelayRun): void;
-  /** Serve no run: turn starts are refused and the gateway bearer is withdrawn. */
+  /** Serve no run: turn starts and new connections are refused. */
   deactivate(): void;
   /** Whether a runtime connection is open on this session right now. */
   readonly connected: boolean;
@@ -98,13 +94,11 @@ export function codexSubscriptionRelayPublicOrigin(
   return origin.origin;
 }
 
-/** The MCP server the app-server reaches the tool gateway through. Its bearer is
- * read per connection from `headersFile`, rewritten at every run activation. */
-export interface RelayToolGateway {
-  readonly serverName: string;
-  readonly url: string;
-  readonly headersFile: string;
-}
+/** The MCP server the app-server reaches the tool gateway through. A kept
+ * session serves one thread and user, so its bearer is the thread-scoped one:
+ * the gateway acts as whichever of the thread's runs is live and refuses
+ * between runs. */
+export type RelayToolGateway = Pick<ToolGatewayCapabilityDescriptor, "serverName" | "url" | "bearerToken">;
 
 interface RelaySessionState {
   readonly scope: CodexRelaySessionScope;
@@ -122,9 +116,6 @@ interface RelaySessionState {
   readonly turnRuns: Map<string, string>;
   /** Ends the live connection and its app-server; set while one is open. */
   disconnect: (() => void) | null;
-  /** Reconnects the live app-server's MCP clients, so they read the active
-   * run's bearer; set once its connection has initialized. */
-  reloadTools: (() => void) | null;
 }
 
 interface RelayDependencies {
@@ -140,8 +131,6 @@ interface RelayDependencies {
   readonly bindThread: (
     scope: CodexRelaySessionScope & { readonly providerThreadId: string },
   ) => Promise<void>;
-  /** Where a session's MCP headers file lives (private to the backend). */
-  readonly headersDirectory: (codexHome: string) => string;
 }
 
 const sessions = new Map<string, RelaySessionState>();
@@ -149,15 +138,13 @@ const sessions = new Map<string, RelaySessionState>();
 /** The app-server's arguments. Model-written code-mode JavaScript runs in the
  * sandbox's code-mode host at `codeModeHostUrl` (a loopback tunnel), never in a
  * host process this backend would otherwise start. The tool gateway's bearer is
- * never in the arguments or environment: a helper prints it per connection. */
+ * read from the environment, never the arguments, and no helper process runs:
+ * Codex would start one in the thread's cwd, which exists only in the sandbox. */
 export function codexSubscriptionAppServerArgs(
   toolGateway: RelayToolGateway | null,
   codeModeHostUrl: string,
 ): string[] {
   assertLoopbackUrl(codeModeHostUrl, ["http:"], "Codex code-mode host must be a loopback HTTP tunnel");
-  if (toolGateway && /\s/.test(toolGateway.headersFile)) {
-    throw new Error("Codex tool gateway headers path must not contain whitespace");
-  }
   return [
     "app-server",
     "--stdio",
@@ -171,10 +158,24 @@ export function codexSubscriptionAppServerArgs(
           "-c",
           `mcp_servers.${toolGateway.serverName}.url=${JSON.stringify(toolGateway.url)}`,
           "-c",
-          `mcp_servers.${toolGateway.serverName}.http_headers_helper=${JSON.stringify(`/bin/cat ${toolGateway.headersFile}`)}`,
+          `mcp_servers.${toolGateway.serverName}.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"`,
         ]
       : []),
   ];
+}
+
+/** The app-server's environment: the account's scoped home and the gateway
+ * bearer its MCP client reads (`bearer_token_env_var` in the arguments). */
+export function codexSubscriptionAppServerEnvironment(
+  codexHome: string,
+  toolGateway: RelayToolGateway | null,
+): Record<string, string> {
+  return {
+    ...codexAppServerChildEnvironment(codexHome),
+    ...(toolGateway
+      ? { USEAGENT_TOOL_GATEWAY_BEARER_TOKEN: toolGateway.bearerToken }
+      : {}),
+  };
 }
 
 const defaultDependencies: RelayDependencies = {
@@ -182,7 +183,7 @@ const defaultDependencies: RelayDependencies = {
   selectRuntime: getCodexSubscriptionRuntimeSelection,
   spawnAppServer: ({ codexHome, toolGateway, codeModeHostUrl }) =>
     spawn("codex", codexSubscriptionAppServerArgs(toolGateway, codeModeHostUrl), {
-      env: codexAppServerChildEnvironment(codexHome),
+      env: codexSubscriptionAppServerEnvironment(codexHome, toolGateway),
       stdio: ["pipe", "pipe", "pipe"],
     }),
   loadThreadBinding: (scope) => findProviderThreadBinding(threadBindingScope(scope)),
@@ -190,7 +191,6 @@ const defaultDependencies: RelayDependencies = {
     ...threadBindingScope(scope),
     providerThreadId: scope.providerThreadId,
   }),
-  headersDirectory: (codexHome) => join(codexHome, "useagent-relay"),
 };
 
 let dependencies = defaultDependencies;
@@ -200,7 +200,7 @@ export function openCodexRelaySession(input: {
   readonly runtime: CodexSubscriptionRuntimeSelection;
   readonly execServerUrl: string;
   readonly codeModeHostUrl: string;
-  readonly toolGateway: Pick<ToolGatewayCapabilityDescriptor, "serverName" | "url"> | null;
+  readonly toolGateway: RelayToolGateway | null;
   readonly reusable: boolean;
   readonly ttlMs?: number;
   readonly publicOrigin?: string;
@@ -211,18 +211,12 @@ export function openCodexRelaySession(input: {
   assertRuntimeMatchesBinding(input.runtime, input.scope);
   const token = crypto.randomUUID();
   const key = capabilityKey(token);
-  let toolGateway: RelayToolGateway | null = null;
-  if (input.toolGateway) {
-    const directory = dependencies.headersDirectory(input.runtime.codexHome);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    toolGateway = { serverName: input.toolGateway.serverName, url: input.toolGateway.url, headersFile: join(directory, `${key.slice(0, 32)}.json`) };
-  }
   const state: RelaySessionState = {
     scope: structuredClone(input.scope),
     codexHome: input.runtime.codexHome,
     execServerUrl: input.execServerUrl,
     codeModeHostUrl: input.codeModeHostUrl,
-    toolGateway,
+    toolGateway: input.toolGateway,
     reusable: input.reusable,
     expiresAt: dependencies.now() + (input.ttlMs ?? DEFAULT_CAPABILITY_TTL_MS),
     connections: 0,
@@ -231,9 +225,7 @@ export function openCodexRelaySession(input: {
     run: null,
     turnRuns: new Map(),
     disconnect: null,
-    reloadTools: null,
   };
-  writeGatewayHeaders(state, null);
   sessions.set(key, state);
   const origin = new URL(input.publicOrigin ?? codexSubscriptionRelayPublicOrigin());
   origin.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
@@ -246,13 +238,9 @@ export function openCodexRelaySession(input: {
     activate(run) {
       if (state.closed) throw new Error("Codex relay session is closed");
       state.run = { ...run, turnStarts: 0 };
-      writeGatewayHeaders(state, run.toolGatewayBearer);
-      // The runtime reloads tools before each turn too; this does not rely on it.
-      state.reloadTools?.();
     },
     deactivate() {
       state.run = null;
-      writeGatewayHeaders(state, null);
     },
     get connected() {
       return state.live;
@@ -287,7 +275,7 @@ export function issueCodexSubscriptionRelayCapability(input: {
     ttlMs: input.ttlMs,
     publicOrigin: input.publicOrigin,
   });
-  session.activate({ runId, model, toolGatewayBearer: input.toolGateway?.bearerToken ?? null });
+  session.activate({ runId, model });
   return { url: session.url, close: () => session.close() };
 }
 
@@ -392,8 +380,6 @@ codexSubscriptionRelayRoutes.get(
     };
     const clientFrames = createSerialTaskQueue(rejectRelay);
     const serverFrames = createSerialTaskQueue(rejectRelay);
-    let reloadTools: (() => void) | null = null;
-    let dropRelayResponse: (line: string) => boolean = () => false;
 
     return {
       onOpen: (_event, socket) => {
@@ -409,21 +395,6 @@ codexSubscriptionRelayRoutes.get(
           environmentBootstrap?.close();
           closeChild();
         };
-        const relayRequests = new Set<string>();
-        reloadTools = () => clientFrames.enqueue(async () => {
-          const process = await childReady;
-          if (!environmentBootstrap || !process.stdin.writable) return;
-          const id = `useagent-relay-${crypto.randomUUID()}`;
-          relayRequests.add(id);
-          const forwarded = await environmentBootstrap.acceptClientFrame(
-            JSON.stringify({ id, method: "config/mcpServer/reload" }),
-          );
-          for (const childFrame of forwarded) process.stdin.write(`${childFrame}\n`);
-        });
-        dropRelayResponse = (line) => {
-          const id = parseCodexSubscriptionFrame(line).id;
-          return typeof id === "string" && relayRequests.delete(id);
-        };
         void attachCodexSubscriptionAppServer({
           childReady,
           isClosed: () => closed,
@@ -432,7 +403,6 @@ codexSubscriptionRelayRoutes.get(
             child = null;
           },
           onLine: (line) => serverFrames.enqueue(async () => {
-            if (dropRelayResponse(line)) return;
             await authorizeSession(session);
             if (!protocol || !environmentBootstrap) {
               throw new Error("Codex relay protocol is unavailable");
@@ -481,11 +451,6 @@ codexSubscriptionRelayRoutes.get(
             throw new Error("Codex relay protocol is unavailable");
           }
           admitTurnStart(session, frame);
-          // Once the runtime has initialized this connection, a later run's
-          // activation may ask the app-server to reconnect its tools.
-          if (parseCodexSubscriptionFrame(frame, "client").method === "initialized") {
-            session.reloadTools = reloadTools;
-          }
           // The protocol may rewrite the frame (bound-thread `thread/start`
           // becomes `thread/resume`); everything downstream sees the outbound.
           const outbound = await protocol.acceptClientFrame(frame);
@@ -503,7 +468,6 @@ codexSubscriptionRelayRoutes.get(
         if (session && accepted) {
           session.live = false;
           session.disconnect = null;
-          session.reloadTools = null;
           if (!session.reusable) closeSession(key, session);
         }
       },
@@ -537,16 +501,6 @@ function rememberTurnRun(session: RelaySessionState, raw: string): void {
   }
 }
 
-/** The MCP client's headers for the active run (or none), written atomically
- * and readable by the backend user only. */
-function writeGatewayHeaders(session: RelaySessionState, bearer: string | null): void {
-  if (!session.toolGateway) return;
-  const headers = bearer ? { Authorization: `Bearer ${bearer}` } : {};
-  const temporary = `${session.toolGateway.headersFile}.${crypto.randomUUID()}.tmp`;
-  writeFileSync(temporary, JSON.stringify(headers), { mode: 0o600 });
-  renameSync(temporary, session.toolGateway.headersFile);
-}
-
 function closeSession(key: string, session: RelaySessionState): void {
   if (session.closed) return;
   session.closed = true;
@@ -554,12 +508,6 @@ function closeSession(key: string, session: RelaySessionState): void {
   sessions.delete(key);
   session.disconnect?.();
   session.disconnect = null;
-  session.reloadTools = null;
-  try {
-    writeGatewayHeaders(session, null);
-  } catch {
-    // A missing headers directory has nothing left to withdraw.
-  }
 }
 
 async function authorizeSession(session: RelaySessionState): Promise<void> {

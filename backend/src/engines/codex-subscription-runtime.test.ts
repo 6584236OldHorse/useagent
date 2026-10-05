@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
@@ -128,6 +128,8 @@ describe("T3 Codex subscription lease", () => {
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/grant",
       codeModeHostUrl: "http://127.0.0.1:43112",
+      // The app-server's MCP client holds the thread-scoped bearer for the session's life.
+      toolGateway: { serverName: "useagent", url: expect.any(String), bearerToken: expect.any(String) },
       reusable: true,
     });
     expect(relays.opened[0]!.runs).toEqual([
@@ -201,6 +203,38 @@ describe("T3 Codex subscription lease", () => {
     expect(warm.commands[0]?.command).toContain(createHash("sha256").update(bearers[1]!).digest("hex"));
     await second.close();
     expect(liveCodexThreadSessions()).toBe(1);
+  });
+
+  test("a kept session serves only runs given its gateway bearer; a re-minted bearer starts a fresh one", async () => {
+    const closed: string[] = [];
+    const relays = relaySessions(closed);
+    const dependencies = {
+      loadThreadBinding: async () => "provider-thread-1",
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close: () => void closed.push("bridge") }),
+      openCodeModeBridge: codeModeBridges(closed),
+      openRelaySession: relays.open,
+    };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    await first.close();
+    // The thread's bearer is re-minted once its 15 minute reuse window has passed.
+    setSystemTime(new Date(Date.now() + 16 * 60_000));
+    try {
+      const warm = fakeSandbox({ execServerListening: true, codeModeListening: true });
+      const second = await prepareCodexSubscription({
+        sandbox: warm.sandbox, ctx: { ...context(), runId: "run-2" }, workdir: "/root/work", runtime: runtime(), dependencies,
+      });
+      expect(second.sessionReused).toBe(false);
+      const [kept, fresh] = relays.opened.map(({ input }) => input.toolGateway?.bearerToken);
+      expect(kept).toBeString();
+      expect(fresh).toBeString();
+      expect(fresh).not.toBe(kept);
+      expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
+      await second.close();
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("SESSION_REUSE=off gives every run its own single-use session, as before reuse", async () => {
