@@ -28,10 +28,13 @@ describe("Codex code-mode host in the sandbox", () => {
     const procRoot = async (forwarderArgs: readonly string[]) => {
       const proc = await mkdtemp(join(home, "proc-"));
       await mkdir(join(proc, "net"));
-      // 0x9368 = 37736 (host, loopback), 0x9369 = 37737 (forwarder, all interfaces).
+      // 0x9368 = 37736 (host on 127.0.0.2), 0x9369 = 37737 (forwarder, all interfaces).
+      // E2B's sandbox agent mirrors loopback listeners on 169.254.0.21; that
+      // socket is not ours and must not count against the host.
       await writeFile(join(proc, "net/tcp"), PROC_TCP_HEADER +
-        "   0: 0100007F:9368 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5001 1\n" +
-        "   1: 00000000:9369 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5002 1\n");
+        "   0: 0200007F:9368 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5001 1\n" +
+        "   1: 00000000:9369 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5002 1\n" +
+        "   2: 1500FEA9:9368 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5003 1\n");
       const process = async (pid: number, inode: number, exe: string, args: readonly string[]) => {
         await mkdir(join(proc, `${pid}/fd`), { recursive: true });
         await symlink(`socket:[${inode}]`, join(proc, `${pid}/fd/7`));
@@ -40,6 +43,7 @@ describe("Codex code-mode host in the sandbox", () => {
       };
       await process(41, 5001, host, hostOwner!.args);
       await process(42, 5002, layout.bunExecutable, forwarderArgs);
+      await process(43, 5003, `${home}/bin/envd`, ["-port", "49983"]);
       return proc;
     };
     const probe = async (forwarderArgs: readonly string[]) => {
@@ -48,15 +52,24 @@ describe("Codex code-mode host in the sandbox", () => {
     };
 
     expect(await probe(forwarderOwner!.args)).toEqual({ status: 0, verdicts: { 37736: 0, 37737: 0 } });
+    // Something else on the host's port at every address shadows the host: foreign.
+    const shadowed = await procRoot(forwarderOwner!.args);
+    await writeFile(join(shadowed, "net/tcp"), `${await Bun.file(join(shadowed, "net/tcp")).text()}   3: 00000000:9368 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 5004 1\n`);
+    await mkdir(join(shadowed, "44/fd"), { recursive: true });
+    await symlink("socket:[5004]", join(shadowed, "44/fd/9"));
+    await symlink(`${home}/bin/envd`, join(shadowed, "44/exe"));
+    await writeFile(join(shadowed, "44/cmdline"), "devserver\0");
+    const result = spawnSync("sh", ["-c", `${buildSandboxListenerProbeCommand([hostOwner!, forwarderOwner!], 0)} ${shadowed}`]);
+    expect(readListenerVerdicts(result.stdout.toString(), [hostOwner!, forwarderOwner!])).toEqual({ 37736: 2, 37737: 0 });
     expect(await probe([`${home}/evil.js`, ...forwarderOwner!.args.slice(1)])).toEqual({ status: 2, verdicts: { 37736: 0, 37737: 2 } });
   });
 
   test("starts only what is missing, and the host replaces the launching shell", () => {
     const layout = { home: "/root", workdir: "/root/work", runsAsRoot: true, bunExecutable: "/usr/local/bin/bun" };
     const both = buildCodexCodeModeLaunchCommand(layout, { host: true, forwarder: true });
-    expect(both).toContain('"/usr/local/bin/bun" "/root/.useagent/code-mode-forwarder.js" "37737" "37736" "/root/.useagent/code-mode-forwarder.sha256" &');
+    expect(both).toContain('"/usr/local/bin/bun" "/root/.useagent/code-mode-forwarder.js" "37737" "127.0.0.2" "37736" "/root/.useagent/code-mode-forwarder.sha256" &');
     expect(both).toContain('"/usr/local/share/useagent/native-engines"/node_modules/@openai/codex-linux-*/vendor/*/bin/codex-code-mode-host');
-    expect(both).toContain('exec "$CODE_MODE_HOST" "--listen" "grpc://127.0.0.1:37736"');
+    expect(both).toContain('exec "$CODE_MODE_HOST" "--listen" "grpc://127.0.0.2:37736"');
     const forwarderOnly = buildCodexCodeModeLaunchCommand(layout, { host: false, forwarder: true });
     expect(forwarderOnly).not.toContain("CODE_MODE_HOST");
     expect(forwarderOnly.trim().endsWith("wait")).toBe(true);

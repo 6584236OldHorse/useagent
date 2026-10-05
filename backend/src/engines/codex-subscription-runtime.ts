@@ -264,6 +264,7 @@ export function buildCodexExecServerCommand(
 export function codexExecServerOwner(layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT): SandboxListenerOwner {
   const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
   return {
+    address: "0.0.0.0",
     port: CODEX_EXEC_SERVER_PORT,
     executable: "codex",
     installRoot: `${prefix}/share/useagent/native-engines`,

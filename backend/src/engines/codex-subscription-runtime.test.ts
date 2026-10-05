@@ -79,7 +79,7 @@ describe("T3 Codex subscription lease", () => {
     expect(harness.sessionCommands[0]?.command).toContain(
       '"/usr/local/bin/codex" exec-server --listen ws://0.0.0.0:37734',
     );
-    expect(harness.sessionCommands[1]?.command).toContain('"--listen" "grpc://127.0.0.1:37736"');
+    expect(harness.sessionCommands[1]?.command).toContain('"--listen" "grpc://127.0.0.2:37736"');
     expect(harness.previewPorts).toEqual([37_734, 37_737]);
     expect(relayBinding).toEqual({
       orgId: "org-1",

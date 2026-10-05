@@ -9,13 +9,17 @@ import { sandboxBunExecutable } from "./sandbox-bun";
 import type { SandboxListenerOwner } from "./sandbox-listener-probe";
 
 export const CODEX_CODE_MODE_HOST_PORT = 37_736;
+/** Not 127.0.0.1: E2B's sandbox agent republishes 127.0.0.1 listeners on its
+ * own address, which would put the host behind the sandbox preview. Only the
+ * forwarder below may reach it. */
+export const CODEX_CODE_MODE_HOST_ADDRESS = "127.0.0.2";
 export const CODEX_CODE_MODE_FORWARDER_PORT = 37_737;
 export const CODEX_CODE_MODE_SESSION = "skynet-codex-code-mode";
 
-/** Runs under the sandbox's Bun: `bun <this file> <listenPort> <hostPort> <tokenSha256File>`. */
+/** Runs under the sandbox's Bun: `bun <this file> <listenPort> <hostAddress> <hostPort> <tokenSha256File>`. */
 export const CODEX_CODE_MODE_FORWARDER_SOURCE = `
 const { createHash, timingSafeEqual } = require("node:crypto");
-const [listenPort, hostPort, tokenFile] = process.argv.slice(2);
+const [listenPort, hostAddress, hostPort, tokenFile] = process.argv.slice(2);
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 const digest = (value) => createHash("sha256").update(value).digest();
 const admitted = async (request) => {
@@ -53,7 +57,7 @@ Bun.serve({
   websocket: {
     open(ws) {
       Bun.connect({
-        hostname: "127.0.0.1",
+        hostname: hostAddress,
         port: Number(hostPort),
         data: { ws, out: [] },
         socket: {
@@ -98,17 +102,20 @@ export function codexCodeModeOwners(layout: SandboxRuntimeLayout): readonly Sand
   const paths = codexCodeModeSandboxPaths(layout);
   return [
     {
+      address: CODEX_CODE_MODE_HOST_ADDRESS,
       port: CODEX_CODE_MODE_HOST_PORT,
       executable: "codex-code-mode-host",
       installRoot: paths.nativeRoot,
-      args: ["--listen", `grpc://127.0.0.1:${CODEX_CODE_MODE_HOST_PORT}`],
+      args: ["--listen", `grpc://${CODEX_CODE_MODE_HOST_ADDRESS}:${CODEX_CODE_MODE_HOST_PORT}`],
     },
     {
+      address: "0.0.0.0",
       port: CODEX_CODE_MODE_FORWARDER_PORT,
       executablePath: paths.bun,
       args: [
         paths.forwarder,
         String(CODEX_CODE_MODE_FORWARDER_PORT),
+        CODEX_CODE_MODE_HOST_ADDRESS,
         String(CODEX_CODE_MODE_HOST_PORT),
         paths.tokenFile,
       ],

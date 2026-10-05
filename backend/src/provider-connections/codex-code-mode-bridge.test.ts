@@ -56,7 +56,7 @@ beforeAll(async () => {
   await writeFile(script, CODEX_CODE_MODE_FORWARDER_SOURCE);
   await writeFile(tokenFile, `${sha256("run-token")}\n`);
   forwarderPort = await freePort();
-  forwarder = Bun.spawn([process.execPath, script, String(forwarderPort), String(echo.port), tokenFile], { stdout: "ignore", stderr: "ignore" });
+  forwarder = Bun.spawn([process.execPath, script, String(forwarderPort), "127.0.0.1", String(echo.port), tokenFile], { stdout: "ignore", stderr: "ignore" });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (await fetch(`http://127.0.0.1:${forwarderPort}/`).then(() => true, () => false)) return;
     await Bun.sleep(50);

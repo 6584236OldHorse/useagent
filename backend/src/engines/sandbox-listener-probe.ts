@@ -3,10 +3,14 @@
 // plane launched is recognised by the process that owns the socket: its
 // executable and its leading arguments, read from /proc.
 
-/** The process that must own `port` and the argv[1..] it starts with. Its
- * executable is either one exact file (`executablePath`, compared by real path)
- * or a file name that must resolve inside `installRoot`. */
+/** The process that must own the IPv4 socket `address:port` and the argv[1..]
+ * it starts with. Its executable is either one exact file (`executablePath`,
+ * compared by real path) or a file name that must resolve inside `installRoot`.
+ * Only that exact socket is the service: a sandbox agent may mirror a loopback
+ * listener on another address under the same port. A wildcard listener on the
+ * port shadows any other address, so it counts as the port's holder too. */
 export type SandboxListenerOwner = {
+  readonly address: string;
   readonly port: number;
   readonly args: readonly string[];
 } & (
@@ -37,10 +41,11 @@ export function buildSandboxListenerProbeCommand(
     'const owners=JSON.parse(Buffer.from(process.argv[1],"base64").toString("utf8")),proc=process.argv[2]||"/proc"',
     `const deadline=Date.now()+${deadlineMs}`,
     'const real=p=>{try{return fs.realpathSync(p)}catch{return null}}',
-    'const listening=port=>{const hex=":"+port.toString(16).toUpperCase().padStart(4,"0"),found=new Set();for(const name of["net/tcp","net/tcp6"]){let text="";try{text=fs.readFileSync(path.join(proc,name),"utf8")}catch{continue}for(const line of text.split("\\n").slice(1)){const c=line.trim().split(/\\s+/);if(c.length>9&&c[1].endsWith(hex)&&c[3]==="0A")found.add(c[9])}}return found}',
+    'const socketHex=owner=>owner.address.split(".").map(Number).reverse().map(n=>n.toString(16).toUpperCase().padStart(2,"0")).join("")+":"+owner.port.toString(16).toUpperCase().padStart(4,"0")',
+    'const listening=owner=>{const local=socketHex(owner),wildcard=socketHex({address:"0.0.0.0",port:owner.port}),found=new Set();let text="";try{text=fs.readFileSync(path.join(proc,"net/tcp"),"utf8")}catch{return found}for(const line of text.split("\\n").slice(1)){const c=line.trim().split(/\\s+/);if(c.length>9&&(c[1]===local||c[1]===wildcard)&&c[3]==="0A")found.add(c[9])}return found}',
     'const holds=(pid,found)=>{try{return fs.readdirSync(path.join(proc,pid,"fd")).some(fd=>{try{const link=fs.readlinkSync(path.join(proc,pid,"fd",fd));return link.startsWith("socket:[")&&found.has(link.slice(8,-1))}catch{return false}})}catch{return false}}',
     'const matches=(pid,owner)=>{try{const exe=fs.realpathSync(path.join(proc,pid,"exe")),args=fs.readFileSync(path.join(proc,pid,"cmdline"),"utf8").split("\\0");if(owner.executablePath){if(real(owner.executablePath)!==exe)return false}else{const root=real(owner.installRoot),rel=root===null?"..":path.relative(root,exe);if(path.basename(exe)!==owner.executable||rel===""||rel.startsWith("..")||path.isAbsolute(rel))return false}return owner.args.every((arg,i)=>args[i+1]===arg)}catch{return false}}',
-    'const verdict=owner=>{const found=listening(owner.port);if(found.size===0)return 1;const holders=fs.readdirSync(proc).filter(pid=>!Number.isNaN(Number(pid))&&holds(pid,found));if(holders.length===0)return 2;return holders.every(pid=>matches(pid,owner))?0:2}',
+    'const verdict=owner=>{const found=listening(owner);if(found.size===0)return 1;const holders=fs.readdirSync(proc).filter(pid=>!Number.isNaN(Number(pid))&&holds(pid,found));if(holders.length===0)return 2;return holders.every(pid=>matches(pid,owner))?0:2}',
     'const probe=()=>{const verdicts={};for(const owner of owners)verdicts[owner.port]=verdict(owner);const values=Object.values(verdicts);const done=values.every(v=>v===0)||values.includes(2)||Date.now()>=deadline;if(!done){setTimeout(probe,50);return}console.log(JSON.stringify(verdicts));process.exit(values.includes(2)?2:values.every(v=>v===0)?0:1)}',
     "probe()",
   ].join(";");
