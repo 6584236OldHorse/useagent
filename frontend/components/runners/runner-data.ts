@@ -114,6 +114,14 @@ export function markRunnerRevoked(runners: readonly Runner[], id: string): Runne
   return runners.map((runner) => (runner.id === id ? { ...runner, status: "revoked" } : runner));
 }
 
+/** How a sandbox provider kind reads to a person. */
+const PROVIDER_NAMES: Record<string, string> = {
+  daytona: "Daytona",
+  cube: "Cube",
+  box: "Box",
+  local: "Local machine",
+};
+
 export function runnerLocationLabel(
   sandboxId: string | null,
   sandboxProvider: unknown,
@@ -122,7 +130,7 @@ export function runnerLocationLabel(
   const runnerId = localRunnerId(sandboxId);
   if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
   return typeof sandboxProvider === "string" && sandboxProvider.trim()
-    ? sandboxProvider
+    ? (PROVIDER_NAMES[sandboxProvider] ?? sandboxProvider)
     : "Unknown runtime";
 }
 

@@ -5,11 +5,15 @@ import { useEffect, useState } from "react";
 import { fetchRunners } from "./runner-api";
 import { localRunnerId, type Runner, runnerLocationLabel } from "./runner-data";
 
-export function RunLocation({
-  run,
-}: {
-  readonly run: { readonly sandbox_id: string | null; readonly sandbox_provider?: unknown };
-}) {
+export type LocatedRun = {
+  readonly sandbox_id: string | null;
+  readonly sandbox_provider?: unknown;
+};
+
+/** Where a run executes, named: the runner's machine for a local sandbox, the
+ *  provider for a cloud one; null while nothing is recorded. Shared by the
+ *  Details rail and the composer's status tab. */
+export function useRunLocationLabel(run: LocatedRun): string | null {
   const [runners, setRunners] = useState<Runner[]>([]);
   const sandboxId = run.sandbox_id;
   const sandboxProvider = run.sandbox_provider;
@@ -27,15 +31,19 @@ export function RunLocation({
     };
   }, [runnerId]);
   if (!sandboxId && !sandboxProvider) return null;
+  return runnerLocationLabel(sandboxId, sandboxProvider, runners);
+}
+
+export function RunLocation({ run }: { readonly run: LocatedRun }) {
+  const label = useRunLocationLabel(run);
+  if (!label) return null;
   return (
     <span
       className="flex min-w-0 items-center gap-1.5 text-caption-1-regular text-text-tertiary"
-      title={`Runs on ${runnerLocationLabel(sandboxId, sandboxProvider, runners)}`}
+      title={`Runs on ${label}`}
     >
       <RiComputerLine aria-hidden className="size-3.5 shrink-0" />
-      <span className="max-w-36 truncate">
-        {runnerLocationLabel(sandboxId, sandboxProvider, runners)}
-      </span>
+      <span className="max-w-36 truncate">{label}</span>
     </span>
   );
 }

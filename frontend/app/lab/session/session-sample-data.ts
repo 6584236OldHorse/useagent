@@ -14,6 +14,7 @@ import type { TimelineMarker, TimelineNode } from "@/components/chat/timeline";
 import type { ApiStep, EngineId } from "@/components/chat/types";
 import type { AgentPanelRowModel } from "@/components/session-ui/agent-panel-row";
 import type { ChangedFile } from "@/components/session-ui/changed-files";
+import type { RunUpload } from "@/components/chat/run-uploads";
 
 // Deterministic clock (never Date.now(): SSR + client must agree, no hydration drift).
 const T0 = Date.parse("2026-08-17T09:00:00.000Z");
@@ -604,10 +605,41 @@ export const agentRows: readonly AgentPanelRowModel[] = [
 ];
 
 /** Composer upload tray state: a ready image, one uploading, one failed. */
-export const sampleUploads = [
-  { localId: "u1", id: "up-1", name: "current-429.png", sizeBytes: 48_120, status: "ready" as const },
-  { localId: "u2", id: null, name: "har-capture.json", sizeBytes: 210_400, status: "uploading" as const },
-  { localId: "u3", id: null, name: "trace.zip", sizeBytes: 1_400_000, status: "error" as const },
+/** A small gradient "photo" so the image tile has a thumbnail without a binary asset. */
+const SAMPLE_THUMBNAIL = `data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6b8afd"/><stop offset="1" stop-color="#d96ba3"/></linearGradient></defs><rect width="56" height="56" fill="url(#g)"/><circle cx="19" cy="21" r="7" fill="#fff" fill-opacity=".85"/><path d="M0 46l17-13 12 9 10-7 17 13v8H0z" fill="#fff" fill-opacity=".55"/></svg>',
+)}`;
+
+const sampleUpload = (
+  localId: string,
+  name: string,
+  kind: RunUpload["kind"],
+  over: Partial<RunUpload> = {},
+): RunUpload => ({
+  localId,
+  id: `up-${localId}`,
+  name,
+  sizeBytes: 48_120,
+  status: "ready",
+  kind,
+  previewUrl: null,
+  progress: 100,
+  ...over,
+});
+
+/** Ten attachments: every tile kind, an upload in flight, a failed one, and two
+ *  past the eight the row shows before folding the rest behind a count. */
+export const sampleUploads: readonly RunUpload[] = [
+  sampleUpload("u1", "current-429.png", "image", { previewUrl: SAMPLE_THUMBNAIL }),
+  sampleUpload("u2", "har-capture.json", "code", { id: null, sizeBytes: 210_400, status: "uploading", progress: 42 }),
+  sampleUpload("u3", "trace.zip", "file", { id: null, sizeBytes: 1_400_000, status: "error" }),
+  sampleUpload("u4", "rate-limits.xlsx", "spreadsheet"),
+  sampleUpload("u5", "rollout-plan.pptx", "presentation"),
+  sampleUpload("u6", "incident-notes.pdf", "document"),
+  sampleUpload("u7", "gateway.ts", "code"),
+  sampleUpload("u8", "replay.mp4", "video"),
+  sampleUpload("u9", "runbook.md", "document"),
+  sampleUpload("u10", "pods.csv", "spreadsheet"),
 ];
 
 export const THREAD_ERROR_SUMMARY =

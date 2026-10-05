@@ -58,20 +58,20 @@ test("every replayed message shows the mode its run was started with, and the co
   const first = html.slice(html.indexOf('data-run-id="run-1"'), html.indexOf('data-run-id="run-2"'));
   const second = html.slice(html.indexOf('data-run-id="run-2"'));
   expect(first).toContain('data-testid="permission-mode-tag"');
-  expect(first).toContain("Read only");
-  expect(second).toContain("Guard, edits auto-applied");
+  expect(first).toContain("Plan mode");
+  expect(second).toContain("Auto</span>");
   expect(html.match(/data-testid="permission-mode-tag"/g)).toHaveLength(2);
-  expect(html).toContain('aria-label="Permission: Guard"');
+  expect(html).toContain('aria-label="Permission: Auto"');
 });
 
 test("a run that reported no mode shows no tag, and the composer chip reads full access", () => {
   const html = render([turn("run-1")]);
   expect(html).not.toContain('data-testid="permission-mode-tag"');
-  expect(html).toContain('aria-label="Permission: Full access"');
+  expect(html).toContain('aria-label="Permission: Bypass all"');
 });
 
 test("on an engine that cannot ask first the reply composer's chip reads Full access, whatever the newest turn ran with", () => {
   const html = render([turn("run-1", "read-only")], "pi");
-  expect(html).toContain('aria-label="Permission: Full access"');
-  expect(html).not.toContain('aria-label="Permission: Read only"');
+  expect(html).toContain('aria-label="Permission: Bypass all"');
+  expect(html).not.toContain('aria-label="Permission: Plan mode"');
 });

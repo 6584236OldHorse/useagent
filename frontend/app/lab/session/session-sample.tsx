@@ -25,11 +25,13 @@ import {
 import { FollowUpRows } from "@/components/chat/follow-up-rows";
 import { ChatTabStrip } from "@/components/chat/chat-tabs";
 import { ReplyComposer } from "@/components/chat/reply-composer";
-import { RunUploadChips, type RunUpload } from "@/components/chat/run-uploads";
+import type { RunUpload } from "@/components/chat/run-uploads";
 import { SubagentRow } from "@/components/chat/subagent-row";
 import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { ChangedFilesCard } from "@/components/session-ui/changed-files-tree";
@@ -103,7 +105,7 @@ const INDEX: readonly { label: string; href: string }[] = [
   { label: "Child-agent panel rows", href: "#agents" },
   { label: "Subagent rows (one line folded, tool rows + Summary open)", href: "#subagents" },
   { label: "Shell panels (Details rail, chat tabs, Bookmarks)", href: "#shell-panels" },
-  { label: "Composer upload tray", href: "#uploads" },
+  { label: "Composer attachments", href: "#uploads" },
   { label: "Follow-ups + sources (closing turn grammar)", href: "#conversation" },
   { label: "Long thread (windowed rendering)", href: "#long-thread" },
 ];
@@ -489,20 +491,23 @@ export function SessionSample() {
 
             <Surface
               id="uploads"
-              title="Composer upload tray"
-              owner="run-uploads (RunUploadChips)"
+              title="Composer attachments"
+              owner="composer-attachments (ComposerAttachmentRow)"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                A user&rsquo;s attached image is a composer affordance, not a thumbnail on
-                the historical user bubble. Image content itself renders as an artifact
-                card (with a click-to-expand lightbox) in the conversation above.
+                Picked, dropped or pasted files sit above the prompt as tiles: an image
+                shows its thumbnail, any other file its typed icon over the name, each
+                with a remove mark. Past eight, the rest fold behind a count. Image
+                content itself renders as an artifact card (with a click-to-expand
+                lightbox) in the conversation above.
               </p>
-              <div className="rounded-xl border border-border-button-default bg-background-primary-default pt-2">
-                <RunUploadChips
+              <div className="rounded-xl border border-border-button-default bg-background-primary-default">
+                <ComposerAttachmentRow
                   uploads={uploads}
                   onRemove={(u) =>
                     setUploads((current) => current.filter((item) => item.localId !== u.localId))
                   }
+                  className="p-3"
                 />
               </div>
               <a
@@ -516,13 +521,14 @@ export function SessionSample() {
 
             <Surface
               id="composer-status"
-              title="Reply composer with its status row"
+              title="Reply composer with its status tab"
               owner="reply-composer · composer-status-bar"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                The status row under the input card (branch, project, engine and the
-                context meter) keeps the card&rsquo;s inset, so the ring chip ends where
-                the send button ends.
+                The status tab hangs off the card&rsquo;s top edge: where the run
+                executes, then the branch and the project, with the engine and the
+                context meter at the right. The round add button at the left of the
+                footer opens the attach menu.
               </p>
               <div
                 data-testid="composer-status-sample"
@@ -533,9 +539,14 @@ export function SessionSample() {
                   model="gpt-5.6-sol"
                   memoryScope="org"
                   pending={false}
+                  enableUploads
                   onReply={() => {}}
+                  permission={
+                    <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
                   status={
                     <ComposerStatusBar
+                      run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}
                       branch="rl-staging"
                       project="gateway"
                       agent="Codex"

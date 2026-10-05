@@ -266,6 +266,10 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-white);
   --color-ai-chat-composer-add-background:       var(--color-neutral-100);
   --color-ai-chat-composer-add-hover-background: var(--color-neutral-200);
+  --color-composer-panel-tab-background:         var(--color-neutral-200);
+  --color-composer-panel-add-background:         var(--color-neutral-200);
+  --color-composer-panel-add-hover-background:   var(--color-neutral-300);
+  --color-composer-panel-tile-border:            var(--color-neutral-200);
   --color-agent-progress-ring:                     var(--color-neutral-700);
   --color-button-ghost-background:                var(--color-accent-100);
   --color-button-ghost-hover:                     var(--color-accent-200);
@@ -441,6 +445,10 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-neutral-700);
   --color-ai-chat-composer-add-background:       var(--color-neutral-700);
   --color-ai-chat-composer-add-hover-background: var(--color-neutral-600);
+  --color-composer-panel-tab-background:         color-mix(in srgb, var(--color-neutral-700) 50%, transparent);
+  --color-composer-panel-add-background:         var(--color-neutral-700);
+  --color-composer-panel-add-hover-background:   var(--color-neutral-600);
+  --color-composer-panel-tile-border:            color-mix(in srgb, var(--color-white) 14%, transparent);
   --color-agent-progress-ring:                     color-mix(in srgb, var(--color-white) 50%, transparent);
   --color-button-ghost-background:                var(--color-accent-900);
   --color-button-ghost-hover:                     var(--color-accent-800);
@@ -669,6 +677,10 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-theme-toggle-sidebar-selected-background);
   --color-ai-chat-composer-add-background:       var(--color-ai-chat-composer-add-background);
   --color-ai-chat-composer-add-hover-background: var(--color-ai-chat-composer-add-hover-background);
+  --color-composer-panel-tab-background:         var(--color-composer-panel-tab-background);
+  --color-composer-panel-add-background:         var(--color-composer-panel-add-background);
+  --color-composer-panel-add-hover-background:   var(--color-composer-panel-add-hover-background);
+  --color-composer-panel-tile-border:            var(--color-composer-panel-tile-border);
   --color-agent-progress-ring:                     var(--color-agent-progress-ring);
   --color-button-ghost-background:                var(--color-button-ghost-background);
   --color-button-ghost-hover:                     var(--color-button-ghost-hover);

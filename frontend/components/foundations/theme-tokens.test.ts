@@ -404,3 +404,22 @@ const relativeLuminance = (hex: string): number => {
 
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
 };
+
+  test("the composer panel tokens are defined in light, dark and every component overlay", () => {
+    // A theme without the overlay entry falls back to the light value, so the
+    // tab, the add button and the tile border would go pale on a dark theme.
+    const tokens = [
+      "--color-composer-panel-tab-background",
+      "--color-composer-panel-add-background",
+      "--color-composer-panel-add-hover-background",
+      "--color-composer-panel-tile-border",
+    ];
+    const overlays = [".dusk {", ".aura {", ".harbor {", ".phosphor {", ".slate {", ".sakura-night {", ".sakura {", ".phosphor-light {"];
+    for (const token of tokens) {
+      expect(lightSemantic[token], `light lacks ${token}`).toBeDefined();
+      expect(darkSemantic[token], `dark lacks ${token}`).toBeDefined();
+      for (const selector of overlays) {
+        expect(componentOverlay(selector)[token], `${selector} lacks ${token}`).toBeDefined();
+      }
+    }
+  });

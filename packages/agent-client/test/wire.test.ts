@@ -101,6 +101,13 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiRun({ ...run, thread_seq: "7" })).toBeNull();
   });
 
+  test("keeps the run's sandbox provider, null included, and drops a malformed one", () => {
+    const located = { ...run, sandbox_provider: "daytona" };
+    expect(decodeApiRun(located)).toEqual(located);
+    expect(decodeApiRun({ ...run, sandbox_provider: null })).toEqual({ ...run, sandbox_provider: null });
+    expect(decodeApiRun({ ...run, sandbox_provider: 7 })).toEqual(run);
+  });
+
   test("decodes the exact durable lifecycle projection", () => {
     const lifecycle = {
       id: "run-1",

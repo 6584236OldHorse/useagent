@@ -38,6 +38,7 @@ export function ReplyComposer({
   repoRevisions,
   lead,
   status,
+  permission,
 }: {
   engine: EngineId;
   model: string;
@@ -72,8 +73,11 @@ export function ReplyComposer({
   repoRevisions?: Readonly<Record<string, string | null>>;
   /** Rendered above the input card (the running footer, the queued rows). */
   lead?: ReactNode;
-  /** The status row under the pill (branch, project, agent, context meter). */
+  /** The status tab on the input card's top edge (where the run executes,
+   *  branch, project, engine, context meter). */
   status?: ReactNode;
+  /** The permission chip for the footer's second column. */
+  permission?: ReactNode;
 }) {
   return (
     <div className="shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
@@ -109,8 +113,9 @@ export function ReplyComposer({
           engineUnavailableMessage={engineUnavailableMessage}
           draftKey={draftKey}
           prefill={prefill}
+          tab={status}
+          permission={permission}
         />
-        {status && <div className="mt-2">{status}</div>}
       </div>
     </div>
   );

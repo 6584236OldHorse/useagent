@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  RiAddLine,
   RiArrowDownSLine,
   RiArrowUpLine,
   RiCornerDownLeftLine,
@@ -11,7 +10,7 @@ import {
 } from "@remixicon/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Agent, AgentChip, ChooseAgentPopover } from "@/components/chat/agent-command";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import { ChatModelMenu, type ChatModelOption } from "@/components/chat/chat-model-menu";
@@ -20,7 +19,7 @@ import { ComposerAlert } from "@/components/chat/composer-alert";
 import { mentionedBotIds, unlinkedBotTokens } from "@/components/chat/composer-mentions";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
 import { ModelPicker } from "@/components/chat/engine-picker";
-import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
+import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
   commandOptionId,
@@ -36,6 +35,8 @@ import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { engineDisplayLabel, ProviderStatusBanner } from "@/components/session-ui/provider-status-banner";
 import { ThreadErrorBanner } from "@/components/session-ui/thread-error-banner";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
 import { composerPlaceholder, getComposerAction } from "@/components/chat/composer-model";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { cx as cn } from "@/utils/cx";
@@ -155,6 +156,10 @@ export type ComposerProps = {
    *  "Ask agent to redo"); the text replaces the current draft so the user can send
    *  or edit it. Absent leaves the composer fully user-driven. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
+  /** The status tab on the card's top edge (location, branch, project, engine, context). Compact only. */
+  tab?: ReactNode;
+  /** The permission chip for the footer's second column. Compact only. */
+  permission?: ReactNode;
 };
 
 /**
@@ -203,6 +208,8 @@ export function Composer({
   engineUnavailableMessage,
   draftKey,
   prefill,
+  tab,
+  permission,
 }: ComposerProps) {
   // Draft restore is a lazy initializer so SSR (no window) and draft-less
   // composers stay on the empty string with zero effect churn.
@@ -397,6 +404,7 @@ export function Composer({
       // trimmed text) so a command's argument bytes reach the backend EXACTLY as typed - the
       // backend rebuilds `/name <args>` verbatim from this intent. The backend re-validates.
       const intent = commands ? parseCommandIntent(raw, commands) : null;
+      const sent = runUploads.readyIds; // the uploads this send carries; later ones stay
       // The chat model picker (when present) owns the model; else the internal state.
       await onSubmit(
         text,
@@ -407,12 +415,12 @@ export function Composer({
         // removed from the toolbar); the run still reads/writes that pool.
         defaultMemoryScope,
         intent,
-        runUploads.readyIds,
+        sent,
         mentionsToRunResources(mentions.mentions),
         mentionedBotIds(mentions.mentions),
       );
       retry.current = null; // accepted — drop the retry key
-      runUploads.clearAccepted();
+      runUploads.clearAccepted(sent);
       mentions.clear(); // accepted — drop the chips (their text tokens already sent)
     } catch (error) {
       // Never silently swallow: restore the draft and show an explicit failed
@@ -436,7 +444,11 @@ export function Composer({
     // The composer THEME-FOLLOWS: its card uses bg-background-primary-default (white in light mode,
     // #20201f in dark) so it reads as the reference's clean white pill in light and
     // a native dark pill in dark - never a white island clashing with the dark page.
-    <div ref={rootRef} className={cn("relative w-full", className)}>
+    <div
+      ref={rootRef}
+      className={cn("relative w-full", className)}
+      {...(enableUploads ? attachmentIntake(runUploads.addFiles, !busy) : {})} // drop or paste files here
+    >
       {showAgentPopover && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-full">
           <ChooseAgentPopover query={slashActive ? value : ""} onSelect={pickAgent} />
@@ -539,6 +551,7 @@ export function Composer({
         </div>
       )}
 
+      {tab}
       {/* No overflow-hidden here: the engine-picker popover opens upward past
           the card edge and must not be clipped. */}
       <div
@@ -559,9 +572,10 @@ export function Composer({
                 event.target.value = "";
               }}
             />
-            <RunUploadChips
+            <ComposerAttachmentRow
               uploads={runUploads.uploads}
               onRemove={(upload) => void runUploads.remove(upload)}
+              className="px-3 pt-3"
             />
           </>
         ) : null}
@@ -583,40 +597,15 @@ export function Composer({
             "cursor-text rounded-none border-0 bg-transparent shadow-none",
             hero
               ? "p-3 md:p-4"
-              : "@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
+              : "grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
           )}
         >
-          {/* The "+" add-context button sits FIRST in the DOM so keyboard focus
-              travels + -> textarea -> send, matching the visual left-to-right
-              order in the compact grid (col-start-1 pins it to the left cell). */}
-          {enableUploads ? (
-            <button
-              type="button"
-              aria-label="Add context"
-              aria-haspopup="menu"
-              aria-expanded={addMenuOpen}
-              onClick={() => setAddMenuOpen((o) => !o)}
-              className={cn(
-                "col-start-1 row-start-1 flex size-9 items-center justify-center rounded-full border transition-colors @max-[26rem]:row-start-2",
-                addMenuOpen
-                  ? "border-border-button-default bg-background-secondary-default text-text-primary"
-                  : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
-              )}
-            >
-              <RiAddLine
-                className={cn(
-                  "size-5 transition-transform duration-200",
-                  addMenuOpen && "rotate-45",
-                )}
-                aria-hidden
-              />
-            </button>
-          ) : null}
           <div
             className={cn(
               "flex items-start gap-1.5 px-1",
               // A narrow composer (the split pane) stacks: the input takes the whole first row, the controls the second.
-              !hero && "col-start-2 row-start-1 min-w-0 items-center @max-[26rem]:col-span-3 @max-[26rem]:col-start-1",
+              // Compact: the field takes the whole first row; the controls are the footer row.
+              !hero && "col-span-3 col-start-1 row-start-1 min-w-0 items-center",
             )}
           >
             {command && (
@@ -666,6 +655,16 @@ export function Composer({
             />
           </div>
 
+          {/* Compact footer: "+" (after the field in the DOM, so Tab order follows the visual order), the permission chip, then model and send. */}
+          {enableUploads ? (
+            <ComposerAddButton
+              aria-label="Add context"
+              open={addMenuOpen}
+              onToggle={() => setAddMenuOpen((o) => !o)}
+              className="col-start-1 row-start-2"
+            />
+          ) : null}
+          {permission && <div className="col-start-2 row-start-2 flex min-w-0 items-center">{permission}</div>}
           {/* px-1 matches the text row above so the +/send controls left/right-align
               with the placeholder (was px-0.5 → a 2px asymmetry). */}
           <div className={cn(hero ? "mt-1 flex items-center gap-1.5 px-1" : "contents")}>
@@ -722,7 +721,7 @@ export function Composer({
             <div
               className={cn(
                 "ml-auto flex items-center gap-1.5",
-                !hero && "col-start-3 row-start-1 @max-[26rem]:row-start-2",
+                !hero && "col-start-3 row-start-2",
               )}
             >
               {/* One engine now — the meaningful per-message choice is the MODEL. */}
