@@ -84,6 +84,17 @@ export async function resolveProviderCredentialForRun(
     const houseKey = (deps.env ?? process.env).OPENCODE_API_KEY?.trim();
     return houseKey ? { value: houseKey, source: "backend_env" } : null;
   }
+  // A Free-lane OpenRouter model costs nothing, so the deployment's key serves
+  // it when there is one: a member's own key, expired or not, must never be
+  // what makes a free model fail. Without a house key the member's key applies.
+  if (
+    input.provider === "openrouter" &&
+    input.model?.includes("/") &&
+    input.model.endsWith(":free")
+  ) {
+    const houseKey = (deps.env ?? process.env).OPENROUTER_API_KEY?.trim();
+    if (houseKey) return { value: houseKey, source: "backend_env" };
+  }
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,

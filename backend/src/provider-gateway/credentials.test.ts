@@ -170,6 +170,29 @@ describe("resolveProviderCredentialForRun precedence", () => {
     )).toBeNull();
   });
 
+  test("a Free-lane OpenRouter model runs on the house key even when the member connected their own", async () => {
+    const withMemberKey = deps({
+      resolveUserConnection: async () => "sk-member-expired",
+      resolveOrgSecret: async () => "sk-org",
+      env: { OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    });
+    expect(await resolveProviderCredentialForRun(
+      { orgId: "org-a", userId: "user-a", provider: "openrouter", model: "vendor/model:free" },
+      withMemberKey,
+    )).toEqual({ value: "sk-house", source: "backend_env" });
+    // A paid model keeps the member's key first.
+    expect(await resolveProviderCredentialForRun(
+      { orgId: "org-a", userId: "user-a", provider: "openrouter", model: "vendor/model" },
+      withMemberKey,
+    )).toEqual({ value: "sk-member-expired", source: "user_connection" });
+    // Without a house key the member's key still serves the free model.
+    expect(await resolveProviderCredentialForRun(
+      { orgId: "org-a", userId: "user-a", provider: "openrouter", model: "vendor/model:free" },
+      deps({ resolveUserConnection: async () => "sk-member", resolveOrgSecret: async () => null, env: {}, devModeEnabled: () => false }),
+    )).toEqual({ value: "sk-member", source: "user_connection" });
+  });
+
   test("production house fallback is restricted to provider-qualified OpenRouter free models", async () => {
     const free = await resolveProviderCredentialForRun(
       {
