@@ -7,6 +7,7 @@ import {
   providerSessionMatchesDriver,
   type HarnessInterimEvent,
   type HarnessOperationResult,
+  type HarnessReconciliation,
   type ProviderDriver,
   type ProviderReconcileRequest,
   type ProviderStartRequest,
@@ -38,6 +39,7 @@ import {
   resolveExpectedSandbox,
   resolveSandboxBindingForSandbox,
 } from "../sandboxes/binding";
+import { compactCommandIdentityIsCurrent } from "./runtime-compact-contract";
 import {
   parseExpectedSandboxBinding,
   type ExpectedSandboxBinding,
@@ -246,26 +248,7 @@ function reconciledRuntimeEvents(
   }
   const activities = snapshot.thread.activities
     .filter((activity) => activity.turnId !== null && ownedTurnIds.has(activity.turnId))
-    .map((activity) => {
-      const event = runtimeActivityProviderEvent(
-        { runId: context.runId, threadId: context.threadId },
-        currentSession.nativeSessionId,
-        activity,
-        context.redact,
-      );
-      return {
-        id: event.id,
-        runScopedId: true,
-        provider: event.provider,
-        eventType: event.eventType,
-        sessionId: event.nativeSessionId,
-        parentSessionId: event.nativeParentSessionId,
-        messageId: event.nativeMessageId,
-        partId: event.nativePartId,
-        callId: event.nativeCallId,
-        payload: event.payload,
-      };
-    });
+    .map((activity) => reconciledRuntimeActivity(activity, currentSession, context));
   const messages = runtimeRootMessageBatches({
     runId: context.runId, threadId: context.threadId, sessionId: currentSession.nativeSessionId,
     userMessageIds: [...ownedMessageIds], redact: context.redact.text,
@@ -276,6 +259,64 @@ function reconciledRuntimeEvents(
     payload: event.payload,
   }));
   return [...messages, ...activities];
+}
+
+function reconciledRuntimeActivity(
+  activity: RuntimeThreadSnapshot["thread"]["activities"][number],
+  currentSession: HarnessSession,
+  context: NonNullable<NonNullable<ProviderReconcileRequest["checkpoint"]>["eventContext"]>,
+): HarnessInterimEvent {
+  const event = runtimeActivityProviderEvent(
+    { runId: context.runId, threadId: context.threadId },
+    currentSession.nativeSessionId,
+    activity,
+    context.redact,
+  );
+  return {
+    id: event.id,
+    runScopedId: true,
+    provider: event.provider,
+    eventType: event.eventType,
+    sessionId: event.nativeSessionId,
+    parentSessionId: event.nativeParentSessionId,
+    messageId: event.nativeMessageId,
+    partId: event.nativePartId,
+    callId: event.nativeCallId,
+    payload: event.payload,
+  };
+}
+
+function compactReconciliation(
+  snapshot: RuntimeThreadSnapshot,
+  currentSession: HarnessSession,
+  checkpoint: ProviderReconcileRequest["checkpoint"],
+  engine: RuntimeEngineId,
+): HarnessReconciliation | null {
+  const context = checkpoint?.eventContext;
+  const command = context?.nativeCommand;
+  if (!context || command?.name !== "compact") return null;
+  if (!compactCommandIdentityIsCurrent(command, engine, currentSession)) {
+    return { status: "failed", summary: "The accepted native command identity is stale" };
+  }
+  const requestId = runtimeUserMessageId(context.runId);
+  const activity = snapshot.thread.activities.findLast((candidate) => {
+    if (!candidate.payload || typeof candidate.payload !== "object") return false;
+    const payload = candidate.payload as Readonly<Record<string, unknown>>;
+    return payload.requestId === requestId && (
+      (candidate.kind === "context-compaction" && payload.state === "compacted") ||
+      candidate.kind === "provider.turn.start.failed"
+    );
+  });
+  if (!activity) return { status: "in_progress" };
+  const events = [reconciledRuntimeActivity(activity, currentSession, context)];
+  if (activity.kind === "context-compaction") {
+    return { status: "completed", summary: "Compacted", events };
+  }
+  const payload = activity.payload as Readonly<Record<string, unknown>>;
+  const summary = [payload.detail, payload.error, payload.message, payload.reason].find(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  ) ?? "The provider runtime compact command failed";
+  return { status: "failed", summary: context.redact.text(summary), events };
 }
 
 export function makeT3ProviderDriver(
@@ -432,6 +473,8 @@ export function makeT3ProviderDriver(
         if (!result) return { status: "unreachable" };
         const { snapshot } = result;
         const context = request.checkpoint?.eventContext;
+        const compact = compactReconciliation(snapshot, request.session, request.checkpoint, engine);
+        if (compact) return compact;
         if (!context || !snapshotMatchesAcceptedRun(snapshot, context.runId)) {
           return { status: "no_change" };
         }

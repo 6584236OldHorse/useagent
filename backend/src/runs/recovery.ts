@@ -54,6 +54,11 @@ import {
   type ExpectedSandboxBinding,
 } from "../sandboxes/expected-binding";
 import { refuseRecoveredApprovals, type RecoveredApprovalDependencies } from "./recovered-approvals";
+import {
+  COMPACT_STOPPED_WAITING_SUMMARY,
+  COMPACT_TIMED_OUT_WAITING_SUMMARY,
+  RUNTIME_COMPACT_TIMEOUT_MS,
+} from "../engines/runtime-compact-contract";
 
 export const INCOMPATIBLE_PROVIDER_SESSION_SUMMARY =
   "This run stopped after an engine protocol upgrade. Retry the turn to start a fresh native session.";
@@ -126,6 +131,22 @@ function recoveryMetadata(
   if (!expectedSandbox) return undefined;
   if (sandboxId !== expectedSandbox.sandboxId) throw new ExpectedSandboxMismatchError();
   return { expectedSandbox, threadId };
+}
+
+function recoveryNativeCommand(input: {
+  commandName: string | null;
+  commandProvider: string | null;
+  commandSessionId: string | null;
+  commandCatalogRevision: number | null;
+}): NonNullable<HarnessCheckpoint["eventContext"]>["nativeCommand"] {
+  return input.commandName
+    ? {
+        name: input.commandName,
+        provider: input.commandProvider,
+        sessionId: input.commandSessionId,
+        catalogRevision: input.commandCatalogRevision,
+      }
+    : undefined;
 }
 
 export interface RecoveryResult {
@@ -210,7 +231,12 @@ async function recoverRunningRun(
   reconcile: ReconcileProbe,
 ): Promise<"reconciled" | "failed" | "parked"> {
   if (cmd.cancelRequested) {
-    const finalized = await finalizeRun(cmd.runId, "failed", CANCEL_SUMMARY, 0);
+    const finalized = await finalizeRun(
+      cmd.runId,
+      "failed",
+      cmd.commandName === "compact" ? COMPACT_STOPPED_WAITING_SUMMARY : CANCEL_SUMMARY,
+      0,
+    );
     const durable = await resolveDurableFinalizationOutcome(cmd.runId, finalized);
     return durable?.status === "completed" ? "reconciled" : "failed";
   }
@@ -267,7 +293,12 @@ async function recoverRunningRun(
       reconcile(handle, {
         sinceMs: lastStepAt?.getTime() ?? 0,
         metadata,
-        eventContext: { runId: cmd.runId, threadId: cmd.runThreadId, redact },
+        eventContext: {
+          runId: cmd.runId,
+          threadId: cmd.runThreadId,
+          nativeCommand: recoveryNativeCommand(cmd),
+          redact,
+        },
       }),
       new Promise<HarnessReconciliation>((resolve) =>
         setTimeout(() => resolve({ status: "unreachable" }), RECONCILE_BUDGET_MS),
@@ -327,6 +358,9 @@ async function parkRunningRun(
   lastStepAt: Date | null,
 ): Promise<void> {
   const now = Date.now();
+  const parkBudget = cmd.commandName === "compact"
+    ? RUNTIME_COMPACT_TIMEOUT_MS
+    : RECONCILE_PARK_BUDGET_MS;
   const newlyParked = await enqueueReconcile({
     runId: cmd.runId,
     threadId: cmd.threadId,
@@ -334,17 +368,16 @@ async function parkRunningRun(
     sessionId: binding.nativeSessionId,
     sinceAt: lastStepAt ?? new Date(now),
     nextAttemptAt: reconcileBackoffAt(now, 0),
-    deadline: new Date(now + RECONCILE_PARK_BUDGET_MS),
+    deadline: new Date(now + parkBudget),
   });
   if (newlyParked) {
     void recordReconcilingMarker(cmd.runId, cmd.threadId, {
       reason: "boot-restart",
       sinceMs: (lastStepAt ?? new Date(now)).getTime(),
-      deadlineMs: now + RECONCILE_PARK_BUDGET_MS,
+      deadlineMs: now + parkBudget,
     });
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Adaptive background reconcile loop (#63). Re-probes parked runs on a short
@@ -382,7 +415,6 @@ async function rescheduleEntry(entry: ReconcileEntry): Promise<boolean> {
 /** The fence every write this tick makes for the run carries: its claim row, locked. */
 const claimFence = (entry: ReconcileEntry): WriteFence =>
   (tx) => reconcileClaimHeldForUpdate(entry.runId, entry.leaseUntil, tx);
-
 
 /** Finalize a parked run only while this tick still owns its row. The fenced delete of
  *  the parked row IS the ownership guard and runs inside the finalization transaction
@@ -460,7 +492,11 @@ export async function runDueReconciles(
       });
     }
     if (run.orgId && await hasRunCancelIntent(run.orgId, run.id)) {
-      const durable = await finalizeOwned(entry, "failed", CANCEL_SUMMARY);
+      const durable = await finalizeOwned(
+        entry,
+        "failed",
+        run.commandName === "compact" ? COMPACT_STOPPED_WAITING_SUMMARY : CANCEL_SUMMARY,
+      );
       if (!durable) lost++;
       else if (durable.status === "completed") adopted++;
       else failed++;
@@ -480,6 +516,7 @@ export async function runDueReconciles(
       run.threadId,
       run.sandboxId,
       run.engineSessionId,
+      recoveryNativeCommand(run),
     );
     // CONTINUITY (#63): ingest reachable native activity before deciding whether
     // to retry or adopt. Completed-event ingestion is strict because finalization
@@ -539,7 +576,11 @@ export async function runDueReconciles(
       else if (durable.status === "completed") adopted++;
       else failed++;
     } else if (action === "fail") {
-      const durable = await finalizeOwned(entry, "failed", STALE_SUMMARY);
+      const durable = await finalizeOwned(
+        entry,
+        "failed",
+        run.commandName === "compact" ? COMPACT_TIMED_OUT_WAITING_SUMMARY : STALE_SUMMARY,
+      );
       if (!durable) lost++;
       else if (durable.status === "completed") adopted++;
       else failed++;
@@ -595,6 +636,7 @@ async function probeParked(
   runThreadId: string,
   runSandboxId: string | null,
   runSessionId: string | null,
+  nativeCommand: NonNullable<HarnessCheckpoint["eventContext"]>["nativeCommand"],
 ): Promise<HarnessReconciliation> {
   if (
     !binding ||
@@ -622,7 +664,7 @@ async function probeParked(
       reconcile(handle, {
         sinceMs: entry.sinceMs,
         metadata,
-        eventContext: { runId: entry.runId, threadId: entry.threadId, redact },
+        eventContext: { runId: entry.runId, threadId: entry.threadId, nativeCommand, redact },
       }),
       new Promise<HarnessReconciliation>((resolve) =>
         setTimeout(() => resolve({ status: "unreachable" }), RECONCILE_BUDGET_MS),

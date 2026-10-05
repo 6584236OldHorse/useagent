@@ -50,6 +50,10 @@ export interface ActiveCommand {
   readonly providerSession: ProviderSessionBinding | null;
   readonly sandboxId: string | null;
   readonly expectedSandbox: ExpectedSandboxBinding | null;
+  readonly commandName: string | null;
+  readonly commandProvider: string | null;
+  readonly commandSessionId: string | null;
+  readonly commandCatalogRevision: number | null;
   /** A durable user stop committed before the actor/recovery path settled. */
   readonly cancelRequested: boolean;
 }
@@ -137,6 +141,7 @@ export async function listActiveCommands(): Promise<ActiveCommand[]> {
            r.thread_id as run_thread_id,
            r.status as run_status, r.engine, r.org_id, r.user_id,
            r.engine_session_id, r.provider_session, r.sandbox_id, r.expected_sandbox,
+           r.command_name, r.command_provider, r.command_session_id, r.command_catalog_revision,
            exists (
              select 1 from commands cancel_cmd
              where cancel_cmd.run_id = r.id and cancel_cmd.kind = ${RUN_CANCEL}
@@ -158,6 +163,12 @@ export async function listActiveCommands(): Promise<ActiveCommand[]> {
     providerSession: parseProviderSessionBinding(r.provider_session),
     sandboxId: (r.sandbox_id as string | null) ?? null,
     expectedSandbox: parseExpectedSandboxBinding(r.expected_sandbox),
+    commandName: (r.command_name as string | null) ?? null,
+    commandProvider: (r.command_provider as string | null) ?? null,
+    commandSessionId: (r.command_session_id as string | null) ?? null,
+    commandCatalogRevision: r.command_catalog_revision === null
+      ? null
+      : Number(r.command_catalog_revision),
     cancelRequested: r.cancel_requested === true,
   }));
 }

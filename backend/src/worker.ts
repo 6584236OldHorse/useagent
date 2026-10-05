@@ -9,6 +9,7 @@ import { resolveProviderRegistration, runProviderTurn } from "./engines";
 import { dispatchReadyForUser } from "./engines/sandbox-login";
 import type { EmitStep, EngineRunContext, RunInputFile } from "./engines/types";
 import { classifyTurnFailure } from "./engines/turn-failure-classification";
+import { compactWaitTerminationSummary } from "./engines/runtime-compact-contract";
 import { recallScopedMemory } from "./memory/team-memory";
 import { resolveScopedMemory } from "./memory/scope";
 import { isInternalRunOrigin } from "./runs/origin";
@@ -739,11 +740,10 @@ async function runEngine(
     );
     await emitFinalizedEnd(runId, finalized);
   } catch (err) {
-    // A user cancel wins over a coincident timeout: the abort was requested, so
-    // report it honestly as "Stopped by user" rather than a timeout/error.
+    // A user cancel wins over a coincident timeout.
     const cancelledReason = wasCancelled();
-    const cancelled = cancelledReason !== null;
-    const timedOut = signal.aborted && !cancelled;
+    const cancelled = cancelledReason !== null, timedOut = signal.aborted && !cancelled;
+    const compactTermination = compactWaitTerminationSummary(commandName, cancelled, timedOut, err);
     let redactFailureText = (_text: string): string => "provider request failed";
     try {
       const redactor = await strictOrgSecretRedactor(orgId);
@@ -755,9 +755,9 @@ async function runEngine(
     // a live turn / stream dropped) is TRANSIENT and resumable, not a provider
     // error. Cancellation + timeout dominate; only the remaining engine errors
     // are classified. See src/engines/turn-failure-classification.ts.
-    const failure =
-      !cancelled && !timedOut ? classifyTurnFailure(err, redactFailureText) : null;
-    if (!cancelled) {
+    const failure = !cancelled && !timedOut && !compactTermination
+      ? classifyTurnFailure(err, redactFailureText) : null;
+    if (!cancelled && !compactTermination) {
       console.error(
         `[worker] engine ${engineId} run ${runId} failed:`,
         redactFailureText(errorMessage(err)),
@@ -766,21 +766,21 @@ async function runEngine(
     // Terminal done step so the trace shows why it stopped.
     await emit({
       kind: "done",
-      label: cancelled
+      label: compactTermination ?? (cancelled
         ? cancelledReason
         : timedOut
           ? `Timed out after ${ADAPTER_TIMEOUT_MS / 1000}s`
-          : failure?.label ?? "Engine error",
+          : failure?.label ?? "Engine error"),
       chip: null,
     }).catch(() => {});
     // Surface the REAL failure reason (truncated) — a bare "engine error"
     // summary tells the user nothing actionable (battle-test T6 finding). A
     // transient stream drop reports as resumable rather than an engine error.
-    const reason = cancelled
+    const reason = compactTermination ?? (cancelled
       ? cancelledReason
       : timedOut
         ? `timed out after ${ADAPTER_TIMEOUT_MS / 1000}s`
-        : failure?.summary ?? "engine error";
+        : failure?.summary ?? "engine error");
     const finalized = await finalizeRun(runId, "failed", reason, Date.now() - startedAt);
     await emitFinalizedEnd(runId, finalized);
   } finally {

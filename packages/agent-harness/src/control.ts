@@ -69,6 +69,12 @@ export interface HarnessCheckpoint {
   eventContext?: {
     runId: string;
     threadId: string;
+    nativeCommand?: {
+      name: string;
+      provider: string | null;
+      sessionId: string | null;
+      catalogRevision: number | null;
+    };
     redact: {
       text(value: string): string;
       unknown<T>(value: T): T;

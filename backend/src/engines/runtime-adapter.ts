@@ -24,11 +24,10 @@ import {
   activityStep,
   assistantText,
   hasOpenRuntimeToolCall,
-  runtimeActivityProviderEvent,
-  runtimeActivityRevision,
   runtimeActivityStepKey,
   shouldProjectRuntimeActivity,
   runtimeThreadId,
+  runtimeUserMessageId,
   runtimeTurnError,
   runtimeTurnSettled,
   type RuntimeEngineId,
@@ -44,14 +43,16 @@ import {
   type SandboxHandle,
 } from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
-import { recordProviderEvent } from "../runs/provider-events";
 import type { ProviderDriver } from "@useagent/agent-harness/control";
 import { sessionCapabilities } from "./capabilities";
 import {
   establishProviderSession,
   recordProviderSessionStarted,
 } from "./provider-turn";
-import { recordRuntimeCommandCatalog } from "./runtime-command-catalog";
+import {
+  recordRuntimeCommandCatalog,
+  runtimeCommandDispatchRejection,
+} from "./runtime-command-catalog";
 import {
   restartRuntimeEnvironment,
   RUNTIME_CUBE_WARM_POOL_NAME,
@@ -76,7 +77,7 @@ import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
 } from "./runtime-startup-recovery.js";
-import { applyPendingCodexProviderConfiguration } from "./runtime-codex-plan-config";
+import { waitForRuntimeCompact } from "./runtime-compact-completion";
 export {
   reloadRetainedOpenCodeSession,
   type OpenCodeSessionReloadDependencies,
@@ -443,7 +444,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         label: "Preparing runtime and integrations…",
         chip: `runtime:${engine}`,
       });
-      let stableProviderPendingRevision: string | null = null;
       const prepared = await prepareSandboxTurn(ctx, {
         snapshot: runtimeRunSnapshot(),
         chip: `runtime:${engine}`,
@@ -458,8 +458,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           : undefined,
         // Frozen timing prefix: hosted cutover canaries read these values.
         timingPrefix: "t3",
-        async prepareStableProvider(sandbox) {
-          stableProviderPendingRevision = await prepareStableRuntimeProvider(sandbox, ctx, engine);
+        prepareStableProvider(sandbox) {
+          return prepareStableRuntimeProvider(sandbox, ctx, engine);
         },
         async prepareProvider(sandbox, workdir, binding, preparation) {
           return await prepareRuntimeProviderBridge(
@@ -469,7 +469,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             workdir,
             preparation.stableProviderPrepared,
             binding,
-            stableProviderPendingRevision,
           );
         },
         closeProvider: (state) => state.close(),
@@ -481,28 +480,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         : undefined;
 
       try {
-        // A warm T3 process may still own a Codex app-server launched from the
-        // previous stable settings. When the host changes those settings,
-        // restart once before session lookup so T3 boots the new argv and then
-        // resumes the retained native thread from its persisted cursor.
-        if (
-          engine === "codex" &&
-          providerBridgeLease.authPath !== "subscription" &&
-          providerBridgeLease.pendingProviderConfigurationRevision
-        ) {
-          const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
-          try {
-            await applyPendingCodexProviderConfiguration({
-              sandbox,
-              signal: ctx.signal,
-              revision: providerBridgeLease.pendingProviderConfigurationRevision,
-              timing: ctx.timing,
-            });
-          } finally {
-            endBarrier?.();
-          }
-        }
-
         // Claude also patches T3 settings.json above. The explicit provider
         // instance carries a unique display marker, so the cache probe proves
         // T3 applied the gateway-backed wrapper rather than merely observing
@@ -663,6 +640,21 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         try {
           for (;;) {
             const createdAt = turnRequestedAt;
+            if (ctx.commandName) {
+              const rejection = await runtimeCommandDispatchRejection({
+                ctx,
+                sandbox,
+                engine,
+                session,
+                command: {
+                  name: ctx.commandName,
+                  provider: ctx.commandProvider ?? null,
+                  sessionId: ctx.commandSessionId ?? null,
+                  catalogRevision: ctx.commandCatalogRevision ?? null,
+                },
+              });
+              if (rejection) throw new Error(`Native command dispatch rejected: ${rejection}`);
+            }
             ctx.timing?.mark("dispatch");
             const endDispatch = ctx.timing?.begin("t3.dispatch_request");
             const steerResult = await driver.steer({
@@ -684,20 +676,30 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             await ctx.markPromptDelivered?.();
             await ctx.emit({ kind: "task", label: "Waiting for provider activity…", chip: `runtime:${engine}` });
             try {
-              const summary = await waitForRuntimeTurn(
-                ctx,
-                sandbox,
-                projector.seen(),
-                turnBase,
-                redact,
-                runtimeTurnWaitDependencies,
-                engine,
-                projector,
-              );
+              const summary = ctx.commandName === "compact"
+                ? await waitForRuntimeCompact(
+                    ctx,
+                    sandbox,
+                    turnBase,
+                    redact,
+                    runtimeUserMessageId(ctx.runId),
+                    runtimeTurnWaitDependencies,
+                  )
+                : await waitForRuntimeTurn(
+                    ctx,
+                    sandbox,
+                    projector.seen(),
+                    turnBase,
+                    redact,
+                    runtimeTurnWaitDependencies,
+                    engine,
+                    projector,
+                  );
               await ctx.emit({ kind: "done", label: "Done", chip: null });
               ctx.setSummary(summary, Date.now() - startedAt);
               break;
             } catch (error) {
+              if (ctx.commandName === "compact") throw error;
               if (
                 providerBridgeLease.authPath === "subscription" &&
                 (error instanceof RuntimeFirstActivityTimeoutError || ctx.signal.aborted)
@@ -756,7 +758,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         } finally {
           endTurn?.();
-          if (ctx.signal.aborted && !skipQueuedCancel) {
+          if (ctx.signal.aborted && !skipQueuedCancel && ctx.commandName !== "compact") {
             const cancelResult = await driver.cancel(
               session,
               "turn aborted",

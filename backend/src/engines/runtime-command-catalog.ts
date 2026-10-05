@@ -6,6 +6,7 @@ import { RUNTIME_ENVIRONMENT_HOME } from "./runtime-environment";
 import { awaitRuntimeOperation } from "./runtime-operation";
 import { PROVIDER_INSTANCE, type RuntimeEngineId } from "./runtime-orchestration";
 import type { EngineRunContext } from "./types";
+import { revalidateCommandBeforeDispatch } from "../runs/command-intent";
 
 // ---------------------------------------------------------------------------
 // The resident runtime keeps one provider status snapshot per configured
@@ -50,6 +51,70 @@ export function buildRuntimeCommandCatalogProbeCommand(engine: RuntimeEngineId):
 export interface RuntimeCommandCatalogSnapshot {
   readonly commands: readonly CanonicalCommand[];
   readonly checkedAt?: string;
+}
+
+export async function readRuntimeCommandCatalog(input: {
+  readonly ctx: Pick<EngineRunContext, "runId" | "signal">;
+  readonly sandbox: { readonly process: Pick<SandboxHandle["process"], "executeCommand"> };
+  readonly engine: RuntimeEngineId;
+  readonly deadlineMs?: number;
+}): Promise<RuntimeCommandCatalogSnapshot | null> {
+  if (input.ctx.signal.aborted) return null;
+  try {
+    const deadline = AbortSignal.any([
+      input.ctx.signal,
+      AbortSignal.timeout(input.deadlineMs ?? PROBE_DEADLINE_MS),
+    ]);
+    const probe = await awaitRuntimeOperation(
+      input.sandbox.process.executeCommand(
+        buildRuntimeCommandCatalogProbeCommand(input.engine),
+        undefined,
+        undefined,
+        PROBE_TIMEOUT_SECONDS,
+      ),
+      deadline,
+      async () => {},
+    );
+    const snapshot = probe.exitCode === 0
+      ? parseRuntimeCommandCatalog(probe.result ?? "", input.engine)
+      : null;
+    if (!snapshot) {
+      console.warn("[runtime-command-catalog] the provider status cache has no command catalog", {
+        runId: input.ctx.runId,
+        engine: input.engine,
+      });
+    }
+    return snapshot;
+  } catch (error) {
+    if (!input.ctx.signal.aborted) {
+      console.error("[runtime-command-catalog] the command catalog could not be read", {
+        runId: input.ctx.runId,
+        engine: input.engine,
+        error: errorMessage(error),
+      });
+    }
+    return null;
+  }
+}
+
+export async function runtimeCommandDispatchRejection(input: {
+  readonly ctx: Pick<EngineRunContext, "runId" | "signal">;
+  readonly sandbox: { readonly process: Pick<SandboxHandle["process"], "executeCommand"> };
+  readonly engine: RuntimeEngineId;
+  readonly session: Pick<HarnessSession, "nativeSessionId">;
+  readonly command: {
+    readonly name: string;
+    readonly provider: string | null;
+    readonly sessionId: string | null;
+    readonly catalogRevision: number | null;
+  };
+}): Promise<string | null> {
+  const live = await readRuntimeCommandCatalog(input);
+  return revalidateCommandBeforeDispatch(input.command, {
+    engine: input.engine,
+    sessionId: input.session.nativeSessionId,
+    catalog: live?.commands ?? null,
+  });
 }
 
 /** The catalog in a probe's output, or null when the output is not this
@@ -98,23 +163,14 @@ export async function recordRuntimeCommandCatalog(input: {
 }): Promise<void> {
   const { ctx, engine } = input;
   if (ctx.signal.aborted) return;
+  const snapshot = await readRuntimeCommandCatalog({
+    ctx,
+    sandbox: input.sandbox,
+    engine,
+    deadlineMs: input.deadlineMs,
+  });
+  if (!snapshot) return;
   try {
-    const deadline = AbortSignal.any([ctx.signal, AbortSignal.timeout(input.deadlineMs ?? PROBE_DEADLINE_MS)]);
-    const probe = await awaitRuntimeOperation(
-      input.sandbox.process.executeCommand(
-        buildRuntimeCommandCatalogProbeCommand(engine),
-        undefined,
-        undefined,
-        PROBE_TIMEOUT_SECONDS,
-      ),
-      deadline,
-      async () => {},
-    );
-    const snapshot = probe.exitCode === 0 ? parseRuntimeCommandCatalog(probe.result ?? "", engine) : null;
-    if (!snapshot) {
-      console.warn("[runtime-command-catalog] the provider status cache has no command catalog", { runId: ctx.runId, engine });
-      return;
-    }
     // A Stop after the probe records nothing. The write settles on its own: the
     // database ends a blocked statement at its statement_timeout and the driver
     // releases the connection when it does, or when the socket dies; nothing here

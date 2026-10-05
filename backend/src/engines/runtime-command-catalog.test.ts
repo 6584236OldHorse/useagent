@@ -8,6 +8,7 @@ import {
   buildRuntimeCommandCatalogProbeCommand,
   parseRuntimeCommandCatalog,
   recordRuntimeCommandCatalog,
+  runtimeCommandDispatchRejection,
   runtimeCommandCatalogCachePath,
 } from "./runtime-command-catalog";
 import { PROVIDER_INSTANCE, type RuntimeEngineId } from "./runtime-orchestration";
@@ -113,6 +114,23 @@ describe("runtime command catalog: the runtime's status cache becomes the sessio
     expect(parseRuntimeCommandCatalog("[]", "codex")).toBeNull();
     // An advertised empty list is a real empty catalog, not a missing one.
     expect(parseRuntimeCommandCatalog(JSON.stringify({ instanceId: "codex", slashCommands: [] }), "codex")).toEqual({ commands: [] });
+  });
+
+  test("a queued native command is rejected when the live session catalog changed before dispatch", async () => {
+    const sandbox = sandboxWithCaches({ codex: recorded("codex") });
+    await expect(runtimeCommandDispatchRejection({
+      ctx,
+      sandbox,
+      engine: "codex",
+      session: { nativeSessionId: "replacement-session" },
+      command: {
+        name: "compact",
+        provider: "codex",
+        sessionId: "accepted-session",
+        catalogRevision: 7,
+      },
+    })).resolves.toContain("session accepted != replacem");
+    expect(sandbox.executed).toHaveLength(1);
   });
 
   test.each(["codex", "claude", "opencode"] as const)("%s: the probed catalog is recorded for (thread, engine, session)", async (engine: RuntimeEngineId) => {
