@@ -15,11 +15,22 @@ export interface RunnerCapacity {
   readonly maxSandboxes?: number;
 }
 
+/** A short-lived, pull-only login for the registry that holds the image. The
+ *  runner logs in for the pull and out again; nothing outlives the pull. */
+export interface ImagePullCredential {
+  /** Registry host, e.g. ghcr.io. */
+  readonly registry: string;
+  readonly username: string;
+  readonly password: string;
+}
+
 export interface ImageRef {
   /** OCI reference the runner pulls, e.g. ghcr.io/useagenthq/sandbox:2026-09-08. */
   readonly ref: string;
   /** Manifest digest the runner verifies after the pull; "sha256:...". */
   readonly digest: string;
+  /** Present when the registry refuses anonymous pulls. */
+  readonly pull?: ImagePullCredential;
 }
 
 export type RunnerBackendKind = "docker" | "apple";
@@ -205,8 +216,17 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function isPullCredential(value: unknown): value is ImagePullCredential {
+  return isRecord(value) && typeof value.registry === "string" && typeof value.username === "string" && typeof value.password === "string";
+}
+
 function isImageRef(value: unknown): value is ImageRef {
-  return isRecord(value) && typeof value.ref === "string" && typeof value.digest === "string";
+  return (
+    isRecord(value) &&
+    typeof value.ref === "string" &&
+    typeof value.digest === "string" &&
+    (value.pull === undefined || isPullCredential(value.pull))
+  );
 }
 
 /**

@@ -70,7 +70,19 @@ export class FakeBackend implements LocalBackend {
     return null;
   }
   async pullImage(ref: string) {
+    if (this.pullFails) throw new Error(this.pullFails);
     this.calls.push(`pull ${ref}`);
+    const digest = this.pullYields.get(ref);
+    if (digest) this.images.set(ref, digest);
+  }
+  pullFails: string | null = null;
+  /** What a pull of each reference leaves on disk. */
+  readonly pullYields = new Map<string, string>();
+  async login(registry: string, username: string, password: string) {
+    this.calls.push(`login ${registry} ${username} ${password}`);
+  }
+  async logout(registry: string) {
+    this.calls.push(`logout ${registry}`);
   }
   async imageDigest(ref: string) {
     return this.images.get(ref) ?? null;

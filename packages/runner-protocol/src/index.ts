@@ -4,6 +4,7 @@ export {
   type EventFrame,
   type HeartbeatFrame,
   type HelloFrame,
+  type ImagePullCredential,
   type ImageRef,
   type RpcErrorFrame,
   type RpcFrame,

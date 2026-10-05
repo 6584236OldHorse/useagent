@@ -13,11 +13,18 @@ export async function ensureImage(backend: LocalBackend, image: ImageRef, onProg
   const present = await backend.imageDigest(image.ref);
   if (present === image.digest) return present;
   let lines = 0;
-  await backend.pullImage(image.ref, (line) => {
-    lines += 1;
-    // Pull output has no total; the bar creeps toward, never reaches, done.
-    onProgress?.(Math.min(0.95, 1 - 1 / (1 + lines / 25)), line);
-  });
+  // A private registry refuses anonymous pulls: log in with the plane's
+  // pull-only token for this pull, and out again whatever happens.
+  if (image.pull) await backend.login(image.pull.registry, image.pull.username, image.pull.password);
+  try {
+    await backend.pullImage(image.ref, (line) => {
+      lines += 1;
+      // Pull output has no total; the bar creeps toward, never reaches, done.
+      onProgress?.(Math.min(0.95, 1 - 1 / (1 + lines / 25)), line);
+    });
+  } finally {
+    if (image.pull) await backend.logout(image.pull.registry).catch(() => undefined);
+  }
   const pulled = await backend.imageDigest(image.ref);
   if (pulled !== image.digest) {
     throw new Error(`pulled ${image.ref} at ${pulled ?? "no digest"}, the control plane expects ${image.digest}`);

@@ -55,16 +55,32 @@ export class DockerBackend implements LocalBackend {
 
   async pullImage(ref: string, onProgress?: (line: string) => void): Promise<void> {
     const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe" });
+    let last = "";
     const relay = async (stream: ReadableStream<Uint8Array>) => {
       const decoder = new TextDecoder();
       for await (const chunk of stream) {
         for (const line of decoder.decode(chunk, { stream: true }).split("\n")) {
-          if (line.trim()) onProgress?.(line.trim());
+          if (line.trim()) {
+            last = line.trim();
+            onProgress?.(last);
+          }
         }
       }
     };
     await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-    if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed`);
+    if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
+  }
+
+  async login(registry: string, username: string, password: string): Promise<void> {
+    const result = await runCli(["docker", "login", registry, "--username", username, "--password-stdin"], {
+      stdin: new TextEncoder().encode(password),
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) throw new BackendError("internal", `docker login ${registry} failed: ${result.stderr.trim()}`);
+  }
+
+  async logout(registry: string): Promise<void> {
+    await runCli(["docker", "logout", registry], { timeoutMs: 30_000 });
   }
 
   async imageDigest(ref: string): Promise<string | null> {

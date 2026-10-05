@@ -5,10 +5,11 @@
 
 import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
-import { type HelloFrame, Mux, PROTOCOL_VERSION, type WelcomeFrame } from "@useagent/runner-protocol";
+import { type HelloFrame, type ImagePullCredential, Mux, PROTOCOL_VERSION, type WelcomeFrame } from "@useagent/runner-protocol";
 import type { AppEnv } from "../http";
 import { currentReleaseFingerprint } from "../release";
 import { runnerConfigBlock } from "./policy";
+import { createPullCredentialSource } from "./registry-pull";
 import { type RunnerRegistry, runnerRegistry } from "./registry";
 import { type RunnerRow, runnerForToken } from "./store";
 
@@ -25,6 +26,8 @@ export interface RunnerLinkDeps {
   readonly runnerForToken: (token: string) => Promise<RunnerRow | null>;
   readonly config: () => ReturnType<typeof runnerConfigBlock>;
   readonly release: () => string;
+  /** The login a runner needs to pull the image, when the registry is private. */
+  readonly pullCredential?: (ref: string) => Promise<ImagePullCredential | null>;
   readonly helloTimeoutMs?: number;
   readonly log?: (message: string) => void;
 }
@@ -34,13 +37,17 @@ export function bearerToken(header: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
-export function welcomeFor(config: ReturnType<typeof runnerConfigBlock>, release: string): WelcomeFrame | null {
+export function welcomeFor(
+  config: ReturnType<typeof runnerConfigBlock>,
+  release: string,
+  pull: ImagePullCredential | null = null,
+): WelcomeFrame | null {
   if (!config.enabled || !config.image) return null;
   return {
     t: "welcome",
     protocol: PROTOCOL_VERSION,
     minProtocol: config.minProtocol,
-    image: config.image,
+    image: pull ? { ...config.image, pull } : config.image,
     heartbeatSeconds: HEARTBEAT_SECONDS,
     release,
   };
@@ -117,7 +124,9 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
           finish(CLOSE_RUNNER_TOO_OLD, `the control plane needs protocol ${config.minProtocol}`);
           return;
         }
-        const welcome = welcomeFor(config, deps.release());
+        const pull = config.image && deps.pullCredential ? await deps.pullCredential(config.image.ref) : null;
+        if (finished) return;
+        const welcome = welcomeFor(config, deps.release(), pull);
         if (!welcome) {
           finish(1013, config.enabled ? "no native image is configured for local sandboxes" : "local runners are switched off");
           return;
@@ -173,9 +182,12 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
   return routes;
 }
 
+const pullCredentials = createPullCredentialSource(process.env);
+
 export const runnerLinkRoutes = createRunnerLinkRoutes({
   registry: runnerRegistry,
   runnerForToken,
   config: () => runnerConfigBlock(),
   release: () => currentReleaseFingerprint().fingerprint,
+  pullCredential: (ref) => pullCredentials.for(ref),
 });
