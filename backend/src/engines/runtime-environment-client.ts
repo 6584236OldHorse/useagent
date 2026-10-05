@@ -253,6 +253,9 @@ export async function prewarmRuntimeEnvironmentAccess(
   signal: AbortSignal,
 ): Promise<void> {
   await ensureRuntimeEnvironmentAccess(sandbox, signal);
+  // The runtime's first shell request builds its state and took fourteen
+  // seconds on a fresh sandbox; a pooled sandbox pays it here, not on a run.
+  await requestRuntimeEnvironment(sandbox, { method: "GET", path: "/api/orchestration/shell" }, signal).catch(() => undefined);
 }
 
 async function establishRuntimeEnvironmentAccess(
