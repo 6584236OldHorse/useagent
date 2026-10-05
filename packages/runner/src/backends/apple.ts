@@ -74,34 +74,34 @@ export class AppleContainerBackend implements LocalBackend {
     return null;
   }
 
-  async pullImage(ref: string, onProgress?: (line: string) => void): Promise<void> {
-    const proc = Bun.spawn(["container", "image", "pull", ref], { stdout: "pipe", stderr: "pipe" });
-    let last = "";
-    const relay = async (stream: ReadableStream<Uint8Array>) => {
-      const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        for (const line of decoder.decode(chunk, { stream: true }).split(/\r?\n/)) {
-          if (line.trim()) {
-            last = line.trim();
-            onProgress?.(last);
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void> {
+    // The container tool keeps logins in the keychain: log in for this pull and out again after.
+    if (login) {
+      const result = await runCli(["container", "registry", "login", login.registry, "--username", login.username, "--password-stdin"], {
+        stdin: new TextEncoder().encode(login.password),
+        timeoutMs: 30_000,
+      });
+      if (result.exitCode !== 0) throw new BackendError("internal", `container registry login ${login.registry} failed: ${result.stderr.trim()}`);
+    }
+    try {
+      const proc = Bun.spawn(["container", "image", "pull", ref], { stdout: "pipe", stderr: "pipe" });
+      let last = "";
+      const relay = async (stream: ReadableStream<Uint8Array>) => {
+        const decoder = new TextDecoder();
+        for await (const chunk of stream) {
+          for (const line of decoder.decode(chunk, { stream: true }).split(/\r?\n/)) {
+            if (line.trim()) {
+              last = line.trim();
+              onProgress?.(last);
+            }
           }
         }
-      }
-    };
-    await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-    if ((await proc.exited) !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
-  }
-
-  async login(registry: string, username: string, password: string): Promise<void> {
-    const result = await runCli(["container", "registry", "login", registry, "--username", username, "--password-stdin"], {
-      stdin: new TextEncoder().encode(password),
-      timeoutMs: 30_000,
-    });
-    if (result.exitCode !== 0) throw new BackendError("internal", `container registry login ${registry} failed: ${result.stderr.trim()}`);
-  }
-
-  async logout(registry: string): Promise<void> {
-    await runCli(["container", "registry", "logout", registry], { timeoutMs: 30_000 });
+      };
+      await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
+      if ((await proc.exited) !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
+    } finally {
+      if (login) await runCli(["container", "registry", "logout", login.registry], { timeoutMs: 30_000 }).catch(() => undefined);
+    }
   }
 
   async imageDigest(ref: string): Promise<string | null> {

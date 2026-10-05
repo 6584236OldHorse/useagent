@@ -3,15 +3,16 @@
 // the conformance suite exercises in CI.
 
 import type { LocalSandboxState } from "@useagent/runner-protocol";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
-import {
-  BackendError,
+import {BackendError,
   type ContainerInfo,
   type ContainerSpec,
   type DialedConnection,
   type ExecOptions,
-  type LocalBackend,
-} from "./types";
+  type LocalBackend, type RegistryLogin } from "./types";
 
 const flags: CliFlags = {
   tool: "docker",
@@ -53,34 +54,36 @@ export class DockerBackend implements LocalBackend {
     return null;
   }
 
-  async pullImage(ref: string, onProgress?: (line: string) => void): Promise<void> {
-    const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe" });
-    let last = "";
-    const relay = async (stream: ReadableStream<Uint8Array>) => {
-      const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        for (const line of decoder.decode(chunk, { stream: true }).split("\n")) {
-          if (line.trim()) {
-            last = line.trim();
-            onProgress?.(last);
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void> {
+    // A login lives in a private config directory for this one pull, so nothing
+    // touches the machine's own docker login state.
+    const config = login ? await mkdtemp(join(tmpdir(), "useagent-pull-")) : null;
+    if (config && login) {
+      await writeFile(join(config, "config.json"), JSON.stringify({ auths: { [login.registry]: { auth: btoa(`${login.username}:${login.password}`) } } }));
+    }
+    try {
+      const proc = Bun.spawn(["docker", "pull", ref], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: config ? { ...process.env, DOCKER_CONFIG: config } : process.env,
+      });
+      let last = "";
+      const relay = async (stream: ReadableStream<Uint8Array>) => {
+        const decoder = new TextDecoder();
+        for await (const chunk of stream) {
+          for (const line of decoder.decode(chunk, { stream: true }).split("\n")) {
+            if (line.trim()) {
+              last = line.trim();
+              onProgress?.(last);
+            }
           }
         }
-      }
-    };
-    await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-    if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
-  }
-
-  async login(registry: string, username: string, password: string): Promise<void> {
-    const result = await runCli(["docker", "login", registry, "--username", username, "--password-stdin"], {
-      stdin: new TextEncoder().encode(password),
-      timeoutMs: 30_000,
-    });
-    if (result.exitCode !== 0) throw new BackendError("internal", `docker login ${registry} failed: ${result.stderr.trim()}`);
-  }
-
-  async logout(registry: string): Promise<void> {
-    await runCli(["docker", "logout", registry], { timeoutMs: 30_000 });
+      };
+      await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
+      if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
+    } finally {
+      if (config) await rm(config, { recursive: true, force: true });
+    }
   }
 
   async imageDigest(ref: string): Promise<string | null> {

@@ -78,8 +78,10 @@ async function run(command: RunCommand): Promise<number> {
     stream: (target, stream) => service.stream(target, stream),
     onWelcome: async (frame) => {
       emitStatus({ state: "pulling", detail: frame.image.ref, progress: 0 });
+      // A login without a password means the plane serves the image and recognises this runner's own token.
+      const image = frame.image.pull && !frame.image.pull.password ? { ...frame.image, pull: { ...frame.image.pull, password: token } } : frame.image;
       try {
-        imageDigest = await ensureImage(backend, frame.image, (progress, detail) => emitStatus({ state: "pulling", detail, progress }));
+        imageDigest = await ensureImage(backend, image, (progress, detail) => emitStatus({ state: "pulling", detail, progress }));
       } catch (error) {
         emitStatus({ state: "error", detail: error instanceof Error ? error.message : String(error) });
         throw error;

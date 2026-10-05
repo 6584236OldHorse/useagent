@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createPullCredentialSource, imageRepository } from "./registry-pull";
+import { createPullCredentialSource, imageRepository, proxiedReference } from "./registry-pull";
 
 const tokenResponse = (token: string, expiresIn?: number) =>
   Response.json(expiresIn === undefined ? { token } : { token, expires_in: expiresIn });
@@ -43,4 +43,18 @@ test("a refused mint is logged and leaves the welcome without a login", async ()
   const source = createPullCredentialSource({ USEAGENT_REGISTRY_TOKEN: "bad" }, (async () => new Response("denied", { status: 403 })) as unknown as typeof fetch, (m) => logged.push(m));
   expect(await source.for("ghcr.io/useagenthq/sandbox:x")).toBeNull();
   expect(logged).toEqual(["[runners] no pull credential for ghcr.io/useagenthq/sandbox: registry token request returned 403"]);
+});
+
+test("the proxied reference keeps the repository and the tag or digest, under the plane's host", () => {
+  expect(proxiedReference("ghcr.io/useagenthq/sandbox:native-1", "app.useagent.org")).toBe("app.useagent.org/useagenthq/sandbox:native-1");
+  expect(proxiedReference("ghcr.io/useagenthq/sandbox@sha256:" + "a".repeat(64), "localhost:3201")).toBe("localhost:3201/useagenthq/sandbox@sha256:" + "a".repeat(64));
+  expect(proxiedReference("useagent-runner-test:debian-1", "app.useagent.org")).toBeNull();
+});
+
+test("forgetting a repository makes the next request mint again", async () => {
+  const calls: string[] = [];
+  const source = createPullCredentialSource({ USEAGENT_REGISTRY_TOKEN: "t" }, (async (input: string | URL) => { calls.push(String(input)); return tokenResponse(`tok-${calls.length}`, 300); }) as unknown as typeof fetch, () => undefined);
+  expect((await source.for("ghcr.io/useagenthq/sandbox:x"))?.password).toBe("tok-1");
+  source.forget("ghcr.io/useagenthq/sandbox:y");
+  expect((await source.for("ghcr.io/useagenthq/sandbox:x"))?.password).toBe("tok-2");
 });

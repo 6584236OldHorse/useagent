@@ -11,7 +11,7 @@ import type {
   LocalBackend,
   TerminalProcess,
 } from "../src/backends/types";
-import { BackendError } from "../src/backends/types";
+import { BackendError, type RegistryLogin } from "../src/backends/types";
 
 export interface FakeContainer {
   readonly spec: ContainerSpec;
@@ -69,21 +69,18 @@ export class FakeBackend implements LocalBackend {
   async available() {
     return null;
   }
-  async pullImage(ref: string) {
+  async pullImage(ref: string, _onProgress?: (line: string) => void, login?: RegistryLogin) {
     if (this.pullFails) throw new Error(this.pullFails);
-    this.calls.push(`pull ${ref}`);
+    this.calls.push(`pull ${ref}${login ? ` as ${login.username}@${login.registry}` : ""}`);
+    if (login) this.passwords.push(login.password);
     const digest = this.pullYields.get(ref);
     if (digest) this.images.set(ref, digest);
   }
   pullFails: string | null = null;
   /** What a pull of each reference leaves on disk. */
   readonly pullYields = new Map<string, string>();
-  async login(registry: string, username: string, password: string) {
-    this.calls.push(`login ${registry} ${username} ${password}`);
-  }
-  async logout(registry: string) {
-    this.calls.push(`logout ${registry}`);
-  }
+  /** Passwords presented with pulls, kept out of `calls` so a test can check nothing leaks. */
+  readonly passwords: string[] = [];
   async imageDigest(ref: string) {
     return this.images.get(ref) ?? null;
   }

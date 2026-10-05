@@ -40,7 +40,7 @@ import {
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
 import { terminalRoutes } from "./runs/terminal";
-import { runnerLinkRoutes } from "./runners/link";
+import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
 import { runnerBridgeRoutes } from "./runners/bridge";
 import { runnerRoutes } from "./runners/routes";
 import { runnerConfigBlock } from "./runners/policy";
@@ -327,6 +327,8 @@ app.route("/api/internal/codex-relay", codexSubscriptionRelayRoutes);
 app.route("/api/internal/runners", runnerLinkRoutes);
 app.route("/api/internal/runners", runnerBridgeRoutes);
 app.route("/api/runners", runnerRoutes);
+// The sandbox image, served to runners under the standard registry API.
+app.route("/v2", runnerRegistryProxyRoutes);
 app.route("/api/threads", threadRelationshipRoutes);
 // Loopback-only operator dispatch bridge (see runs/operator-routes.ts): lets
 // the release-lane parity canary run turns IN THIS PROCESS so the codex relay

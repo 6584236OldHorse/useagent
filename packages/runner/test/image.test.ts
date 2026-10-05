@@ -3,32 +3,38 @@ import { ensureImage } from "../src/image";
 import { FakeBackend } from "./fake-backend";
 
 const DIGEST = "sha256:" + "1".repeat(64);
-const pull = { registry: "ghcr.io", username: "x", password: "pull-token" };
+const REF = "app.useagent.org/useagenthq/sandbox:one";
 
-test("an image already present at its digest needs no pull and no login", async () => {
+test("an image already present at its digest needs no pull", async () => {
   const backend = new FakeBackend();
-  backend.images.set("ghcr.io/useagenthq/sandbox:one", DIGEST);
-  expect(await ensureImage(backend, { ref: "ghcr.io/useagenthq/sandbox:one", digest: DIGEST, pull })).toBe(DIGEST);
+  backend.images.set(REF, DIGEST);
+  expect(await ensureImage(backend, { ref: REF, digest: DIGEST, pull: { registry: "app.useagent.org", username: "runner", password: "rt" } })).toBe(DIGEST);
   expect(backend.calls).toEqual([]);
 });
 
-test("a private image is pulled inside a login that ends with the pull", async () => {
+test("a login with a password is handed to the engine for the pull", async () => {
   const backend = new FakeBackend();
-  backend.pullYields.set("ghcr.io/useagenthq/sandbox:one", DIGEST);
-  expect(await ensureImage(backend, { ref: "ghcr.io/useagenthq/sandbox:one", digest: DIGEST, pull })).toBe(DIGEST);
-  expect(backend.calls).toEqual(["login ghcr.io x pull-token", "pull ghcr.io/useagenthq/sandbox:one", "logout ghcr.io"]);
+  backend.pullYields.set(REF, DIGEST);
+  expect(await ensureImage(backend, { ref: REF, digest: DIGEST, pull: { registry: "app.useagent.org", username: "runner", password: "rt" } })).toBe(DIGEST);
+  expect(backend.calls).toEqual([`pull ${REF} as runner@app.useagent.org`]);
+  expect(backend.passwords).toEqual(["rt"]);
 });
 
-test("a failed pull still logs out and reports the engine's reason", async () => {
+test("a login without a password is not presented (the caller fills the runner token first)", async () => {
   const backend = new FakeBackend();
-  backend.pullFails = "container image pull ghcr.io/useagenthq/sandbox:one failed: unauthorized";
-  await expect(ensureImage(backend, { ref: "ghcr.io/useagenthq/sandbox:one", digest: DIGEST, pull })).rejects.toThrow("unauthorized");
-  expect(backend.calls).toEqual(["login ghcr.io x pull-token", "logout ghcr.io"]);
+  backend.pullYields.set(REF, DIGEST);
+  await ensureImage(backend, { ref: REF, digest: DIGEST, pull: { registry: "app.useagent.org", username: "runner" } });
+  expect(backend.calls).toEqual([`pull ${REF}`]);
 });
 
-test("a public image is pulled without any login", async () => {
+test("a failed pull reports the engine's reason", async () => {
   const backend = new FakeBackend();
-  backend.pullYields.set("ghcr.io/useagenthq/sandbox:one", DIGEST);
-  await ensureImage(backend, { ref: "ghcr.io/useagenthq/sandbox:one", digest: DIGEST });
-  expect(backend.calls).toEqual(["pull ghcr.io/useagenthq/sandbox:one"]);
+  backend.pullFails = `container image pull ${REF} failed: unauthorized`;
+  await expect(ensureImage(backend, { ref: REF, digest: DIGEST })).rejects.toThrow("unauthorized");
+});
+
+test("a digest mismatch after the pull is an error", async () => {
+  const backend = new FakeBackend();
+  backend.pullYields.set(REF, "sha256:" + "2".repeat(64));
+  await expect(ensureImage(backend, { ref: REF, digest: DIGEST })).rejects.toThrow("expects");
 });

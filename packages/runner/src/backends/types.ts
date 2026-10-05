@@ -72,16 +72,20 @@ export interface TerminalProcess {
   kill(): void;
 }
 
+export interface RegistryLogin {
+  readonly registry: string;
+  readonly username: string;
+  readonly password: string;
+}
+
 export interface LocalBackend {
   readonly kind: RunnerBackendKind;
   /** Whether `pinnedImage` names the digest itself; otherwise the service checks the digest after boot. */
   readonly pinsByDigest: boolean;
   /** Null when the engine is usable, else why not. */
   available(): Promise<string | null>;
-  pullImage(ref: string, onProgress?: (line: string) => void): Promise<void>;
-  /** Log the engine in to a registry for the pulls that follow. */
-  login(registry: string, username: string, password: string): Promise<void>;
-  logout(registry: string): Promise<void>;
+  /** Pull `ref`; with a login, the engine authenticates to that registry for this pull only. */
+  pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void>;
   /** The digest of a local image reference, or null when it is not present. */
   imageDigest(ref: string): Promise<string | null>;
   removeImage(ref: string): Promise<void>;

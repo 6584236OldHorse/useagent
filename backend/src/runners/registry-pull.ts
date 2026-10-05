@@ -23,8 +23,19 @@ export function imageRepository(ref: string): { registry: string; repository: st
 }
 
 export interface PullCredentialSource {
-  /** The login a runner needs to pull `ref`, or null when none is configured or the mint failed. */
+  /** The upstream login for `ref`, or null when none is configured or the mint failed. */
   for(ref: string): Promise<ImagePullCredential | null>;
+  /** Drop the cached login for `ref`; the next `for` mints again (the registry refused it early). */
+  forget(ref: string): void;
+}
+
+/** The same image, named through the plane: `ghcr.io/org/sandbox:tag` at `app.example` is
+ *  `app.example/org/sandbox:tag`. The tag or digest part is kept as written. */
+export function proxiedReference(ref: string, host: string): string | null {
+  const target = imageRepository(ref);
+  if (!target) return null;
+  const suffix = ref.trim().slice(`${target.registry}/${target.repository}`.length);
+  return `${host}/${target.repository}${suffix}`;
 }
 
 export function createPullCredentialSource(
@@ -50,6 +61,10 @@ export function createPullCredentialSource(
         inflight.set(target.repository, pending);
       }
       return pending;
+    },
+    forget(ref) {
+      const target = imageRepository(ref);
+      if (target) cache.delete(target.repository);
     },
   };
 

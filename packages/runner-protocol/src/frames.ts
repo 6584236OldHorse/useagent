@@ -15,13 +15,14 @@ export interface RunnerCapacity {
   readonly maxSandboxes?: number;
 }
 
-/** A short-lived, pull-only login for the registry that holds the image. The
- *  runner logs in for the pull and out again; nothing outlives the pull. */
+/** How the runner logs its engine in for the pull; nothing outlives the pull.
+ *  Without a password the runner presents its own runner token: the plane
+ *  serves the image itself and recognises the token. */
 export interface ImagePullCredential {
-  /** Registry host, e.g. ghcr.io. */
+  /** Registry host the login is for, e.g. app.useagent.org. */
   readonly registry: string;
   readonly username: string;
-  readonly password: string;
+  readonly password?: string;
 }
 
 export interface ImageRef {
@@ -217,7 +218,12 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isPullCredential(value: unknown): value is ImagePullCredential {
-  return isRecord(value) && typeof value.registry === "string" && typeof value.username === "string" && typeof value.password === "string";
+  return (
+    isRecord(value) &&
+    typeof value.registry === "string" &&
+    typeof value.username === "string" &&
+    (value.password === undefined || typeof value.password === "string")
+  );
 }
 
 function isImageRef(value: unknown): value is ImageRef {
