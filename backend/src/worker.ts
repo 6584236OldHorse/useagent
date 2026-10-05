@@ -2,25 +2,19 @@ import { withoutSandboxVendor } from "./sandboxes/provider";
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
 import { getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
-import { markRunPromptDelivered, threadHistoryForTurn, type ThreadHistory } from "./runs/thread-history";
+import { markRunPromptDelivered } from "./runs/thread-history";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
 import { resolveProviderRegistration, runProviderTurn } from "./engines";
 import { dispatchReadyForUser } from "./engines/sandbox-login";
-import type { EmitStep, EngineRunContext, RunInputFile } from "./engines/types";
+import type { EmitStep, EngineRunContext, PendingTurnContext, RunInputFile } from "./engines/types";
+import type { PreambleHashes } from "./engines/turn-prompt";
 import { classifyTurnFailure } from "./engines/turn-failure-classification";
 import { compactWaitTimeoutSummary } from "./engines/runtime-compact-contract";
-import { recallScopedMemory } from "./memory/team-memory";
 import { resolveScopedMemory } from "./memory/scope";
 import { isInternalRunOrigin } from "./runs/origin";
-import { recordContextRetrieval } from "./memory/retrieval-ledger";
-import { listSkillCatalogForOrg } from "./skills/repo";
 import { resolveExecutableSkillPin } from "./skills/pins";
-import {
-  formatSkillCatalogPrefill,
-  shouldPrefillSkillCatalog,
-} from "./skills/catalog";
 import { formatSkillMarkdown, frameSkillContext } from "./skills/format";
 import { recordSkillLoaded } from "./skills/skill-loaded";
 import { finalizeRun, type FinalizeRunResult } from "./runs/finalize";
@@ -38,21 +32,18 @@ import {
   type RunStageTimer,
 } from "./runs/run-timing";
 import { botContextForTurn, NO_BOT_TURN_CONTEXT } from "./bots/prompt-context";
-import { frameTurnContexts } from "./engines/turn-contexts";
 import { formatInputContext, runInputFiles } from "./uploads/materialize";
 import { buildChatContext } from "./chat/context";
 import { chatFailure, chatTurnCredential, chatTurnStream } from "./chat/turn";
 import { subscribeNative } from "./runs/native-events";
 import { createSlidingInactivityWatchdog } from "./runs/inactivity-watchdog";
-import {
-  buildResourceAccessSnapshot,
-} from "./resources/access-snapshot";
 import { runMock } from "./worker-mock.js";
 import { bus, channel, RUN_SPAWNED, type BusEvent } from "./worker-events.js";
 import { strictOrgSecretRedactor } from "./secrets/store";
 import { errorMessage } from "./util/error-message";
 import { ensureRunWorkdir } from "./run-workdir";
 import { createProviderSessionSaver } from "./worker-provider-session";
+import { gatherTurnContext, TurnContextError } from "./worker-turn-context";
 
 export { bus, channel, RUN_SPAWNED, type BusEvent } from "./worker-events.js";
 export { ensureRunWorkdir } from "./run-workdir";
@@ -250,120 +241,26 @@ async function runWorker(runId: string): Promise<void> {
       await runMock(runId, run.threadId, run.orgId, run.origin, ac.signal, wasCancelled);
       return;
     }
-    const bot = run.commandName ? NO_BOT_TURN_CONTEXT : await botContextForTurn({ orgId: run.orgId, threadId: run.threadId, engine: run.engine });
     if (run.engine === "chat") {
+      const bot = run.commandName ? NO_BOT_TURN_CONTEXT : await botContextForTurn({ orgId: run.orgId, threadId: run.threadId, engine: run.engine });
       await runChat(run, skillContext, bot.identity, ac.signal, wasCancelled);
       return;
     }
 
-    // Split the run's context (north star "Fix the Current Context Bug First"):
-    // turnContext is fresh team memory (config-gated, "" when MEMORY_API_URL is
-    // unset), reference-framed and injected on EVERY turn; bootstrapContext is
-    // the reconstructed prior thread, injected ONLY into a FRESH native session.
-    // Fetched in PARALLEL. Prompts are stored clean; the composed prefix is the
-    // engine's only view. The scope PLAN maps the run's persisted identity and
-    // memoryScope to the pools it reads (org: org pool; personal: personal + org)
-    // and the pool it captures into; null when memory is disabled. Identity is
-    // ALWAYS from the run row, never the sandbox or prompt.
+    // The scope PLAN maps the run's persisted identity and memoryScope to the
+    // pools it reads (org: org pool; personal: personal + org) and the pool it
+    // captures into; null when memory is disabled. Identity is ALWAYS from the
+    // run row, never the sandbox or prompt. The adapter needs the native session
+    // and the uploads to prepare the sandbox; the prompt-only context (memory,
+    // history, skill catalog, resources, bots) is gathered meanwhile and awaited
+    // just before the prompt is composed (worker-turn-context.ts).
     const plan = resolveScopedMemory(run);
-    // Start the native-session lookup alongside every other independent context
-    // source. The result both controls fresh-only catalog prefill and is reused
-    // by the adapter, avoiding a second DB lookup before dispatch.
-    const providerSessionStatePromise = getThreadProviderSessionState(
-      run.orgId, run.threadId,
-      run.engine,
-      run.id,
-    );
-    const endContext = stageLedger?.begin("worker.context");
-    const timedContextOperation = async <T>(
-      stage: string,
-      operation: () => Promise<T>,
-    ): Promise<T> => {
-      const end = stageLedger?.begin(stage);
-      try {
-        return await operation();
-      } finally {
-        end?.();
-      }
-    };
-    const [providerSessionState, recall, history, skillCatalogPage, resourceSnapshot] = await Promise.all([
-      providerSessionStatePromise,
-      // Layered recall (new_mem_prompt.md 6.2): Tencent L0 (immediate ground
-      // evidence, incl. explicit "remember X") + L1 (distilled) searched in
-      // parallel and merged, so a freshly-taught fact is injected into a NEW
-      // thread's context before L1 extraction even finishes.
-      timedContextOperation("worker.memory_recall", () =>
-        plan ? recallScopedMemory(run.prompt, plan.readPools) : Promise.resolve(null),
-      ),
-      timedContextOperation("worker.thread_preamble", () => threadHistoryForTurn(run)),
-      timedContextOperation("worker.skill_catalog", async () => {
-        const state = await providerSessionStatePromise;
-        const engineSessionId = state.binding?.nativeSessionId ?? state.legacySessionId ?? undefined;
-        if (
-          !shouldPrefillSkillCatalog({
-            hasPinnedSkill: skillContext.length > 0,
-            commandName: run.commandName ?? null,
-            orgId: run.orgId,
-            engineSessionId,
-          }) ||
-          run.orgId === null
-        ) {
-          return null;
-        }
-        try {
-          const entries = await listSkillCatalogForOrg(run.orgId);
-          return formatSkillCatalogPrefill(entries, run.prompt);
-        } catch (error) {
-          console.warn(
-            `[worker] skill catalog prefill failed for run ${run.id}; ` +
-              "falling back to skills_list discovery:",
-            error,
-          );
-          return null;
-        }
-      }),
-      timedContextOperation("worker.resource_access", () =>
-        run.orgId && run.userId
-          ? buildResourceAccessSnapshot({
-              orgId: run.orgId,
-              userId: run.userId,
-              runId: run.id,
-              resources: run.resolvedResources ?? [],
-              repos: run.repos ?? [],
-            })
-          : Promise.resolve(null),
-      ),
-    ]);
+    const providerSessionStatePromise = getThreadProviderSessionState(run.orgId, run.threadId, run.engine, run.id);
+    const pendingTurnContext = gatherTurnContext({ run, plan, skillContext, providerSessionState: providerSessionStatePromise, stageLedger });
+    const [providerSessionState, inputFiles] = await Promise.all([providerSessionStatePromise, runInputFiles(run)]);
     const providerSession = providerSessionState.binding ?? undefined;
     const engineSessionId = providerSession?.nativeSessionId ??
       providerSessionState.legacySessionId ?? undefined;
-    const { turnContext, skillCatalogContext, resourceContext } = frameTurnContexts({ recall, skillCatalogPage, resourceSnapshot, botIdentity: bot.identity });
-
-    if (turnContext || history.bootstrapContext || history.unseenTurnsContext || skillContext || skillCatalogContext || resourceContext) {
-      console.log(
-        `[worker] run ${runId} thread ${run.threadId} scope=${plan?.scope ?? "off"}: ` +
-          `turnContext ${turnContext.length} (${recall?.items.length ?? 0} memory items, ` +
-          `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${history.bootstrapContext.length} + unseenTurnsContext ${history.unseenTurnsContext.length}` +
-          ` + skillContext ${skillContext.length} chars` +
-          ` + skillCatalogContext ${skillCatalogContext.length} chars` +
-          ` + resourceContext ${resourceContext.length} chars`,
-      );
-    }
-    // Retrieval ledger (Phase 3a): durably record + stream what was recalled as a
-    // `context.retrieved` native frame. AWAITED before the engine turn (a crash
-    // must not lose the record of what context a run used) but OFF the delta
-    // fast-path — deltas are published by the adapter during the turn, after this
-    // resolves. A persist failure is logged, never fails the run.
-    if (plan && recall) {
-      await timedContextOperation("worker.context_marker", () =>
-        recordContextRetrieval(run.id, run.threadId, plan, run.prompt, recall).catch((err) =>
-          console.warn(`[worker] context.retrieved marker persist failed for run ${run.id}:`, err),
-        ),
-      );
-    }
-    endContext?.();
-
-    const inputFiles = await runInputFiles(run);
 
     // The completed-turn capture is enqueued by runs/finalize.ts (transactionally,
     // from the run row's scope) — not here — so it survives a crash in the old
@@ -392,13 +289,10 @@ async function runWorker(runId: string): Promise<void> {
         runId,
         run.engine,
         run.prompt,
-        history,
-        turnContext,
+        pendingTurnContext,
+        providerSessionState.preambleHashes,
         plan !== null,
-        resourceContext,
         skillContext,
-        skillCatalogContext,
-        bot.delegation,
         run.threadId,
         engineSessionId,
         providerSession,
@@ -564,13 +458,10 @@ async function runEngine(
   runId: string,
   engineId: string,
   prompt: string,
-  history: ThreadHistory,
-  turnContext: string,
+  pendingTurnContext: Promise<PendingTurnContext>,
+  priorPreamble: PreambleHashes | null,
   memoryEnabled: boolean,
-  resourceContext: string,
   skillContext: string,
-  skillCatalogContext: string,
-  botContext: string,
   threadId: string,
   engineSessionId: string | undefined,
   providerSession: ProviderSessionBinding | undefined,
@@ -664,13 +555,12 @@ async function runEngine(
   const ctx: EngineRunContext = {
     runId,
     prompt,
-    ...history,
-    turnContext,
+    bootstrapContext: "",
+    turnContext: "",
+    pendingTurnContext,
+    priorPreamble,
     memoryEnabled,
-    resourceContext,
     skillContext,
-    skillCatalogContext,
-    botContext,
     workdir,
     threadId,
     timing,
@@ -689,7 +579,7 @@ async function runEngine(
     commandCatalogRevision,
     saveProviderSession: createProviderSessionSaver(runId),
     prepareOutputCapture: (sandbox, root) => recordOutputBaseline(runId, sandbox, root, signal),
-    markPromptDelivered: () => markRunPromptDelivered(runId),
+    markPromptDelivered: () => markRunPromptDelivered(runId, ctx.deliveredPreamble ?? null),
     signal,
     emit,
     // In-place step enrichment (same idx → SSE clients upsert): a tool call
@@ -738,6 +628,7 @@ async function runEngine(
     );
     await emitFinalizedEnd(runId, finalized);
   } catch (err) {
+    if (err instanceof TurnContextError) throw err.cause; // fails the run as a worker error, as before the overlap
     // A user cancel wins over a coincident timeout.
     const cancelledReason = wasCancelled();
     const cancelled = cancelledReason !== null, timedOut = signal.aborted && !cancelled;

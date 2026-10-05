@@ -1,5 +1,5 @@
 import type { EngineAdapter } from "./types";
-import { composeTurnPrompt } from "./types";
+import { composeRunTurnPrompt } from "./types";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
 import { sessionCapabilities } from "./capabilities";
 import { establishProviderSession, recordProviderSessionStarted } from "./provider-turn";
@@ -90,7 +90,7 @@ export function makePiAdapter(dependencies: PiAdapterDependencies = defaults): E
           driver: piProviderDriver,
           session: established.session,
           bridge,
-          prompt: composeTurnPrompt(ctx, established.resumed, executionCapabilities),
+          prompt: await composeRunTurnPrompt(ctx, established.resumed, executionCapabilities),
           mapFrame: createPiRpcFrameMapper(`pi-message-${ctx.runId}`, bridge.contextWindow ?? undefined),
           redact: prepared.redact,
         });

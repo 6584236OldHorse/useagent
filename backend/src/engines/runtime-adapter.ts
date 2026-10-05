@@ -1,5 +1,5 @@
 import type { EngineAdapter, EngineRunContext } from "./types";
-import { composeTurnPrompt } from "./types";
+import { composeRunTurnPrompt } from "./types";
 import { setTimeout as delay } from "node:timers/promises";
 import { acquireThreadSandbox } from "./thread-sandbox";
 import {
@@ -640,7 +640,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // HTTP orchestration dispatch validates thread.turn.start against an
         // already-projected thread. ProviderDriver.start creates it explicitly instead of
         // relying on the websocket-only bootstrap normalization path.
-        const prompt = composeTurnPrompt(
+        const prompt = await composeRunTurnPrompt(
           ctx,
           runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease),
           executionCapabilities,

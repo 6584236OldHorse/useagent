@@ -53,7 +53,7 @@ describe("lost workspace notice", () => {
     const run = ctx(root, root);
     expect(await noteLostWorkspace(run)).toBe(false);
     expect(run.steps).toEqual([]);
-    expect(run.turnContext).toBe("<memory>none</memory>\n");
+    expect(run.workspaceNotice).toBeUndefined();
   });
 
   test("a released or expired workspace is reported as no longer available", async () => {
@@ -90,9 +90,11 @@ describe("lost workspace notice", () => {
         label: "Workspace was reclaimed while idle; starting a fresh sandbox, earlier files are gone",
       },
     ]);
-    expect(run.turnContext.startsWith("<memory>none</memory>\n")).toBe(true);
-    expect(run.turnContext).toContain("<workspace_notice>");
-    expect(run.turnContext).toContain("reclaimed while idle to make room");
+    // Its own field: the worker's turn context may still be in flight while the
+    // sandbox is acquired, so the notice must not be written into it.
+    expect(run.turnContext).toBe("<memory>none</memory>\n");
+    expect(run.workspaceNotice).toContain("<workspace_notice>");
+    expect(run.workspaceNotice).toContain("reclaimed while idle to make room");
 
     // A sandbox provisioned after the reclaim makes the marker history; a later
     // loss is reported generically again.

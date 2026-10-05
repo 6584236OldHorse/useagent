@@ -8,6 +8,7 @@
 import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { runs } from "../db/schema";
+import type { PreambleHashes } from "../engines/turn-prompt";
 
 type RunRecord = typeof runs.$inferSelect;
 
@@ -171,14 +172,18 @@ export async function buildUnseenTurnsContext(
 }
 
 /** Delivery evidence for a run: the engine runtime accepted its prompt. Stamped
- * by the adapter only after a steer returned ok, never on session binding.
- * Best-effort for the live turn: a missing stamp can only make a later turn
- * repeat history, never lose it, so a write failure is logged, not thrown. */
-export async function markRunPromptDelivered(runId: string): Promise<void> {
+ * by the adapter only after a steer returned ok, never on session binding, with
+ * the preamble hashes the session now holds. Best-effort for the live turn: a
+ * missing stamp can only make a later turn repeat history or preamble, never
+ * lose it, so a write failure is logged, not thrown. */
+export async function markRunPromptDelivered(
+  runId: string,
+  preambleHashes: PreambleHashes | null = null,
+): Promise<void> {
   try {
     await db
       .update(runs)
-      .set({ promptDeliveredAt: sql`now()` })
+      .set({ promptDeliveredAt: sql`now()`, preambleHashes })
       .where(and(eq(runs.id, runId), isNull(runs.promptDeliveredAt)));
   } catch (err) {
     console.error(`[thread-history] failed to record prompt delivery for ${runId}:`, err);

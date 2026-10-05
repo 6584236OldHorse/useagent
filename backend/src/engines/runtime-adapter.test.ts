@@ -506,7 +506,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain(
       "runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease)",
     );
-    expect(source).toContain("const prompt = composeTurnPrompt(");
+    expect(source).toContain("const prompt = await composeRunTurnPrompt(");
     expect(source).toContain("await establishProviderSession({");
     expect(source).toContain("snapshot: await readThreadSnapshot(ctx, sandbox),");
     expect(source).not.toContain("established.resumed\n          ? await readThreadSnapshot");

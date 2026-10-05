@@ -102,26 +102,24 @@ describe("agent-selected skill gateway", () => {
     if (!second) throw new Error("second skill fixture creation failed");
 
     const firstPage = await executeSkillTool(claims, "skills_list", { limit: 1 });
-    const cursor = firstPage.structuredContent?.nextCursor;
-    expect(cursor).toBe(1);
+    expect(firstPage.content[0]?.text).toEndWith("\n\nMore entries: call skills_list with cursor 1.");
 
-    const secondPage = await executeSkillTool(claims, "skills_list", { cursor, limit: 1 });
-    const ids = (secondPage.structuredContent?.skills ?? []) as Array<{ id: string }>;
-    expect(ids).toHaveLength(1);
-    expect(secondPage.structuredContent).toHaveProperty("nextCursor", null);
+    const secondPage = await executeSkillTool(claims, "skills_list", { cursor: 1, limit: 1 });
+    const text = secondPage.content[0]?.text ?? "";
+    expect(text.match(/^\[/gm)).toHaveLength(1);
+    expect(text).not.toContain("More entries");
   });
 
   test("lists only the authenticated organization's catalog", async () => {
     const { claims, skillId, otherSkillId } = await fixture();
     const result = await executeSkillTool(claims, "skills_list", {});
-    const ids = ((result.structuredContent?.skills ?? []) as Array<{ id: string }>).map(({ id }) => id);
-    expect(ids).toContain(skillId);
-    expect(ids).not.toContain(otherSkillId);
+    expect(result.content[0]?.text).toContain(`[${skillId}]`);
+    expect(result.content[0]?.text).not.toContain(otherSkillId);
     expect(result.content[0]?.text).toContain("inspect-production-dashboard");
     expect(result.content[0]?.text).not.toContain("cross-tenant-secret");
   });
 
-  test("uses the shared catalog page formatter for tool text and structured payload", async () => {
+  test("returns the page once, as the shared formatter's text", async () => {
     const { claims, skillId } = await fixture();
     const result = await executeSkillTool(claims, "skills_list", {});
     const expected = formatSkillCatalogPage([
@@ -135,11 +133,9 @@ describe("agent-selected skill gateway", () => {
       },
     ]);
 
-    expect(result.content[0]?.text).toBe(expected.text);
-    expect(result.structuredContent).toEqual({
-      skills: expected.skills,
-      nextCursor: expected.nextCursor,
-    });
+    // One copy: a client that reads structuredContent (Codex) must not get a second one.
+    expect(result.content).toEqual([{ type: "text", text: expected.text }]);
+    expect(result.structuredContent).toBeUndefined();
   });
 
   test("activates the current immutable revision and returns its full procedure", async () => {

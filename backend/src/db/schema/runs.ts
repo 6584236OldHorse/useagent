@@ -13,6 +13,7 @@ import {
 import type { RunResource } from "../../resources/types";
 import type { ExpectedSandboxBinding } from "../../sandboxes/expected-binding";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
+import type { PreambleHashes } from "../../engines/turn-prompt";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -89,6 +90,11 @@ export const runs = pgTable(
     // because a session was bound. Null on a run whose prompt never reached an
     // engine, so the thread's next turn can carry that message as history.
     promptDeliveredAt: timestamp("prompt_delivered_at", { withTimezone: true }),
+    // Content hashes of the rule blocks and skill catalog the native session held
+    // once this run's prompt was delivered (engines/turn-prompt.ts). The thread's
+    // next resumed turn re-sends a block only when its hash changed. Null when no
+    // prompt was delivered or a native command was, so the next turn sends all.
+    preambleHashes: jsonb("preamble_hashes").$type<PreambleHashes>(),
     // The Daytona sandbox this run executed in. Persisted so the thread→sandbox
     // mapping SURVIVES backend restarts — the next turn resumes the same box
     // (workspace + resident engine server) instead of provisioning a new one.

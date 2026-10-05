@@ -9,12 +9,25 @@ import type {
   ProviderSessionBinding,
 } from "@useagent/agent-harness/canonical";
 
+import type { PreambleHashes } from "./turn-prompt";
+
 export {
   AGENT_OPERATING_RULES,
   AGENT_SKILL_DISCOVERY_RULES,
   AGENT_WORKFLOW_ROUTING_RULES,
+  composeRunTurnPrompt,
   composeTurnPrompt,
 } from "./turn-prompt";
+
+/** The worker's gathered prompt context for one turn. */
+export interface PendingTurnContext {
+  readonly parts: Pick<
+    EngineRunContext,
+    "bootstrapContext" | "unseenTurnsContext" | "turnContext" | "resourceContext" | "skillCatalogContext" | "botContext"
+  >;
+  /** Durably record what was recalled; called just before the prompt is composed. */
+  recordRetrieval(): Promise<void>;
+}
 
 // ---------------------------------------------------------------------------
 // The pluggable engine layer. Every harness (Claude Agent SDK, Codex CLI,
@@ -95,6 +108,17 @@ export interface EngineRunContext {
   inputFiles?: readonly RunInputFile[];
   /** Structured, control-plane-authored file references for this turn. */
   inputContext?: string;
+  /** Set when a fresh sandbox replaced the one the thread used before; composed
+   *  right after {@link turnContext}. */
+  workspaceNotice?: string;
+  /** Prompt-only context the worker gathers while the sandbox is prepared.
+   *  {@link composeRunTurnPrompt} awaits it and fills the fields above; absent
+   *  when they are already final. A gathering error rejects it. */
+  pendingTurnContext?: Promise<PendingTurnContext>;
+  /** Preamble hashes the resumed session last received (stored with its run). */
+  priorPreamble?: PreambleHashes | null;
+  /** Preamble hashes this turn leaves the session holding, stored on delivery. */
+  deliveredPreamble?: PreambleHashes | null;
   /** Isolated working directory (already created) — the ONLY place an engine
    *  may touch the filesystem. Never the repo itself. */
   workdir: string;

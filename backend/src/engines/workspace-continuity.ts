@@ -94,9 +94,11 @@ export async function describeLostWorkspace(
 }
 
 /**
- * Emit the timeline step and extend the turn context when a fresh sandbox
- * replaces one the thread had before. Returns whether a workspace was lost. A
- * lookup failure never blocks provisioning.
+ * Emit the timeline step and set the workspace notice when a fresh sandbox
+ * replaces one the thread had before. The notice is its own field because the
+ * worker's turn context may still be in flight while the sandbox is acquired;
+ * it is composed right after that context. Returns whether a workspace was
+ * lost. A lookup failure never blocks provisioning.
  */
 export async function noteLostWorkspace(
   ctx: EngineRunContext,
@@ -106,6 +108,6 @@ export async function noteLostWorkspace(
   const lost = await describe(ctx.threadId, ctx.runId).catch(() => null);
   if (!lost) return false;
   await ctx.emit({ kind: "task", label: lost.label, chip: "warning" });
-  ctx.turnContext = `${ctx.turnContext}${lost.note}`;
+  ctx.workspaceNotice = lost.note;
   return true;
 }

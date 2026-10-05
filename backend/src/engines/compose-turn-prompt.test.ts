@@ -10,8 +10,11 @@ import {
   AGENT_OPERATING_RULES,
   AGENT_SKILL_DISCOVERY_RULES,
   AGENT_WORKFLOW_ROUTING_RULES,
+  composeRunTurnPrompt,
   composeTurnPrompt,
+  type EngineRunContext,
 } from "./types";
+import { turnPreambleHashes } from "./turn-prompt";
 import { executionCapabilityPrompt } from "./execution-capabilities";
 import { botContextForTurn } from "../bots/prompt-context";
 import { frameTurnContexts } from "./turn-contexts";
@@ -357,5 +360,89 @@ describe("memory guidance", () => {
     const { turnContext } = frameTurnContexts({ recall: { rendered: "", degraded: true }, skillCatalogPage: null, resourceSnapshot: null });
     expect(turnContext).toBe(MEMORY_UNAVAILABLE_NOTE);
     expect(frameTurnContexts({ recall: { rendered: "MEMORY", degraded: false }, skillCatalogPage: null, resourceSnapshot: null }).turnContext).toBe("MEMORY");
+  });
+});
+
+describe("resumed preamble dedupe", () => {
+  const catalog = "<skill_catalog>\nCATALOG_JSON\n</skill_catalog>\n\n";
+  const env = { PRODUCT_CHILD_THREADS: "off" };
+  const context = (over: Parameters<typeof ctx>[0] = {}) => ({ ...ctx({ skillCatalogContext: catalog, ...over }) });
+
+  test("a resumed session that already holds the rules and catalog gets neither again", () => {
+    const priorPreamble = turnPreambleHashes(context(), EXECUTION, env);
+    const out = composeTurnPrompt({ ...context(), priorPreamble }, true, EXECUTION, env);
+    expect(out).toBe(`TURN${userRequest("USER")}`);
+  });
+
+  test("a changed block is sent again while an unchanged one stays out", () => {
+    const held = turnPreambleHashes(context(), EXECUTION, env);
+    const newCatalog = "<skill_catalog>\nOTHER_JSON\n</skill_catalog>\n\n";
+    expect(composeTurnPrompt({ ...context({ skillCatalogContext: newCatalog }), priorPreamble: held }, true, EXECUTION, env))
+      .toBe(`${newCatalog}TURN${userRequest("USER")}`);
+    const rulesChanged = { ...held, rules: "older-rules" };
+    expect(composeTurnPrompt({ ...context(), priorPreamble: rulesChanged }, true, EXECUTION, env))
+      .toBe(`${P}${W}${S}TURN${userRequest("USER")}`);
+  });
+
+  test("a fresh session gets everything whatever an earlier session held", () => {
+    const priorPreamble = turnPreambleHashes(context(), EXECUTION, env);
+    expect(composeTurnPrompt({ ...context(), priorPreamble }, false, EXECUTION, env))
+      .toBe(`${R}BOOT${P}${W}${S}${catalog}TURN${userRequest("USER")}`);
+  });
+
+  test("a pinned skill changes the rules hash, so the next unpinned turn gets discovery again", () => {
+    const pinned = turnPreambleHashes(context({ skillContext: "PINNED\n" }), EXECUTION, env);
+    expect(composeTurnPrompt({ ...context(), priorPreamble: pinned }, true, EXECUTION, env))
+      .toBe(`${P}${W}${S}${catalog}TURN${userRequest("USER")}`);
+  });
+
+  test("the workspace notice follows the turn context", () => {
+    expect(compose({ ...ctx(), workspaceNotice: "NOTICE\n" } as never, true))
+      .toBe(`${P}${W}${S}TURN${"NOTICE\n"}${userRequest("USER")}`);
+  });
+});
+
+describe("composeRunTurnPrompt", () => {
+  const runCtx = (over: Partial<EngineRunContext> = {}): EngineRunContext => ({
+    runId: "run-1",
+    prompt: "USER",
+    bootstrapContext: "",
+    turnContext: "",
+    workdir: "/work",
+    signal: new AbortController().signal,
+    emit: async () => undefined,
+    setSummary: () => {},
+    ...over,
+  });
+
+  test("waits for the gathered context, records the retrieval, then composes with it", async () => {
+    const order: string[] = [];
+    const ctxValue = runCtx({
+      pendingTurnContext: Promise.resolve({
+        parts: { bootstrapContext: "BOOT", unseenTurnsContext: "", turnContext: "MEMORY\n", resourceContext: "", skillCatalogContext: "", botContext: "" },
+        recordRetrieval: async () => {
+          order.push("ledger");
+        },
+      }),
+    });
+    const prompt = await composeRunTurnPrompt(ctxValue, false, EXECUTION);
+    order.push("composed");
+    expect(prompt).toContain("BOOT");
+    expect(prompt).toContain("MEMORY\n<current_user_request>");
+    expect(order).toEqual(["ledger", "composed"]);
+    expect(ctxValue.deliveredPreamble).toEqual(turnPreambleHashes(ctxValue, EXECUTION));
+  });
+
+  test("a gathering failure rejects the compose, so the turn fails instead of running without context", async () => {
+    const failure = new Error("history unavailable");
+    const pending = Promise.reject(failure);
+    pending.catch(() => {});
+    await expect(composeRunTurnPrompt(runCtx({ pendingTurnContext: pending }), true, EXECUTION)).rejects.toBe(failure);
+  });
+
+  test("a native command leaves no preamble behind, so the next turn sends the blocks again", async () => {
+    const ctxValue = runCtx({ prompt: "/compact", commandName: "compact" });
+    expect(await composeRunTurnPrompt(ctxValue, true, EXECUTION)).toBe("/compact");
+    expect(ctxValue.deliveredPreamble).toBeNull();
   });
 });
