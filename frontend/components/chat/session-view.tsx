@@ -80,6 +80,7 @@ import type { InitialThreadRelationshipHint } from "@/lib/thread-relationship-hi
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun, createThreadMessage, runCreateFailureMessage } from "@/lib/create-run";
 import { cx } from "@/utils/cx";
+import { deriveRunningStartedAt } from "@/components/pro/running-phase";
 /**
  * The coding-session surface: a threaded conversation column beside a vertical
  * editor|terminal split. The whole thread renders as one conversation, driven by
@@ -416,8 +417,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   useEffect(() => {
     if (pending && shouldRetireOptimistic(pending.runId, snapshot)) setPending(null);
   }, [pending, snapshot]);
-  // The ACTUALLY-RUNNING turn may not be the newest (rapid-fire replies make
-  // the newest a QUEUED run) - Stop and Send-now must target the running one.
+  // Queued replies may be newest; Stop, Send-now and elapsed target the running turn.
   const runningTurn = turns.find((t) => t.status === "running") ?? null;
   const headQueuedId = turns.find((t) => t.status === "queued")?.run.id ?? null;
   // The session-bar status reflects the thread's current activity: running if any
@@ -731,7 +731,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             sendNowFor={runningTurn ? headQueuedId : null}
             onSendNow={handleSendNow} onRemoveQueued={removeQueued}
             running={runningTurn !== null}
-            runStartedAt={runningTurn?.run.created_at ?? null}
+            runStartedAt={deriveRunningStartedAt(runningTurn)}
             stopping={stopping}
             stopError={stopError}
             onStop={handleStop}

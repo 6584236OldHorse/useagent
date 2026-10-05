@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RunningFooter } from "./running-footer";
-import type { RunningStatus } from "./running-phase";
+import { deriveRunningStartedAt, type RunningStatus } from "./running-phase";
+import type { ApiStep } from "@/components/chat/types";
 
 const status: RunningStatus = {
   phase: "working",
@@ -34,6 +35,26 @@ test("stopping disables the control and says so; no elapsed without a start time
   expect(html).toContain('aria-label="Stopping this run"');
   expect(html).toContain("disabled");
   expect(html).not.toContain("font-mono");
+});
+
+test("running elapsed excludes minutes in the queue and stays stable on reload", () => {
+  const now = Date.now();
+  const run = { created_at: new Date(now - 365_000).toISOString() };
+  const start: ApiStep = {
+    id: "start", run_id: "run", idx: 0, kind: "task", chip: "boot",
+    label: "Preparing context and runtime", code_json: '{"phase":"preparing"}',
+    created_at: new Date(now - 65_000).toISOString(),
+  };
+  const render = (turn: { run: typeof run; steps: ApiStep[] }) => renderToStaticMarkup(
+    <RunningFooter status={status} model="m" startedAt={deriveRunningStartedAt(turn)} />,
+  );
+  expect(render({ run, steps: [] })).not.toContain("font-mono");
+  const running = { run, steps: [start] };
+  for (const snapshot of [running, JSON.parse(JSON.stringify(running))]) {
+    const html = render(snapshot);
+    expect(html).toContain("1m 5s");
+    expect(html).not.toContain("6m 5s");
+  }
 });
 
 test("a delegating phase names the agent in the chip", () => {

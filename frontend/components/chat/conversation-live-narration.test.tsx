@@ -71,6 +71,33 @@ function render(turn: Turn): string {
   );
 }
 
+test("native working timers exclude queue delay and hide elapsed without a durable start", () => {
+  const now = Date.now();
+  const pending = chatTurn("");
+  pending.run.created_at = new Date(now - 365_000).toISOString();
+  const waitingForStart = render(pending);
+  expect(waitingForStart).toContain('data-timeline-source="native"');
+  expect(waitingForStart).toContain('data-session-ui="working-indicator"');
+  expect(waitingForStart).not.toContain("Working for");
+  expect(waitingForStart).not.toContain("6m 5s");
+  const start: ApiStep = {
+    id: "chat-start", run_id: pending.run.id, idx: 0, kind: "task", chip: "chat",
+    label: "Preparing chat context", code_json: '{"phase":"retrieval"}',
+    created_at: new Date(now - 65_000).toISOString(),
+  };
+  const running = { ...pending, steps: [start] };
+  const replay = { ...running, steps: JSON.parse(JSON.stringify(running.steps)) as ApiStep[] };
+  for (const snapshot of [running, replay]) {
+    const html = render(snapshot);
+    expect(html).toContain('data-session-ui="working-indicator"');
+    expect(html).toContain("Working for");
+    expect(html).toContain("1m 5s");
+    expect(html).not.toContain("6m 5s");
+  }
+  // Steps-only preparation owns a work row rather than the empty-timeline timer.
+  expect(render({ ...running, native: undefined })).not.toContain("6m 5s");
+});
+
 test("a chat turn narrates its streamed answer while its native frames carry no text", () => {
   const html = render(chatTurn("Retry budgets bound how much a client may retry"));
   expect(html).toContain("Retry budgets bound how much a client may retry");
