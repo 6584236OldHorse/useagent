@@ -18,7 +18,10 @@ import { uid } from "./helpers";
 // preserving the committed payload, (3) a `delivering` orphan resolves only on an
 // explicit operator decision, org-scoped. DB-backed against useAgent_test.
 
-const ORG_A = "org-skynet-dev"; // the seeded dev org
+// Owned by this file. The seeded dev org is shared with suites whose mock runs
+// finalize in the background and enqueue captures of their own, which would
+// land in an "only this org's captures" listing after the beforeEach delete.
+const ORG_A = "org-memory-admin";
 const ORG_B = "org-other-test";
 
 function orgIdentity(orgId: string, runId: string): MemoryIdentity {
@@ -74,7 +77,7 @@ describe("listCapturesForOrg — org-scoped inspection", () => {
     expect(row.promptPreview).toBe("my capture prompt");
     // The admin row NEVER leaks the transport identity/pool ids.
     expect(JSON.stringify(row)).not.toContain("agentId");
-    expect(JSON.stringify(row)).not.toContain("org:org-skynet-dev");
+    expect(JSON.stringify(row)).not.toContain(`org:${ORG_A}`);
 
     // ORG_B's row must not appear in ORG_A's view.
     const bId = rows.find((r) => r.runId !== mine);

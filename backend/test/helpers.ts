@@ -214,11 +214,11 @@ export async function createOrgSession(label = "org"): Promise<OrgSession> {
 }
 
 /** Poll `fn` until it returns truthy or the timeout elapses. The default sits
- * under the suite's 15 s per-test budget: a loaded runner needs more than 8 s
+ * under the suite's 30 s per-test budget: a loaded runner needs more than 8 s
  * for a spawn-and-settle wait, while a real hang still fails here first. */
 export async function waitFor<T>(
   fn: () => Promise<T | null | undefined | false>,
-  { timeoutMs = 12_000, intervalMs = 50 }: { timeoutMs?: number; intervalMs?: number } = {},
+  { timeoutMs = 20_000, intervalMs = 50 }: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

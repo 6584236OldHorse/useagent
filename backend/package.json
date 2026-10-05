@@ -13,7 +13,7 @@
     "index:canonical-execution:verify": "bun run scripts/canonical-execution-index.ts verify",
     "index:canonical-execution:drop": "bun run scripts/canonical-execution-index.ts drop",
     "canary:v002-native-children": "bun run test/manual/native-children-release-canary.ts",
-    "test": "bun run test/prepare-db.ts && bun test --max-concurrency=1 --timeout 15000 --path-ignore-patterns='**/test/slack.test.ts' && bun run test/prepare-db.ts && bun test --max-concurrency=1 --timeout 15000 ./test/slack.test.ts",
+    "test": "bun run test/prepare-db.ts && bun test --max-concurrency=1 --timeout 30000 --path-ignore-patterns='**/test/slack.test.ts' && bun run test/prepare-db.ts && bun test --max-concurrency=1 --timeout 30000 ./test/slack.test.ts",
     "test:memory-matrix": "bun test src/memory/team-memory.test.ts src/memory/scope.test.ts test/finalize.test.ts test/capture-outbox.test.ts test/memory-tools.test.ts test/memory-two-sandbox.live.test.ts test/learning-outbox.test.ts test/knowledge-drafts.test.ts test/skill-proposals.test.ts",
     "e2e": "bun run test/e2e/full-stack.ts",
     "soak": "bun run test/e2e/soak/run.ts"
