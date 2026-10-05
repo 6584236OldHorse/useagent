@@ -53,7 +53,7 @@ export async function acceptResolvedThreadFollowup(input: {
   if (input.requireCurrentHead) {
     const [latest] = await db.select({ id: runs.id }).from(runs).where(and(
       eq(runs.orgId, input.orgId), eq(runs.threadId, input.command.run.threadId),
-    )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+    )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
     if (latest?.id !== input.expectedParentRunId) return { status: "stale_parent" };
   }
   const inheritsParentModel =
@@ -172,7 +172,7 @@ export async function acceptThreadFollowup(input: {
   const [latest] = await db.select().from(runs).where(and(
     eq(runs.orgId, input.orgId),
     eq(runs.threadId, input.threadId),
-  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+  )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
   if (!latest) return { status: "not_found" };
   const inheritedResources = latest.resolvedResources.length > 0
     ? latest.resolvedResources

@@ -100,6 +100,7 @@ function toRun(
     parent_run_id: r.parentRunId,
     child_session: childSession,
     thread_id: r.threadId,
+    thread_seq: r.threadSeq,
     engine_session_id: r.engineSessionId,
     sandbox_id: r.sandboxId,
     repo: r.repo ? parseRepoRef(r.repo).repo : null,
@@ -261,6 +262,10 @@ export async function createRun(
     // a run that waited for the lock must still sort after every run accepted
     // while it waited. Thread order is the order runs were accepted in.
     createdAt: sql`clock_timestamp()`,
+    // The run's place in its thread, assigned here under the same lock: the
+    // lossless acceptance order the wire carries (created_at loses its
+    // microseconds in transit).
+    threadSeq: sql`(select coalesce(max(${runs.threadSeq}), 0) + 1 from ${runs} where ${runs.threadId} = ${input.threadId})`,
     orgId: input.orgId,
     userId: input.userId,
     projectId: project?.id ?? null,
@@ -303,7 +308,7 @@ export async function getLatestThreadRun(
     .select()
     .from(runs)
     .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))
-    .orderBy(desc(runs.createdAt), desc(runs.id))
+    .orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id))
     .limit(1);
   return row ?? null;
 }
@@ -649,7 +654,7 @@ export async function getThreadForRun(
     .select()
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
 }
 
@@ -678,7 +683,7 @@ export async function getThreadOutlineForRun(
     })
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return rows.map(
     (row) =>
       ({
@@ -714,7 +719,7 @@ export async function getThreadRunsByIds(
         inArray(runs.id, [...ids]),
       ),
     )
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
 }
 

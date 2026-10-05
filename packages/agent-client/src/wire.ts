@@ -225,6 +225,12 @@ export interface ApiRun {
    *  user turn. `parent_run_id` alone cannot tell them apart - replies set it too. */
   child_session: boolean;
   thread_id: string;
+  /** The run's place in its thread, assigned at acceptance under the thread's
+   *  lock: the lossless order clients sort a thread by (`created_at` loses its
+   *  microseconds on the wire). Absent only from a backend that predates it;
+   *  rows from before the column report 0 and sort by `created_at` among
+   *  themselves. */
+  thread_seq?: number;
   /** The engine's own native session id (opencode `ses_*`), when one was recorded.
    *  The thread's latest non-null value deep-links the Live tab into that session. */
   engine_session_id: string | null;
@@ -697,6 +703,7 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     !MEMORY_SCOPE_SET.has(record.memory_scope) ||
     !(record.permission_mode === undefined ||
       (typeof record.permission_mode === "string" && PERMISSION_MODE_SET.has(record.permission_mode))) ||
+    !(record.thread_seq === undefined || typeof record.thread_seq === "number") ||
     !isNullableString(record.skill_id) ||
     !(record.skill_version === null || typeof record.skill_version === "number") ||
     !isNullableString(record.skill_content_hash) ||
@@ -725,6 +732,7 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     ...(typeof record.permission_mode === "string"
       ? { permission_mode: record.permission_mode as PermissionMode }
       : {}),
+    ...(typeof record.thread_seq === "number" ? { thread_seq: record.thread_seq } : {}),
     skill_id: record.skill_id,
     skill_version: record.skill_version,
     skill_content_hash: record.skill_content_hash,

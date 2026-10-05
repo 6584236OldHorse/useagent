@@ -20,6 +20,7 @@ import {
   decodeThreadOutlineTurn,
 } from "@useagent/agent-client/wire";
 import type { Turn } from "./conversation";
+import { compareThreadOrder } from "./thread-order";
 
 export type { ApiThreadOutlineTurn };
 
@@ -106,21 +107,10 @@ export function chunkTurnIds(ids: readonly string[]): string[][] {
   return chunks;
 }
 
-/** Canonical thread order - created_at then id, the backend's thread ordering
- *  (ISO timestamps compare lexicographically). Merges parallel chunk fetches
- *  back into one oldest→newest list. */
+/** Canonical thread order, the backend's (see compareThreadOrder). Merges
+ *  parallel chunk fetches back into one oldest→newest list. */
 export function sortRunsByThreadOrder(runs: readonly ApiRun[]): ApiRun[] {
-  return runs.toSorted((a, b) =>
-    a.created_at < b.created_at
-      ? -1
-      : a.created_at > b.created_at
-        ? 1
-        : a.id < b.id
-          ? -1
-          : a.id > b.id
-            ? 1
-            : 0,
-  );
+  return runs.toSorted(compareThreadOrder);
 }
 
 /** A placeholder Turn for a not-yet-loaded outline entry. It NEVER materializes

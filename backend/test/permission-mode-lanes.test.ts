@@ -242,5 +242,12 @@ describe("permission mode across the lanes that continue a turn", () => {
     const c = await acceptRunCommand({ idempotencyKey: uid("c"), orgId: owner.orgId, actorId: root.userId, run: replyRun(cId) });
     expect(c.status).toBe("created");
     expect((await getRun(cId))?.permissionMode).toBe("read-only");
+    // The thread sequence records acceptance order losslessly, and the wire carries it.
+    expect(await Promise.all([root.id, bId, aId, cId].map(async (id) => (await getRun(id))?.threadSeq))).toEqual([1, 2, 3, 4]);
+    const { body: thread } = await json<{ thread: Array<{ id: string; thread_seq: number }> }>(
+      `/api/runs/${root.id}?thread=1`,
+      { cookies: owner.cookies },
+    );
+    expect(thread.thread.map((r) => [r.id, r.thread_seq])).toEqual([[root.id, 1], [bId, 2], [aId, 3], [cId, 4]]);
   });
 });

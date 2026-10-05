@@ -95,6 +95,12 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiRun({ ...run, permission_mode: "yolo" })).toBeNull();
   });
 
+  test("keeps the run's thread sequence and rejects a non-numeric one", () => {
+    const sequenced = { ...run, thread_seq: 7 };
+    expect(decodeApiRun(sequenced)).toEqual(sequenced);
+    expect(decodeApiRun({ ...run, thread_seq: "7" })).toBeNull();
+  });
+
   test("decodes the exact durable lifecycle projection", () => {
     const lifecycle = {
       id: "run-1",

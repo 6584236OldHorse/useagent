@@ -62,6 +62,11 @@ export const runs = pgTable(
     // composed server-side by walking the thread, never nested into the prompt.
     parentRunId: text("parent_run_id").references((): AnyPgColumn => runs.id),
     threadId: text("thread_id").notNull(),
+    // The run's place in its thread, assigned under the thread lifecycle lock
+    // at insert (max + 1): a lossless acceptance order that survives the wire,
+    // where created_at is truncated to milliseconds. Rows from before the
+    // column keep 0 and sort among themselves by created_at.
+    threadSeq: integer("thread_seq").notNull().default(0),
     // The engine's OWN session id for this run (opencode ses_*, claude-sdk UUID,
     // codex session id). Persisted so the thread's next turn resumes the engine's
     // native conversation EXPLICITLY by id — a peer tool's set_resume_session_id
