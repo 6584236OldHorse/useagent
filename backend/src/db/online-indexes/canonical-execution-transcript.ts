@@ -1,4 +1,5 @@
 import postgres from "postgres";
+import { executionGraphEnabled } from "../../runs/execution-graph-switch";
 
 export const CANONICAL_EXECUTION_TRANSCRIPT_INDEX =
   "idx_canonical_events_execution_delivery_v1";
@@ -297,10 +298,14 @@ export async function dropCanonicalExecutionTranscriptIndex(
   });
 }
 
-export async function assertCanonicalExecutionTranscriptIndexForBoot(
+/** Boot: with the execution graph enabled, child transcripts are served through this
+ *  index, so an enabled process makes sure it exists (creating it concurrently under the
+ *  advisory lock when absent, exactly what the operator script does) rather than serving
+ *  an unindexed scan or refusing to boot on a fresh database. Switched off, nothing runs. */
+export async function ensureCanonicalExecutionTranscriptIndexForBoot(
   environment: Record<string, string | undefined> = process.env,
-  verify: () => Promise<void> = () => verifyCanonicalExecutionTranscriptIndex(),
+  apply: () => Promise<unknown> = () => applyCanonicalExecutionTranscriptIndex(),
 ): Promise<void> {
-  if (environment.EXECUTION_GRAPH_ROLLOUT?.trim().toLowerCase() !== "read") return;
-  await verify();
+  if (!executionGraphEnabled(environment)) return;
+  await apply();
 }

@@ -6,7 +6,7 @@ import type { RunCommandInput } from "./types";
 import { claimUploadsForRun, UploadClaimError } from "../uploads/repo";
 import { recordAdmissionOnAccept } from "../fleet/intake";
 import { ensureRootThreadRelationship, insertThreadRelationship } from "../runs/thread-relationship-repo";
-import { threadRelationshipWriteMode } from "../runs/thread-relationship-rollout";
+import { threadRelationshipsEnabled } from "../runs/thread-relationship-switch";
 import { enqueueProductChildStartedTx } from "../slack/product-child";
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ export async function insertCommandWithRun(
       cmd.origin === null &&
       cmd.run.parentRunId === null &&
       cmd.run.threadId === cmd.run.id &&
-      threadRelationshipWriteMode() !== "off"
+      threadRelationshipsEnabled()
     ) {
       await ensureRootThreadRelationship({
         orgId: cmd.orgId,

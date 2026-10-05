@@ -5,7 +5,7 @@ import type { ThreadRelationship } from "@useagent/agent-client";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import type { OrgChange } from "@/lib/org-changes";
 import {
-  EXECUTION_GRAPH_CLIENT_MODE,
+  EXECUTION_GRAPH_CLIENT_ENABLED,
   fetchExecutionGraph,
   type ExecutionGraphResponse,
 } from "./execution-graph-client";
@@ -98,7 +98,7 @@ export function useProductChildGraphs(
   });
 
   useEffect(() => {
-    if (EXECUTION_GRAPH_CLIENT_MODE !== "read" || expanded.length === 0) {
+    if (!EXECUTION_GRAPH_CLIENT_ENABLED || expanded.length === 0) {
       setCache(new Map());
       return;
     }

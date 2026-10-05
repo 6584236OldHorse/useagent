@@ -29,7 +29,7 @@ import {
   type StepKind,
 } from "../db/schema";
 import { sidebarNativeChildren } from "./native-children-projection";
-import { executionGraphReadEnabled } from "./execution-graph-rollout";
+import { executionGraphEnabled } from "./execution-graph-switch";
 import { parseRepoRef } from "../github/repo-ref";
 import type { RunResource } from "../resources/types";
 import { ensureProject } from "../projects/repo";
@@ -583,7 +583,7 @@ export async function listRunSummaries(
   if (
     opts.all ||
     !opts.includeNativeChildren ||
-    !executionGraphReadEnabled() ||
+    !executionGraphEnabled() ||
     summaries.length === 0
   ) return summaries;
   const childrenByThread = await sidebarNativeChildren(

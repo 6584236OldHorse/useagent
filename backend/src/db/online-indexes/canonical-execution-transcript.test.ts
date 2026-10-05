@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  assertCanonicalExecutionTranscriptIndexForBoot,
+  ensureCanonicalExecutionTranscriptIndexForBoot,
   classifyCanonicalExecutionIndex,
   type CanonicalExecutionIndexCatalogRow,
 } from "./canonical-execution-transcript";
@@ -70,28 +70,21 @@ describe("canonical execution transcript online index catalog", () => {
   });
 });
 
-describe("canonical execution transcript READ boot guard", () => {
-  test("does not require the index in OFF or SHADOW", async () => {
+describe("canonical execution transcript boot guard", () => {
+  test("does nothing when the execution graph is switched off", async () => {
     let calls = 0;
-    const verify = async () => { calls += 1; };
-    await assertCanonicalExecutionTranscriptIndexForBoot({}, verify);
-    await assertCanonicalExecutionTranscriptIndexForBoot(
-      { EXECUTION_GRAPH_ROLLOUT: "shadow" },
-      verify,
-    );
+    await ensureCanonicalExecutionTranscriptIndexForBoot({ EXECUTION_GRAPH_ROLLOUT: "off" }, async () => { calls += 1; });
     expect(calls).toBe(0);
   });
 
-  test("requires successful verification before READ can boot", async () => {
+  test("an enabled process ensures the index and fails boot when it cannot", async () => {
     let calls = 0;
-    await assertCanonicalExecutionTranscriptIndexForBoot(
-      { EXECUTION_GRAPH_ROLLOUT: " READ " },
-      async () => { calls += 1; },
-    );
-    expect(calls).toBe(1);
-    await expect(assertCanonicalExecutionTranscriptIndexForBoot(
+    await ensureCanonicalExecutionTranscriptIndexForBoot({}, async () => { calls += 1; });
+    await ensureCanonicalExecutionTranscriptIndexForBoot({ EXECUTION_GRAPH_ROLLOUT: " READ " }, async () => { calls += 1; });
+    expect(calls).toBe(2);
+    await expect(ensureCanonicalExecutionTranscriptIndexForBoot(
       { EXECUTION_GRAPH_ROLLOUT: "read" },
-      async () => { throw new Error("index missing"); },
-    )).rejects.toThrow("index missing");
+      async () => { throw new Error("index apply failed"); },
+    )).rejects.toThrow("index apply failed");
   });
 });

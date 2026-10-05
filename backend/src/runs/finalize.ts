@@ -43,7 +43,7 @@ import { enqueueCanonicalization } from "./canonicalization-outbox";
 import { canonicalEngine } from "../engines/engine-alias";
 import { enqueueLearning } from "../learning/learning-outbox";
 import { releaseLeaseForRun } from "../fleet/lease-repo";
-import { executionGraphRolloutMode } from "./execution-graph-rollout";
+import { executionGraphEnabled } from "./execution-graph-switch";
 import {
   prepareExecutionGraphSeal,
   sealExecutionGraphAfterFinalizeTx,
@@ -314,9 +314,9 @@ export async function finalizeRun(
   durationMs: number,
   options: FinalizeRunOptions = {},
 ): Promise<FinalizeRunResult> {
-  const executionGraphMode = executionGraphRolloutMode();
+  const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
-  await prepareExecutionGraphSeal(runId, executionGraphMode);
+  if (executionGraph) await prepareExecutionGraphSeal(runId);
   let applied = false;
   let effectiveStatus: "completed" | "failed" = status === "completed" ? "completed" : "failed";
   let effectiveSummary = summary;
@@ -381,7 +381,7 @@ export async function finalizeRun(
     }
     applied = true;
     await releaseLeaseForRun(runId, tx);
-    if (executionGraphMode !== "off" && run.orgId) {
+    if (executionGraph && run.orgId) {
       if (effectiveStatus !== "completed" && effectiveStatus !== "failed") {
         throw new Error("execution_graph_seal_requires_terminal_run");
       }
@@ -389,7 +389,6 @@ export async function finalizeRun(
         orgId: run.orgId,
         runId,
         status: effectiveStatus,
-        mode: executionGraphMode,
       }, tx);
     }
 

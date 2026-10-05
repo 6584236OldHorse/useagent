@@ -1,4 +1,4 @@
-import { productChildThreadsEnabled } from "../runs/thread-relationship-rollout";
+import { productChildThreadsEnabled } from "../runs/thread-relationship-switch";
 
 /** The provider-neutral context needed to compose one agent turn. */
 export interface TurnPromptContext {
@@ -67,7 +67,7 @@ function productFanoutRoutingRules(
   const gatewayAvailable =
     tools.availability === "ready" && tools.access.kind === "useagent_gateway";
   const productFanoutAvailable = gatewayAvailable && ctx.origin === null &&
-    productChildThreadsEnabled(ctx.orgId, env);
+    productChildThreadsEnabled(env);
   if (!productFanoutAvailable) return "";
   return "<delegation_routing>\n" +
     "When the user explicitly asks to fan out, delegate, parallelize work across agents, or create " +

@@ -361,73 +361,30 @@ describe("thread relationship routes", () => {
     expect((await json(`/api/threads/${internalId}/children`, { cookies: owner.cookies })).status).toBe(404);
   });
 
-  test("canary allowlist enables product child reads and composer for one org only", async () => {
-    const allowed = await createOrgSession("thread-canary-allowed");
-    const denied = await createOrgSession("thread-canary-denied");
-    process.env.THREAD_RELATIONSHIPS_WRITE = "shadow";
-    process.env.THREAD_RELATIONSHIPS_READ = "off";
+  test("switched off, thread relationships and product child threads are hidden for every org", async () => {
+    const owner = await createOrgSession("thread-switch-off");
+    const root = await json<{ id: string }>("/api/runs", {
+      method: "POST",
+      cookies: owner.cookies,
+      headers: { "Idempotency-Key": uid("switch-root") },
+      body: { prompt: "Switch root", engine: "mock" },
+    });
+    const run = await getRunForOrg(owner.orgId, root.body.id);
+    if (!run) throw new Error("switch root missing");
+    process.env.THREAD_RELATIONSHIPS_WRITE = "off";
     process.env.PRODUCT_CHILD_THREADS = "off";
-    process.env.PRODUCT_CHILD_CANARY_ORG_IDS = allowed.orgId;
     try {
-      const makeRoot = (cookies: string) => json<{ id: string }>("/api/runs", {
+      expect((await json(`/api/threads/${run.threadId}/relationship`, { cookies: owner.cookies })).status).toBe(404);
+      expect((await json(`/api/threads/${run.threadId}/children`, { cookies: owner.cookies })).status).toBe(404);
+      expect((await json(`/api/threads/${run.threadId}/messages`, {
         method: "POST",
-        cookies,
-        headers: { "Idempotency-Key": uid("canary-root") },
-        body: { prompt: "Canary root", engine: "mock" },
-      });
-      const allowedRoot = await makeRoot(allowed.cookies);
-      const deniedRoot = await makeRoot(denied.cookies);
-      const allowedRun = await getRunForOrg(allowed.orgId, allowedRoot.body.id);
-      const deniedRun = await getRunForOrg(denied.orgId, deniedRoot.body.id);
-      if (!allowedRun || !deniedRun) throw new Error("canary roots missing");
-      const allowedChild = await createChildSession({
-        orgId: allowed.orgId,
-        actorId: allowedRun.userId,
-        parentRunId: allowedRun.id,
-        threadId: allowedRun.threadId,
-        prompt: "Allowed product child",
-        title: "Allowed product child",
-        engine: allowedRun.engine,
-        model: allowedRun.model,
-        repos: [],
-        memoryScope: allowedRun.memoryScope,
-        idempotencyKey: "allowed-child",
-      });
-      const deniedChild = await createChildSession({
-        orgId: denied.orgId,
-        actorId: deniedRun.userId,
-        parentRunId: deniedRun.id,
-        threadId: deniedRun.threadId,
-        prompt: "Denied legacy child",
-        title: "Denied legacy child",
-        engine: deniedRun.engine,
-        model: deniedRun.model,
-        repos: [],
-        memoryScope: deniedRun.memoryScope,
-        idempotencyKey: "denied-child",
-      });
-      if (allowedChild.status === "conflict" || deniedChild.status === "conflict") throw new Error("canary child conflict");
-      expect(allowedChild.child.kind).toBe("product_thread");
-      expect(deniedChild.child.kind).toBe("legacy_child_run");
-      expect((await json(`/api/threads/${allowedRun.threadId}/children`, { cookies: allowed.cookies })).status).toBe(200);
-      expect((await json(`/api/threads/${deniedRun.threadId}/children`, { cookies: denied.cookies })).status).toBe(404);
-      expect((await json(`/api/threads/${allowedChild.child.threadId}/messages`, {
-        method: "POST",
-        cookies: allowed.cookies,
-        headers: { "Idempotency-Key": "canary-followup" },
-        body: { text: "Allowed follow-up" },
-      })).status).toBe(201);
-      expect((await json(`/api/threads/${deniedRun.threadId}/messages`, {
-        method: "POST",
-        cookies: denied.cookies,
-        headers: { "Idempotency-Key": "denied-followup" },
-        body: { text: "Denied follow-up" },
+        cookies: owner.cookies,
+        headers: { "Idempotency-Key": "switch-off-followup" },
+        body: { text: "Switched off follow-up" },
       })).status).toBe(404);
     } finally {
       process.env.THREAD_RELATIONSHIPS_WRITE = "on";
-      process.env.THREAD_RELATIONSHIPS_READ = "read";
       process.env.PRODUCT_CHILD_THREADS = "on";
-      delete process.env.PRODUCT_CHILD_CANARY_ORG_IDS;
     }
   });
 });

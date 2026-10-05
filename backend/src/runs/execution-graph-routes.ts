@@ -6,7 +6,7 @@ import {
   getExecutionGraphPageForRun,
   type ExecutionGraphPageCursor,
 } from "./execution-graph-repo";
-import { executionGraphReadEnabled } from "./execution-graph-rollout";
+import { executionGraphEnabled } from "./execution-graph-switch";
 import { getCustomerRunForOrg } from "./repo";
 
 function iso(value: Date | null): string | null {
@@ -136,7 +136,7 @@ function parseExecutionGraphLimit(value: string | undefined): number {
 
 export function registerExecutionGraphRoutes(routes: Hono<AppEnv>): void {
   routes.get("/:id/executions", async (c) => {
-    if (!executionGraphReadEnabled()) return c.json({ error: "run not found" }, 404);
+    if (!executionGraphEnabled()) return c.json({ error: "run not found" }, 404);
 
     const orgId = c.get("orgId");
     const runId = c.req.param("id");
@@ -200,7 +200,7 @@ export function registerExecutionGraphRoutes(routes: Hono<AppEnv>): void {
   });
 
   routes.get("/:id/executions/:executionId/events", async (c) => {
-    if (!executionGraphReadEnabled()) return c.json({ error: "run not found" }, 404);
+    if (!executionGraphEnabled()) return c.json({ error: "run not found" }, 404);
 
     const orgId = c.get("orgId");
     const runId = c.req.param("id");

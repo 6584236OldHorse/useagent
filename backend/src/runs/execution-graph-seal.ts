@@ -9,9 +9,8 @@ import {
 import { taskChildSessionId } from "../engines/opencode-child-identity";
 import { errorMessage } from "../util/error-message";
 import { advanceExecutionLifecycle } from "./execution-graph-repo";
-import type { ExecutionGraphRolloutMode } from "./execution-graph-rollout";
 import { drainProviderEvents } from "./provider-events";
-import { auditExecutionGraphAtSeal } from "./execution-graph-shadow-writer";
+import { auditExecutionGraphAtSeal } from "./execution-graph-writer";
 import { executionGraphSealBlockers } from "./execution-graph-pending-repo";
 
 const TERMINAL_STATUSES = new Set<ExecutionStatus>(["completed", "failed", "cancelled"]);
@@ -120,10 +119,8 @@ function sealEventId(runId: string, watermark: number): string {
 
 export async function prepareExecutionGraphSeal(
   runId: string,
-  mode: ExecutionGraphRolloutMode,
   drain: (id: string) => Promise<void> = drainProviderEvents,
 ): Promise<void> {
-  if (mode === "off") return;
   await drain(runId);
   const [run] = await db.select({ orgId: runs.orgId }).from(runs).where(eq(runs.id, runId)).limit(1);
   if (!run?.orgId) return;
@@ -132,13 +129,11 @@ export async function prepareExecutionGraphSeal(
   await db.transaction((tx) => auditExecutionGraphAtSeal(run.orgId!, runId, tx, {
     failOnBlockers: false,
   }));
-  if (mode === "read") {
-    const blockers = await executionGraphSealBlockers(run.orgId, runId);
-    if (blockers.length > 0) {
-      throw new Error(blockers.some((row) => row.structuralMismatchAt != null)
-        ? "execution_graph_structural_revision_mismatch"
-        : "execution_graph_pending_unresolved");
-    }
+  const blockers = await executionGraphSealBlockers(run.orgId, runId);
+  if (blockers.length > 0) {
+    throw new Error(blockers.some((row) => row.structuralMismatchAt != null)
+      ? "execution_graph_structural_revision_mismatch"
+      : "execution_graph_pending_unresolved");
   }
 }
 
@@ -286,31 +281,17 @@ export async function reconcileExecutionGraphAtSeal(
 
 interface SealPolicyOptions {
   readonly reconcile?: typeof reconcileExecutionGraphAtSeal;
-  readonly warn?: (message: string, context: Record<string, string>) => void;
 }
 
-/** Apply strict READ semantics or fail-open SHADOW semantics inside finalization. */
+/** Seal the graph inside the finalization transaction: a reconciliation failure rolls
+ *  the finalization back, so a run never settles with a graph the seal could not close. */
 export async function sealExecutionGraphAfterFinalizeTx(
-  input: SealInput & { readonly mode: Exclude<ExecutionGraphRolloutMode, "off"> },
+  input: SealInput,
   tx: DbTx,
   options: SealPolicyOptions = {},
 ): Promise<void> {
   const reconcile = options.reconcile ?? reconcileExecutionGraphAtSeal;
-  if (input.mode === "read") {
-    await reconcile(input, tx);
-    return;
-  }
-  try {
-    await tx.transaction((savepoint) => reconcile(input, savepoint));
-  } catch (error) {
-    (options.warn ?? ((message, context) => console.warn(message, context)))(
-      "[execution-graph-seal] shadow reconciliation failed",
-      {
-        runId: input.runId.slice(0, LOG_VALUE_CAP),
-        error: errorMessage(error).slice(0, LOG_VALUE_CAP),
-      },
-    );
-  }
+  await reconcile(input, tx);
 }
 
 export const executionGraphSealInternals = {

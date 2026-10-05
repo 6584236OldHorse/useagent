@@ -4,7 +4,7 @@ import type { AppEnv } from "../http";
 import { toolGatewayConfig } from "../knowledge/gateway/config";
 import { gcsConfiguredForOrg } from "../knowledge/gateway/gcs-tools";
 import { providerGatewayConfig } from "../provider-gateway/config";
-import { productChildThreadsEnabled } from "../runs/thread-relationship-rollout";
+import { productChildThreadsEnabled } from "../runs/thread-relationship-switch";
 import { botsEnabled } from "../bots/rollout";
 import { orgScope } from "../middleware/org";
 import { configuredUserFacingEngines } from "../runs/engine-readiness";
@@ -47,7 +47,7 @@ export function createCapabilityCatalogRoutes(
       memoryConfigured: memoryConfig() !== null,
       gcsConfigured: await gcsConfiguredForOrg(c.get("orgId")),
       childSessionsConfigured: gatewayConfigured,
-      productChildThreadsConfigured: productChildThreadsEnabled(c.get("orgId")),
+      productChildThreadsConfigured: productChildThreadsEnabled(),
       botsConfigured: botsEnabled(c.get("orgId")),
       ...(codexModelCatalog ? { codexModelCatalog } : {}),
     }));

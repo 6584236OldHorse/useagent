@@ -11,7 +11,7 @@ import type {
 } from "@/components/chat/canonical-timeline";
 import { deriveChildrenViewFromExecutionSummary } from "@/components/chat/execution-summary-rollout";
 import {
-  EXECUTION_GRAPH_CLIENT_MODE,
+  EXECUTION_GRAPH_CLIENT_ENABLED,
   executionHistoryKey,
   fetchExecutionGraph,
   fetchExecutionTranscriptById,
@@ -248,7 +248,7 @@ export function AgentsRail({
   const graphRunId = focusExecutionRunId ?? rootRunId;
 
   useEffect(() => {
-    if (EXECUTION_GRAPH_CLIENT_MODE !== "read" || !graphRunId) {
+    if (!EXECUTION_GRAPH_CLIENT_ENABLED || !graphRunId) {
       setGraph(null);
       return;
     }
@@ -340,7 +340,7 @@ export function AgentsRail({
 
   useEffect(() => {
     if (
-      EXECUTION_GRAPH_CLIENT_MODE !== "read" ||
+      !EXECUTION_GRAPH_CLIENT_ENABLED ||
       !selectedRunId ||
       !selectedNode?.executionId
     ) {
