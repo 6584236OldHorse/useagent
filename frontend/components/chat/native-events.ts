@@ -57,6 +57,50 @@ export interface ChildFidelity {
   readonly usage: ChildUsage | null;
 }
 
+/** How full the conversation's context window is, from the newest step-finish
+ *  usage of the parent session (children carry their own). Missing on runtimes
+ *  that report no usage. */
+export interface ThreadContext {
+  /** Tokens the last model call carried: fresh input, cache reads and writes, output. */
+  readonly used: number;
+  /** The cache-read share of `used`. */
+  readonly cached: number;
+  /** The model's context window in tokens, when the runtime reported it. */
+  readonly window: number | null;
+}
+
+const readNumber = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+export function deriveThreadContext(
+  frames: readonly NativeFrame[],
+  childSessionIds: ReadonlySet<string>,
+): ThreadContext | null {
+  let latest: { seq: number; context: ThreadContext } | null = null;
+  for (const frame of frames) {
+    if (frame.eventType !== "part.step-finish") continue;
+    if (frame.native.sessionId && childSessionIds.has(frame.native.sessionId)) continue;
+    if (latest && frame.seq <= latest.seq) continue;
+    const payload = asRecord(frame.payload);
+    const tokens = payload ? asRecord(payload.tokens) : null;
+    if (!tokens) continue;
+    const cache = asRecord(tokens.cache);
+    const cached = readNumber(cache?.read) ?? 0;
+    const used =
+      readNumber(tokens.total) ??
+      (readNumber(tokens.input) ?? 0) +
+        cached +
+        (readNumber(cache?.write) ?? 0) +
+        (readNumber(tokens.output) ?? 0);
+    if (used <= 0) continue;
+    latest = {
+      seq: frame.seq,
+      context: { used, cached, window: readNumber(payload?.contextWindow) },
+    };
+  }
+  return latest?.context ?? null;
+}
+
 const TASK_CHILD_ID = /<task\s+id="([^"]+)"/;
 const TASK_RESULT = /<task_result>\s*([\s\S]*?)\s*<\/task_result>/;
 

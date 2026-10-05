@@ -29,6 +29,38 @@ function providerFrame(
 }
 
 describe("Pi RPC canonical bridge mapping", () => {
+  test("carries cache buckets, the total and the model window on usage frames", () => {
+    const bodies = createPiRpcFrameMapper("m", 200_000)({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        timestamp: 5,
+        stopReason: "stop",
+        usage: { input: 2, output: 1, cacheRead: 40, cacheWrite: 3, totalTokens: 46, cost: { total: 0.02 } },
+        content: [{ type: "text", text: "done" }],
+      },
+    });
+    const usage = bodies.find((body) => body.kind === "usage.updated");
+    expect(usage).toEqual({
+      kind: "usage.updated",
+      inputTokens: 2,
+      outputTokens: 1,
+      cacheReadTokens: 40,
+      cacheWriteTokens: 3,
+      totalTokens: 46,
+      costUsd: 0.02,
+      contextWindow: 200_000,
+    });
+    const sequencer = new NativeBridgeSequencer("s", () => 1);
+    const event = piBridgeProviderEvent({ runId: "run", threadId: "thread" }, sequencer.frame(usage!));
+    expect(event.eventType).toBe("part.step-finish");
+    expect(event.payload).toMatchObject({
+      tokens: { input: 2, output: 1, cache: { read: 40, write: 3 }, total: 46 },
+      cost: 0.02,
+      contextWindow: 200_000,
+    });
+  });
+
   test("maps a bounded MCP tool lifecycle without losing call identity", () => {
     expect(piRpcFrameBodies({
       type: "tool_execution_start",

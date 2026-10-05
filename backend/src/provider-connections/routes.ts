@@ -4,10 +4,12 @@ import { orgScope } from "../middleware/org";
 import {
   cancelManagedCodexChatGptLogin,
   readManagedCodexChatGptStatus,
+  readManagedCodexRateLimits,
   revokeManagedCodexChatGptLogin,
   startManagedCodexChatGptLogin,
   type CodexAppServerLoginStartResult,
   type CodexChatGptStatus,
+  type CodexRateLimits,
 } from "./codex-app-server";
 import {
   getCurrentUserProviderConnection,
@@ -36,6 +38,9 @@ export interface CodexChatGptOAuthLifecycle {
   status(input: {
     scope: { orgId: string; userId: string };
   }): Promise<CodexChatGptStatus>;
+  limits(input: {
+    scope: { orgId: string; userId: string };
+  }): Promise<CodexRateLimits | null>;
   cancel(input: {
     scope: { orgId: string; userId: string };
     loginId: string;
@@ -48,6 +53,7 @@ export interface CodexChatGptOAuthLifecycle {
 const defaultCodexChatGptOAuthLifecycle: CodexChatGptOAuthLifecycle = {
   start: startManagedCodexChatGptLogin,
   status: readManagedCodexChatGptStatus,
+  limits: readManagedCodexRateLimits,
   cancel: cancelManagedCodexChatGptLogin,
   revoke: revokeManagedCodexChatGptLogin,
 };
@@ -96,6 +102,15 @@ export function createProviderConnectionsRoutes(input: {
     if (!scope) return c.json({ error: "user_required" }, 403);
     const status = await codexChatGptOAuth.status({ scope });
     return c.json({ status });
+  });
+
+  // The subscription's rolling usage windows for the Usage card; null when
+  // no ChatGPT account is signed in for this user.
+  providerConnectionsRoutes.get("/openai/chatgpt-oauth/limits", async (c) => {
+    const scope = requireUserScope(c);
+    if (!scope) return c.json({ error: "user_required" }, 403);
+    const limits = await codexChatGptOAuth.limits({ scope });
+    return c.json({ limits });
   });
 
   providerConnectionsRoutes.post("/openai/chatgpt-oauth/cancel", async (c) => {

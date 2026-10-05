@@ -2,6 +2,7 @@ export type CodexAppServerAccountMethod =
   | "account/login/start"
   | "account/login/cancel"
   | "account/read"
+  | "account/rateLimits/read"
   | "account/logout";
 
 export interface CodexAppServerClient {
@@ -55,6 +56,20 @@ export interface CodexChatGptStatus {
     planType: string | null;
   } | null;
   requiresOpenaiAuth: boolean;
+}
+
+/** One rolling usage window of a subscription (the 5-hour and weekly limits). */
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  /** Unix seconds when the window resets, when the provider reports it. */
+  resetsAt: number | null;
+}
+
+export interface CodexRateLimits {
+  planType: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
 }
 
 export interface CodexChatGptRefreshRequest {

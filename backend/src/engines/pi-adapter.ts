@@ -91,7 +91,7 @@ export function makePiAdapter(dependencies: PiAdapterDependencies = defaults): E
           session: established.session,
           bridge,
           prompt: composeTurnPrompt(ctx, established.resumed, executionCapabilities),
-          mapFrame: createPiRpcFrameMapper(`pi-message-${ctx.runId}`),
+          mapFrame: createPiRpcFrameMapper(`pi-message-${ctx.runId}`, bridge.contextWindow ?? undefined),
           redact: prepared.redact,
         });
         await ctx.emit({ kind: "done", label: "Done", chip: null });

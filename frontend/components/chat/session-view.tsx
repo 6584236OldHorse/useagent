@@ -15,6 +15,7 @@ import {
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
 import { replyRunBody } from "@/components/chat/reply-run-body";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { deriveThreadContext } from "@/components/chat/native-events";
 import { AgentsRail } from "@/components/chat/agents-rail";
 import { deriveThreadGatewayChildren } from "@/components/chat/gateway-children";
 import {
@@ -191,6 +192,15 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   const allCanonicalEvents = useMemo(() => turns.flatMap((t) => t.canonical ?? []), [turns]);
   // Subagent fidelity is derived from native frames across the WHOLE thread.
   const allFrames = useMemo(() => turns.flatMap((t) => t.native?.nativeFrames ?? []), [turns]);
+  // The composer's context meter follows the newest turn that reported usage.
+  const composerContext = useMemo(() => {
+    for (const turn of turns.toReversed()) {
+      const native = turn.native;
+      const context = native ? deriveThreadContext(native.nativeFrames, native.childSessionIds) : null;
+      if (context) return context;
+    }
+    return null;
+  }, [turns]);
   // Gateway child sessions across the whole thread (child_session_create fan-out)
   // - deferred serial thread turns the agent spawned. The rail lists them all
   // (the inline fold groups the same rows per parent turn).
@@ -751,6 +761,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             repoRevisions={Object.fromEntries(
               newest.repo_specs.map((spec) => [spec.repo, spec.branch]),
             )}
+            composerContext={composerContext}
             resourceMentions={!isProductChild}
             composerLocked={composerRelationshipBlocked || readOnlyMessage !== undefined}
             composerLockedMessage={readOnlyMessage ?? "Verifying child session…"}

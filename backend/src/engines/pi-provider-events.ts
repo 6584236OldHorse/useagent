@@ -127,8 +127,14 @@ export function piBridgeProviderEvent(
         eventType: "part.step-finish",
         nativeMessageId: `pi:${nativeSessionId}:assistant`,
         payload: {
-          tokens: { input: body.inputTokens, output: body.outputTokens },
+          tokens: {
+            input: body.inputTokens,
+            output: body.outputTokens,
+            cache: { read: body.cacheReadTokens, write: body.cacheWriteTokens },
+            total: body.totalTokens,
+          },
           cost: body.costUsd,
+          contextWindow: body.contextWindow,
           bridgeSeq: frame.seq,
         },
       };

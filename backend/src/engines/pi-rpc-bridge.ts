@@ -71,6 +71,8 @@ type PiRpcCommandInput = RpcCommand extends infer Command
 export interface PiBridgeSession {
   readonly sessionId: string;
   readonly sessionFile: string;
+  /** The session model's context window in tokens, when Pi reported one. */
+  readonly contextWindow?: number | null;
   readonly sandboxId: string;
   readonly fingerprint: string;
   /** Binding authority captured when a constrained run created/resumed this bridge. */
@@ -139,6 +141,7 @@ class LivePiBridgeSession implements PiBridgeSession {
   #protocolFailed = false;
   #disposed = false;
   #disposePromise: Promise<void> | undefined;
+  readonly contextWindow: number | null = null;
 
   private constructor(
     private readonly transport: PiRpcTransport,
@@ -239,9 +242,11 @@ class LivePiBridgeSession implements PiBridgeSession {
       const sessionId = typeof data?.sessionId === "string" ? data.sessionId : null;
       const sessionFile = typeof data?.sessionFile === "string" ? data.sessionFile : null;
       if (!sessionId || !sessionFile) throw new Error("Pi RPC did not report a persistent session");
+      const contextWindow = objectValue(data?.model)?.contextWindow;
       Object.defineProperties(instance, {
         sessionId: { value: sessionId },
         sessionFile: { value: sessionFile },
+        contextWindow: { value: typeof contextWindow === "number" ? contextWindow : null },
       });
       return instance;
     } catch (error) {

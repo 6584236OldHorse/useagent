@@ -53,7 +53,11 @@ type NativeBridgeFramePayload =
       readonly kind: "usage.updated";
       readonly inputTokens?: number;
       readonly outputTokens?: number;
+      readonly cacheReadTokens?: number;
+      readonly cacheWriteTokens?: number;
+      readonly totalTokens?: number;
       readonly costUsd?: number;
+      readonly contextWindow?: number;
     }
   | {
       readonly kind: "child.started";

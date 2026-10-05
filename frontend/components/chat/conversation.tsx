@@ -38,6 +38,9 @@ import {
 } from "@/components/chat/question-state";
 import { ReplyComposer } from "@/components/chat/reply-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
+import type { ThreadContext } from "@/components/chat/native-events";
+import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
 import { type GatewayChildSession, SubagentsFold } from "@/components/chat/subagents-fold";
 import { buildTimeline, hasNarration } from "@/components/chat/timeline";
 import {
@@ -466,6 +469,7 @@ export const Conversation = memo(function Conversation({
   runStartedAt,
   prefill,
   repoRevisions,
+  composerContext = null,
   resourceMentions = true,
   onTurnsNeeded,
   composerLocked = false,
@@ -528,6 +532,8 @@ export const Conversation = memo(function Conversation({
    *  proposal); each request carries a fresh nonce so repeats re-apply. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
   repoRevisions?: Readonly<Record<string, string | null>>;
+  /** How full the thread's context window is (null until a step reports usage). */
+  composerContext?: ThreadContext | null;
   resourceMentions?: boolean;
   composerLocked?: boolean;
   composerLockedMessage?: string;
@@ -794,6 +800,27 @@ export const Conversation = memo(function Conversation({
         enableMentions={resourceMentions && composerAcceptsRunResources(pendingQuestion ?? null)}
         enableUploads={composerAcceptsRunResources(pendingQuestion ?? null)}
         repoRevisions={repoRevisions}
+        status={
+          <ComposerStatusBar
+            branch={Object.values(repoRevisions ?? {})[0] ?? null}
+            project={Object.keys(repoRevisions ?? {})[0]?.split("/").at(-1) ?? null}
+            agent={engineDisplayLabel(defaultEngine)}
+            context={composerContext}
+            onCompact={
+              commands?.some((c) => c.name === "compact")
+                ? () =>
+                    void onReply(
+                      "/compact",
+                      defaultEngine,
+                      defaultModel,
+                      crypto.randomUUID(),
+                      defaultMemoryScope,
+                      { name: "compact", args: "" },
+                    )
+                : undefined
+            }
+          />
+        }
       />
     </div>
   );
