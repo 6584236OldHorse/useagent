@@ -17,7 +17,8 @@ import type { SlashCommand } from "@/components/chat/slash-command";
 import { compactAvailable } from "@/components/chat/composer-model";
 import { cleanPrompt, type EngineId, type MemoryScope, modelLabel, type PermissionMode } from "@/components/chat/types";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
-import { PermissionModeChip, permissionModeFor } from "@/components/pro/permission-mode-chip";
+import { permissionModeFor } from "@/components/chat/permission-mode";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-messages";
 import { RunningFooter } from "@/components/pro/running-footer";
 import {

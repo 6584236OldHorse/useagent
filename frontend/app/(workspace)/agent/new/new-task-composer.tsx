@@ -47,7 +47,8 @@ import {
   partitionModelOptions,
   type PermissionMode,
 } from "@/components/chat/types";
-import { PermissionModeChip, permissionModeFor } from "@/components/pro/permission-mode-chip";
+import { permissionModeFor } from "@/components/chat/permission-mode";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
