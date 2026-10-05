@@ -2690,8 +2690,8 @@ describe("slack workspace identity (fail closed)", () => {
     const signUp = await fetchApi("/api/auth/sign-up/email", { method: "POST", body: { name: "New Comer", email, password: "password-1234" } });
     expect(signUp.status).toBe(200);
     const cookies = signUp.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
-    const accepted = await json("/api/auth/organization/accept-invitation", { method: "POST", cookies, body: { invitationId: (row as { id: string }).id } });
-    expect(accepted.status).toBe(200);
+    const accepted = await json<{ message?: string; code?: string }>("/api/auth/organization/accept-invitation", { method: "POST", cookies, body: { invitationId: (row as { id: string }).id } });
+    expect(`${accepted.status} ${accepted.body.message ?? ""} ${accepted.body.code ?? ""}`.trim()).toBe("200");
     await waitFor(async () => rec.messages.find((m) => m.channel === slackUserId && m.text.includes("You are in")) ?? null);
     const fourth = uid("fourth");
     await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${fourth}`, ts: `${uid("ts")}.4` }));
@@ -3022,6 +3022,30 @@ describe("slack workspace identity (fail closed)", () => {
     expect((binding as { user_id: string }).user_id).toBe((a as { id: string }).id); // A stands
     const [row] = await db.execute(sql`select status from slack_access_requests where id = ${requestId}`);
     expect((row as { status: string }).status).toBe("allowed"); // and the old request is closed
+  });
+
+  test("another sender's admission never settles an invitation a typed request is still waiting on", async () => {
+    const listed = () => json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    const alice = `${uid("alice")}@example.test`;
+    // Sender A: no address from Slack; an admin types Alice's address, so A waits on Alice's acceptance.
+    const senderA = `U-${uid("a")}`;
+    const channelA = `D${uid("dm")}`;
+    const silent = { userInfo: async () => null } as unknown as SlackClient;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: senderA, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client: silent })).toBe("asked");
+    const requestA = (await listed()).body.requests.find((r) => r.name === senderA)!;
+    expect((await json<{ status: string }>(`/api/team/access-requests/${requestA.id}/allow`, { method: "POST", body: { email: alice } })).body.status).toBe("invited");
+    // Sender B: Slack itself reports Alice's address; B is admitted as Alice.
+    const senderB = `U-${uid("b")}`;
+    const vouching = { userInfo: async () => ({ name: "Alice via Slack", email: alice, image: null }) } as unknown as SlackClient;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: senderB, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client: vouching })).toBe("asked");
+    const requestB = (await listed()).body.requests.find((r) => r.name === "Alice via Slack")!;
+    expect((await json<{ status: string }>(`/api/team/access-requests/${requestB.id}/allow`, { method: "POST", body: {} })).body.status).toBe("allowed");
+    // A's invitation is untouched, and A's next message still waits on Alice.
+    const [inv] = await db.execute(sql`select i.status from invitation i join slack_access_requests r on r.invitation_id = i.id where r.id = ${requestA.id}`);
+    expect((inv as { status: string }).status).toBe("pending");
+    await postSlack(eventCallback({ type: "message", channel: channelA, channel_type: "im", user: senderA, text: `hi ${uid("x")}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channelA && m.text.includes("An admin has invited you")) ?? null);
+    expect(await db.execute(sql`select 1 from slack_users where team_id = ${TEAM} and slack_user_id = ${senderA}`)).toHaveLength(0);
   });
 
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {

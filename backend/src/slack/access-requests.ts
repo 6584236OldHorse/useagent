@@ -11,7 +11,7 @@
  * made when the person who owns that address accepts it on the web, so a typed
  * address can never claim somebody else's identity. Deny is remembered.
  */
-import { and, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, ne, notExists, or } from "drizzle-orm";
 import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
 import { createPersonalOrgForUser } from "../auth-hooks";
 import { sendSmtp } from "../connectors/email/smtp";
@@ -496,10 +496,26 @@ const strongest = (value: string | null | undefined) =>
 async function settleInvitationsFor(tx: Executor, orgId: string, userId: string): Promise<void> {
   const [account] = await tx.select({ email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
   if (!account) return;
+  // An invitation another Slack sender is still waiting on (a typed address,
+  // awaiting the address owner's acceptance on the web) is left alone: settling
+  // it here would let that sender in on the strength of somebody else's admission.
   const open = await tx
     .select({ id: invitation.id, role: invitation.role })
     .from(invitation)
-    .where(and(eq(invitation.organizationId, orgId), eq(invitation.email, account.email.toLowerCase()), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())));
+    .where(
+      and(
+        eq(invitation.organizationId, orgId),
+        eq(invitation.email, account.email.toLowerCase()),
+        eq(invitation.status, "pending"),
+        gt(invitation.expiresAt, new Date()),
+        notExists(
+          tx
+            .select({ id: slackAccessRequests.id })
+            .from(slackAccessRequests)
+            .where(and(eq(slackAccessRequests.invitationId, invitation.id), eq(slackAccessRequests.status, "invited"))),
+        ),
+      ),
+    );
   if (!open.length) return;
   const [membership] = await tx
     .select({ id: member.id, role: member.role })
