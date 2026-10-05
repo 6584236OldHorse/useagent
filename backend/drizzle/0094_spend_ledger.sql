@@ -1,6 +1,6 @@
 -- fast-deploy: expansion-safe
 -- Spend ledger: each member's allowance and settled spend per organisation, and
--- the per-run charge that keeps accrual idempotent.
+-- the per-charge record that keeps accrual idempotent.
 CREATE TABLE IF NOT EXISTS "spend_accounts" (
 	"org_id" text NOT NULL,
 	"user_id" text NOT NULL,
@@ -12,10 +12,11 @@ CREATE TABLE IF NOT EXISTS "spend_accounts" (
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "spend_entries" (
-	"run_id" text PRIMARY KEY NOT NULL REFERENCES "runs"("id") ON DELETE CASCADE,
+	"charge_key" text PRIMARY KEY NOT NULL,
 	"org_id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"cost_usd" numeric(14, 6) NOT NULL,
+	"tokens" integer DEFAULT 0 NOT NULL,
 	"source" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );

@@ -24,9 +24,13 @@ export function useSpend(): SpendSnapshot | null {
     }
   }, []);
 
-  useOrgChanges((change) => {
-    if (change.type === "run" && (change.action === "settled" || change.action === "cancelled")) void load();
-  });
+  useOrgChanges(
+    (change) => {
+      if (change.type === "run" && (change.action === "settled" || change.action === "cancelled")) void load();
+    },
+    // A settlement missed while the org stream was down is caught up on reconnect.
+    () => void load(),
+  );
 
   useEffect(() => {
     const ctrl = new AbortController();

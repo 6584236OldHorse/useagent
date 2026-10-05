@@ -12,7 +12,9 @@ import { captureChatExchange } from "./capture";
 import { chatModelCatalog } from "./models";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
-import { chatModel, streamChat, type ChatMessage } from "./stream";
+import { chatModel, newChatAccount, streamChat, type ChatMessage } from "./stream";
+import { chargeChatTurn } from "./turn";
+import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 
 /**
  * Lightweight Chat API (#122) - mounted at /api/chat. A NO-SANDBOX conversational
@@ -101,6 +103,14 @@ chatRoutes.post("/", async (c) => {
   if (!resolved) {
     return c.json({ error: "chat is not configured (no OpenRouter credential)" }, 503);
   }
+  // The same allowance every run ingress enforces, before any model call: a
+  // member at the cap is refused here too, and the turn below is charged.
+  try {
+    await assertSpendAllowance(orgId, userId);
+  } catch (error) {
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
+    throw error;
+  }
   console.info(`[chat] org ${orgId} served by ${resolved.source}`);
 
   // Retrieve against the latest user message; the surface is stateless so a
@@ -143,6 +153,7 @@ chatRoutes.post("/", async (c) => {
       };
       if (signal.aborted) return cleanup();
       signal.addEventListener("abort", cleanup);
+      const account = newChatAccount();
 
       void (async () => {
         try {
@@ -174,7 +185,7 @@ chatRoutes.post("/", async (c) => {
           ].filter(Boolean).join("\n\n");
           const llmMessages: ChatMessage[] = [{ role: "system", content: system }, ...messages];
           let answer = "";
-          for await (const delta of streamChat(llmMessages, model, resolved.value, signal)) {
+          for await (const delta of streamChat(llmMessages, model, resolved.value, signal, account)) {
             if (closed) return;
             answer += delta;
             sendEvent("delta", { delta });
@@ -190,6 +201,8 @@ chatRoutes.post("/", async (c) => {
         } catch {
           if (!closed) sendEvent("error", { error: "chat request failed" });
         } finally {
+          // Charged however the stream ended; the response never waits on it.
+          void chargeChatTurn({ orgId, userId, account, credential: resolved });
           cleanup();
         }
       })();

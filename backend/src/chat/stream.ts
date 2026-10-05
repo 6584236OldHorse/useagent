@@ -46,12 +46,20 @@ interface StreamChunk {
 
 /** What one streamed completion cost, as the provider reported it at the end. */
 export interface ChatUsage {
-  /** The provider's generation id, the key for reading the settled charge back. */
-  readonly generationId: string | null;
   readonly totalTokens: number;
   /** USD as streamed; null when the provider sent no figure. */
   readonly cost: number | null;
 }
+
+/** The accounting one stream fills in as it goes: the provider's generation id
+ *  from the FIRST chunk that names it (so an aborted or failed stream can still
+ *  be priced by reading the generation back), and the final chunk's usage. */
+export interface ChatAccount {
+  generationId: string | null;
+  usage: ChatUsage | null;
+}
+
+export const newChatAccount = (): ChatAccount => ({ generationId: null, usage: null });
 
 const finiteNumber = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -67,15 +75,16 @@ function openRouterBaseUrl(): string {
  * an invalid customer key surfaces the real OpenRouter error rather than falling
  * back to the house. Throws ChatStreamError when no key is passed or the call
  * fails; the caller surfaces that as an SSE `error` frame. `signal` aborts the
- * fetch (used for the client's Stop control). `onUsage` receives the final
- * chunk's accounting (tokens, cost, generation id) when the stream carries it.
+ * fetch (used for the client's Stop control). `account`, when given, is filled
+ * in place with the generation id as soon as a chunk names it and with the
+ * final chunk's usage, so the caller can price the turn however it ended.
  */
 export async function* streamChat(
   messages: ChatMessage[],
   model: string,
   apiKey: string,
   signal?: AbortSignal,
-  onUsage?: (usage: ChatUsage) => void,
+  account?: ChatAccount,
 ): AsyncGenerator<string, void, unknown> {
   if (!apiKey) throw new ChatStreamError("no OpenRouter credential resolved");
 
@@ -115,15 +124,17 @@ export async function* streamChat(
         if (data === "[DONE]") return;
         try {
           const chunk = JSON.parse(data) as StreamChunk;
+          if (account && !account.generationId && typeof chunk.id === "string" && chunk.id) {
+            account.generationId = chunk.id;
+          }
           if (chunk.error) throw new ChatStreamError(`openrouter error: ${chunk.error.message}`);
           const delta = chunk.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta.length > 0) yield delta;
-          if (chunk.usage && onUsage) {
-            onUsage({
-              generationId: typeof chunk.id === "string" && chunk.id ? chunk.id : null,
+          if (chunk.usage && account) {
+            account.usage = {
               totalTokens: finiteNumber(chunk.usage.total_tokens) ?? 0,
               cost: finiteNumber(chunk.usage.cost),
-            });
+            };
           }
         } catch (e) {
           if (e instanceof ChatStreamError) throw e;

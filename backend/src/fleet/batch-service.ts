@@ -3,7 +3,7 @@ import { db, type Executor } from "../db/client";
 import { ENGINE_IDS, type EngineId } from "../db/schema";
 import { insertCommandWithRun } from "../commands/repo";
 import { assertRunAdmissionOpen } from "../commands/admission";
-import { assertSandboxMinutes } from "../runs/sandbox-minutes";
+import { assertSpendAllowance } from "../runs/spend";
 import { runIntentFingerprint } from "../commands/fingerprint";
 import type { RunCommandIntent, RunCommandInput } from "../commands/types";
 import {
@@ -274,7 +274,7 @@ export async function acceptFleetBatch(input: {
     if (replay) return { created: false, batch: replay } as const;
 
     await assertRunAdmissionOpen(tx);
-    await assertSandboxMinutes(input.orgId, input.actorId, tx);
+    await assertSpendAllowance(input.orgId, input.actorId, tx);
     const runIds = input.tasks.map(() => crypto.randomUUID());
     for (const [index, task] of input.tasks.entries()) {
       const run = acceptedRun(task, runIds[index]!);

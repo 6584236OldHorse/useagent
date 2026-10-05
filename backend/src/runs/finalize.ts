@@ -409,11 +409,6 @@ export async function finalizeRun(
     }
     applied = true;
     await releaseLeaseForRun(runId, tx);
-    // Spend ledger: charge the settled run's real cost to its member ONCE, in
-    // this transaction, for both terminal statuses (a failed turn still spent).
-    // ponytail: usage a provider reports after settlement is not charged; add a
-    // post-seal top-up if an engine ever streams its usage late.
-    await accrueRunSpend(run, tx);
     if (executionGraph && run.orgId) {
       if (effectiveStatus !== "completed" && effectiveStatus !== "failed") {
         throw new Error("execution_graph_seal_requires_terminal_run");
@@ -513,6 +508,14 @@ export async function finalizeRun(
         tx,
       );
     }
+
+    // Spend ledger: charge the settled run's real cost to its member ONCE, in
+    // this transaction, for both terminal statuses (a failed turn still spent).
+    // LAST on purpose: the account upsert takes the member's row lock, and the
+    // transaction must not wait for anything else while holding it.
+    // ponytail: usage a provider reports after settlement is not charged; add a
+    // post-seal top-up if an engine ever streams its usage late.
+    await accrueRunSpend(run, tx);
   });
 
   if (!applied) return { applied: false };
