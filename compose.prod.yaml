@@ -1,8 +1,16 @@
 name: useagent-${USEAGENT_RELEASE_COLOR:?set USEAGENT_RELEASE_COLOR to blue or green}
 
+# Logs go to the host journal (rotated by journald) so they survive the blue/green
+# container swap; json-file logs were deleted with each replaced container.
+x-logging: &logging
+  driver: journald
+  options:
+    tag: "useagent-{{.Name}}"
+
 services:
   backend:
     image: ${USEAGENT_BACKEND_IMAGE:?set an immutable backend image digest}
+    logging: *logging
     network_mode: host
     labels:
       io.useagent.release.color: ${USEAGENT_RELEASE_COLOR}
@@ -57,6 +65,7 @@ services:
 
   gateway:
     image: ${USEAGENT_GATEWAY_IMAGE:?set an immutable gateway image digest}
+    logging: *logging
     network_mode: host
     labels:
       io.useagent.release.color: ${USEAGENT_RELEASE_COLOR}
@@ -95,6 +104,7 @@ services:
 
   frontend:
     image: ${USEAGENT_FRONTEND_IMAGE:?set an immutable frontend image digest}
+    logging: *logging
     network_mode: host
     labels:
       io.useagent.release.color: ${USEAGENT_RELEASE_COLOR}
