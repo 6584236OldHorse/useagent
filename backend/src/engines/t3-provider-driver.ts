@@ -1,4 +1,5 @@
 import type { HarnessRuntime, HarnessSession } from "@useagent/agent-harness/canonical";
+import { turnRunIds } from "./turn-recovery";
 import {
   providerProtocolIdentity,
   providerDriverUnsupported,
@@ -205,13 +206,21 @@ function snapshotMatchesAcceptedRun(
 ): boolean {
   const latestTurn = snapshot.thread.latestTurn;
   if (!latestTurn) return false;
-  const accepted = snapshot.thread.messages.find(
-    (message) => message.role === "user" && message.id === runtimeUserMessageId(runId),
-  );
-  if (!accepted) return false;
-  if (accepted.turnId !== null) return accepted.turnId === latestTurn.turnId;
-  if (!accepted.createdAt || !latestTurn.requestedAt) return false;
-  const acceptedAt = Date.parse(accepted.createdAt);
+  // The run answers for its highest accepted attempt: the continuation the
+  // plane sent, if the runtime accepted one, else the run's own message. A
+  // continuation that has not started yet leaves the run pending; the
+  // original's completed turn is not its answer. The runtime may leave a
+  // message's turn id unset; each attempt is requested at its own time, and
+  // the turn carries that time.
+  const attempts = turnRunIds(runId).map((id) => runtimeUserMessageId(id));
+  const latest = attempts
+    .map((id) => snapshot.thread.messages.find((message) => message.role === "user" && message.id === id))
+    .filter((message) => message !== undefined)
+    .at(-1);
+  if (!latest) return false;
+  if (latest.turnId !== null) return latest.turnId === latestTurn.turnId;
+  if (!latest.createdAt || !latestTurn.requestedAt) return false;
+  const acceptedAt = Date.parse(latest.createdAt);
   const requestedAt = Date.parse(latestTurn.requestedAt);
   return Number.isFinite(acceptedAt) && acceptedAt === requestedAt;
 }
@@ -224,8 +233,16 @@ function reconciledRuntimeEvents(
   const latestTurnId = snapshot.thread.latestTurn?.turnId;
   const context = checkpoint?.eventContext;
   if (!latestTurnId || !context) return undefined;
+  // Every turn the run owns: its own message's, each continuation's, and the
+  // latest. A first turn whose events were lost before the continuation is
+  // restored with it.
+  const ownedMessageIds = new Set(turnRunIds(context.runId).map((id) => runtimeUserMessageId(id)));
+  const ownedTurnIds = new Set<string>([latestTurnId]);
+  for (const message of snapshot.thread.messages) {
+    if (message.role === "user" && ownedMessageIds.has(message.id) && message.turnId !== null) ownedTurnIds.add(message.turnId);
+  }
   return snapshot.thread.activities
-    .filter((activity) => activity.turnId === latestTurnId)
+    .filter((activity) => activity.turnId !== null && ownedTurnIds.has(activity.turnId))
     .map((activity) => {
       const event = runtimeActivityProviderEvent(
         { runId: context.runId, threadId: context.threadId },

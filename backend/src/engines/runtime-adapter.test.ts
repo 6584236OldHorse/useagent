@@ -461,8 +461,11 @@ describe("T3 run adapter gate", () => {
     expect(reloadSource).not.toContain("/config");
     expect(reloadSource).not.toContain("global/dispose");
     expect(source).toContain("? { runtimeMode, createdAt, ...controlMetadata }");
-    expect(source).toContain("activityStep(activity, runtimeThreadId(ctx), engine)");
-    expect(source).toContain("ctx.publishDelta?.(delta)");
+    // Native activity projection lives with the turn projector the adapter drives.
+    const projectorSource = readFileSync(new URL("./turn-projector.ts", import.meta.url), "utf8");
+    expect(projectorSource).toContain("activityStep(activity, threadId, engine)");
+    expect(projectorSource).toContain("ctx.publishDelta?.(projection.delta)");
+    expect(source).toContain("projector.apply(snapshot, (activity) => watchdog.observeActivity(activity))");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
     expect(source).toContain('"turn aborted",');

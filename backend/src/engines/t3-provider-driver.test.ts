@@ -412,6 +412,40 @@ describe("T3 provider drivers", () => {
     });
   });
 
+  test("a continuation with no turn id on its message is matched by its request time", async () => {
+    const thread = (latestTurn: { turnId: string; requestedAt: string }, continuationStarted: boolean): RuntimeThreadSnapshot => ({
+      snapshotSequence: 3,
+      thread: {
+        id: "skynet-thread-thread-1",
+        latestTurn: { ...latestTurn, state: "completed", assistantMessageId: continuationStarted ? "assistant-b" : null },
+        messages: [
+          { id: "skynet-message-run-2", role: "user", text: "Original", turnId: null, streaming: false, createdAt: "2026-09-05T00:01:00.000Z" },
+          { id: "skynet-message-run-2-continue-2", role: "user", text: "Continue", turnId: null, streaming: false, createdAt: "2026-09-05T00:02:00.000Z" },
+          ...(continuationStarted
+            ? [{ id: "assistant-b", role: "assistant" as const, text: "The answer", turnId: "turn-b", streaming: false }]
+            : []),
+        ],
+        activities: [],
+        session: { status: "ready", lastError: null },
+      },
+    });
+    const request = (snapshot: RuntimeThreadSnapshot) => {
+      const driver = makeT3ProviderDriver("codex", {
+        resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+        requestEnvironment: async <T>() => snapshot as T,
+      });
+      return driver.reconcile!({
+        session: sessionFor(driver),
+        checkpoint: { sinceMs: 10, eventContext: { runId: "run-2", threadId: "thread-1", redact: createSecretRedactor([]) } },
+      });
+    };
+    // The original turn ended; the accepted continuation has not started: pending, not the original's empty answer.
+    expect((await request(thread({ turnId: "turn-a", requestedAt: "2026-09-05T00:01:00.000Z" }, false))).status).toBe("no_change");
+    // The continuation's turn completed: the run is done with its answer.
+    const done = await request(thread({ turnId: "turn-b", requestedAt: "2026-09-05T00:02:00.000Z" }, true));
+    expect(done.status).toBe("completed");
+  });
+
   test("reconciles only the latest turn through the live activity mapper", async () => {
     const secret = "sk-recovery-secret-1234567890";
     const snapshot: RuntimeThreadSnapshot = {
