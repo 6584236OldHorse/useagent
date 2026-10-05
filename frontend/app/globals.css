@@ -3967,6 +3967,25 @@ html {
 .neobrutal :is([class*="text-label"], [class*="text-subheading"]) {
   font-weight: 700;
 }
+/* The sidebar meets the canvas on a stroke, not a shadow. */
+.neobrutal [data-slot="sidebar-container"] {
+  border-right: 2px solid hsl(var(--neutral-950));
+}
+/* Primary CTAs: flat fill, stroke, hard offset. */
+.neobrutal .bg-button-primary {
+  border: 2px solid hsl(var(--neutral-950));
+  box-shadow: var(--shadow-sm);
+}
+/* White cards and panels without a stroke class still read as blocks. */
+.neobrutal .rounded-2xl:is(.bg-background-primary-default, .bg-background-secondary-default, .bg-bg-white-0, .bg-white):not(.border) {
+  border: 2px solid hsl(var(--neutral-950));
+}
+/* Fields: an inset stroke on the base Input's frame that cannot fight the
+ * ring utilities. */
+.neobrutal .rounded-2lg.bg-background-tertiary-default {
+  outline: 2px solid hsl(var(--neutral-950));
+  outline-offset: -2px;
+}
 
 /* custom scale for Remix Icon */
 .remixicon path {
