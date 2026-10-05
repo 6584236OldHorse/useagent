@@ -178,6 +178,15 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
     const piOnCube = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "pi")!;
     expect(piOnCube.files[0]!.path).toBe("/opt/useagent/pi-runtime/manifest/package.json");
   });
+
+  test("let the desktop user start Xorg without root rights when the sandbox runs unprivileged", () => {
+    // With root rights the server's shared-memory segments belong to root and the user's x11vnc
+    // dies on MIT-SHM BadAccess, so the stream never opens (proved on the local image).
+    const box = nativeImageSteps(BOX_LAYOUT, inputs()).find((step) => step.name === "desktop")!;
+    const cube = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "desktop")!;
+    expect(box.command).toContain("allowed_users=anybody\nneeds_root_rights=no\n");
+    expect(cube.command).toContain("allowed_users=anybody\nneeds_root_rights=yes\n");
+  });
 });
 
 describe("native image Dockerfile", () => {

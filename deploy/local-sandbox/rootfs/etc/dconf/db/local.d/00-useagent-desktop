@@ -1,0 +1,61 @@
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='Adwaita'
+icon-theme='Adwaita'
+cursor-theme='Adwaita'
+font-name='Cantarell 11'
+document-font-name='Cantarell 11'
+monospace-font-name='Monospace 11'
+[org/gnome/desktop/wm/preferences]
+button-layout='appmenu:minimize,maximize,close'
+titlebar-font='Cantarell Bold 11'
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'
+picture-uri-dark='file:///usr/share/backgrounds/gnome/adwaita-d.webp'
+primary-color='#023c88'
+show-desktop-icons=false
+[org/gnome/desktop/screensaver]
+idle-activation-enabled=false
+lock-enabled=false
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+[org/gnome/desktop/lockdown]
+disable-lock-screen=true
+[com/solus-project/budgie-panel]
+dark-theme=true
+panels=['11111111-1111-4111-8111-111111111111']
+[com/solus-project/budgie-panel/panels/{11111111-1111-4111-8111-111111111111}]
+location='bottom'
+size=36
+spacing=2
+enable-shadow=true
+transparency='none'
+applets=['a1111111-1111-4111-8111-111111111111', 'a2111111-1111-4111-8111-111111111111', 'a3111111-1111-4111-8111-111111111111', 'a4111111-1111-4111-8111-111111111111', 'a5111111-1111-4111-8111-111111111111', 'a6111111-1111-4111-8111-111111111111', 'a7111111-1111-4111-8111-111111111111']
+[com/solus-project/budgie-panel/applets/{a1111111-1111-4111-8111-111111111111}]
+name='Budgie Menu'
+alignment='start'
+position=0
+[com/solus-project/budgie-panel/applets/{a2111111-1111-4111-8111-111111111111}]
+name='Icon Task List'
+alignment='start'
+position=1
+[com/solus-project/budgie-panel/applets/{a3111111-1111-4111-8111-111111111111}]
+name='System Tray'
+alignment='end'
+position=0
+[com/solus-project/budgie-panel/applets/{a4111111-1111-4111-8111-111111111111}]
+name='Notifications'
+alignment='end'
+position=1
+[com/solus-project/budgie-panel/applets/{a5111111-1111-4111-8111-111111111111}]
+name='Status Indicator'
+alignment='end'
+position=2
+[com/solus-project/budgie-panel/applets/{a6111111-1111-4111-8111-111111111111}]
+name='Clock'
+alignment='end'
+position=3
+[com/solus-project/budgie-panel/applets/{a7111111-1111-4111-8111-111111111111}]
+name='Raven Trigger'
+alignment='end'
+position=4

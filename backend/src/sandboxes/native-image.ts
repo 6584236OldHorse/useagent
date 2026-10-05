@@ -243,8 +243,10 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
     `if ! (command -v google-chrome || command -v chromium || command -v chromium-browser) >/dev/null 2>&1; then ${sudo}apt-get install -y -qq --no-install-recommends chromium; fi`,
     `${sudo}rm -rf /var/lib/apt/lists/*`,
     writeFile(sudo, "/etc/X11/xorg.conf.d/10-virtual-display.conf", XORG_VIRTUAL_DISPLAY),
-    // Xorg may be started by whoever owns the desktop process session, root or not.
-    writeFile(sudo, "/etc/X11/Xwrapper.config", "allowed_users=anybody\nneeds_root_rights=yes\n"),
+    // Xorg is started by whoever owns the desktop process session. On a non-root layout it must
+    // run as that user: with root rights the server's shared-memory segments belong to root and
+    // x11vnc (the user's process) dies on MIT-SHM BadAccess, so the stream never opens.
+    writeFile(sudo, "/etc/X11/Xwrapper.config", `allowed_users=anybody\nneeds_root_rights=${layout.runsAsRoot ? "yes" : "no"}\n`),
     writeFile(sudo, "/etc/dconf/profile/user", "user-db:user\nsystem-db:local\n"),
     writeFile(sudo, "/etc/dconf/db/local.d/00-useagent-desktop", DESKTOP_DEFAULTS),
     `${sudo}dconf update`,
