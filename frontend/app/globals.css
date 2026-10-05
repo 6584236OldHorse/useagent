@@ -3976,12 +3976,17 @@ html {
   box-shadow: 4px 4px 0 0 var(--neo-ink);
 }
 /* Arbitrary radii the composer and reply box use. */
-.neobrutal :is(.rounded-20, .rounded-\[20px\], .rounded-t-2xl) {
+.neobrutal :is(.rounded-20, .rounded-\[20px\], .rounded-t-2xl, .rounded-b-2xl) {
   border-radius: 5px;
 }
 .neobrutal .rounded-t-2xl {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
+}
+/* The status tray under the reply box keeps its top edge square against the card. */
+.neobrutal .rounded-b-2xl {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 /* The composer and the reply box: a thicker stroke, the same offset. */
 .neobrutal fieldset.rounded-2xl.shadow-card,

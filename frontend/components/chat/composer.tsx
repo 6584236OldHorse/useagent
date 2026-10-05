@@ -160,7 +160,7 @@ export type ComposerProps = {
    *  "Ask agent to redo"); the text replaces the current draft so the user can send
    *  or edit it. Absent leaves the composer fully user-driven. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
-  /** The status tab on the card's top edge (location, branch, project, engine, context). Compact only. */
+  /** The status tray under the card (location, branch, project, engine, spend, context). Compact only. */
   tab?: ReactNode;
   /** The permission chip for the footer's second column. Compact only. */
   permission?: ReactNode;
@@ -559,7 +559,6 @@ export function Composer({
         </div>
       )}
 
-      {tab}
       {/* No overflow-hidden here: the engine-picker popover opens upward past
           the card edge and must not be clipped. */}
       <div
@@ -784,6 +783,9 @@ export function Composer({
           </div>
         </PromptInput>
       </div>
+      {/* The status tray hangs under the card in every state, so it never moves
+          when a run starts or stops. */}
+      {tab}
     </div>
   );
 }

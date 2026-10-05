@@ -31,6 +31,7 @@ import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { RunningFooter } from "@/components/pro/running-footer";
 import { UsageCard } from "@/components/pro/usage-card";
 import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
@@ -522,12 +523,12 @@ export function SessionSample() {
 
             <Surface
               id="composer-status"
-              title="Reply composer with its status tab"
+              title="Reply composer with its status tray"
               owner="reply-composer · composer-status-bar"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                The status tab hangs off the card&rsquo;s top edge: where the run
-                executes, then the branch and the project, with the engine and the
+                The status tray hangs under the card: where the run executes, then
+                the branch and the project, with the engine, the spend and the
                 context meter at the right. The round add button at the left of the
                 footer opens the attach menu.
               </p>
@@ -544,6 +545,54 @@ export function SessionSample() {
                   onReply={() => {}}
                   permission={
                     <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
+                  status={
+                    <ComposerStatusBar
+                      run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}
+                      branch="rl-staging"
+                      project="gateway"
+                      agent="Codex"
+                      context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                      spend={{ spent: 12.34, allowance: 100, runs: 3 }}
+                    />
+                  }
+                />
+              </div>
+            </Surface>
+
+            <Surface
+              id="composer-running"
+              title="Reply composer while a run is in flight"
+              owner="reply-composer · running-footer · composer-status-bar"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The running footer sits above the card and the send action reads Queue;
+                the status tray stays where it is under the card.
+              </p>
+              <div
+                data-testid="composer-running-sample"
+                className="rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <ReplyComposer
+                  engine="codex"
+                  model="gpt-5.6-sol"
+                  memoryScope="org"
+                  pending={false}
+                  enableUploads
+                  running
+                  onStop={() => {}}
+                  runStartedAt={new Date(Date.now() - 84_000).toISOString()}
+                  onReply={() => {}}
+                  permission={
+                    <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
+                  lead={
+                    <RunningFooter
+                      status={{ phase: "working", label: "Working", sentence: "Editing gateway/routes.ts", toolCalls: 7, agentsRunning: 0, agentsDone: 1 }}
+                      model="GPT-5.6 Sol"
+                      startedAt={new Date(Date.now() - 84_000).toISOString()}
+                      onStop={() => {}}
+                    />
                   }
                   status={
                     <ComposerStatusBar

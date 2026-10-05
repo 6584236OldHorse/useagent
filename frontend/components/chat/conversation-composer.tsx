@@ -34,7 +34,7 @@ import { useSpend } from "@/hooks/use-spend";
  * The reply composer of a thread plus everything that frames it: the running
  * footer while a turn runs (phase, current step, elapsed, Stop), the messages
  * still waiting in the queue as numbered rows, the placeholder for the thread's
- * state, the status tab (location, branch, project, engine, context meter), the
+ * state, the status tray under the card (location, branch, project, engine, context meter), the
  * footer's permission chip and the Compact now action, which is offered only while nothing is
  * pending, queued or running, and whose refusal shows in the same banner a
  * failed turn uses. Dismissing the banner clears only the error it is showing.
