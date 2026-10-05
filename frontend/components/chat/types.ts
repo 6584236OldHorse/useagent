@@ -289,8 +289,6 @@ export function parseFileEntries(step: ApiStep): FileEntry[] {
 
   const entries: FileEntry[] = [];
   for (const item of items) {
-    const path = pickPath(item);
-    if (!path) continue;
     // Full file body, when the engine mirrored it. Live only for whole-file
     // writes (`input.content`); an Edit's `new_string` is a fragment, never the
     // whole file, so it is deliberately NOT treated as content.
@@ -301,6 +299,28 @@ export function parseFileEntries(step: ApiStep): FileEntry[] {
     const body = ["content", "code", "diff"]
       .flatMap((k) => [item[k], input?.[k]])
       .find((v): v is string => typeof v === "string" && v.length > 0);
+    // The runtime projection lists every touched path under `files:[{path, kind?}]`
+    // (top-level for legacy rows, under `input` for tool-shaped ones). A body can
+    // only belong to a single-file change.
+    const files = [item.files, input?.files].find(Array.isArray) as unknown[] | undefined;
+    if (files && files.length > 0) {
+      for (const raw of files) {
+        if (!raw || typeof raw !== "object") continue;
+        const file = raw as Record<string, unknown>;
+        const path = pickPath(file);
+        if (!path) continue;
+        entries.push({
+          path,
+          base: basename(path),
+          dir: parentDir(path),
+          kind: normalizeKind(file.kind ?? file.action ?? file.change ?? item.kind),
+          content: files.length === 1 ? body : undefined,
+        });
+      }
+      continue;
+    }
+    const path = pickPath(item);
+    if (!path) continue;
     entries.push({
       path,
       base: basename(path),
@@ -310,6 +330,29 @@ export function parseFileEntries(step: ApiStep): FileEntry[] {
     });
   }
   return entries;
+}
+
+/** Collapse a run's file steps into a de-duplicated list of touched files,
+ * latest change kind winning, ordered by first appearance. A step whose tool
+ * failed touched nothing, so it is left out. */
+export function filesFromSteps(steps: readonly ApiStep[]): FileEntry[] {
+  const byPath = new Map<string, FileEntry>();
+  for (const step of steps) {
+    if (step.kind !== "file") continue;
+    const code = parseStepCode(step);
+    if (code && typeof code === "object" && (code as Record<string, unknown>).error === true) continue;
+    for (const entry of parseFileEntries(step)) {
+      const existing = byPath.get(entry.path);
+      // Keep original insertion order; refresh the change kind + latest content.
+      byPath.set(
+        entry.path,
+        existing
+          ? { ...existing, kind: entry.kind, content: entry.content ?? existing.content }
+          : entry,
+      );
+    }
+  }
+  return [...byPath.values()];
 }
 
 // ── Trace rows (beautiful-ui verb + target grammar) ─────────────────────────

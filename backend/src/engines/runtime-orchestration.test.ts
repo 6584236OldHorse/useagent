@@ -1374,3 +1374,70 @@ describe("hasOpenRuntimeToolCall", () => {
     expect(hasOpenRuntimeToolCall([])).toBe(false);
   });
 });
+
+describe("activityStep file and command payloads", () => {
+  const completed = (id: string, summary: string, payload: Record<string, unknown>) => ({
+    id,
+    tone: "tool" as const,
+    kind: "tool.completed",
+    summary,
+    payload,
+    turnId: "turn",
+  });
+
+  test("a claude file change recovers its path from the detail string", () => {
+    const step = activityStep(completed("fc-claude", "File change", {
+      itemType: "file_change",
+      toolName: "Write",
+      detail: 'Write: {"file_path":"/w/src/app.ts","content":"export const a = 1;\\n"}',
+      data: { toolCallId: "call-1", toolName: "Write" },
+    }));
+    expect(step.kind).toBe("file");
+    expect(step.code_json).toMatchObject({
+      input: { toolCallId: "call-1", file_path: "/w/src/app.ts", files: [{ path: "/w/src/app.ts" }] },
+    });
+  });
+
+  test("a projected files list is kept whole and names its first path", () => {
+    const step = activityStep(completed("fc-codex", "File change", {
+      itemType: "file_change",
+      detail: "apply_patch",
+      data: { toolCallId: "call-2", files: [{ path: "a.ts" }, { path: "b.ts" }] },
+    }));
+    expect(step.code_json).toMatchObject({
+      input: { file_path: "a.ts", files: [{ path: "a.ts" }, { path: "b.ts" }] },
+    });
+  });
+
+  test("a path-less file change is passed through untouched", () => {
+    const step = activityStep(completed("fc-none", "File change", {
+      itemType: "file_change",
+      detail: "Edit: [unserializable input]",
+      data: { toolCallId: "call-3" },
+    }));
+    expect(step.code_json).toMatchObject({ input: { toolCallId: "call-3" } });
+    expect((step.code_json as { input: Record<string, unknown> }).input.files).toBeUndefined();
+  });
+
+  test("a codex command reports its captured output, not the command line", () => {
+    const step = activityStep(completed("cmd-codex", "Command run", {
+      itemType: "command_execution",
+      detail: "bun test",
+      data: {
+        toolCallId: "call-4",
+        command: "bun test",
+        item: { command: "bun test", aggregatedOutput: "54 pass, 0 fail" },
+      },
+    }));
+    expect(step.code_json).toMatchObject({ input: { command: "bun test" }, output: "54 pass, 0 fail" });
+  });
+
+  test("a command without captured output keeps the detail as before", () => {
+    const step = activityStep(completed("cmd-plain", "Command run", {
+      itemType: "command_execution",
+      detail: "ls -la",
+      data: { toolCallId: "call-5", command: "ls -la" },
+    }));
+    expect(step.code_json).toMatchObject({ output: "ls -la" });
+  });
+});

@@ -95,6 +95,62 @@ function runtimeToolInput(
     payload;
 }
 
+const FILE_PATH_KEYS = ["file_path", "filePath", "path", "filename"] as const;
+
+function stringField(value: unknown, key: string): string | null {
+  const field = record(value)?.[key];
+  return typeof field === "string" && field.trim() ? field.trim() : null;
+}
+
+/**
+ * Every path a projected file change names. The runtime's activity projection
+ * rewrites file tool inputs to `files:[{path}]` and its collector does not know
+ * Claude's `file_path`, so a Claude edit reaches this adapter with no path in its
+ * data at all; the only copy is the `detail` string the Claude adapter builds
+ * from the tool input (`Write: {"file_path":"…"}`), read here as a last resort.
+ */
+export function runtimeFilePaths(input: unknown, detail: string | undefined): string[] {
+  const paths: string[] = [];
+  const push = (path: string | null): void => {
+    if (path && !paths.includes(path)) paths.push(path);
+  };
+  const data = record(input);
+  const files = Array.isArray(data?.files) ? data.files : [];
+  for (const entry of files) push(stringField(entry, "path"));
+  for (const key of FILE_PATH_KEYS) push(stringField(data, key));
+  if (paths.length === 0 && detail) {
+    const match = /"(?:file_path|filePath|path)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(detail);
+    if (match) {
+      try {
+        push(JSON.parse(`"${match[1]}"`) as string);
+      } catch {
+        // Not a JSON string literal after all; the row stays path-less.
+      }
+    }
+  }
+  return paths;
+}
+
+/** File-change input with one uniform shape for the UI: `file_path` names the
+ * first file and `files` lists every one (the runtime's own entries kept when
+ * present, since they may carry a change kind). */
+function fileChangeInput(input: unknown, detail: string | undefined): unknown {
+  const paths = runtimeFilePaths(input, detail);
+  if (paths.length === 0) return input;
+  const data = record(input) ?? {};
+  const files = Array.isArray(data.files) && data.files.length > 0
+    ? data.files
+    : paths.map((path) => ({ path }));
+  return { ...data, file_path: paths[0], files };
+}
+
+/** The captured output of a command item. The runtime nests Codex's command
+ * result under `data.item` (`aggregatedOutput`, or `result.content`), while the
+ * payload's `detail` is the command line itself; the UI wants the former. */
+function commandOutput(item: Readonly<Record<string, unknown>> | null): string | null {
+  return stringField(item, "aggregatedOutput") ?? stringField(record(item?.result), "content");
+}
+
 /**
  * T3 deliberately keeps provider-native tool records lossless. Codex MCP calls
  * arrive under `data.item`, while other providers expose their identity at the
@@ -594,6 +650,12 @@ export function activityStep(activity: RuntimeActivity, rootSessionId?: string):
       ? runtimeAttributedChildParentSessionId(activity, payload, rootSessionId)
       : null;
     const tool = toolActivityName(itemType, projection.tool, isSubagent);
+    const input = itemType === "file_change"
+      ? fileChangeInput(projection.input, detail)
+      : projection.input;
+    const output = itemType === "command_execution"
+      ? commandOutput(projection.item) ?? detail
+      : detail;
     return {
       kind: itemType === "file_change" ? "file" : isSubagent ? "task" : "command",
       label: toolActivityLabel(activity, projection, tool),
@@ -603,9 +665,9 @@ export function activityStep(activity: RuntimeActivity, rootSessionId?: string):
         activityId: activity.id,
         activityKind: activity.kind,
         tool,
-        input: projection.input,
+        input,
         ...(projection.server ? { server: projection.server } : {}),
-        ...(detail ? { output: detail } : {}),
+        ...(output ? { output } : {}),
         error: activity.tone === "error" ||
           activity.kind === "tool.denied" ||
           runtimeToolResultFailed(activity),
