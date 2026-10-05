@@ -221,8 +221,18 @@ describe("canonical context markers", () => {
     mem.ingestNative(skynetFrame("kn_run-1", 1, "context.retrieved", { source: "knowledge", itemCount: 2 }), 0);
     const markers = buildTimeline(mem.getSnapshot(), false)!.filter((n) => n.kind === "marker");
     expect(markers).toHaveLength(2);
-    expect(markers[0]).toMatchObject({ marker: { source: "memory", itemCount: 1 } });
-    expect(markers[1]).toMatchObject({ marker: { source: "knowledge", itemCount: 2 } });
+    expect(markers[0]).toMatchObject({ marker: { source: "memory", itemCount: 1, degraded: false } });
+    expect(markers[1]).toMatchObject({ marker: { source: "knowledge", itemCount: 2, degraded: false } });
+  });
+
+  test("context.retrieved with degraded:true is an outage marker (legacy frames default to false)", () => {
+    const s = createNativeStore();
+    s.reset([], 0);
+    s.ingestNative(skynetFrame("ctxret_run-1", 0, "context.retrieved", { itemCount: 0, degraded: true, query: "q" }), 0);
+    expect(buildTimeline(s.getSnapshot(), false)![0]).toMatchObject({
+      kind: "marker",
+      marker: { kind: "context", source: "memory", itemCount: 0, query: "q", degraded: true },
+    });
   });
 });
 

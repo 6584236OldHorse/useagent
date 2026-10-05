@@ -202,7 +202,7 @@ function toTimelineMarker(e: CanonicalEventLike): TimelineMarker {
   if (t === "memory") {
     return { kind: "memory", op: "remember", scope: "org", failed: false, reconciled: false };
   }
-  return { kind: "context", source: t ?? "context", itemCount: 0, query: null };
+  return { kind: "context", source: t ?? "context", itemCount: 0, query: null, degraded: false };
 }
 
 type Ranked = { node: TimelineNode; k0: number; k1: number; k2: number };

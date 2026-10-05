@@ -228,12 +228,14 @@ export const conversation: SampleTurn[] = [
         source: "memory",
         itemCount: 3,
         query: "gateway middleware conventions",
+        degraded: false,
       }),
       marker("m-ctx-kb", {
         kind: "context",
         source: "knowledge",
         itemCount: 5,
         query: "token bucket rate limiting",
+        degraded: false,
       }),
       reasoning(
         "r-1",

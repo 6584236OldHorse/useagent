@@ -141,5 +141,7 @@ export interface RecallLedgerRow {
   items: { content: string; sourceScope: MemoryScope }[];
   latencyMs: number;
   truncated: boolean;
+  /** The memory service was unreachable for this run's recall. */
+  degraded: boolean;
   createdAt: string;
 }

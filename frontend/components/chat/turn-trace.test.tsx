@@ -29,7 +29,7 @@ const NODES: TimelineNode[] = [
   {
     kind: "marker",
     key: "m1",
-    marker: { kind: "context", source: "memory", itemCount: 4, query: null },
+    marker: { kind: "context", source: "memory", itemCount: 4, query: null, degraded: false },
   },
   { kind: "reasoning", key: "r1", text: "Check the log first." },
   toolNode("s1", {

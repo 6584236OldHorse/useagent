@@ -269,6 +269,17 @@ function markerRow(key: string, marker: TimelineMarker, running: boolean): Trace
       };
     case "context": {
       const known = marker.source === "knowledge" || marker.source === "memory";
+      if (marker.degraded) {
+        // An outage frame - the store was unreachable, never a 0-hit recall.
+        return {
+          ...base,
+          family: "memory",
+          label: "Memory unavailable",
+          chip: chip(marker.query, false),
+          detail: "service unavailable",
+          status: "failed",
+        };
+      }
       const n = marker.itemCount;
       return {
         ...base,
