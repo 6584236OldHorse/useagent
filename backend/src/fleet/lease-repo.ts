@@ -73,13 +73,21 @@ const DEFAULT_RETAINED_SANDBOX_TTL_MIN = 4_320;
 export function retainedSandboxReservationTtlMs(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
-  const minutes = (value: string | undefined): number | null => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  };
-  const reuse = minutes(env.SANDBOX_AUTO_DELETE_MIN) ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN;
-  const reservation = minutes(env.FLEET_RETAINED_RESERVATION_MIN) ?? reuse;
-  return Math.min(reservation, reuse) * 60_000;
+  const reuseMs = retainedSandboxReuseMs(env);
+  const reservation = positiveMinutes(env.FLEET_RETAINED_RESERVATION_MIN);
+  return reservation === null ? reuseMs : Math.min(reservation * 60_000, reuseMs);
+}
+
+/** How long a settled thread keeps its sandbox: SANDBOX_AUTO_DELETE_MIN, after which it is deleted. */
+export function retainedSandboxReuseMs(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return (positiveMinutes(env.SANDBOX_AUTO_DELETE_MIN) ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN) * 60_000;
+}
+
+function positiveMinutes(value: string | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 export interface RetainedSandboxMapping {
@@ -115,14 +123,19 @@ export async function listCurrentRetainedSandboxMappings(
   }));
 }
 
-/** Oldest settled retained thread that can be evicted under capacity pressure. */
-export async function oldestReclaimableRetainedSandbox(
+/**
+ * Deployment-owned thread sandboxes whose thread has settled and nothing holds:
+ * no queued or running turn, no live lease. Oldest first, idle for at least
+ * `idleForMs` and, when given, at most `idleAtMostMs`.
+ */
+export async function idleRetainedSandboxes(
+  options: { readonly idleForMs: number; readonly idleAtMostMs?: number; readonly limit: number },
   exec: Executor = db,
-  orgId?: string,
-): Promise<ReclaimableRetainedSandbox | null> {
-  // Org-limit pressure may only be relieved by that org's own idle boxes.
-  const orgFilter = orgId === undefined ? sql`` : sql`and c.org_id = ${orgId}`;
-  const [row] = await exec.execute(sql`
+): Promise<ReclaimableRetainedSandbox[]> {
+  const recentEnough = options.idleAtMostMs === undefined
+    ? sql``
+    : sql`and c.last_used_at >= now() - (${options.idleAtMostMs}::bigint * interval '1 millisecond')`;
+  const rows = await exec.execute(sql`
     with current as (
       select distinct on (r.org_id, r.thread_id)
         r.id, r.org_id, r.thread_id, r.sandbox_id, r.status,
@@ -136,7 +149,8 @@ export async function oldestReclaimableRetainedSandbox(
     from current c
     where c.status in ('completed', 'failed')
       and coalesce(c.sandbox_credential, 'env') <> 'user'
-      ${orgFilter}
+      and c.last_used_at < now() - (${options.idleForMs}::bigint * interval '1 millisecond')
+      ${recentEnough}
       and not exists (
         select 1 from runs active
         where active.org_id = c.org_id
@@ -149,14 +163,13 @@ export async function oldestReclaimableRetainedSandbox(
           and lease.state in ('active', 'reclaiming')
       )
     order by c.last_used_at asc, c.id asc
-    limit 1`);
-  if (!row) return null;
-  return {
+    limit ${options.limit}`);
+  return rows.map((row) => ({
     runId: String(row.id),
     orgId: String(row.org_id),
     threadId: String(row.thread_id),
     sandboxId: String(row.sandbox_id),
-  };
+  }));
 }
 
 /**

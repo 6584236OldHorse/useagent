@@ -5,6 +5,7 @@ import type { GatewayRun } from "./run-authorization";
 import {
   createProviderGatewayRoutes,
   providerUpstreamOrigin,
+  REQUEST_CAP_MESSAGE,
   type ProviderRouteDeps,
 } from "./routes";
 import type { ProviderTokenClaims } from "./token";
@@ -608,6 +609,18 @@ describe("provider gateway routes", () => {
     expect(exhausted.status).toBe(429);
     expect(await exhausted.json()).toEqual({ error: "concurrency_exhausted" });
     expect(exhausted.headers.get("retry-after")).toBe("1");
+
+    const capped = await app({
+      beginAudit: async () => {
+        throw new ProviderGatewayAdmissionError("request_budget_exhausted");
+      },
+    }).request(
+      "/api/provider/openrouter/v1/chat/completions",
+      { method: "POST", body: JSON.stringify({ model: run.model }) },
+    );
+    // Not retryable: the engine must end the turn and show why.
+    expect(capped.status).toBe(400);
+    expect(await capped.json()).toMatchObject({ error: { message: REQUEST_CAP_MESSAGE } });
 
     const unavailable = await app({
       beginAudit: async () => {

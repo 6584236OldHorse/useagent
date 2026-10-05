@@ -17,6 +17,7 @@ import { ensureSandboxDesktopView } from "../engines/desktop";
 import { sandboxPreviewHeaders } from "../sandboxes/provider";
 import { errorMessage } from "../util/error-message";
 import { getThreadExpectedSandbox } from "../sandboxes/binding";
+import { watchThreadSandbox } from "../engines/sandbox-runtime";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ desktopProxyRoutes.get(
     const search = new URL(c.req.url).search;
     let upstream: WebSocket | null = null;
     let closed = false;
+    let unwatch = () => {};
 
     return {
       onOpen: (_evt, ws) => {
@@ -131,6 +133,7 @@ desktopProxyRoutes.get(
             });
             sock.binaryType = "arraybuffer";
             upstream = sock;
+            if (!closed) unwatch = watchThreadSandbox(threadId);
             sock.onmessage = (e) => {
               if (closed) return;
               try {
@@ -177,6 +180,7 @@ desktopProxyRoutes.get(
 
       onClose: () => {
         closed = true;
+        unwatch();
         const sock = upstream;
         upstream = null;
         if (sock) {

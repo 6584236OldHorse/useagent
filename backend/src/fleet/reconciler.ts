@@ -34,6 +34,7 @@ import {
 import { cachedProviderInventory, ensureProviderInventory } from "./inventory";
 import type { CapacityInventory } from "./types";
 import { recordSandboxReclaimed } from "../engines/workspace-continuity";
+import { startIdleSandboxSweep, stopIdleSandboxSweep } from "./idle-sandboxes";
 
 // ---------------------------------------------------------------------------
 // Fleet reconciliation worker (HA Stage A). One periodic tick, wired into the
@@ -328,6 +329,7 @@ export function startFleetReconciler(
       });
   }, intervalMs);
   if (typeof loopTimer.unref === "function") loopTimer.unref();
+  startIdleSandboxSweep();
 }
 
 /** Stop the loop (tests / shutdown). */
@@ -336,6 +338,7 @@ export function stopFleetReconciler(): void {
     clearInterval(loopTimer);
     loopTimer = null;
   }
+  stopIdleSandboxSweep();
   ticking = false;
   lastRetainedReconcileAt = 0;
 }

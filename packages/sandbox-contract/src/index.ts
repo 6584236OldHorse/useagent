@@ -244,6 +244,9 @@ export interface SandboxProvider {
   create(options?: SandboxCreateOptions): Promise<SandboxHandle>;
   get(sandboxId: string): Promise<SandboxHandle>;
   list(): AsyncIterable<SandboxHandle>;
+  /** OPTIONAL: pause an idle sandbox now so it stops billing; the next get or
+   * connect resumes it. Providers that stop idle sandboxes themselves omit it. */
+  pause?(sandboxId: string): Promise<void>;
   /**
    * OPTIONAL: report a template's state before creating from it and, when the
    * provider parks unused templates (Daytona deactivates an idle snapshot),

@@ -19,6 +19,7 @@ import { applyOpenRouterProviderRouting } from "./provider-routing";
 import { fetchProviderUpstream, providerGatewayMaxRetries } from "./retry";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+export const REQUEST_CAP_MESSAGE = "This run hit the deployment's request cap";
 
 export interface ProviderRouteDeps {
   readonly verifyToken?: typeof verifyProviderToken;
@@ -330,10 +331,15 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
       );
     } catch (error) {
       if (error instanceof ProviderGatewayAdmissionError) {
-        const headers = error.reason === "concurrency_exhausted"
-          ? { "retry-after": "1" }
-          : undefined;
-        return c.json({ error: error.reason }, 429, headers);
+        if (error.reason === "request_budget_exhausted") {
+          // Not a 429: the engine would retry until it gave up as "no progress".
+          // A 400 in the shape both API families read ends the turn with this text.
+          return c.json({
+            type: "error",
+            error: { type: "invalid_request_error", code: "request_cap_reached", message: REQUEST_CAP_MESSAGE },
+          }, 400);
+        }
+        return c.json({ error: error.reason }, 429, { "retry-after": "1" });
       }
       console.error(
         `[provider-gateway] audit start failed for run ${run.id}:`,

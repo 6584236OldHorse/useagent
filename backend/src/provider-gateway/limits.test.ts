@@ -10,10 +10,15 @@ describe("provider request limits", () => {
       PROVIDER_GATEWAY_UPSTREAM_TIMEOUT_MS: "999999999",
     });
     expect(resolved).toEqual({
-      maxRequestsPerRun: 256,
+      maxRequestsPerRun: Number.POSITIVE_INFINITY,
       maxConcurrentPerRun: 4,
       maxOutputTokens: 65_536,
       upstreamTimeoutMs: 600_000,
     });
+  });
+
+  test("caps requests per run only when the operator sets one", () => {
+    expect(providerRequestLimits({}).maxRequestsPerRun).toBe(Number.POSITIVE_INFINITY);
+    expect(providerRequestLimits({ PROVIDER_GATEWAY_MAX_REQUESTS_PER_RUN: "500" }).maxRequestsPerRun).toBe(500);
   });
 });

@@ -5,6 +5,7 @@ import {
 import { setTimeout as delay } from "node:timers/promises";
 import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
 import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
+import { pingRuntimeSocket } from "./turn-liveness";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
 const SUBSCRIPTION_REQUEST_ID = 1;
@@ -144,6 +145,8 @@ export async function followRuntimeThreadSnapshots(input: {
   readonly readSnapshot: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
   readonly applySnapshot: (snapshot: RuntimeThreadSnapshot) => Promise<boolean>;
   readonly subscribe?: typeof subscribeRuntimeThread;
+  /** Called whenever the stream shows it is alive (a frame or a pong). */
+  readonly onHeard?: () => void;
 }): Promise<void> {
   let observedSequence = input.initialSequence;
   let refreshThroughSequence = observedSequence;
@@ -219,6 +222,7 @@ export async function followRuntimeThreadSnapshots(input: {
         }
         return true;
       },
+      input.onHeard,
     );
     await awaitRefresh();
     await awaitApplications();
@@ -247,6 +251,7 @@ export async function subscribeRuntimeThread(
   afterSequence: number | undefined,
   signal: AbortSignal,
   onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
+  onHeard: () => void = () => {},
 ): Promise<void> {
   const [ticket, preview] = await Promise.all([
     issueRuntimeEnvironmentWebSocketTicket(sandbox, signal),
@@ -262,10 +267,12 @@ export async function subscribeRuntimeThread(
     const socket = new WebSocket(url.toString(), {
       headers: { ...previewLinkBase(preview).headers },
     });
+    const stopPinging = pingRuntimeSocket(socket, onHeard);
 
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
+      stopPinging();
       signal.removeEventListener("abort", abort);
       try {
         socket.close();
@@ -292,6 +299,7 @@ export async function subscribeRuntimeThread(
       );
     };
     socket.onmessage = (event) => {
+      onHeard();
       processing = processing
         .then(async () => {
           const text = await messageText(event.data);

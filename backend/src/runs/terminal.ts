@@ -10,6 +10,7 @@ import { withoutSandboxVendor } from "../sandboxes/provider";
 import { createTerminalChunkDecoder } from "./terminal-decode";
 import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
 import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
+import { watchThreadSandbox } from "../engines/sandbox-runtime";
 
 /** The notice line the pane recognizes as a declared capability gap (no reconnect loop). */
 export const TERMINAL_UNAVAILABLE_NOTICE = "[UseAgent] terminal unavailable:";
@@ -56,6 +57,7 @@ terminalRoutes.get(
     const orgId = c.get("orgId");
     let pty: PtyLike | null = null;
     let closed = false;
+    let unwatch = () => {};
 
     return {
       onOpen: (_evt, ws) => {
@@ -106,6 +108,7 @@ terminalRoutes.get(
               await handle.disconnect().catch(() => {});
               return;
             }
+            unwatch = watchThreadSandbox(run.threadId);
             send("\x1b[2m[UseAgent] connected to sandbox " + sandboxId.slice(0, 8) + "\x1b[0m\r\n");
             await pty.sendInput("cd ~/work 2>/dev/null || cd ~; printf '\\033[2J\\033[H'\n");
           } catch (err) {
@@ -142,6 +145,7 @@ terminalRoutes.get(
 
       onClose: () => {
         closed = true;
+        unwatch();
         const h = pty;
         pty = null;
         if (h) {

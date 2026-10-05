@@ -64,6 +64,7 @@ import {
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
 import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
+import { watchTurnLiveness } from "./turn-liveness";
 import { activityRevisions, createTurnProjector, type TurnProjector } from "./turn-projector";
 import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
@@ -106,8 +107,6 @@ export { projectRuntimeAssistantText } from "./turn-projector";
 // settings.json, which T3 applies through an asynchronous settings-watch
 // reconcile. Wait for the reconcile to publish the remote instance before
 // steering; if it does not land in time, fall back to a deterministic restart.
-/** How often a running turn pushes out the sandbox's own lifetime clock (providers with an absolute deadline). */
-const SANDBOX_KEEPALIVE_MS = 5 * 60_000;
 const CODEX_BARRIER_DEADLINE_MS = 5_000;
 const CODEX_VERIFY_DEADLINE_MS = 8_000;
 // T3's authoritative Claude health check includes a 4s CLI version probe and
@@ -298,6 +297,7 @@ interface RuntimeTurnWaitDependencies {
   readonly subscribeRuntimeThread: typeof subscribeRuntimeThread;
   /** How a read-only run declines a request; the real reply path unless a test injects one. */
   readonly replyToRuntimeApproval?: typeof replyToRuntimeApproval;
+  readonly watchLiveness?: typeof watchTurnLiveness;
 }
 
 const runtimeTurnWaitDependencies: RuntimeTurnWaitDependencies = {
@@ -332,12 +332,9 @@ export async function waitForRuntimeTurn(
     }
   }, 15_000);
   toolHeartbeat.unref?.();
-  // A provider that stops sandboxes at an absolute deadline has its clock pushed
-  // out for as long as the turn runs; the turn, not the sandbox lifetime, decides when it ends.
-  const keepAlive = setInterval(() => {
-    void sandbox.keepAlive?.().catch(() => {});
-  }, SANDBOX_KEEPALIVE_MS);
-  keepAlive.unref?.();
+  // Keeps the sandbox's lifetime clock pushed out while the turn runs; fails the
+  // turn only when the sandbox stops answering, never because it is slow.
+  const liveness = (dependencies.watchLiveness ?? watchTurnLiveness)(sandbox);
   const threadId = runtimeThreadId(ctx);
   const priorTurnId = priorSnapshot.thread.latestTurn?.turnId ?? null;
   let currentTurnObserved = false;
@@ -351,6 +348,7 @@ export async function waitForRuntimeTurn(
     ctx.signal,
     watchdog.signal,
     firstActivityDeadline.signal,
+    liveness.signal,
   ]);
   // A read-only run answers the runtime's own approval requests itself: every
   // command and file change is declined the moment it is recorded, through the
@@ -403,17 +401,19 @@ export async function waitForRuntimeTurn(
       readSnapshot: (signal) => dependencies.readThreadSnapshot(ctx, sandbox, signal),
       applySnapshot: acceptSnapshot,
       subscribe: dependencies.subscribeRuntimeThread,
+      onHeard: liveness.heard,
     });
   } catch (error) {
     streamError = error;
   } finally {
     clearTimeout(firstActivityTimer);
     clearInterval(toolHeartbeat);
-    clearInterval(keepAlive);
+    liveness.dispose();
     watchdog.dispose();
   }
   if (watchdog.signal.aborted) throw watchdog.signal.reason;
   ctx.signal.throwIfAborted();
+  if (liveness.signal.aborted) throw liveness.signal.reason;
   if (firstActivityDeadline.signal.aborted && !currentTurnObserved) {
     throw new RuntimeFirstActivityTimeoutError(runtimeFirstActivityTimeoutMs());
   }
