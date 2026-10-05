@@ -1,7 +1,14 @@
-/** Private Pro paths that must never enter the public OSS repository. */
+/** Private Pro paths that must never enter the public OSS repository: the
+ * production host lane, prod Terraform, internal planning notes, and the
+ * workflows plus controller that drive the production promote. */
 export const OSS_SYNC_EXCLUDED_PREFIXES = [
   "deploy/hetzner/",
   "infra/terraform/prod/",
+  "plan/",
+  ".github/workflows/promote.yml",
+  ".github/workflows/gates.yml",
+  ".github/workflows/images.yml",
+  "deploy/promote.ts",
 ] as const;
 
 export function assertOssSyncSafe(paths: readonly string[]): void {
