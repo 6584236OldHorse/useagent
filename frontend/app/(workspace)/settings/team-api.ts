@@ -34,6 +34,8 @@ export interface AccessRequest {
   readonly name: string;
   readonly email: string | null;
   readonly image: string | null;
+  /** The account this sender already owns here; Allow restores it and needs no address. */
+  readonly account: string | null;
   readonly createdAt: string;
 }
 

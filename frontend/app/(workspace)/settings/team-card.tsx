@@ -293,8 +293,11 @@ function InvitationRow({
 
 /** The address Allow will use: Slack's word when it has one (it may arrive while
  *  the row is on screen), else what the admin typed. */
-export function decisionEmail(request: Pick<AccessRequest, "email">, typed: string): string | null {
-  return request.email ?? (typed.trim() || null);
+export function decisionEmail(
+  request: Pick<AccessRequest, "email" | "account">,
+  typed: string,
+): string | null {
+  return request.email ?? request.account ?? (typed.trim() || null);
 }
 
 /** A Slack sender nobody has let in yet. When Slack shared their address, Allow
@@ -312,7 +315,7 @@ function AccessRequestRow({
   onDeny: () => void;
 }) {
   const [email, setEmail] = useState(request.email ?? "");
-  const known = request.email !== null;
+  const known = request.email !== null || request.account !== null;
   const decision = decisionEmail(request, email);
   return (
     <div
@@ -329,7 +332,9 @@ function AccessRequestRow({
       <div className="min-w-0 flex-1">
         <p className="truncate text-body-2-medium text-text-primary">{request.name}</p>
         <p className="truncate text-caption-1-regular text-text-secondary">
-          {known ? request.email : "Email unknown"} · asked {relTime(request.createdAt)}
+          {request.email ??
+            (request.account ? `previously let in as ${request.account}` : "Email unknown")}{" "}
+          · asked {relTime(request.createdAt)}
         </p>
       </div>
       {!known && (

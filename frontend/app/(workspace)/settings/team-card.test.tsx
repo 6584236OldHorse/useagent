@@ -43,10 +43,18 @@ describe("team roles", () => {
   });
 
   test("Allow uses Slack's address once it arrives, else what the admin typed", () => {
-    expect(decisionEmail({ email: null }, "")).toBeNull();
-    expect(decisionEmail({ email: null }, "  typed@example.test ")).toBe("typed@example.test");
+    expect(decisionEmail({ email: null, account: null }, "")).toBeNull();
+    expect(decisionEmail({ email: null, account: null }, "  typed@example.test ")).toBe(
+      "typed@example.test",
+    );
     // The row stays mounted with an empty input while Slack's word arrives.
-    expect(decisionEmail({ email: "slack@example.test" }, "")).toBe("slack@example.test");
+    expect(decisionEmail({ email: "slack@example.test", account: null }, "")).toBe(
+      "slack@example.test",
+    );
+    // A sender let in before needs no address: Allow restores their account.
+    expect(decisionEmail({ email: null, account: "old@example.test" }, "")).toBe(
+      "old@example.test",
+    );
   });
 
   test("the invitation link points at the accept page on this origin", () => {

@@ -2919,10 +2919,14 @@ describe("slack workspace identity (fail closed)", () => {
     await waitFor(async () => rec.messages.slice(before).find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(await findRunByPrompt(`work ${after}`)).toBeNull();
-    const reopened = await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
-    expect(reopened.body.requests.find((r) => r.name === "Leaver")?.id).toBe(request.id);
-    // Allowing again restores the same account: the sender already owns a binding here.
+    const reopened = await json<{ requests: Array<{ id: string; name: string; account: string | null }> }>("/api/team/access-requests");
+    const row = reopened.body.requests.find((r) => r.name === "Leaver");
+    expect(row?.id).toBe(request.id);
+    expect(row?.account).toBe(email); // the card knows whom Allow restores
+    // Allowing again restores the same account, the sender already owns a binding here, and says so on Slack again.
+    const told = rec.messages.filter((m) => m.channel === slackUserId && m.text.includes("You are in")).length;
     await json(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: "ignored@example.test" } });
+    await waitFor(async () => (rec.messages.filter((m) => m.channel === slackUserId && m.text.includes("You are in")).length > told ? true : null));
     const back = uid("back");
     await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${back}`, ts: `${uid("ts")}.4` }));
     const run = await waitFor(async () => findRunByPrompt(`work ${back}`));

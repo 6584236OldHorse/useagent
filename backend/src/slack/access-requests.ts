@@ -170,6 +170,9 @@ export interface AccessRequestRow {
   name: string;
   email: string | null;
   image: string | null;
+  /** The address of the account this sender already owns here (let in before,
+   *  membership since removed): Allow restores that account, nothing else. */
+  account: string | null;
   createdAt: string;
 }
 
@@ -181,12 +184,18 @@ export async function listAccessRequests(orgId: string): Promise<AccessRequestRo
       name: slackAccessRequests.name,
       email: slackAccessRequests.email,
       image: slackAccessRequests.image,
+      account: user.email,
       createdAt: slackAccessRequests.createdAt,
     })
     .from(slackAccessRequests)
     // Only while the workspace still belongs here: a request from a workspace
     // since rebound to another org can no longer be answered by this one.
     .innerJoin(slackWorkspaces, and(eq(slackWorkspaces.teamId, slackAccessRequests.teamId), eq(slackWorkspaces.orgId, slackAccessRequests.orgId)))
+    .leftJoin(
+      slackUsers,
+      and(eq(slackUsers.teamId, slackAccessRequests.teamId), eq(slackUsers.slackUserId, slackAccessRequests.slackUserId), eq(slackUsers.orgId, slackAccessRequests.orgId)),
+    )
+    .leftJoin(user, eq(user.id, slackUsers.userId))
     .where(and(eq(slackAccessRequests.orgId, orgId), eq(slackAccessRequests.status, "pending")))
     .limit(200);
   return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
@@ -246,7 +255,7 @@ export async function decideAccessRequest(input: {
       await tx.update(slackAccessRequests).set({ status: "invited", invitationId: invited.id, ...decided }).where(eq(slackAccessRequests.id, row.id));
       return "invited";
     }
-    await admit(tx, { orgId: input.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
+    await admit(tx, { orgId: input.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${decided.decidedAt.getTime()}`);
     await tx.update(slackAccessRequests).set({ status: "allowed", ...decided }).where(eq(slackAccessRequests.id, row.id));
     return "allowed";
   });
@@ -304,7 +313,7 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
       .where(and(eq(member.organizationId, row.orgId), eq(member.userId, userId)))
       .limit(1);
     if (!membership) return false;
-    await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
+    await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${invitationId}`);
     await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
     return true;
   });
@@ -341,7 +350,7 @@ export async function acceptLinkedInvitationAsMember(invitationId: string, who: 
 }
 
 /** An admin's Allow: the member row if missing, then the binding. Only this path creates membership. */
-async function admit(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }): Promise<void> {
+async function admit(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }, decision: string): Promise<void> {
   const [membership] = await tx
     .select({ id: member.id })
     .from(member)
@@ -350,14 +359,16 @@ async function admit(tx: Executor, input: { orgId: string; teamId: string; slack
   if (!membership) {
     await tx.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: input.orgId, userId: input.userId, role: "member", createdAt: new Date() });
   }
-  await bind(tx, input);
+  await bind(tx, input, decision);
 }
 
-/** The binding and the Slack reply, in the caller's transaction. */
-async function bind(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }): Promise<void> {
+/** The binding and the Slack reply, in the caller's transaction. The reply is
+ *  keyed by the decision, so a retry of it says nothing twice and a later
+ *  re-admission is announced again. */
+async function bind(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }, decision: string): Promise<void> {
   await upsertSlackUser({ teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, userId: input.userId }, tx);
   await enqueuePostMessageTx(tx, {
-    idempotencyKey: `slack-access-allowed:${input.teamId}:${input.slackUserId}:${input.userId}`,
+    idempotencyKey: `slack-access-allowed:${decision}`,
     orgId: input.orgId,
     teamId: input.teamId,
     channel: input.slackUserId,
