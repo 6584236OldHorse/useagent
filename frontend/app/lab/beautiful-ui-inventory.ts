@@ -14,6 +14,7 @@ export const BEAUTIFUL_UI_COMPONENTS = [
   "filter-table",
   "sidebar-nav",
   "search",
+  "flowchart",
   "insight-cards",
   "code-block",
   "fine-tune-card",

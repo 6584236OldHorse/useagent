@@ -25,7 +25,7 @@
     "file": "LICENSE",
     "sha256": "e273df457a1fb6cedf6690b03f7bf70023dcccd094ff46910ac55a378345b26e"
   },
-  "componentCount": 20,
+  "componentCount": 21,
   "unresolvedUpstreamImports": [
     "glimm",
     "liveline",
@@ -214,6 +214,21 @@
       "bytes": 3947,
       "sha256": "86e244a2ea8381cb5728690b2220421a1bbf9f16b2fcde27899bbd8acd4b872a",
       "imports": ["react"]
+    },
+    {
+      "slug": "flowchart",
+      "displayName": "Flowchart",
+      "description": "Workflow trigger and condition steps on a dotted canvas.",
+      "exportName": "Flowchart",
+      "intendedFilename": "flowchart.tsx",
+      "vendoredPath": "sources/flowchart.tsx.txt",
+      "bytes": 17638,
+      "sha256": "a2cc588086ec5b9c8a423289f78f5f7d1f7456c378f00c5b1816884c17b011f3",
+      "imports": ["react"],
+      "sourceUrl": "https://github.com/slev12397/beautiful-ui/blob/ff0f74d62d8be9d89bcb735b3632e31a6ccf88dc/public/r/flowchart.json",
+      "upstreamCommit": "ff0f74d62d8be9d89bcb735b3632e31a6ccf88dc",
+      "registryPath": "components/primitives/Flowchart.tsx",
+      "fetchedAtUtc": "2026-09-13T10:48:02Z"
     },
     {
       "slug": "insight-cards",

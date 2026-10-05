@@ -31,14 +31,14 @@ import { useOverlayPortalContainer } from "@/components/base/overlay-portal-cont
  * Figma source: Board UI → dashboard 1 dropdown triggers ("All prices" filter
  * and table status dropdown).
  *
- * Select with a button trigger styled 1:1 with Figma:
+ * Select with a button trigger adapted to the shared Input heights:
  *   trigger  bg color/white, 1px border/button/default, shadow/xs,
- *            px 10 py 8, radius/2lg (10px), gap 6,
+ *            md 36px / sm 32px, radius/2lg (10px), gap 6,
  *            Body 1/Medium text color/neutral/950,
  *            16px chevron (custom stroke glyph) in text/secondary
  *
  * The open popover/listbox shares the BoardUI menu recipe with Dropdown:
- * radius/2xl panel, p 10, shadow/dropdown, 150ms fade/scale/blur motion,
+ * radius/2xl panel, p 6, shadow/dropdown, 150ms fade/scale/blur motion,
  * and radius/2lg rows with the same hover/selected surface.
  *
  * Item content is free-form: pass a `StatusDot` + text for status selects.
@@ -114,8 +114,8 @@ export function Select<T extends object>({
               "outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-border-focus-ring",
               "disabled:cursor-not-allowed disabled:bg-background-primary-disabled disabled:text-text-tertiary disabled:shadow-none",
               size === "sm"
-                ? "gap-1 px-[7px] py-1 text-body-2-medium"
-                : "gap-1.5 px-2.5 py-2 text-body-medium",
+                ? "h-8 gap-1 px-[7px] py-1 text-body-2-medium"
+                : "h-9 gap-1.5 px-2.5 py-1.5 text-body-medium",
               triggerClassName,
             )}
           >
@@ -143,9 +143,6 @@ export function Select<T extends object>({
             className={cx(
               MENU_POPOVER_WIDTH,
               MENU_POPOVER_SURFACE,
-              // Listbox rows already space themselves 4px apart, so the
-              // surface sits a touch tighter than the action-menu Dropdown.
-              "p-2",
               popoverClassName,
             )}
           >
