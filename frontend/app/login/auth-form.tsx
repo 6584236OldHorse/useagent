@@ -2,14 +2,16 @@
 
 import { RiLockLine, RiMailLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { AuthScreen } from "@/components/auth/auth-screen";
+import { DesktopSignIn } from "@/components/auth/desktop-sign-in";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 import { Button } from "@/components/base/buttons/button";
 import { Divider } from "@/components/base/divider/divider";
 import { Input } from "@/components/base/input/input";
 import { invalidateSession, useAuthConfig } from "@/lib/auth";
 import { backendFetch } from "@/lib/backend-fetch";
+import { desktopBridge, type DesktopBridge } from "@/lib/desktop-bridge";
 
 const COPY = {
   title: "Welcome back",
@@ -19,14 +21,27 @@ const COPY = {
   endpoint: "/api/auth/sign-in/email",
 } as const;
 
-export function AuthForm({ callbackURL = "/" }: { callbackURL?: string }) {
+export function AuthForm({
+  callbackURL = "/",
+  googleAction,
+  initialDesktopBridge,
+}: {
+  callbackURL?: string;
+  googleAction?: () => Promise<void>;
+  initialDesktopBridge?: DesktopBridge | null;
+}) {
   const router = useRouter();
   const authConfig = useAuthConfig();
+  const [desktop, setDesktop] = useState<DesktopBridge | null | undefined>(initialDesktopBridge);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (initialDesktopBridge === undefined) setDesktop(desktopBridge());
+  }, [initialDesktopBridge]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -60,6 +75,8 @@ export function AuthForm({ callbackURL = "/" }: { callbackURL?: string }) {
     }
   }
 
+  if (desktop === undefined) return <AuthScreen><p role="status">Loading sign-in...</p></AuthScreen>;
+  if (desktop) return <AuthScreen><DesktopSignIn openExternal={desktop.openExternal} /></AuthScreen>;
   return (
     <AuthScreen>
       <div className="mx-auto w-full max-w-[360px]">
@@ -68,7 +85,7 @@ export function AuthForm({ callbackURL = "/" }: { callbackURL?: string }) {
 
         {authConfig?.google && (
           <div className="mt-8">
-            <GoogleSignInButton enabled callbackURL={callbackURL} />
+            <GoogleSignInButton enabled callbackURL={callbackURL} action={googleAction} />
           </div>
         )}
 

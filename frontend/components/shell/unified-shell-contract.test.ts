@@ -36,6 +36,10 @@ describe("unified shell contract", () => {
     expect(appShell).not.toContain("shadow-regular");
   });
 
+  test("mounts native window chrome in the global provider stack", () => {
+    expect(readFromFrontend("app/providers.tsx")).toContain("<DesktopTitlebar />");
+  });
+
   test("shares one AppShell thread snapshot across the rail, the panel, and the page", () => {
     const { appShell } = shellSources();
 

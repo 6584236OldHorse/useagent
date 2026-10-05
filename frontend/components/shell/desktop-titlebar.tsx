@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { desktopBridge } from "@/lib/desktop-bridge";
 
 /** Native window chrome only; a normal browser keeps its existing layout. */
 export function DesktopTitlebar() {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
-    const desktop = (window as Window & { useagentDesktop?: { platform: string } }).useagentDesktop;
+    const desktop = desktopBridge();
     if (desktop?.platform !== "darwin") return;
     document.documentElement.style.setProperty("--desktop-titlebar-height", "36px");
     setVisible(true);
