@@ -189,17 +189,10 @@ export class LinkClient {
       return { reason: "runner_too_old", detail: `the control plane needs protocol ${frame.minProtocol}; this runner speaks ${PROTOCOL_VERSION}` };
     }
     this.image = frame.image;
-    try {
-      await this.options.onWelcome(frame, this.stopping.signal);
-    } catch (error) {
-      // The image could not be made ready; drop this link so the next attempt pulls again.
-      this.options.onState("offline", error instanceof Error ? error.message : String(error));
-      if (this.mux === mux) this.socket?.close(1000, "image not ready");
-      return null;
-    }
-    if (this.mux !== mux) return null;
-    this.online = true;
-    this.options.onState("online", this.options.planeUrl);
+    // Heartbeats start before the pull, not after it: the plane drops a link
+    // that stays silent for a few beats, and a first pull on a slow line can
+    // outlast that many times over. A beat without a digest says the machine
+    // is here but not ready, and the plane offers it no work until one arrives.
     const beat = () => {
       mux.send({
         t: "heartbeat",
@@ -211,6 +204,18 @@ export class LinkClient {
     beat();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(beat, Math.max(1, frame.heartbeatSeconds) * 1000);
+    try {
+      await this.options.onWelcome(frame, this.stopping.signal);
+    } catch (error) {
+      // The image could not be made ready; drop this link so the next attempt pulls again.
+      this.options.onState("offline", error instanceof Error ? error.message : String(error));
+      if (this.mux === mux) this.socket?.close(1000, "image not ready");
+      return null;
+    }
+    if (this.mux !== mux) return null;
+    this.online = true;
+    this.options.onState("online", this.options.planeUrl);
+    beat();
     return null;
   }
 
