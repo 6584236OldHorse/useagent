@@ -42,6 +42,9 @@ export function codexProviderConfigPendingPath(): string {
   return PENDING_PATH;
 }
 
+/** Printed between the install probes and the revision read of the memo-hit check. */
+export const INSTALL_VALIDATED = "useagent-native-install-validated";
+
 export function buildPendingCodexProviderConfigurationProbeCommand(revision: string): string {
   const script = [
     'const fs=require("node:fs")',
@@ -70,7 +73,16 @@ export async function readPendingCodexProviderConfigurationRevision(
   if (!result || (result.exitCode ?? 1) !== 0) {
     throw new Error("Codex provider configuration marker read failed");
   }
-  const response = result.result?.trim();
+  return parsePendingCodexProviderConfigurationResponse(result.result, expectedRevision);
+}
+
+/** The pending revision from the probe's stdout: null when absent, the expected
+ *  revision when present, anything else refused. */
+export function parsePendingCodexProviderConfigurationResponse(
+  stdout: string | null | undefined,
+  expectedRevision: string,
+): string | null {
+  const response = stdout?.trim();
   if (response === "absent") return null;
   if (response === `present:${expectedRevision}`) return expectedRevision;
   throw new Error("Codex provider configuration marker response is invalid");

@@ -1130,7 +1130,7 @@ exit 17
     expect(lease.pendingProviderConfigurationRevision).toBe(revision);
   });
 
-  test("batches retained Codex Bun and package identity validation and repairs tampering", async () => {
+  test("checks a retained Codex install and its pending revision in one command and repairs tampering", async () => {
     const commands: string[] = [];
     let identityValid = true;
     let bootstraps = 0;
@@ -1154,7 +1154,10 @@ exit 17
           }
           if (command.includes(identityCommand)) {
             expect(command).toContain(buildSandboxBunProbeCommand(layout));
-            return { exitCode: identityValid ? 0 : 1, result: "" };
+            expect(isCodexConfigProbe(command)).toBe(true);
+            return identityValid
+              ? { exitCode: 0, result: "useagent-native-install-validated\nabsent\n" }
+              : { exitCode: 1, result: "" };
           }
           if (isCodexConfigProbe(command)) return { exitCode: 0, result: "absent\n" };
           return { exitCode: 0, result: "" };
@@ -1178,13 +1181,54 @@ exit 17
 
     await prepareStableRuntimeProvider(sandbox, context, "codex");
     const afterCold = commands.length;
-    await prepareStableRuntimeProvider(sandbox, context, "codex");
-    expect(commands.slice(afterCold)).toHaveLength(2);
+    await expect(prepareStableRuntimeProvider(sandbox, context, "codex")).resolves.toBeNull();
+    // One round trip: the install probes and the revision read travel together.
+    expect(commands.slice(afterCold)).toHaveLength(1);
     expect(bootstraps).toBe(1);
 
     identityValid = false;
     await prepareStableRuntimeProvider(sandbox, context, "codex");
     expect(bootstraps).toBe(2);
+  });
+
+  test("a valid install with an unreadable pending revision fails closed instead of re-bootstrapping", async () => {
+    let bootstraps = 0;
+    let primed = false;
+    const sandbox = {
+      id: "retained-revision-unreadable",
+      providerKind: "cube",
+      process: {
+        executeCommand: async (command: string) => {
+          if (command.includes('NATIVE_PACKAGE="@openai/codex@0.153.3"')) {
+            bootstraps += 1;
+            return { exitCode: 0, result: "" };
+          }
+          if (isCodexConfigProbe(command) && command.includes("useagent-native-install-validated")) {
+            return { exitCode: 2, result: "useagent-native-install-validated\n" };
+          }
+          if (isCodexConfigProbe(command)) return { exitCode: 0, result: primed ? "" : "absent\n" };
+          return { exitCode: 0, result: "" };
+        },
+      },
+    } as unknown as SandboxHandle;
+    const context = {
+      runId: "run-revision-unreadable",
+      threadId: "thread-revision-unreadable",
+      prompt: "work",
+      bootstrapContext: "",
+      turnContext: "",
+      workdir: "/root/work",
+      orgId: "org-a",
+      userId: "user-a",
+      model: "gpt-5.6-luna",
+      signal: new AbortController().signal,
+      emit: async () => undefined,
+      setSummary: () => undefined,
+    } as const;
+    await prepareStableRuntimeProvider(sandbox, context, "codex");
+    primed = true;
+    await expect(prepareStableRuntimeProvider(sandbox, context, "codex")).rejects.toThrow("marker read failed");
+    expect(bootstraps).toBe(1);
   });
 
   test("does not repeat stable bootstrap inside the same fresh turn preparation", async () => {

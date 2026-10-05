@@ -33,7 +33,7 @@ import {
   buildAttachmentTreeAccessCommand,
   buildRootTraversalAccessCommand,
 } from "./runtime-user-permissions";
-import { buildCodexProviderConfigUpdateScript, codexProviderConfig, codexProviderConfigurationRevision, codexProviderConfigPendingPath, readPendingCodexProviderConfigurationRevision } from "./runtime-codex-plan-config";
+import { buildCodexProviderConfigUpdateScript, codexProviderConfig, codexProviderConfigurationRevision, buildPendingCodexProviderConfigurationProbeCommand, codexProviderConfigPendingPath, INSTALL_VALIDATED, parsePendingCodexProviderConfigurationResponse, readPendingCodexProviderConfigurationRevision } from "./runtime-codex-plan-config";
 export { openCodeModelLimitsChanged } from "./opencode-model-limit-refresh";
 
 const RUNTIME_SETTINGS_PATH = `${RUNTIME_ENVIRONMENT_HOME}/userdata/settings.json`;
@@ -522,6 +522,8 @@ async function ensureRuntimeProviderBootstrap(
   if (current) {
     await current;
     signal.throwIfAborted();
+    // One round trip: install probes, then (Codex) the pending revision. No sentinel means the
+    // install failed or the call did: evict and fully re-bootstrap. Sentinel plus failure: fail closed.
     const validationCommand = [
       "set -eu",
       buildSandboxBunProbeCommand(layout),
@@ -530,18 +532,27 @@ async function ensureRuntimeProviderBootstrap(
         : engine === "claude"
           ? buildClaudeInstallIdentityProbeCommand(layout)
           : buildOpenCodeInstallIdentityProbeCommand(layout),
+      ...(pendingRevision
+        ? [`echo ${INSTALL_VALIDATED}`, buildPendingCodexProviderConfigurationProbeCommand(pendingRevision)]
+        : []),
     ].join("\n");
     const validation = await sandbox.process
       .executeCommand(validationCommand, undefined, undefined, 10)
       .catch(() => null);
     signal.throwIfAborted();
+    const output = validation?.result ?? "";
+    const sentinel = output.indexOf(INSTALL_VALIDATED);
     if (validation?.exitCode === 0) {
-      if (!pendingRevision) return null;
-      return await readPendingCodexProviderConfigurationRevision(
-        sandbox,
-        signal,
-        pendingRevision,
-      );
+      // `set -eu`: exit 0 means the install passed and the revision was read.
+      return pendingRevision
+        ? parsePendingCodexProviderConfigurationResponse(
+            sentinel === -1 ? output : output.slice(sentinel + INSTALL_VALIDATED.length),
+            pendingRevision,
+          )
+        : null;
+    }
+    if (pendingRevision && validation && sentinel !== -1) {
+      throw new Error("Codex provider configuration marker read failed");
     }
 
     // The sandbox or retained filesystem changed after bootstrap. Evict only

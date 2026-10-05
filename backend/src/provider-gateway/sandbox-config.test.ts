@@ -122,6 +122,34 @@ function expectLifetime(
 }
 
 describe("sandbox provider gateway config", () => {
+  test("refreshes the Codex capability and drops a stale login in one command", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.TOOL_GATEWAY_SECRET = "tool-test-0123456789abcdef0123456789abcdef";
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-one-command-"));
+    const shell = localShellSandbox(root);
+    const commands: string[] = [];
+    const sandbox = {
+      process: {
+        executeCommand: async (command: string, ...rest: unknown[]) => {
+          commands.push(command);
+          return (shell.process.executeCommand as (c: string, ...r: unknown[]) => Promise<unknown>)(command, ...rest);
+        },
+      },
+    } as unknown as SandboxHandle;
+    try {
+      await mkdir(join(root, ".codex"), { recursive: true });
+      await writeFile(join(root, ".codex", "auth.json"), "{}");
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-one-command"), "codex");
+      expect(commands).toHaveLength(1);
+      expect(await Bun.file(join(root, ".codex", "auth.json")).exists()).toBe(false);
+      expect(await Bun.file(join(root, ".codex", "config.toml")).exists()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("migrates and refreshes private files without disturbing app state", async () => {
     process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
     process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";

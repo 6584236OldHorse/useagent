@@ -286,3 +286,22 @@ describe("finalizeRun — transactional memory capture (GAP 2)", () => {
     });
   });
 });
+
+describe("finalizeRun — settlement timing", () => {
+  test("a completed run records its settlement spans and a settle mark", async () => {
+    const { drainProviderEvents } = await import("../src/runs/provider-events");
+    const id = await freshRun("time the settlement");
+    await setRunStatus(id, "running");
+    await finalizeRun(id, "completed", "done", 1000);
+    await drainProviderEvents(id);
+    const rows = await db.execute(sql`select event_type, payload from provider_events where run_id = ${id} and provider = 'skynet-timing'`);
+    const stages = (rows as unknown as { event_type: string; payload: string }[]).map((row) => {
+      const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+      return `${row.event_type}:${payload.stage}`;
+    });
+    expect(stages).toContain("timing.span:settle.outputs");
+    expect(stages).toContain("timing.span:settle.event_drain");
+    expect(stages).toContain("timing.span:settle.transaction");
+    expect(stages).toContain("timing.mark:settle");
+  });
+});

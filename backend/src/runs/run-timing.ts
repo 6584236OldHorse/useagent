@@ -158,6 +158,21 @@ export function createRunTimer(
   };
 }
 
+/** A timer whose rows are held until `flush`, for work (settlement) whose own
+ *  seal must not see them: the rows land after it, like other post-commit frames. */
+export function createBufferedRunTimer(
+  runId: string,
+  threadId: string,
+): { readonly timer: RunStageTimer; flush(): void } {
+  const held: Parameters<TimingSink>[0][] = [];
+  return {
+    timer: createRunTimer(runId, threadId, (event) => held.push(event)),
+    flush() {
+      for (const event of held.splice(0)) defaultSink(event);
+    },
+  };
+}
+
 /** Mark the first provider output that can become visible to the user. Whitespace
  * deltas do not paint anything, and repeated chunks must not overwrite the first
  * milestone's stable timing row. */
