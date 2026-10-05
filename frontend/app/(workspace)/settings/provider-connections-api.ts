@@ -27,6 +27,9 @@ export async function fetchProviderConnections(): Promise<ProviderConnectionMeta
 
 export interface SandboxConfig {
   readonly provider: string | null;
+  /** The provider's name as a person reads it, from where the deployment points
+   *  (the E2B-protocol plugin is "E2B" on e2b.app and "Cube" self-hosted). */
+  readonly label: string | null;
   /** The host the managed sandboxes run on, when the server says. */
   readonly host: string | null;
   /** True when a connected personal computer runs that user's work. */
@@ -36,9 +39,12 @@ export interface SandboxConfig {
 export async function fetchSandboxConfig(): Promise<SandboxConfig> {
   const res = await backendFetch("/api/config", { cache: "no-store" });
   if (!res.ok) throw new Error(`sandbox-config ${res.status}`);
-  const data = (await res.json()) as { sandbox?: { provider?: unknown; host?: unknown; userComputers?: unknown } };
+  const data = (await res.json()) as {
+    sandbox?: { provider?: unknown; label?: unknown; host?: unknown; userComputers?: unknown };
+  };
   return {
     provider: typeof data.sandbox?.provider === "string" ? data.sandbox.provider : null,
+    label: typeof data.sandbox?.label === "string" && data.sandbox.label ? data.sandbox.label : null,
     host: typeof data.sandbox?.host === "string" && data.sandbox.host ? data.sandbox.host : null,
     userComputers: data.sandbox?.userComputers === true,
   };

@@ -53,6 +53,22 @@ export function sandboxProviderKind(env: SandboxEnv = process.env): SandboxProvi
   return value;
 }
 
+/** How a provider kind reads to a person. The E2B-protocol plugin keeps its id
+ *  (cube) whatever it points at; its name follows the deployment: "E2B" when
+ *  CUBE_API_URL is on e2b.app, the plugin's own label for a self-hosted stack
+ *  that speaks the same protocol. The other kinds carry their plugin's label. */
+export function sandboxProviderLabel(kind: SandboxProviderKind, env: SandboxEnv = process.env): string {
+  const label = sandboxPlugin(kind).label;
+  if (kind !== "cube") return label;
+  let host = "";
+  try {
+    host = new URL(env.CUBE_API_URL?.trim() ?? "").hostname.toLowerCase();
+  } catch {
+    return label;
+  }
+  return host === "e2b.app" || host.endsWith(".e2b.app") ? "E2B" : label;
+}
+
 export function sandboxProviderApiKey(env: SandboxEnv = process.env): string | undefined {
   return sandboxProviderApiKeyFor(sandboxProviderKind(env), env);
 }

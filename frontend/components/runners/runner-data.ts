@@ -114,8 +114,10 @@ export function markRunnerRevoked(runners: readonly Runner[], id: string): Runne
   return runners.map((runner) => (runner.id === id ? { ...runner, status: "revoked" } : runner));
 }
 
-/** How a sandbox provider kind reads to a person. */
-const PROVIDER_NAMES: Record<string, string> = {
+/** How a sandbox provider kind reads to a person. The E2B-protocol plugin (id
+ *  cube) reads as whatever the deployment points at, so callers that know the
+ *  config's label pass it in `names`; this map is the fallback. */
+export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   daytona: "Daytona",
   cube: "Cube",
   box: "Box",
@@ -126,11 +128,12 @@ export function runnerLocationLabel(
   sandboxId: string | null,
   sandboxProvider: unknown,
   runners: readonly Runner[],
+  names: Readonly<Record<string, string>> = PROVIDER_NAMES,
 ): string {
   const runnerId = localRunnerId(sandboxId);
   if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
   return typeof sandboxProvider === "string" && sandboxProvider.trim()
-    ? (PROVIDER_NAMES[sandboxProvider] ?? sandboxProvider)
+    ? (names[sandboxProvider] ?? sandboxProvider)
     : "Unknown runtime";
 }
 
