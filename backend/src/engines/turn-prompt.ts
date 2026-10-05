@@ -5,6 +5,9 @@ import { MEMORY_TURN_GUIDANCE, MEMORY_TURN_GUIDANCE_NO_TOOLS } from "../memory/m
 export interface TurnPromptContext {
   readonly prompt: string;
   readonly bootstrapContext: string;
+  /** Prior thread turns a RESUMED session never saw (they failed before any engine
+   *  ran). A fresh session gets them through bootstrapContext instead. */
+  readonly unseenTurnsContext?: string;
   readonly turnContext: string;
   readonly memoryEnabled?: boolean;
   readonly resourceContext?: string;
@@ -109,9 +112,10 @@ function servedPortsContext(
 
 /**
  * Compose the exact text sent to an engine for one turn. Fresh sessions receive
- * reconstructed thread history and global rules. Resumed sessions receive only
- * current per-turn workflow, skill, upload, and memory context before the user's
- * prompt. Validated native commands are delivered byte-verbatim.
+ * reconstructed thread history and global rules. Resumed sessions receive the
+ * thread turns their native history lacks, then only current per-turn workflow,
+ * skill, upload, and memory context before the user's prompt. Validated native
+ * commands are delivered byte-verbatim.
  */
 export function composeTurnPrompt(
   ctx: TurnPromptContext,
@@ -142,7 +146,9 @@ export function composeTurnPrompt(
     (ctx.resourceContext ?? "") +
     (ctx.inputContext ?? "") +
     ctx.turnContext;
-  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
+  const prefix = resumed
+    ? (ctx.unseenTurnsContext ?? "") + perTurn
+    : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
   return `${prefix}<current_user_request>\n${ctx.prompt}\n</current_user_request>`;
 }
 import type { ExecutionCapabilitySnapshot } from "@useagent/agent-harness/canonical";

@@ -664,6 +664,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             if (steerResult.status !== "ok") {
               throw new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
             }
+            // Delivery evidence, separate from session authority: only an accepted
+            // steer proves this prompt, and the history it carried, reached the engine.
+            await ctx.markPromptDelivered?.();
             await ctx.emit({ kind: "task", label: "Waiting for provider activity…", chip: `runtime:${engine}` });
             try {
               const summary = await waitForRuntimeTurn(

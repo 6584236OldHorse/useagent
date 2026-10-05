@@ -225,6 +225,9 @@ export async function runNativeBridgeTurn(
       if (result.status !== "ok") {
         throw new Error(`Pi steer failed (${result.status}): ${result.message ?? "unsupported"}`);
       }
+      // Delivery evidence, separate from session authority: the bridge accepted
+      // this prompt and the history it carried.
+      await ctx.markPromptDelivered?.();
       await settled;
     } catch (error) {
       operationError = error;

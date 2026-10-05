@@ -13,9 +13,6 @@ import {
   isNotNull,
   isNull,
   like,
-  lt,
-  ne,
-  or,
   sql,
 } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
@@ -677,71 +674,6 @@ export async function getThreadRunsByIds(
     )
     .orderBy(runs.createdAt, runs.id);
   return withSteps(runRows);
-}
-
-// ---------------------------------------------------------------------------
-// Thread context — the engine's view of prior turns. Prompts are stored clean;
-// the composed preamble below is what an adapter prepends to its engine prompt,
-// so context lives at invocation time and never nests into the stored prompt.
-// ---------------------------------------------------------------------------
-
-/** Keep the preamble bounded: at most the last N turns, and under ~MAX chars
- * with the OLDEST turns dropped first. */
-const THREAD_MAX_TURNS = 6;
-const THREAD_MAX_CHARS = 4000;
-
-/** Compose the engine context preamble for a run: walk its thread's PRIOR turns
- * (every other run in the thread, oldest→newest) and render each as
- * `User: <prompt>\nResult: <summary ?? 'no summary'>`. Returns "" when there is
- * no prior context (a thread root). */
-export async function buildThreadPreamble(
-  threadId: string,
-  currentRunId: string,
-): Promise<string> {
-  const [currentRun] = await db
-    .select({ createdAt: runs.createdAt })
-    .from(runs)
-    .where(and(eq(runs.threadId, threadId), eq(runs.id, currentRunId)))
-    .limit(1);
-  const priorRun = currentRun
-    ? or(
-        lt(runs.createdAt, currentRun.createdAt),
-        and(eq(runs.createdAt, currentRun.createdAt), lt(runs.id, currentRunId)),
-      )
-    : ne(runs.id, currentRunId);
-  const rows = await db
-    .select({ prompt: runs.prompt, summary: runs.summary })
-    .from(runs)
-    .where(
-      and(
-        eq(runs.threadId, threadId),
-        priorRun,
-        inArray(runs.status, ["completed", "failed"]),
-      ),
-    )
-    .orderBy(desc(runs.createdAt), desc(runs.id))
-    .limit(THREAD_MAX_TURNS);
-  if (rows.length === 0) return "";
-
-  // Keep the most recent turns, then trim oldest-first to the char budget.
-  let blocks = rows
-    .toReversed()
-    .map((r) => `User: ${r.prompt}\nYou replied: ${r.summary ?? "no summary"}`);
-  while (blocks.length > 1 && blocks.join("\n\n").length > THREAD_MAX_CHARS) {
-    blocks = blocks.slice(1);
-  }
-  // Framing is load-bearing: a weak "context:" note gets ignored and the engine
-  // claims it "starts fresh" when asked what happened above. State plainly that
-  // this IS its own history of THIS session and that "above / earlier /
-  // previously" refers to it.
-  return (
-    `This is an ONGOING conversation, and below is YOUR OWN history of it — the ` +
-    `previous turns between the user and you (oldest first, most recent last). ` +
-    `You DO have this context: when the user says "above", "earlier", or ` +
-    `"previously", they mean these turns — answer from them instead of saying ` +
-    `you lack history. (Only work outside this conversation is unknown to you ` +
-    `unless a team-memory block is provided above.)\n\n${blocks.join("\n\n")}\n\n---\n\n`
-  );
 }
 
 export async function getStepsApi(runId: string): Promise<ApiStep[]> {
