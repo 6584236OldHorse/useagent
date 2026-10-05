@@ -104,8 +104,10 @@ export function addressBarNavigateCommand(url: string, browserExecutable: string
     : '"$(command -v google-chrome 2>/dev/null || command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null)"';
   return `win=$(xdotool search --onlyvisible --class chrom 2>/dev/null | tail -n 1); ` +
     `if [ -n "$win" ]; then xdotool windowactivate --sync "$win" && xdotool key --clearmodifiers ctrl+l && sleep 0.2 && ` +
-    `${typeCommand(safeUrl, 10)} && xdotool key --clearmodifiers Return; ` +
-    `else (setsid ${browser} '${safeUrl}' >/dev/null 2>&1 &) && sleep 2; fi`;
+    // Delete first: the address bar autocompletes a typed prefix from history.
+    `${typeCommand(safeUrl, 10)} && xdotool key --clearmodifiers Delete Return; ` +
+    `else browser=${browser}; [ -n "$browser" ] || { echo 'no browser is installed on this desktop' >&2; exit 1; }; ` +
+    `(setsid "$browser" '${safeUrl}' >/dev/null 2>&1 &) && sleep 2; fi`;
 }
 
 function cubeSequenceCommand(action: ComputerSequenceAction): string {

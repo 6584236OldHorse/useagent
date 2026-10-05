@@ -503,8 +503,9 @@ describe("navigate without a browser relay", () => {
     expect(command).toContain("xdotool search --onlyvisible --class chrom");
     expect(command).toContain("xdotool key --clearmodifiers ctrl+l");
     expect(command).toContain("xdotool type --clearmodifiers");
-    expect(command).toContain("xdotool key --clearmodifiers Return");
-    expect(command).toContain("(setsid '/usr/bin/google-chrome' 'https://x.com/a%27b?q=1' >/dev/null 2>&1 &)");
+    expect(command).toContain("xdotool key --clearmodifiers Delete Return");
+    expect(command).toContain("browser='/usr/bin/google-chrome'; [ -n \"$browser\" ] || { echo 'no browser is installed on this desktop' >&2; exit 1; }");
+    expect(command).toContain("(setsid \"$browser\" 'https://x.com/a%27b?q=1' >/dev/null 2>&1 &)");
     expect(command).not.toContain("a'b");
     expect(addressBarNavigateCommand("https://x.com/", null)).toContain("command -v google-chrome");
   });
