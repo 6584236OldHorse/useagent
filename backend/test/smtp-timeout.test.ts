@@ -38,13 +38,28 @@ describe("smtp client bounds", () => {
     }
   });
 
-  test("a relay that never accepts the connection times out too", async () => {
-    // A non-routable address: the connect attempt hangs until the deadline.
-    const started = Date.now();
-    await expect(
-      sendSmtp({ host: "10.255.255.1", port: 25, secure: false, timeoutMs: 200 }, message),
-    ).rejects.toThrow("SMTP timeout");
-    expect(Date.now() - started).toBeLessThan(3_000);
+  test("a connect attempt that never completes times out, and a late socket is dropped", async () => {
+    const original = Bun.connect;
+    let settle = (_socket: unknown): void => {
+      throw new Error("connect was never called");
+    };
+    let terminated = 0;
+    Bun.connect = (() =>
+      new Promise((resolve) => {
+        settle = resolve;
+      })) as typeof Bun.connect;
+    try {
+      const started = Date.now();
+      await expect(
+        sendSmtp({ host: "relay.example.test", port: 25, secure: false, timeoutMs: 100 }, message),
+      ).rejects.toThrow("SMTP timeout");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      settle({ terminate: () => void (terminated += 1), write() {}, end() {} });
+      await Bun.sleep(10);
+      expect(terminated).toBe(1);
+    } finally {
+      Bun.connect = original;
+    }
   });
 
   test("a relay that hangs up mid-dialog fails the send instead of parking it", async () => {

@@ -34,8 +34,8 @@ export async function invitedSignupAllowed(
   return row !== undefined;
 }
 
-/** Where an invitation is accepted: the app origin better-auth already serves. */
-export function invitationLink(id: string, origin: string = env.BETTER_AUTH_URL): string {
+/** Where an invitation is accepted: the accept page lives on the frontend. */
+export function invitationLink(id: string, origin: string = env.FRONTEND_ORIGIN): string {
   return new URL(`/accept-invitation/${encodeURIComponent(id)}`, origin).toString();
 }
 

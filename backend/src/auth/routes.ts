@@ -1,7 +1,7 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
-import { invitationMailEnabled } from "../auth-invitations";
+import { INVITATION_EXPIRES_IN_SECONDS, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, googleAuthEnabled } from "../env";
@@ -46,11 +46,11 @@ routes.post("/api/auth/electron/token", (c) => {
   if (origin !== "useagent:/") return c.json({ message: "Desktop token exchange requires the native app." }, 403);
   return auth.handler(c.req.raw);
 });
-/** A resend repeats the invitation as stored, whatever role the request names,
- *  so an admin could extend an owner invitation by asking for "member". The
- *  organisation is resolved once here and pinned on the forwarded request, and
- *  every live invitation for that email is checked: if any is an owner
- *  invitation, only an owner may resend. */
+/** A resend renews the invitation that already exists, with the role stored on
+ *  it, never the role the request names. It is answered here in full instead of
+ *  being forwarded, so nothing can change between the check and the renewal.
+ *  Membership is checked before any invitation is read, so an outsider learns
+ *  nothing about a workspace's invitations from the answer. */
 routes.post("/api/auth/organization/invite-member", async (c) => {
   const request = c.req.raw;
   const text = await request.clone().text();
@@ -68,9 +68,19 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     typeof body.organizationId === "string" && body.organizationId.trim()
       ? body.organizationId.trim()
       : session.session.activeOrganizationId ?? null;
-  if (!organizationId) return auth.handler(request); // better-auth reports the missing organisation
+  if (!organizationId) return c.json({ message: "Organization not found" }, 400);
+  const roles = (value: string | null | undefined) => (value ?? "").split(",").map((role) => role.trim());
+  const [membership] = await db
+    .select({ role: member.role })
+    .from(member)
+    .where(and(eq(member.organizationId, organizationId), eq(member.userId, session.user.id)))
+    .limit(1);
+  const mine = roles(membership?.role);
+  if (!mine.includes("owner") && !mine.includes("admin")) {
+    return c.json({ message: "You are not allowed to invite people to this workspace" }, 403);
+  }
   const live = await db
-    .select({ role: invitation.role })
+    .select({ id: invitation.id, role: invitation.role })
     .from(invitation)
     .where(
       and(
@@ -80,20 +90,31 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
         gt(invitation.expiresAt, new Date()),
       ),
     );
-  const roles = (value: string | null | undefined) => (value ?? "").split(",").map((role) => role.trim());
-  if (live.some((row) => roles(row.role).includes("owner"))) {
-    const [membership] = await db
-      .select({ role: member.role })
-      .from(member)
-      .where(and(eq(member.organizationId, organizationId), eq(member.userId, session.user.id)))
-      .limit(1);
-    if (!roles(membership?.role).includes("owner")) {
-      return c.json({ message: "Only an owner can resend an owner invitation" }, 403);
-    }
+  if (live.some((row) => roles(row.role).includes("owner")) && !mine.includes("owner")) {
+    return c.json({ message: "Only an owner can resend an owner invitation" }, 403);
   }
-  const pinned = new Request(request, { body: JSON.stringify({ ...body, organizationId }) });
-  pinned.headers.set("content-type", "application/json");
-  return auth.handler(pinned);
+  const [renewed] = live.length
+    ? await db
+        .update(invitation)
+        .set({ expiresAt: new Date(Date.now() + INVITATION_EXPIRES_IN_SECONDS * 1000) })
+        .where(and(inArray(invitation.id, live.map((row) => row.id)), eq(invitation.status, "pending")))
+        .returning()
+    : [];
+  if (!renewed) return c.json({ message: "No pending invitation for that address" }, 400);
+  const [org] = await db
+    .select({ name: organization.name })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1);
+  await deliverInvitation({
+    id: renewed.id,
+    email: renewed.email,
+    role: renewed.role ?? "member",
+    organization: { name: org?.name ?? "" },
+    invitation: { expiresAt: renewed.expiresAt },
+    inviter: { user: { name: session.user.name, email: session.user.email } },
+  });
+  return c.json(renewed);
 });
 /** The invitation a link points at, for the person it was sent to. better-auth's
  *  own preview refuses once the inviter has left the organisation, although the

@@ -3,6 +3,7 @@ import { like } from "drizzle-orm";
 
 await import("./helpers");
 const { db } = await import("../src/db/client");
+const { env } = await import("../src/env");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
   deliverInvitation,
@@ -44,7 +45,9 @@ describe("invitation mail configuration", () => {
     ).toBeNull();
   });
 
-  test("the link and the message name the workspace, the inviter and the deadline", () => {
+  test("the link points at the frontend, not the auth origin, and names the workspace", () => {
+    expect(env.FRONTEND_ORIGIN).not.toBe(env.BETTER_AUTH_URL); // the local layout the link must survive
+    expect(new URL(invitationLink("x")).origin).toBe(new URL(env.FRONTEND_ORIGIN).origin);
     expect(invitationLink("inv 1", "https://app.example.test")).toBe(
       "https://app.example.test/accept-invitation/inv%201",
     );

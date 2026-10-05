@@ -185,3 +185,71 @@ test("the invitation preview answers the recipient, even after the inviter has l
   const gone = await json(`/api/auth/invitation-preview?id=${invite.body.id}`, { cookies: invitee.cookies });
   expect(gone.status).toBe(404);
 });
+
+test("a resend keeps the stored role whatever the request names, and renews the deadline", async () => {
+  const org = await createOrgSession("renew");
+  const admin = await createOrgSession("renew-admin");
+  const [adminUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, admin.email));
+  await db.insert(member).values({
+    id: `member_${crypto.randomUUID()}`,
+    organizationId: org.orgId,
+    userId: adminUser!.id,
+    role: "admin",
+    createdAt: new Date(),
+  });
+  const invite = await json<{ id: string; expiresAt: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "keep@example.test", role: "member" },
+  });
+  expect(invite.status).toBe(200);
+  await db
+    .update(invitation)
+    .set({ expiresAt: new Date(Date.now() + 60_000) })
+    .where(eq(invitation.id, invite.body.id));
+  const resent = await json<{ id: string; role: string; expiresAt: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: admin.cookies,
+    body: { organizationId: org.orgId, email: "keep@example.test", role: "owner", resend: true },
+  });
+  expect(resent.status).toBe(200);
+  expect(resent.body.id).toBe(invite.body.id);
+  expect(resent.body.role).toBe("member");
+  const [row] = await db.select({ role: invitation.role, expiresAt: invitation.expiresAt }).from(invitation).where(eq(invitation.id, invite.body.id));
+  expect(row!.role).toBe("member");
+  expect(row!.expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+});
+
+test("an outsider or a plain member gets the same answer whatever invitations exist", async () => {
+  const org = await createOrgSession("closed");
+  for (const [email, role] of [["closed-owner@example.test", "owner"], ["closed-member@example.test", "member"]] as const) {
+    const res = await json("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email, role },
+    });
+    expect(res.status).toBe(200);
+  }
+  const stranger = await createOrgSession("stranger");
+  const plain = await createOrgSession("plain");
+  const [plainUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, plain.email));
+  await db.insert(member).values({
+    id: `member_${crypto.randomUUID()}`,
+    organizationId: org.orgId,
+    userId: plainUser!.id,
+    role: "member",
+    createdAt: new Date(),
+  });
+  const answers = new Set<string>();
+  for (const cookies of [stranger.cookies, plain.cookies]) {
+    for (const email of ["closed-owner@example.test", "closed-member@example.test", "nobody@example.test"]) {
+      const res = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+        method: "POST",
+        cookies,
+        body: { organizationId: org.orgId, email, role: "member", resend: true },
+      });
+      answers.add(`${res.status} ${res.body.message}`);
+    }
+  }
+  expect([...answers]).toEqual(["403 You are not allowed to invite people to this workspace"]);
+});
