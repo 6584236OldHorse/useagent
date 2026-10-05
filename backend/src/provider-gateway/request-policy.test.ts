@@ -103,6 +103,28 @@ describe("provider request body policy", () => {
       .toEqual({ ok: false, error: "model_not_allowed" });
   });
 
+  test("refuses a fallback model list or a routing mode beside the run's model", () => {
+    const freeRun = { ...run, engine: "opencode", model: "vendor/model:free" } satisfies GatewayRun;
+    expect(applyProviderBodyPolicy(
+      freeRun,
+      JSON.stringify({ model: "vendor/model:free", models: ["openai/gpt-4o"], max_tokens: 16 }),
+      "max_tokens",
+      100,
+    )).toEqual({ ok: false, error: "model_not_allowed" });
+    expect(applyProviderBodyPolicy(
+      freeRun,
+      JSON.stringify({ model: "vendor/model:free", route: "fallback", max_tokens: 16 }),
+      "max_tokens",
+      100,
+    )).toEqual({ ok: false, error: "model_not_allowed" });
+    expect(applyProviderBodyPolicy(
+      freeRun,
+      JSON.stringify({ model: "vendor/model:free", max_tokens: 16 }),
+      "max_tokens",
+      100,
+    ).ok).toBe(true);
+  });
+
   test("adds a missing output ceiling and preserves a smaller one", () => {
     const added = applyProviderBodyPolicy(run, '{"model":"gpt-5"}', "max_output_tokens", 100);
     expect(added.ok && JSON.parse(added.body).max_output_tokens).toBe(100);

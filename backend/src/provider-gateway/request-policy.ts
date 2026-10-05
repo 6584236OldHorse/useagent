@@ -44,6 +44,11 @@ export function applyProviderBodyPolicy(
   if (!requestModelMatchesRun(run, body.model)) {
     return { ok: false, error: "model_not_allowed" };
   }
+  // A fallback list or a routing mode would let the provider swap in another
+  // model, and bill for it, when the run's model fails; the run has one model.
+  if ("models" in body || "route" in body) {
+    return { ok: false, error: "model_not_allowed" };
+  }
 
   let requestedOutputTokens = 0;
   if (outputLimitField) {
