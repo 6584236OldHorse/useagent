@@ -385,8 +385,10 @@ describe("review findings", () => {
     runner = new Mux("runner", { send: () => {} }, { onStreamOpen: () => new Promise(() => {}) });
     const opening = plane.openStream({}, { timeoutMs: 5000 }).then(() => "resolved", (e: unknown) => e);
     await settled();
-    // Two bytes into a window of one, before stream.opened: the stream is reset.
-    plane.receive(new Uint8Array([1, 0, 0, 0, 2, 9, 9]));
+    // Before stream.opened the opener allows an older peer the protocol default; past that it resets.
+    const frame = new Uint8Array(5 + 256 * 1024 + 1);
+    frame.set([1, 0, 0, 0, 2]);
+    plane.receive(frame);
     const error = await opening;
     expect(error).toBeInstanceOf(StreamRefusedError);
     expect((error as StreamRefusedError).message).toMatch(/window/);
@@ -488,10 +490,11 @@ describe("review findings", () => {
   });
 
   test("pipeToStream fails when the source dies while a write waits for credit", async () => {
-    let received: Promise<unknown> = Promise.resolve();
-    const { plane } = connectPair({}, {
+    let accepted!: MuxStream;
+    const { plane, runner } = connectPair({}, {
       onStreamOpen: (_target, stream) => {
-        received = readAllFromStream(stream).then(() => "resolved", (e: unknown) => String(e));
+        // Nobody reads: after one window plus the prefetched chunk, the write waits for credit.
+        accepted = stream;
       },
     }, { window: 1 });
     const stream = await plane.openStream({});
@@ -502,12 +505,39 @@ describe("review findings", () => {
         c.enqueue(new Uint8Array(10));
       },
     });
+    let pipeSettled = false;
     const pipe = pipeToStream(source, stream).then(() => "resolved", (e: unknown) => String(e));
+    void pipe.then(() => { pipeSettled = true; });
     await settled();
+    expect(pipeSettled).toBe(false);
     controller.error(new Error("container died"));
     expect(await pipe).toMatch(/container died/);
-    expect(await received).toMatch(/container died/);
+    await expect(readAllFromStream(accepted)).rejects.toThrow(/container died/);
     expect(plane.openStreams).toBe(0);
+    expect(runner.openStreams).toBe(0);
+  });
+
+  test("an older acceptor may send the protocol default before it acknowledges", async () => {
+    let runnerMux!: Mux;
+    const plane = new Mux("plane", { send: (m) => queueMicrotask(() => runnerMux.receive(m)) }, {}, { window: 8 });
+    // The acceptor writes nine bytes and acknowledges without a window, as an older peer would.
+    runnerMux = new Mux("runner", {
+      send: (m) => {
+        if (typeof m === "string" && m.includes('"stream.opened"')) {
+          const frame = JSON.parse(m) as { id: number };
+          queueMicrotask(() => plane.receive(JSON.stringify({ t: "stream.opened", id: frame.id })));
+          return;
+        }
+        queueMicrotask(() => plane.receive(m));
+      },
+    }, {
+      onStreamOpen: (_target, stream) => {
+        void stream.write(new Uint8Array(9)).then(() => stream.end());
+      },
+    });
+    const stream = await plane.openStream({});
+    expect((await readAllFromStream(stream)).byteLength).toBe(9);
+    stream.end();
   });
 
   test("pipeToStream fails when the link closes during an idle read", async () => {

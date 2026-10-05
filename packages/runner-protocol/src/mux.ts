@@ -204,6 +204,9 @@ export class Mux {
     }
     this.nextStreamId = id + 2;
     const state = this.createStream(id);
+    // Until the acceptor answers, it might be an older peer sending against the
+    // protocol default; the acknowledgement settles which allowance applies.
+    state.recvWindow = Math.max(this.window, ASSUMED_PEER_WINDOW);
     const { promise, resolve, reject } = Promise.withResolvers<MuxStream>();
     const timer = setTimeout(() => {
       this.opening.delete(id);
