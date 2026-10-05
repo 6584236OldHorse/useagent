@@ -476,7 +476,7 @@ export function ModelPicker({
                         onChange(e.value);
                         setOpen(false);
                       }}
-                      className="hover:bg-background-primary-hover flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55"
+                      className="hover:bg-background-primary-hover flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent"
                     >
                       <span
                         className={cn(
@@ -488,11 +488,12 @@ export function ModelPicker({
                       </span>
                       <RowMark option={e.value} />
                       <span className="min-w-0 flex-1">
-                        <span className="text-body-2-regular text-text-primary block">
+                        <span className="text-body-2-regular text-text-primary block truncate">
                           {e.label}
                         </span>
                         {e.description ? (
-                          <span className="text-caption-1-regular text-text-tertiary block">
+                          // One line, like every other row; the full reason is the row's title.
+                          <span className="text-caption-1-regular text-text-tertiary block truncate">
                             {e.description}
                           </span>
                         ) : null}
