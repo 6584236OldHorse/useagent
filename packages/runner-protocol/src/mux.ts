@@ -111,8 +111,8 @@ interface StreamState {
   recvWindow: number;
   /** Bytes received and not yet credited back; a peer past the window is reset. */
   recvOutstanding: number;
-  /** Bytes received before the peer acknowledged (its window unknown); judged when it does. */
-  preAckReceived: number;
+  /** The most bytes in flight at once before the peer acknowledged (its window unknown); judged when it does. */
+  preAckPeak: number;
   creditWaiters: Array<() => void>;
   localClosed: boolean;
   remoteClosed: boolean;
@@ -238,7 +238,7 @@ export class Mux {
     const state = this.streams.get(data.streamId);
     if (!state || state.remoteClosed || data.payload.byteLength === 0) return;
     state.recvOutstanding += data.payload.byteLength;
-    if (state.peerWindow === 0) state.preAckReceived += data.payload.byteLength;
+    if (state.peerWindow === 0) state.preAckPeak = Math.max(state.preAckPeak, state.recvOutstanding);
     if (state.recvOutstanding > state.recvWindow) {
       this.finishStream(state, new Error("peer exceeded the stream window"));
       return;
@@ -386,14 +386,14 @@ export class Mux {
   private grantPeerWindow(state: StreamState, window: number | undefined): boolean {
     state.peerWindow = window ?? ASSUMED_PEER_WINDOW;
     state.recvWindow = window === undefined ? Math.max(this.window, ASSUMED_PEER_WINDOW) : this.window;
-    // Everything that arrived before the acknowledgement counts, whether or not
-    // the consumer already drained some of it: a peer that advertises a window
-    // was bound by it from its first byte.
-    if (Math.max(state.recvOutstanding, state.preAckReceived) > state.recvWindow) {
+    // The peak in flight before the acknowledgement counts, whether or not the
+    // consumer drained it since: a peer that advertises a window was bound by
+    // it from its first byte, while credit it earned back was legitimately spent.
+    if (Math.max(state.recvOutstanding, state.preAckPeak) > state.recvWindow) {
       this.finishStream(state, new Error("peer exceeded the stream window"));
       return false;
     }
-    state.preAckReceived = 0;
+    state.preAckPeak = 0;
     state.sendCredit = state.peerWindow;
     const waiters = state.creditWaiters;
     state.creditWaiters = [];
@@ -438,7 +438,7 @@ export class Mux {
       peerWindow: 0,
       recvWindow: this.window,
       recvOutstanding: 0,
-      preAckReceived: 0,
+      preAckPeak: 0,
       creditWaiters: [],
       localClosed: false,
       remoteClosed: false,

@@ -565,6 +565,22 @@ describe("review findings", () => {
     expect(plane.openStreams).toBe(0);
   });
 
+  test("credit earned back before the acknowledgement may be spent before it", async () => {
+    // Both windows are 8; the acceptor writes 16 bytes before it acknowledges, so the
+    // second chunk rides on credit the opener returned during prefetch. That is legal.
+    let accepted!: MuxStream;
+    const { plane } = connectPair({}, {
+      onStreamOpen: async (_target, stream) => {
+        accepted = stream;
+        await stream.write(new Uint8Array(16));
+      },
+    }, { window: 8 });
+    const stream = await plane.openStream({});
+    accepted.end();
+    expect((await readAllFromStream(stream)).byteLength).toBe(16);
+    stream.end();
+  });
+
   test("an older acceptor may send the protocol default before it acknowledges", async () => {
     let runnerMux!: Mux;
     const plane = new Mux("plane", { send: (m) => queueMicrotask(() => runnerMux.receive(m)) }, {}, { window: 8 });
