@@ -32,7 +32,7 @@ describe("Desktop product surface", () => {
     expect(sessionView).toContain(
       'const hasRuntimeSurfaces = normalizeEngine(newest.engine) !== "chat"',
     );
-    expect(sessionView).toContain("const railOpen = railOverride ?? hasRuntimeSurfaces");
+    expect(sessionView).toContain("const railOpen = railOverride ?? (railDefaultOpen && hasRuntimeSurfaces)");
     expect(sessionView).not.toContain("railOverride ?? hasRailContent");
     expect(sessionView).toContain('aria-hidden={railTab !== "desktop"}');
     expect(sessionView).toContain(
