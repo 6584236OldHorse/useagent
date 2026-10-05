@@ -3,7 +3,7 @@
 // The ONE block a turn's work renders as, in every thread: a Thinking header
 // ("Thinking" + the pixel loader while live, "Thought for 1m 12s" or "4 tool
 // calls, 2 messages" once settled) over short step lines behind a hairline
-// rule. A step line is: a muted check when done (an x when failed, the loader
+// rule. A step line is: a muted check when done (a muted x when failed, the loader
 // while it runs), the step's family glyph, a verb-first label, the object it
 // acted on in a chip (mono for a command, a path or a slug), and a muted
 // detail. A step opens in place to its payload (reasoning prose, a tool's
@@ -55,7 +55,7 @@ function StatusGlyph({ status }: { status: TraceRowStatus }) {
       {status === "running" ? (
         <PixelLoader size="sm" className="text-text-secondary" />
       ) : status === "failed" ? (
-        <RiCloseLine className="size-3.5 text-text-error-primary" aria-hidden />
+        <RiCloseLine className="size-3.5 text-text-tertiary" aria-hidden />
       ) : (
         <RiCheckLine className="size-3.5 text-text-tertiary" aria-hidden />
       )}
@@ -121,10 +121,7 @@ const TraceRowView = memo(function TraceRowView({ row }: { row: TraceStepRow }) 
       <Icon className="size-3.5 shrink-0 text-text-tertiary opacity-80" aria-hidden />
       <span
         data-testid="trace-row-label"
-        className={cn(
-          "shrink-0 text-[12.5px] font-medium leading-5",
-          row.status === "failed" ? "text-text-error-primary" : "text-text-primary",
-        )}
+        className="shrink-0 text-[12.5px] font-medium leading-5 text-text-primary"
       >
         {row.label}
       </span>

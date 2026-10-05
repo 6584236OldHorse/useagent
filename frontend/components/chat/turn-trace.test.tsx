@@ -208,6 +208,8 @@ describe("turn trace", () => {
     expect(html).toContain('aria-label="Failed"');
     expect(html).toContain(">bun run typecheck<");
     expect(html).toContain(">exit 1<");
+    // A step the turn survived is marked, not alarmed: no error tint on the row or the header.
+    expect(html).not.toContain("text-text-error-primary");
   });
 
   test("a bot reply keeps fetched sources visible outside the closed trace", () => {
