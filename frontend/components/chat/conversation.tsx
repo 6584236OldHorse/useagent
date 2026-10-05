@@ -807,7 +807,8 @@ export const Conversation = memo(function Conversation({
             agent={engineDisplayLabel(defaultEngine)}
             context={composerContext}
             onCompact={
-              !running && !pendingQuestion && !pendingApproval && !controlLocksComposer && !composerLocked &&
+              !running && pendingReply === null && !turns.some((turn) => turn.status === "queued") &&
+              !pendingQuestion && !pendingApproval && !controlLocksComposer && !composerLocked &&
               commands?.some((c) => c.name === "compact")
                 ? () =>
                     void onReply(

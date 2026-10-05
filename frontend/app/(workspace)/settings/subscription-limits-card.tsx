@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import { AgentLimitsCard, type UsageLimit } from "@/components/pro/agent-limits-card";
 import { fetchCodexRateLimits } from "./provider-connections-api";
@@ -55,16 +55,25 @@ const PLAN_NAMES: Record<string, string> = {
 
 export function SubscriptionLimitsCard() {
   const [limits, setLimits] = useState<CodexRateLimits | null>(null);
+  // Only the newest request may set state: a slow earlier read must not
+  // restore limits that a later revocation already cleared.
+  const generation = useRef(0);
   const refresh = useCallback(() => {
+    const mine = ++generation.current;
     fetchCodexRateLimits()
-      .then(setLimits)
-      .catch(() => setLimits(null));
+      .then((fresh) => {
+        if (generation.current === mine) setLimits(fresh);
+      })
+      .catch(() => {
+        if (generation.current === mine) setLimits(null);
+      });
   }, []);
   useEffect(refresh, [refresh]);
-  // Connecting or revoking the account elsewhere on the page changes the answer.
+  // Connecting or revoking the account elsewhere on the page changes the
+  // answer; a reconnect of the org stream may have missed such a change.
   useOrgChanges((change) => {
     if (change.type === "provider_connection") refresh();
-  });
+  }, refresh);
   if (!limits) return null;
   const rows = limitRows(limits, new Date());
   if (rows.length === 0) return null;
