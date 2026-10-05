@@ -22,7 +22,20 @@ export interface ChatChargeSweep {
   readonly stuck: readonly string[];
 }
 
-export async function settlePendingChatCharges(graceMs = CHAT_CHARGE_SWEEP_GRACE_MS): Promise<ChatChargeSweep> {
+/** The sweep in flight, if any: a second call joins it instead of running
+ *  beside it, since two sweeps writing the unresolved counts from their own
+ *  snapshots could clear a member the other had just marked. */
+let sweeping: Promise<ChatChargeSweep> | null = null;
+
+export function settlePendingChatCharges(graceMs = CHAT_CHARGE_SWEEP_GRACE_MS): Promise<ChatChargeSweep> {
+  if (sweeping) return sweeping;
+  sweeping = sweepPendingChatCharges(graceMs).finally(() => {
+    sweeping = null;
+  });
+  return sweeping;
+}
+
+async function sweepPendingChatCharges(graceMs: number): Promise<ChatChargeSweep> {
   const houseKey = process.env.OPENROUTER_API_KEY;
   let settled = 0;
   // What this process could not write: retried with what it kept, until it lands.
