@@ -59,7 +59,7 @@ describe("native image steps", () => {
 installed=0
 command() {
   case "$2" in
-    xdotool|xfce4-clipman) [ "$installed" = 1 ] ;;
+    xdotool|pcmanfm) [ "$installed" = 1 ] ;;
     *) return 0 ;;
   esac
 }
@@ -68,13 +68,19 @@ apt-get() {
   case " $* " in
     *" install "*)
       case " $* " in *" xdotool "*) ;; *) return 1 ;; esac
-      case " $* " in *" xfce4-clipman "*) ;; *) return 1 ;; esac
+      case " $* " in *" budgie-core "*) ;; *) return 1 ;; esac
+      case " $* " in *" xserver-xorg-video-dummy "*) ;; *) return 1 ;; esac
       echo installed-desktop-tools
       installed=${repaired ? 1 : 0}
       ;;
   esac
 }
 rm() { :; }
+install() { :; }
+tee() { cat >/dev/null; }
+chmod() { :; }
+dconf() { :; }
+gtk-update-icon-cache() { :; }
 set -eu
 ${desktopToolchainCommand(CUBE_LAYOUT)}
 `], { stdout: "pipe", stderr: "pipe" });

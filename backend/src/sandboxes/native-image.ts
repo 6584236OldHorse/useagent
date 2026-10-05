@@ -109,16 +109,149 @@ export function desktopToolchainProbeCommand(): string {
   ].join(" && ");
 }
 
+const XORG_VIRTUAL_DISPLAY = `Section "Device"
+    Identifier "Configured Video Device"
+    Driver "dummy"
+    VideoRam 256000
+EndSection
+Section "Monitor"
+    Identifier "Configured Monitor"
+    HorizSync 30.0-90.0
+    VertRefresh 50.0-75.0
+    Modeline "1920x1080_60.00" 173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync
+EndSection
+Section "Screen"
+    Identifier "Default Screen"
+    Monitor "Configured Monitor"
+    Device "Configured Video Device"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080_60.00"
+        Virtual 1920 1080
+    EndSubSection
+EndSection
+`;
+
+const PANEL = "11111111-1111-4111-8111-111111111111";
+const APPLETS: readonly [string, string, "start" | "end", number][] = [
+  ["a1111111-1111-4111-8111-111111111111", "Budgie Menu", "start", 0],
+  ["a2111111-1111-4111-8111-111111111111", "Icon Task List", "start", 1],
+  ["a3111111-1111-4111-8111-111111111111", "System Tray", "end", 0],
+  ["a4111111-1111-4111-8111-111111111111", "Notifications", "end", 1],
+  ["a5111111-1111-4111-8111-111111111111", "Status Indicator", "end", 2],
+  ["a6111111-1111-4111-8111-111111111111", "Clock", "end", 3],
+  ["a7111111-1111-4111-8111-111111111111", "Raven Trigger", "end", 4],
+];
+
+/** System-wide desktop defaults: dark Adwaita, Cantarell, one bottom panel, no lock or idle, desktop launchers. */
+const DESKTOP_DEFAULTS = [
+  "[org/gnome/desktop/interface]",
+  "color-scheme='prefer-dark'",
+  "gtk-theme='Adwaita'",
+  "icon-theme='Adwaita'",
+  "cursor-theme='Adwaita'",
+  "font-name='Cantarell 11'",
+  "document-font-name='Cantarell 11'",
+  "monospace-font-name='Monospace 11'",
+  "[org/gnome/desktop/wm/preferences]",
+  "button-layout='appmenu:minimize,maximize,close'",
+  "titlebar-font='Cantarell Bold 11'",
+  "[org/gnome/desktop/background]",
+  "picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'",
+  "picture-uri-dark='file:///usr/share/backgrounds/gnome/adwaita-d.webp'",
+  "primary-color='#023c88'",
+  "show-desktop-icons=false",
+  "[org/gnome/desktop/screensaver]",
+  "idle-activation-enabled=false",
+  "lock-enabled=false",
+  "[org/gnome/desktop/session]",
+  "idle-delay=uint32 0",
+  "[org/gnome/desktop/lockdown]",
+  "disable-lock-screen=true",
+  "[com/solus-project/budgie-panel]",
+  "dark-theme=true",
+  `panels=['${PANEL}']`,
+  `[com/solus-project/budgie-panel/panels/{${PANEL}}]`,
+  "location='bottom'",
+  "size=36",
+  "spacing=2",
+  "enable-shadow=true",
+  "transparency='none'",
+  `applets=[${APPLETS.map(([id]) => `'${id}'`).join(", ")}]`,
+  ...APPLETS.flatMap(([id, name, alignment, position]) => [
+    `[com/solus-project/budgie-panel/applets/{${id}}]`,
+    `name='${name}'`,
+    `alignment='${alignment}'`,
+    `position=${position}`,
+  ]),
+  "",
+].join("\n");
+
+/** The desktop icons and wallpaper are drawn by pcmanfm (it runs as root, which nemo refuses). */
+const DESKTOP_ITEMS = [
+  "[*]",
+  "wallpaper_mode=crop",
+  "wallpaper_common=1",
+  "wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp",
+  "desktop_bg=#023c88",
+  "desktop_fg=#ffffff",
+  "desktop_shadow=#000000",
+  "desktop_font=Cantarell 11",
+  "show_wm_menu=0",
+  "sort=mtime;ascending;",
+  "show_documents=0",
+  "show_trash=0",
+  "show_mounts=0",
+  "",
+].join("\n");
+
+const DESKTOP_LAUNCHERS: readonly [string, string, string, string][] = [
+  ["files", "Files", "pcmanfm %U", "system-file-manager"],
+  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser)"', "web-browser"],
+  ["terminal", "Terminal", "gnome-terminal", "org.gnome.Terminal"],
+];
+
+/** Write `text` to `path` as the layout's privileged writer (heredoc, quoted delimiter). */
+function writeFile(sudo: string, path: string, text: string, mode = "644"): string {
+  return [
+    `${sudo}install -d -m 755 ${q(path.slice(0, path.lastIndexOf("/")))}`,
+    `${sudo}tee ${q(path)} >/dev/null <<'USEAGENT_EOF'`,
+    text.replace(/\n$/, ""),
+    "USEAGENT_EOF",
+    `${sudo}chmod ${mode} ${q(path)}`,
+  ].join("\n");
+}
+
+/** The desktop the sandbox shows: Budgie on a real Xorg dummy display at 1920x1080, dark Adwaita,
+ *  desktop launchers drawn by nemo, x11vnc and noVNC for the stream. */
 export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
   const sudo = layout.runsAsRoot ? "" : "sudo -n ";
   const probe = desktopToolchainProbeCommand();
+  const desktopDir = `${layout.home}/Desktop`;
   return [
     `if ${probe}; then exit 0; fi`,
     "export DEBIAN_FRONTEND=noninteractive",
     `${sudo}apt-get update -qq`,
-    `${sudo}apt-get install -y -qq --no-install-recommends dbus-x11 novnc procps thunar websockify x11-utils x11vnc xdotool xfce4 xfce4-clipman xfce4-terminal xvfb`,
+    `${sudo}apt-get install -y -qq --no-install-recommends ` +
+      "adwaita-icon-theme budgie-core dbus-x11 dconf-cli fonts-cantarell fonts-noto-mono gnome-backgrounds gnome-settings-daemon " +
+      "gnome-terminal hicolor-icon-theme libglib2.0-bin librsvg2-common novnc pcmanfm procps websockify x11-utils x11vnc xdotool " +
+      "xserver-xorg-core xserver-xorg-legacy xserver-xorg-video-dummy",
     `if ! (command -v google-chrome || command -v chromium || command -v chromium-browser) >/dev/null 2>&1; then ${sudo}apt-get install -y -qq --no-install-recommends chromium; fi`,
     `${sudo}rm -rf /var/lib/apt/lists/*`,
+    writeFile(sudo, "/etc/X11/xorg.conf.d/10-virtual-display.conf", XORG_VIRTUAL_DISPLAY),
+    // Xorg may be started by whoever owns the desktop process session, root or not.
+    writeFile(sudo, "/etc/X11/Xwrapper.config", "allowed_users=anybody\nneeds_root_rights=yes\n"),
+    writeFile(sudo, "/etc/dconf/profile/user", "user-db:user\nsystem-db:local\n"),
+    writeFile(sudo, "/etc/dconf/db/local.d/00-useagent-desktop", DESKTOP_DEFAULTS),
+    `${sudo}dconf update`,
+    // Symbolic icons are SVG; the caches make the themes visible to the panel.
+    `${sudo}gtk-update-icon-cache -f -q /usr/share/icons/Adwaita || true`,
+    `${sudo}gtk-update-icon-cache -f -q /usr/share/icons/hicolor || true`,
+    writeFile("", `${layout.home}/.config/pcmanfm/useagent/desktop-items-0.conf`, DESKTOP_ITEMS),
+    ...DESKTOP_LAUNCHERS.map(([file, name, exec, icon]) =>
+      writeFile("", `${desktopDir}/${file}.desktop`, `[Desktop Entry]\nType=Application\nName=${name}\nExec=${exec}\nIcon=${icon}\n`, "755"),
+    ),
     probe,
   ].join("\n");
 }

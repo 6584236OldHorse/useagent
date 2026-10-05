@@ -69,9 +69,12 @@ describe("shared sandbox desktop", () => {
   test("launches a private VNC server behind the existing websockify preview", () => {
     const command = buildDesktopLaunchCommand();
 
-    expect(command).toContain("Xvfb :1");
-    expect(command).toContain("dbus-launch --exit-with-session startxfce4");
-    expect(command).toContain('xfce4-clipman >"$HOME/.skynet/clipman.log" 2>&1 &');
+    expect(command).toContain("Xorg :1 -noreset -nolisten tcp -ac");
+    expect(command).toContain('dbus-launch --exit-with-session "$HOME/.skynet/desktop-session.sh"');
+    expect(command).toContain("budgie-wm >");
+    expect(command).toContain("pcmanfm --desktop --profile useagent");
+    expect(command).toContain("XDG_SESSION_TYPE=x11");
+    expect(command).toContain("--start-maximized");
     expect(command).not.toContain("openbox");
     expect(command).toContain("--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222");
     expect(command).toContain('--user-data-dir="$HOME/.skynet/browser-profile"');
@@ -110,11 +113,10 @@ describe("shared sandbox desktop", () => {
     expect(command).toContain("/json/version");
     expect(command).toContain('00000000:4B16');
     for (const process of [
-      "xfce4-session",
-      "xfwm4",
-      "xfce4-panel",
-      "xfdesktop",
-      "xfce4-clipman",
+      "budgie-wm",
+      "budgie-panel",
+      "budgie-daemon",
+      "pcmanfm",
     ]) {
       expect(command).toContain(`pgrep -x ${process}`);
     }
@@ -186,7 +188,7 @@ describe("shared sandbox desktop", () => {
             return {
               exitCode: 0,
               result:
-                "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nXFCE=1\nMCP=0\n",
+                "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nSESSION=1\nMCP=0\n",
             };
           }
           return { exitCode: 0, result: "" };
@@ -208,27 +210,26 @@ describe("shared sandbox desktop", () => {
     expect(probe).toContain("socket.create_connection(('127.0.0.1',5900),1)");
     expect(probe).toContain("/json/version");
     for (const binary of [
-      "startxfce4",
-      "xfce4-panel",
-      "xfwm4",
-      "xfdesktop",
-      "xfce4-terminal",
-      "thunar",
-      "xfce4-settings-manager",
-      "xfce4-clipman",
+      "Xorg",
+      "budgie-wm",
+      "budgie-panel",
+      "budgie-daemon",
+      "pcmanfm",
+      "gnome-terminal",
+      "dconf",
     ]) {
       expect(probe).toContain(binary);
     }
     expect(commands).not.toEqual(expect.arrayContaining([expect.stringContaining("npm install")]));
   });
 
-  test("repairs the desktop when noVNC, RFB, XFCE, CDP, or its relay is unhealthy", async () => {
+  test("repairs the desktop when noVNC, RFB, the session, CDP, or its relay is unhealthy", async () => {
     for (const firstHealth of [
-      "VNC=1\nRFB=1\nCDP=0\nCDP_RELAY=1\nXFCE=1",
-      "VNC=1\nRFB=0\nCDP=1\nCDP_RELAY=1\nXFCE=1",
-      "VNC=0\nRFB=1\nCDP=1\nCDP_RELAY=1\nXFCE=1",
-      "VNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nXFCE=0",
-      "VNC=1\nRFB=1\nCDP=1\nCDP_RELAY=0\nXFCE=1",
+      "VNC=1\nRFB=1\nCDP=0\nCDP_RELAY=1\nSESSION=1",
+      "VNC=1\nRFB=0\nCDP=1\nCDP_RELAY=1\nSESSION=1",
+      "VNC=0\nRFB=1\nCDP=1\nCDP_RELAY=1\nSESSION=1",
+      "VNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nSESSION=0",
+      "VNC=1\nRFB=1\nCDP=1\nCDP_RELAY=0\nSESSION=1",
     ]) {
       const commands: string[] = [];
       const deleted: string[] = [];
@@ -265,7 +266,7 @@ describe("shared sandbox desktop", () => {
       expect(deleted).toEqual(["skynet-browser-mcp", "skynet-desktop"]);
       expect(created).toEqual(["skynet-desktop"]);
       expect(launched).toHaveLength(1);
-      expect(launched[0]).toContain("Xvfb :1");
+      expect(launched[0]).toContain("Xorg :1");
       expect(healthChecks).toBe(1);
       expect(commands.at(-1)).toContain("/vnc.html");
       expect(commands.at(-1)).toContain("socket.create_connection(('127.0.0.1',5900),1)");
@@ -281,7 +282,7 @@ describe("shared sandbox desktop", () => {
             return {
               exitCode: 0,
               result:
-                "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nXFCE=0\nMCP=0\n",
+                "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nSESSION=0\nMCP=0\n",
             };
           }
           if (command.startsWith('chmod 700 "$HOME/.skynet"')) {
@@ -320,8 +321,8 @@ describe("shared sandbox desktop", () => {
             return {
               exitCode: 0,
               result: wasHealthy
-                ? "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nXFCE=1\nMCP=1\n"
-                : "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nXFCE=0\nMCP=1\n",
+                ? "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=1\nRFB=1\nCDP=1\nCDP_RELAY=1\nSESSION=1\nMCP=1\n"
+                : "HOME=/home/daytona\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nSESSION=0\nMCP=1\n",
             };
           }
           if (command.includes("skynet-browser-guard-ping")) {

@@ -244,7 +244,7 @@ The important variables are:
 - The worker routes production turns through the provider registry. Codex, Claude Code, OpenCode, and Pi retain their native `ProviderDriver` lifecycles on every supported sandbox provider.
 - Daytona, Cube, Box and an enrolled developer's machine (`local`) all run real sandboxes, with the capability differences in the matrix above.
 - Better Auth owns sign-in and organizations; existing local user, organization and membership IDs remain the tenancy model. Existing-account password sign-in and configured Google sign-in are available; public signup is closed.
-- Desktop readiness and repair cover noVNC, RFB, the XFCE process set, browser CDP, and the restricted CDP relays. Failure degrades the advertised capability instead of failing the coding run.
+- Desktop readiness and repair cover noVNC, RFB, the desktop session process set, browser CDP, and the restricted CDP relays. Failure degrades the advertised capability instead of failing the coding run.
 
 ### Bounded Roadmap
 
