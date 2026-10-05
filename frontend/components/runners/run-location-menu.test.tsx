@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { UseAgentDesktopBridge } from "./desktop-bridge";
 import {
@@ -7,6 +8,7 @@ import {
   defaultRunLocation,
   isRunLocationShortcut,
   runLocationShortcutHint,
+  runnerStatusSettled,
   toggledRunLocation,
 } from "./run-location-menu";
 
@@ -27,6 +29,26 @@ describe("run location menu", () => {
     expect(defaultRunLocation(null)).toBe("cloud");
     expect(toggledRunLocation("local")).toBe("cloud");
     expect(toggledRunLocation("cloud")).toBe("local");
+    // The default is taken only once the runner is past starting up, so a
+    // machine still coming up is not fixed on Cloud by its first report.
+    expect(runnerStatusSettled(null)).toBe(false);
+    expect(runnerStatusSettled({ state: "starting" })).toBe(false);
+    expect(runnerStatusSettled({ state: "pulling", progress: 0.4 })).toBe(false);
+    for (const state of ["online", "offline", "error"] as const) expect(runnerStatusSettled({ state })).toBe(true);
+  });
+
+  test("the new-task composer mounts the menu through the desktop bridge and sends the choice on the root run", () => {
+    // The composer owns a router and a capability catalog, so its wiring is read, not rendered.
+    const composer = readFileSync(
+      new URL("../../app/(workspace)/agent/new/new-task-composer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(composer).toContain("useEffect(() => setBridge(desktopBridge()), []);");
+    expect(composer).toContain("<RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} />");
+    expect(composer).toContain("...(runLocation ? { run_location: runLocation } : {}),");
+    // Machine logins and the local caption count only for a thread placed on the machine.
+    expect(composer).toContain("useEnabledEngineConfig({ machineLogins: onMachine })");
+    expect(composer).toContain("const machineRunsWork = useMachineRunsWork() && onMachine;");
   });
 
   test("the shortcut is the command key with the apostrophe, named for the platform", () => {

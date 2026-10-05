@@ -85,7 +85,7 @@ import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
 import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
-import { runLocationChoice } from "./run-location";
+import { machineUnavailable, runLocationChoice } from "./run-location";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
 runsRoutes.use("*", orgScope);
@@ -133,9 +133,7 @@ export async function handleRunCreate(
       : null;
   let requestedEngine: EngineId | null = null;
   if (body.engine !== undefined && body.engine !== null && body.engine !== "") {
-    if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) {
-      return c.json({ error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` }, 400);
-    }
+    if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) return c.json({ error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` }, 400);
     requestedEngine = body.engine as EngineId;
   }
 
@@ -227,8 +225,8 @@ export async function handleRunCreate(
   const permission = runPermissionMode(body.permission_mode);
   if (!permission.ok) return c.json({ error: permission.error }, 400);
   const { permissionMode } = permission;
-  // Run location: a root run's cloud-or-machine choice, refused now when the machine cannot take it; a reply inherits.
-  const location = await runLocationChoice(body.run_location, { orgId: c.get("orgId"), userId: c.get("userId"), reply: parentRunId !== null });
+  // Run location: a root run's cloud-or-machine choice (the machine's availability is asked below, of a new acceptance only); a reply inherits.
+  const location = runLocationChoice(body.run_location, parentRunId !== null);
   if (!location.ok) return c.json(location.body, location.status);
 
   // Parse the stable skill selection before the replay lookup. Its mutable
@@ -342,6 +340,8 @@ export async function handleRunCreate(
     return c.json({ error: "idempotency_key_reused", reason: replay.reason }, 409);
   }
   // Mutable authorization/readiness checks apply only to first acceptance.
+  const machine = location.runLocation === "local" ? await machineUnavailable({ orgId: c.get("orgId"), userId: c.get("userId") }) : null;
+  if (machine) return c.json(machine.body, machine.status);
   if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
     return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
   }

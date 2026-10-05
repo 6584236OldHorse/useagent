@@ -33,6 +33,13 @@ export function defaultRunLocation(status: DesktopRunnerStatus | null): RunLocat
   return status?.state === "online" ? "local" : "cloud";
 }
 
+/** The status is settled once the runner is past starting up; the default is
+ *  taken from a settled status only, so a machine still coming up lands on
+ *  Local rather than being fixed on Cloud by its first report. */
+export function runnerStatusSettled(status: DesktopRunnerStatus | null): status is DesktopRunnerStatus {
+  return status !== null && status.state !== "starting" && status.state !== "pulling";
+}
+
 export function toggledRunLocation(location: RunLocation): RunLocation {
   return location === "local" ? "cloud" : "local";
 }
@@ -132,9 +139,9 @@ export function RunLocationMenu({ bridge, location, onChange, disabled = false, 
       if (timer) clearTimeout(timer);
     };
   }, [bridge]);
-  // The default is chosen once, when the status is first known; a pick sticks.
+  // The default is chosen once, when the status has settled; a pick sticks.
   useEffect(() => {
-    if (bridge && status && location === null) onChange(defaultRunLocation(status));
+    if (bridge && location === null && runnerStatusSettled(status)) onChange(defaultRunLocation(status));
   }, [bridge, status, location, onChange]);
   useEffect(() => {
     if (!bridge || disabled) return;

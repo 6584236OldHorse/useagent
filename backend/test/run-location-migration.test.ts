@@ -53,17 +53,25 @@ test("a database deployed at main's journal tail upgrades into the run location 
     client = postgres(databaseUrl.toString(), { max: 1 });
     const upgradeDb = drizzle(client);
     await migrate(upgradeDb, { migrationsFolder: partialFolder });
+    // A cloud thread, and a thread that ran on a machine under the old rule (its
+    // root holds the local sandbox; its reply, whose sandbox was released, does not).
     await client.unsafe(`
-      insert into runs (id, org_id, prompt, model, engine, status, thread_id)
-      values ('legacy-run', 'org-legacy', 'legacy', 'openai/gpt-5.6-luna', 'opencode', 'completed', 'legacy-run');
+      insert into runs (id, org_id, prompt, model, engine, status, thread_id, sandbox_id, sandbox_provider)
+      values ('legacy-run', 'org-legacy', 'legacy', 'openai/gpt-5.6-luna', 'opencode', 'completed', 'legacy-run', 'sb_cloud', 'daytona'),
+             ('legacy-local', 'org-legacy', 'legacy', 'openai/gpt-5.6-luna', 'opencode', 'completed', 'legacy-local', 'local:rn_a:c1', 'local'),
+             ('legacy-local-reply', 'org-legacy', 'legacy', 'openai/gpt-5.6-luna', 'opencode', 'completed', 'legacy-local', null, null);
     `);
 
     await migrate(upgradeDb, { migrationsFolder });
 
-    const [run] = await client.unsafe<{ run_location: string | null }[]>(
-      `select run_location from runs where id = 'legacy-run'`,
+    const rows = await client.unsafe<{ id: string; run_location: string | null }[]>(
+      `select id, run_location from runs where org_id = 'org-legacy' order by id`,
     );
-    expect(run).toEqual({ run_location: null });
+    expect(rows).toEqual([
+      { id: "legacy-local", run_location: "local" },
+      { id: "legacy-local-reply", run_location: "local" },
+      { id: "legacy-run", run_location: null },
+    ]);
   } finally {
     if (client) await client.end();
     await admin`

@@ -1,13 +1,16 @@
 "use client";
 
 import { RiComputerLine } from "@remixicon/react";
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { useEffect, useState } from "react";
-import { fetchRunners, fetchSandboxProviderName, type SandboxProviderName } from "./runner-api";
-import { localRunnerId, PROVIDER_NAMES, type Runner, runnerLocationLabel } from "./runner-data";
+import { fetchRunners } from "./runner-api";
+import { localRunnerId, type Runner, runnerLocationLabel } from "./runner-data";
 
 export type LocatedRun = {
   readonly sandbox_id: string | null;
   readonly sandbox_provider?: unknown;
+  /** Where the thread asked to run; names the place before any sandbox exists. */
+  readonly run_location?: RunLocation | null;
 };
 
 /** Where a run executes, named: the runner's machine for a local sandbox, the
@@ -15,7 +18,6 @@ export type LocatedRun = {
  *  Details rail and the composer's status tab. */
 export function useRunLocationLabel(run: LocatedRun): string | null {
   const [runners, setRunners] = useState<Runner[]>([]);
-  const [deployment, setDeployment] = useState<SandboxProviderName | null>(null);
   const sandboxId = run.sandbox_id;
   const sandboxProvider = run.sandbox_provider;
   const runnerId = localRunnerId(sandboxId);
@@ -31,25 +33,8 @@ export function useRunLocationLabel(run: LocatedRun): string | null {
       cancelled = true;
     };
   }, [runnerId]);
-  // A cloud run is named by what the deployment's provider points at (E2B or
-  // Cube for the E2B-protocol plugin), which only the config knows.
-  const cloud = !runnerId && typeof sandboxProvider === "string";
-  useEffect(() => {
-    if (!cloud) return;
-    let cancelled = false;
-    void fetchSandboxProviderName().then((value) => {
-      if (!cancelled && value) setDeployment(value);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [cloud]);
-  if (!sandboxId && !sandboxProvider) return null;
-  const names =
-    deployment && deployment.provider === sandboxProvider
-      ? { ...PROVIDER_NAMES, [deployment.provider]: deployment.label }
-      : PROVIDER_NAMES;
-  return runnerLocationLabel(sandboxId, sandboxProvider, runners, names);
+  if (!sandboxId && !sandboxProvider && !run.run_location) return null;
+  return runnerLocationLabel(sandboxId, sandboxProvider, runners, run.run_location);
 }
 
 export function RunLocation({ run }: { readonly run: LocatedRun }) {

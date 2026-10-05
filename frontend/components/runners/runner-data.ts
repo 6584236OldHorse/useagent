@@ -1,3 +1,5 @@
+import type { RunLocation } from "@useagent/agent-client/wire";
+
 export const RUNNER_STATUSES = ["enrolled", "online", "offline", "revoked"] as const;
 export type RunnerStatus = (typeof RUNNER_STATUSES)[number];
 
@@ -114,27 +116,28 @@ export function markRunnerRevoked(runners: readonly Runner[], id: string): Runne
   return runners.map((runner) => (runner.id === id ? { ...runner, status: "revoked" } : runner));
 }
 
-/** How a sandbox provider kind reads to a person. The E2B-protocol plugin (id
- *  cube) reads as whatever the deployment points at, so callers that know the
- *  config's label pass it in `names`; this map is the fallback. */
-export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+/** How a sandbox provider kind reads to a person. */
+const PROVIDER_NAMES: Record<string, string> = {
   daytona: "Daytona",
   cube: "Cube",
   box: "Box",
   local: "Local machine",
 };
 
+/** Where a run executes, named: the machine for a local sandbox, the provider
+ *  when one is reported, else the place the thread asked for (run_location). */
 export function runnerLocationLabel(
   sandboxId: string | null,
   sandboxProvider: unknown,
   runners: readonly Runner[],
-  names: Readonly<Record<string, string>> = PROVIDER_NAMES,
+  runLocation: RunLocation | null | undefined = null,
 ): string {
   const runnerId = localRunnerId(sandboxId);
   if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
-  return typeof sandboxProvider === "string" && sandboxProvider.trim()
-    ? (names[sandboxProvider] ?? sandboxProvider)
-    : "Unknown runtime";
+  if (typeof sandboxProvider === "string" && sandboxProvider.trim()) {
+    return PROVIDER_NAMES[sandboxProvider] ?? sandboxProvider;
+  }
+  return runLocation === "cloud" ? "Cloud" : runLocation === "local" ? "Local" : "Unknown runtime";
 }
 
 export function runnerLoginAvailable(
@@ -158,8 +161,8 @@ export function runnerLoginAvailable(
   );
 }
 
-/** Whether this user's own machine is online and allowed to run their work; the
- *  plane sends new threads there ahead of the cloud. */
+/** Whether this user's own machine is online and allowed to run their work; a
+ *  new thread goes there only when the person chooses Local. */
 export function runnerRunsUserWork(
   policy: RunnerPolicy | null,
   runners: readonly Runner[],

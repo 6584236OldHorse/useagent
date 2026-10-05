@@ -1,7 +1,9 @@
 "use client";
 
+import { desktopBridge, type UseAgentDesktopBridge } from "@/components/runners/desktop-bridge";
 import { useMachineRunsWork } from "@/components/runners/local-login-availability";
-import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine } from "@remixicon/react";
+import { type RunLocation, RunLocationMenu } from "@/components/runners/run-location-menu";
+import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine, RiRefreshLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -18,13 +20,13 @@ import {
   GithubConnectedRow,
 } from "@/components/chat/composer-add-menu";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
-import { engineProvider } from "@/components/chat/catalog-model-picker";
 import {
   engineRuntimeCaption,
   pickerEngineOptions,
   resolveEnabledEngine,
   useEnabledEngineConfig,
 } from "@/components/chat/engine-picker";
+import { engineMarkFor, vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
 import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
@@ -37,6 +39,7 @@ import {
   type EngineId,
   engineLabel,
   modelOptionsForEngine,
+  partitionModelOptions,
   type PermissionMode,
 } from "@/components/chat/types";
 import { permissionModeFor } from "@/components/chat/permission-mode";
@@ -46,7 +49,6 @@ import { ComposerLoader } from "@/components/application/composer-loader/compose
 import { Button } from "@/components/base/buttons/button";
 import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
-import { ModelPicker } from "@/components/pro/model-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { backendFetch } from "@/lib/backend-fetch";
 import {
@@ -90,11 +92,16 @@ export function NewTaskComposer({
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
   // A new thread starts in Full access unless the person picks a mode before sending.
   const [chosenMode, setChosenMode] = useState<PermissionMode>("full-access");
+  // Where the thread runs: the desktop app's Local/Cloud menu sets it (Local
+  // while this machine's runner is connected); the web app has no menu, sends
+  // nothing and runs on the cloud. A machine login counts only on the machine.
+  const [bridge, setBridge] = useState<UseAgentDesktopBridge | null>(null);
+  useEffect(() => setBridge(desktopBridge()), []);
+  const [runLocation, setRunLocation] = useState<RunLocation | null>(null);
+  const onMachine = runLocation === "local";
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
-  // A reasoning level from the picker; null runs on the runtime's default.
-  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [engine, setEngine] = useState<string>("codex");
   // What actually rides POST /api/runs: the pick, unless the selected engine
   // cannot honour it (admission would refuse the run), then Full access.
@@ -106,8 +113,8 @@ export function NewTaskComposer({
   // ENABLED_ENGINES): claude/codex surface here only on a backend that turned them
   // on, so the picker never lets a user start a run the backend would 403. This is
   // the capability-driven engine manifest.
-  const engineConfig = useEnabledEngineConfig();
-  const machineRunsWork = useMachineRunsWork();
+  const engineConfig = useEnabledEngineConfig({ machineLogins: onMachine });
+  const machineRunsWork = useMachineRunsWork() && onMachine;
   const enabledEngines = engineConfig.engines;
   const engineId = engine as EngineId;
   const selectableModels = modelOptionsForEngine(
@@ -120,38 +127,49 @@ export function NewTaskComposer({
   const [refreshingModels, setRefreshingModels] = useState(false);
   const { refreshModels } = engineConfig;
   const refreshFreeModels = useCallback(
-    async (preserveModel: string, target: EngineId) => {
+    async (preserveModel: string) => {
       setRefreshingModels(true);
       try {
-        await refreshModels(preserveModel, target);
+        await refreshModels(preserveModel, engineId);
       } finally {
         setRefreshingModels(false);
       }
     },
-    [refreshModels],
+    [engineId, refreshModels],
   );
-  // The rail: one entry per engine the server configured, each with its manifest
-  // lineup. Readiness decorates an engine's title instead of hiding it.
-  const providers = useMemo(
-    () =>
-      pickerEngineOptions(enabledEngines).map((candidate) =>
-        engineProvider(
-          candidate.id,
-          engineConfig,
-          // Bound to the entry's own engine: browsing OpenCode's Free lane from a
-          // Codex selection refreshes the Free lane, not the Codex catalog.
-          { refreshing: refreshingModels, onRefresh: () => void refreshFreeModels(model, candidate.id) },
-          engineRuntimeCaption(
-            candidate.id,
-            engineConfig.runtimes[candidate.id],
-            engineConfig.readiness[candidate.id],
-            engineConfig.localLoginOffered.includes(candidate.id),
-            machineRunsWork,
-          ),
+  const modelGroups: PickerGroup[] = useMemo(() => {
+    const toOption = (m: (typeof selectableModels)[number]) => ({
+      value: m.value,
+      label: m.label,
+      icon: vendorMarkForModel(m.value),
+    });
+    // Zero-cost OpenRouter ":free" variants (OpenCode only) get their own
+    // section; membership is manifest-driven via the shared partition.
+    const { paid, free } = partitionModelOptions(selectableModels);
+    const groups: PickerGroup[] = [{ label: "Models", options: paid.map(toOption) }];
+    if (free.length > 0) {
+      groups.push({
+        label: "Free",
+        action: (
+          <button
+            type="button"
+            aria-label="Refresh free models"
+            title="Refresh"
+            disabled={refreshingModels}
+            onClick={() => void refreshFreeModels(model)}
+            className="rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary disabled:opacity-50"
+          >
+            <RiRefreshLine
+              className={cx("size-3.5", refreshingModels && "animate-spin")}
+              aria-hidden
+            />
+          </button>
         ),
-      ),
-    [enabledEngines, engineConfig, machineRunsWork, model, refreshFreeModels, refreshingModels],
-  );
+        options: free.map(toOption),
+      });
+    }
+    return groups;
+  }, [selectableModels, refreshingModels, refreshFreeModels, model]);
   // Per-repo branch overrides (repo full_name -> branch). An absent entry means
   // "clone the repo's default branch"; only overrides are sent to the backend.
   const [branches, setBranches] = useState<Record<string, string>>({});
@@ -334,6 +352,37 @@ export function NewTaskComposer({
     if (preskill && skills.some((s) => s.id === preskill)) setPlaybook(preskill);
   }, [skills]);
 
+  // Keep configured engines discoverable; readiness decorates an engine with
+  // actionable status instead of deleting it from the picker.
+  const engineGroups: PickerGroup[] = useMemo(
+    () => [
+      {
+        label: "Engines",
+        options: pickerEngineOptions(enabledEngines).map(
+          (e) => ({
+            value: e.id,
+            label: e.label,
+            caption: engineRuntimeCaption(
+              e.id,
+              engineConfig.runtimes[e.id],
+              engineConfig.readiness[e.id],
+              engineConfig.localLoginOffered.includes(e.id),
+              machineRunsWork,
+            ),
+            icon: engineMarkFor(e.id),
+          }),
+        ),
+      },
+    ],
+    [
+      enabledEngines,
+      engineConfig.localLoginOffered,
+      engineConfig.readiness,
+      engineConfig.runtimes,
+      machineRunsWork,
+    ],
+  );
+
   // One combined picker over the shared substrate: an explicit "none" option, then
   // Skills and Playbooks as separate groups (a run pins exactly one, either kind).
   const skillGroups: PickerGroup[] = useMemo(() => {
@@ -403,8 +452,8 @@ export function NewTaskComposer({
       engine,
       memory_scope: "org",
       permission_mode: permissionMode,
+      ...(runLocation ? { run_location: runLocation } : {}),
       ...(selectableModels.length > 0 ? { model } : {}),
-      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
       ...(mentionResources.length ? { resources: mentionResources } : {}),
@@ -562,6 +611,8 @@ export function NewTaskComposer({
               {/* Permission for the new thread, the panel's faces over the run's mode
                   (Auto, Manual, Plan mode, Bypass all); rides POST /api/runs as permission_mode. */}
               <PermissionModeChip mode={permissionMode} onChange={setChosenMode} engine={engine} />
+              {/* Desktop app only: Local (this machine) or Cloud for the new thread; rides POST /api/runs as run_location. */}
+              <RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} />
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes
@@ -570,22 +621,37 @@ export function NewTaskComposer({
                   <AgentThinking variant="wave" label="Starting the run" showTimer={false} />
                 </div>
               ) : (
-                /* Engine and model read as one quiet chip on the right: the rail
-                   inside the picker chooses the engine, the rows its model. */
-                <div className="ml-auto flex min-w-0 flex-nowrap items-center overflow-hidden">
-                  <ModelPicker
-                    providers={providers}
-                    value={model}
-                    providerId={engine}
-                    onChange={(nextModel, nextEngine) => {
-                      setEngine(nextEngine);
-                      setModel(nextModel);
-                    }}
-                    effort={reasoningEffort}
-                    onEffortChange={(next) => setReasoningEffort(next || null)}
-                    placement="bottom end"
-                    className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
+                /* Engine and model read as one compact quiet chip on the right:
+                   the engine name, a dot, then the model, with a single chevron. */
+                <div className="ml-auto flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden">
+                  <SearchablePicker
+                    ariaLabel="Select engine"
+                    triggerLabel="Engine"
+                    searchPlaceholder="Search engines..."
+                    groups={engineGroups}
+                    value={engine}
+                    onChange={setEngine}
+                    hideChevron={selectableModels.length > 0}
+                    triggerClassName="h-8 shrink-0 rounded-full px-2 text-caption-1-medium text-text-secondary"
                   />
+                  {/* Model is shown only for engines whose backend policy accepts an
+                      explicit user choice (OpenCode and Codex). */}
+                  {selectableModels.length > 0 ? (
+                    <>
+                      <span aria-hidden className="shrink-0 select-none text-text-tertiary">
+                        ·
+                      </span>
+                      <SearchablePicker
+                        ariaLabel="Select model"
+                        triggerLabel="Model"
+                        searchPlaceholder="Search models..."
+                        groups={modelGroups}
+                        value={model}
+                        onChange={setModel}
+                        triggerClassName="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
+                      />
+                    </>
+                  ) : null}
                 </div>
               )}
               {/* Compact dark circular send (ai-kit reference): disabled only while

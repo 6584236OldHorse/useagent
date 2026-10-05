@@ -4,53 +4,51 @@ import { runIntentFingerprint } from "../src/commands/fingerprint";
 import type { RunCommandIntent } from "../src/commands/types";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
-import { MACHINE_NOT_CONNECTED_REASON, runLocationChoice } from "../src/runs/run-location";
-import { createOrgSession, json } from "./helpers";
+import { acceptRunCommand } from "../src/commands";
+import { MACHINE_NOT_CONNECTED_REASON, machineUnavailable, runLocationChoice } from "../src/runs/run-location";
+import { createOrgSession, json, uid } from "./helpers";
 
 // Where a thread runs is a choice made on its root run: absent is the cloud (the
 // control plane never places a run on a machine nobody chose), "local" needs the
 // machine connected and allowed at the moment of the choice, and every reply
 // carries its thread's location so the worker reads its own row.
 
-const scope = { orgId: "org", userId: "user", reply: false };
+const scope = { orgId: "org", userId: "user" };
 const allow = async () => ({ allowLocalExecution: true });
 
 describe("run location choice", () => {
-  test("absent is the cloud, a reply carries no choice of its own, and an unknown value names the targets", async () => {
-    expect(await runLocationChoice(undefined, scope)).toEqual({ ok: true, runLocation: null });
-    expect(await runLocationChoice(null, scope)).toEqual({ ok: true, runLocation: null });
-    expect(await runLocationChoice("cloud", scope)).toEqual({ ok: true, runLocation: "cloud" });
-    expect(await runLocationChoice("local", { ...scope, reply: true })).toEqual({ ok: true, runLocation: undefined });
-    expect(await runLocationChoice("laptop", scope)).toEqual({
+  test("absent is the cloud, a reply carries no choice of its own, and an unknown value names the targets", () => {
+    expect(runLocationChoice(undefined, false)).toEqual({ ok: true, runLocation: null });
+    expect(runLocationChoice(null, false)).toEqual({ ok: true, runLocation: null });
+    expect(runLocationChoice("cloud", false)).toEqual({ ok: true, runLocation: "cloud" });
+    expect(runLocationChoice("local", false)).toEqual({ ok: true, runLocation: "local" });
+    expect(runLocationChoice("local", true)).toEqual({ ok: true, runLocation: undefined });
+    expect(runLocationChoice("laptop", false)).toEqual({
       ok: false,
       status: 400,
       body: { error: "run_location must be one of: cloud, local" },
     });
   });
 
-  test("local needs the deployment and the organisation to allow it and the machine to be connected", async () => {
+  test("the machine takes the work only when the deployment and the organisation allow it and it is connected", async () => {
     const deps = { env: {}, policy: allow, machineOnline: () => true };
-    expect(await runLocationChoice("local", scope, deps)).toEqual({ ok: true, runLocation: "local" });
-    expect(await runLocationChoice("local", scope, { ...deps, machineOnline: () => false })).toEqual({
-      ok: false,
+    expect(await machineUnavailable(scope, deps)).toBeNull();
+    expect(await machineUnavailable(scope, { ...deps, machineOnline: () => false })).toEqual({
       status: 409,
       body: { error: "machine_not_connected", reason: MACHINE_NOT_CONNECTED_REASON },
     });
-    expect(await runLocationChoice("local", { ...scope, userId: null }, deps)).toMatchObject({
-      ok: false,
+    expect(await machineUnavailable({ ...scope, userId: null }, deps)).toMatchObject({
       status: 409,
       body: { error: "machine_not_connected" },
     });
-    expect(await runLocationChoice("local", scope, { ...deps, policy: async () => ({ allowLocalExecution: false }) })).toEqual({
-      ok: false,
+    expect(await machineUnavailable(scope, { ...deps, policy: async () => ({ allowLocalExecution: false }) })).toEqual({
       status: 409,
       body: {
         error: "local_execution_disabled",
         reason: "Local execution is switched off for this organisation, so this can only run on the cloud.",
       },
     });
-    expect(await runLocationChoice("local", scope, { ...deps, env: { LOCAL_RUNNERS: "off" } })).toEqual({
-      ok: false,
+    expect(await machineUnavailable(scope, { ...deps, env: { LOCAL_RUNNERS: "off" } })).toEqual({
       status: 409,
       body: {
         error: "local_execution_disabled",
@@ -110,5 +108,31 @@ describe("POST /api/runs run_location", () => {
     expect(shown.body.run_location).toBe("cloud");
     const shownPlain = await json<{ run_location: unknown }>(`/api/runs/${plain.body.id}`, { cookies });
     expect(shownPlain.body.run_location).toBeNull();
+  });
+
+  test("an accepted local request replays under its key whatever the machine is doing today", async () => {
+    // Accepted while the machine was connected (the acceptance itself does not ask); the
+    // identical retry arrives with no machine in the process and must still answer the run.
+    const { cookies, orgId } = await createOrgSession("run-location-replay");
+    const key = uid("run-location-replay");
+    const prompt = "Local work, retried.";
+    const runId = crypto.randomUUID();
+    const intent: RunCommandIntent = {
+      prompt, model: null, engine: "mock", parentRunId: null, requestedRepos: [], requestedResources: [],
+      attachmentIds: [], memoryScope: null, permissionMode: null, runLocation: "local", skillId: null, skillVersion: null,
+      commandName: null, commandProvider: null, commandSessionId: null, commandCatalogRevision: null, expectedSandbox: null,
+    };
+    expect(await acceptRunCommand({
+      idempotencyKey: key, orgId, actorId: null, intent,
+      run: {
+        id: runId, prompt, model: "claude-opus-5", engine: "mock", parentRunId: null, threadId: runId, repos: [],
+        resolvedResources: [], memoryScope: "org", runLocation: "local", skillId: null, skillVersion: null,
+        skillContentHash: null, commandName: null, commandProvider: null, commandSessionId: null, commandCatalogRevision: null,
+      },
+    })).toMatchObject({ status: "created", runId });
+    const replay = await json<{ id: string }>("/api/runs", {
+      method: "POST", cookies, headers: { "Idempotency-Key": key }, body: { prompt, engine: "mock", run_location: "local" },
+    });
+    expect(replay).toMatchObject({ status: 200, body: { id: runId } });
   });
 });

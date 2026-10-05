@@ -270,7 +270,7 @@ export async function requestModelCatalogRefresh(
   }
 }
 
-export function useEnabledEngineConfig(): {
+export function useEnabledEngineConfig(options: { readonly machineLogins?: boolean } = {}): {
   engines: EngineId[];
   models: EngineModelCatalog;
   modelDetails: EngineModelDetails;
@@ -319,9 +319,12 @@ export function useEnabledEngineConfig(): {
       modelCatalogStatuses: refreshed.modelCatalogStatuses,
     }));
   }, []);
+  // A machine login counts only for a thread that runs on the machine; a
+  // composer sending its threads to the cloud asks for none.
+  const machineLogins = options.machineLogins !== false;
   const offeredConfig = useMemo(
-    () => applyLocalLoginOffers(config, localLoginOffers),
-    [config, localLoginOffers],
+    () => applyLocalLoginOffers(config, machineLogins ? localLoginOffers : []),
+    [config, localLoginOffers, machineLogins],
   );
   return { ...offeredConfig, refreshModels };
 }

@@ -751,8 +751,10 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     ...(typeof record.permission_mode === "string"
       ? { permission_mode: record.permission_mode as PermissionMode }
       : {}),
-    ...(typeof record.run_location === "string" && RUN_LOCATION_SET.has(record.run_location)
-      ? { run_location: record.run_location as RunLocation }
+    // An explicit null (a row from before the choice) stays distinct from an
+    // older backend that omits the field; an unknown value reads as omitted.
+    ...(record.run_location === null || (typeof record.run_location === "string" && RUN_LOCATION_SET.has(record.run_location))
+      ? { run_location: record.run_location as RunLocation | null }
       : {}),
     ...(typeof record.thread_seq === "number" ? { thread_seq: record.thread_seq } : {}),
     skill_id: record.skill_id,

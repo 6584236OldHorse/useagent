@@ -95,6 +95,14 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiRun({ ...run, permission_mode: "yolo" })).toBeNull();
   });
 
+  test("keeps a reported run location, an explicit null included, and drops an unknown one", () => {
+    const local = { ...run, run_location: "local" as const };
+    expect(decodeApiRun(local)).toEqual(local);
+    const none = { ...run, run_location: null };
+    expect(decodeApiRun(none)).toEqual(none);
+    expect(decodeApiRun({ ...run, run_location: "laptop" })).toEqual(run);
+  });
+
   test("keeps the run's thread sequence and rejects a non-numeric one", () => {
     const sequenced = { ...run, thread_seq: 7 };
     expect(decodeApiRun(sequenced)).toEqual(sequenced);
