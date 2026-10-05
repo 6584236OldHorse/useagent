@@ -56,6 +56,8 @@ export interface DeploymentConfig {
   /** Providers this account is offered, when the server restricts any (PROVIDER_ACCOUNTS);
    *  null when the manifest carries no list, meaning every provider. */
   readonly offeredProviders: string[] | null;
+  /** Every model provider this deployment serves from its own key, OpenCode Zen included. */
+  readonly servedProviders: string[];
 }
 
 /** The parts of GET /api/config the provider settings read: which sandbox
@@ -70,6 +72,9 @@ export async function fetchDeploymentConfig(): Promise<DeploymentConfig> {
     offeredProviders: Array.isArray(data.offeredProviders)
       ? data.offeredProviders.filter((item): item is string => typeof item === "string")
       : null,
+    servedProviders: Object.entries(data.providers && typeof data.providers === "object" ? data.providers : {})
+      .filter(([, served]) => served === true)
+      .map(([provider]) => provider),
   };
 }
 

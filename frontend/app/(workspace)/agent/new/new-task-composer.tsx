@@ -63,6 +63,14 @@ import { RepoBranchBar } from "./repo-branch-bar";
 import { type RepoItem, RepoMultiPicker } from "./repo-multi-picker";
 import { type PickerGroup, SearchablePicker } from "./searchable-picker";
 import type { Skill } from "./skills-data";
+import {
+  AddOpenRouterKey,
+  FreeLaneNote,
+  START_FREE_ERROR,
+  StartFreePrompt,
+  startFreeModel,
+  useStartFree,
+} from "./start-free-prompt";
 import { mentionedBotIds } from "@/components/chat/composer-mentions";
 
 /**
@@ -129,6 +137,16 @@ export function NewTaskComposer({
   // re-derives it on demand (same affordance as the chat surface's picker).
   const [refreshingModels, setRefreshingModels] = useState(false);
   const { refreshModels } = engineConfig;
+  // A member with no model key: the start-free card, the picker's Free action
+  // and the send check below. A machine thread runs on the machine's logins.
+  const startFree = useStartFree();
+  const modelPicked = useRef(false);
+  const freeModel = engineConfig.loaded && !onMachine ? startFreeModel(startFree, engineConfig.models) : null;
+  useEffect(() => {
+    if (!freeModel || modelPicked.current) return;
+    setEngine("opencode");
+    setModel(freeModel);
+  }, [freeModel]);
   const refreshFreeModels = useCallback(
     async (preserveModel: string, target: EngineId) => {
       setRefreshingModels(true);
@@ -158,9 +176,19 @@ export function NewTaskComposer({
             engineConfig.localLoginOffered.includes(candidate.id),
             machineRunsWork,
           ),
+          startFree.openRouterMissing ? <FreeLaneNote onAdd={startFree.openForm} /> : undefined,
         ),
       ),
-    [enabledEngines, engineConfig, machineRunsWork, model, refreshFreeModels, refreshingModels],
+    [
+      enabledEngines,
+      engineConfig,
+      machineRunsWork,
+      model,
+      refreshFreeModels,
+      refreshingModels,
+      startFree.openForm,
+      startFree.openRouterMissing,
+    ],
   );
   // Per-repo branch overrides (repo full_name -> branch). An absent entry means
   // "clone the repo's default branch"; only overrides are sent to the backend.
@@ -359,6 +387,10 @@ export function NewTaskComposer({
       setError(readiness.message ?? `${engineLabel(engineId)} is not ready. Check Settings and retry.`);
       return;
     }
+    if (startFree.needsKey && !onMachine) {
+      setError(START_FREE_ERROR);
+      return;
+    }
     setSubmitting(true);
     setError(null);
     // Close the add-context shelf so the rim light wraps the full rounded card
@@ -432,6 +464,18 @@ export function NewTaskComposer({
 
   return (
     <div>
+      {startFree.visible && !onMachine ? (
+        <StartFreePrompt
+          formOpen={startFree.formOpen}
+          connection={startFree.openRouterConnection}
+          onAdd={startFree.openForm}
+          onDismiss={startFree.dismiss}
+          onSaved={async () => {
+            await startFree.saved();
+            setError(null);
+          }}
+        />
+      ) : null}
       {/* Composer card modeled on the ai-kit KnowledgeComposerCard: an outer card
           wrapping a darker inset that holds the prompt textarea and a clean pill
           toolbar. Every control is real - attach, repos, engine, model, skill -
@@ -575,6 +619,7 @@ export function NewTaskComposer({
                     value={model}
                     providerId={engine}
                     onChange={(nextModel, nextEngine) => {
+                      modelPicked.current = true;
                       setEngine(nextEngine);
                       setModel(nextModel);
                     }}
@@ -640,6 +685,12 @@ export function NewTaskComposer({
       {error ? (
         <p role="alert" className="mt-2 text-caption-1-regular text-text-error-primary">
           {error}
+          {error === START_FREE_ERROR ? (
+            <>
+              {" "}
+              <AddOpenRouterKey onClick={startFree.openForm} />
+            </>
+          ) : null}
         </p>
       ) : null}
     </div>

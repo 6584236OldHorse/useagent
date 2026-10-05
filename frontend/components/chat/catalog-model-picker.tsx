@@ -5,7 +5,7 @@
 // speaks (Models, Free, Discovered) with the refresh actions those sections own.
 
 import { RiRefreshLine } from "@remixicon/react";
-import { useLayoutEffect, useState } from "react";
+import { type ReactNode, useLayoutEffect, useState } from "react";
 import {
   type EngineModelCatalog,
   type EngineModelDetails,
@@ -64,12 +64,15 @@ export function RefreshModelsAction({
 }
 
 /** One rail entry for `engine`: the manifest's dispatchable models in the paid
- *  and Free sections, the discovered-but-blocked ones under Discovered. */
+ *  and Free sections, the discovered-but-blocked ones under Discovered.
+ *  `freeNote` replaces the Free section's default note (the home composer's
+ *  in-place key action). */
 export function engineProvider(
   engine: EngineId,
   catalog: ProviderCatalog,
   refresh?: ProviderRefresh,
   caption?: string,
+  freeNote?: ReactNode,
 ): ModelPickerProvider {
   const options = modelOptionsForEngine(
     engine,
@@ -94,7 +97,7 @@ export function engineProvider(
       action: refresh ? <RefreshModelsAction label="Refresh free models" refresh={refresh} /> : undefined,
       // Free models are free on the member's own OpenRouter key; the deployment
       // never lends one, so the section says where the key goes.
-      note: (
+      note: freeNote ?? (
         <>
           Free on your OpenRouter key.{" "}
           <Link href="/settings" className="text-text-secondary underline underline-offset-2 hover:text-text-primary">
