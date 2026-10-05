@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TimelineNode } from "./timeline";
-import { Timeline } from "./timeline-view";
+import { Timeline, turnTraceContext } from "./timeline-view";
 import { TraceRowPayload } from "./turn-trace";
 import type { ApiStep } from "./types";
 
@@ -106,6 +106,20 @@ describe("turn trace", () => {
     expect(html).not.toContain("settled-thought");
     // The reply is still the message.
     expect(html).toContain("Here is today&#x27;s digest.");
+  });
+
+  test("a plain turn's trace is open while it works and folded once it settled", () => {
+    const turn = { run: { duration_ms: 192_000 }, status: "completed" as const, summary: "Done.", steps: [] };
+    const settled = turnTraceContext(turn, true && false);
+    expect(settled.defaultOpen).toBe(false);
+    const settledHtml = renderToStaticMarkup(<Timeline nodes={NODES} live={false} trace={settled} />);
+    expect(settledHtml).toContain('data-testid="turn-trace"');
+    expect(settledHtml).toContain('aria-expanded="false"');
+    expect(settledHtml).toContain("Here is today&#x27;s digest.");
+    const working = turnTraceContext({ ...turn, status: "running" as const }, true && true);
+    expect(working.defaultOpen).toBe(true);
+    const liveHtml = renderToStaticMarkup(<Timeline nodes={NODES.slice(0, -1)} live trace={working} />);
+    expect(liveHtml).toContain('aria-expanded="true"');
   });
 
   test("mid-work narration is a muted prose line inside the trace: no verb, no chip", () => {

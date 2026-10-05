@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  createContext,
-  type Dispatch,
-  type ReactNode,
-  type SetStateAction,
-  useContext,
-  useRef,
-  useState,
-} from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, createContext, useCallback, useContext, useRef, useState } from "react";
 
 type TurnUiState = Map<string, unknown>;
 
@@ -37,12 +29,15 @@ export function useTurnUiState<T>(
   const [value, setValue] = useState<T>(() =>
     store?.has(key) ? (store.get(key) as T) : initialValue,
   );
-  const setPersistentValue: Dispatch<SetStateAction<T>> = (next) => {
-    setValue((current) => {
-      const resolved = typeof next === "function" ? (next as (value: T) => T)(current) : next;
-      store?.set(key, resolved);
-      return resolved;
-    });
-  };
+  const setPersistentValue: Dispatch<SetStateAction<T>> = useCallback(
+    (next) => {
+      setValue((current) => {
+        const resolved = typeof next === "function" ? (next as (value: T) => T)(current) : next;
+        store?.set(key, resolved);
+        return resolved;
+      });
+    },
+    [store, key],
+  );
   return [value, setPersistentValue];
 }
