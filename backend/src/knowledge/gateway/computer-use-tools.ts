@@ -446,6 +446,7 @@ const productionService: ComputerUseService = {
           if (sandbox.desktop) await cubeCommand(sandbox, addressBarNavigateCommand(batch.navigate, sandbox.desktop.browserExecutable ?? null));
           else await navigateVisibleBrowserPage(sandbox, batch.navigate);
         } catch (error) {
+          desktopReadyUntil.delete(sandbox.id);
           throw new Error(`Action ${offset + 1} of ${actions.length} (navigate) failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         offset += 1;
