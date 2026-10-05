@@ -28,11 +28,23 @@ test("GET /api/config reports the deployment-provided providers and follows the 
   // What a runner must speak and boot; no image is configured in the test environment.
   expect(served.body.runner).toEqual({ enabled: true, minProtocol: 2, image: null });
   expect(JSON.stringify(served.body)).not.toContain("sk-test-deployment");
-  // The sandbox block names the provider a person reads, following where the deployment points.
-  const sandbox = served.body.sandbox as { provider: string; label: string };
-  expect(typeof sandbox.provider).toBe("string");
-  expect(sandbox.label).toBe(sandbox.provider === "cube" ? (process.env.CUBE_API_URL?.includes("e2b.app") ? "E2B" : "Cube") : sandbox.label);
-  expect(sandbox.label.length).toBeGreaterThan(0);
+  // The sandbox block names the provider a person reads, following where the
+  // deployment points: the test environment runs the default provider, and the
+  // E2B-protocol plugin reads as E2B on e2b.app and Cube elsewhere.
+  expect(served.body.sandbox).toMatchObject({ provider: "daytona", label: "Daytona" });
+  const previous = { provider: process.env.SANDBOX_PROVIDER, url: process.env.CUBE_API_URL };
+  try {
+    process.env.SANDBOX_PROVIDER = "cube";
+    process.env.CUBE_API_URL = "https://api.e2b.app";
+    expect((await json<{ sandbox: unknown }>("/api/config")).body.sandbox).toMatchObject({ provider: "cube", label: "E2B" });
+    process.env.CUBE_API_URL = "https://cube.internal.example";
+    expect((await json<{ sandbox: unknown }>("/api/config")).body.sandbox).toMatchObject({ provider: "cube", label: "Cube" });
+  } finally {
+    if (previous.provider === undefined) delete process.env.SANDBOX_PROVIDER;
+    else process.env.SANDBOX_PROVIDER = previous.provider;
+    if (previous.url === undefined) delete process.env.CUBE_API_URL;
+    else process.env.CUBE_API_URL = previous.url;
+  }
   delete process.env.OPENAI_API_KEY;
   const unserved = await json<{ providers: Record<string, boolean> }>("/api/config");
   expect(unserved.body.providers.openai).toBe(false);

@@ -21,16 +21,28 @@ import { parseSandboxMinutes, type SandboxMinutes } from "@/lib/sandbox-minutes"
 import { money, type SpendSnapshot } from "@/lib/spend";
 
 /** The buckets a usage frame carries, in the order the bar draws them; a bucket
- *  the runtime did not report is left out rather than drawn as zero. */
+ *  the runtime did not report is left out rather than drawn as zero. Fresh input
+ *  is what remains of the ring's `used` after the other buckets: the runtime
+ *  lane's input figure includes its cached reads (Codex counts them inside
+ *  input) while OpenCode's excludes them, and the remainder is right for both,
+ *  so the segments never add up to more than the ring shows. */
 export function contextSegments(context: ConversationContext): ContextSegment[] {
-  const buckets: { label: string; tokens: number | undefined }[] = [
-    { label: "Fresh input", tokens: context.input },
-    { label: "Cached input", tokens: context.cached },
-    { label: "Output", tokens: context.output },
-    { label: "Reasoning", tokens: context.reasoning },
-    { label: "Cache write", tokens: context.cacheWrite },
+  const cached = context.cached;
+  const output = context.output ?? 0;
+  const reasoning = context.reasoning ?? 0;
+  const cacheWrite = context.cacheWrite ?? 0;
+  // Only a frame that carried an input figure has a fresh share to show; a bare
+  // total is not broken down into a bucket it never named.
+  const fresh =
+    context.input === undefined ? 0 : Math.max(0, context.used - cached - output - reasoning - cacheWrite);
+  const buckets: { label: string; tokens: number }[] = [
+    { label: "Fresh input", tokens: fresh },
+    { label: "Cached input", tokens: cached },
+    { label: "Output", tokens: output },
+    { label: "Reasoning", tokens: reasoning },
+    { label: "Cache write", tokens: cacheWrite },
   ];
-  return buckets.flatMap(({ label, tokens }) => (tokens && tokens > 0 ? [{ label, tokens }] : []));
+  return buckets.filter(({ tokens }) => tokens > 0);
 }
 
 /** "12 of 600 min" with a bar while a cap is set; "12 min" alone without one. */
@@ -44,7 +56,9 @@ export function minutesLimit(minutes: SandboxMinutes): UsageLimit {
       };
 }
 
-/** "$12.34 of $100" with a bar while an allowance is set; "$12.34" alone without one. */
+/** "$12.34 of $100" with a bar while an allowance is set; "$12.34" alone without
+ *  one. A zero allowance is a cap the plane keeps and refuses admission on, so it
+ *  reads as used up, not as untouched. */
 export function spendLimit(spend: SpendSnapshot): UsageLimit {
   const spent = money(Number(spend.spent.toFixed(2)));
   return spend.allowance === null
@@ -52,7 +66,7 @@ export function spendLimit(spend: SpendSnapshot): UsageLimit {
     : {
         label: "Spend",
         detail: `${spent} of ${money(spend.allowance)}`,
-        used: spend.spent / Math.max(Number.EPSILON, spend.allowance),
+        used: spend.allowance > 0 ? spend.spent / spend.allowance : 1,
       };
 }
 
