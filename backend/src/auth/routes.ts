@@ -106,6 +106,23 @@ routes.post("/api/auth/organization/update-member-role", async (c) => {
   if (role !== undefined && !exactRole(role)) return c.json({ message: ROLE_MESSAGE }, 400);
   return auth.handler(request);
 });
+const NO_WAY_IN =
+  "That address has no account with a password here, and this deployment cannot create one. Set up Google sign-in, or invite an address that already signs in with a password.";
+
+/** Whether an invitation to this address can ever be used. Any deployment that
+ *  creates accounts says yes; a closed one needs an account with a password,
+ *  since a Google-only account from a time when Google was on has no way in. */
+async function canSignIn(email: string): Promise<boolean> {
+  if (selfSignupEnabled() || googleAuthEnabled()) return true;
+  const [known] = await db
+    .select({ id: user.id })
+    .from(user)
+    .innerJoin(account, and(eq(account.userId, user.id), eq(account.providerId, "credential"), isNotNull(account.password)))
+    .where(eq(user.email, email.trim().toLowerCase()))
+    .limit(1);
+  return known !== undefined;
+}
+
 /** A resend renews the invitation that already exists, with the role stored on
  *  it, never the role the request names. It is answered here in full instead of
  *  being forwarded, so nothing can change between the check and the renewal.
@@ -125,31 +142,18 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     // The library trims role tokens when it validates them but stores the raw
     // string, so "admin, owner" passes as admin and lands as owner. One exact role.
     if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
-    if (typeof body.email === "string" && !selfSignupEnabled() && !googleAuthEnabled()) {
-      // Nobody can create an account on this deployment, so an address without
-      // one would get a link it can never use. Only a manager learns that.
+    if (typeof body.email === "string" && !(await canSignIn(body.email))) {
+      // Only a manager learns which addresses have a way in.
       const manager = await managerFor(request, body);
       if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-      // An account counts only with a password: a Google-only account from a time
-      // when Google was on has no way in either.
-      const [known] = await db
-        .select({ id: user.id })
-        .from(user)
-        .innerJoin(account, and(eq(account.userId, user.id), eq(account.providerId, "credential"), isNotNull(account.password)))
-        .where(eq(user.email, body.email.trim().toLowerCase()))
-        .limit(1);
-      if (!known) {
-        return c.json(
-          { message: "That address has no account with a password here, and this deployment cannot create one. Set up Google sign-in, or invite an address that already signs in with a password." },
-          400,
-        );
-      }
+      return c.json({ message: NO_WAY_IN }, 400);
     }
     return auth.handler(request);
   }
   const manager = await managerFor(request, body);
   if ("status" in manager) return c.json({ message: manager.message }, manager.status);
   const { session, organizationId, roles: mine } = manager;
+  if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
   const live = await db
     .select({ id: invitation.id, role: invitation.role })
     .from(invitation)

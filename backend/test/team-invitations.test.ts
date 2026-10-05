@@ -374,6 +374,15 @@ test("the desktop app's referer passes the resend check the way the library allo
 test("a deployment that cannot create accounts refuses to invite an address without one", async () => {
   const org = await createOrgSession("closed-signup");
   const existing = await createOrgSession("has-account");
+  // Invited while the deployment could still create accounts, but never signed in with a password.
+  const googleOnly = `google-only-${crypto.randomUUID().slice(0, 8)}@example.test`;
+  await db.insert(user).values({ id: crypto.randomUUID(), name: "Google Only", email: googleOnly, emailVerified: true });
+  const earlier = await json<{ id: string; expiresAt: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: googleOnly, role: "member" },
+  });
+  expect(earlier.status).toBe(200);
   const saved = { NODE_ENV: process.env.NODE_ENV, GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET };
   process.env.NODE_ENV = "production";
   delete process.env.GOOGLE_CLIENT_ID;
@@ -386,15 +395,22 @@ test("a deployment that cannot create accounts refuses to invite an address with
     });
     expect(unknown.status).toBe(400);
     expect(unknown.body.message).toContain("cannot create one");
-    // An account without a password (Google-only, from when Google was on) is no better.
-    const googleOnly = `google-only-${crypto.randomUUID().slice(0, 8)}@example.test`;
-    await db.insert(user).values({ id: crypto.randomUUID(), name: "Google Only", email: googleOnly, emailVerified: true });
+    // An account without a password (Google-only, from when Google was on) is no better,
+    // and resending its earlier invitation is refused the same way, leaving it untouched.
     const noPassword = await json<{ message?: string }>("/api/auth/organization/invite-member", {
       method: "POST",
       cookies: org.cookies,
       body: { organizationId: org.orgId, email: googleOnly, role: "member" },
     });
     expect(noPassword.status).toBe(400);
+    const resend = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: googleOnly, role: "member", resend: true },
+    });
+    expect(resend.status).toBe(400);
+    const [untouched] = await db.select({ expiresAt: invitation.expiresAt }).from(invitation).where(eq(invitation.id, earlier.body.id));
+    expect(untouched!.expiresAt.toISOString()).toBe(earlier.body.expiresAt);
     const known = await json("/api/auth/organization/invite-member", {
       method: "POST",
       cookies: org.cookies,
