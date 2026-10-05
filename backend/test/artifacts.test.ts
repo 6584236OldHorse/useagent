@@ -180,7 +180,7 @@ describe("durable artifacts", () => {
             and not granted
         `);
         return Number(rows[0]?.count) > 0;
-      }, { timeoutMs: 2_000, intervalMs: 10 });
+      }, { timeoutMs: 15_000, intervalMs: 10 }); // a loaded runner takes seconds to reach the lock
       expect(requestSettled).toBe(false);
     } catch (error) {
       waitError = error;

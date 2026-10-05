@@ -138,6 +138,8 @@ test("a long delivering prompt dedupes by full content, not its bounded display"
 });
 
 test("concurrent drains deliver once, then confirmed upstream recall replaces the overlay", async () => {
+  // The drains below deliver every due row; rows other suites left due would be counted as adds.
+  await db.execute(sql`delete from memory_outbox`);
   const stored: Array<{ id: string; role: string; content: string }> = [];
   const memory = memoryFetch(stored);
   globalThis.fetch = memory.fetchMock;
