@@ -70,6 +70,15 @@ describe("shared sandbox desktop", () => {
     const command = buildDesktopLaunchCommand();
 
     expect(command).toContain("Xorg :1 -noreset -nolisten tcp -ac");
+    // An earlier desktop, the boot's or a previous repair's, is stopped before anything starts.
+    const stop = command.indexOf('kill -TERM -- "-$old"');
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(command.indexOf("Xorg :1 -noreset"));
+    expect(command).toContain("pkill -x Xorg 2>/dev/null || true");
+    expect(command).toContain("for name in websockify x11vnc budgie-panel budgie-wm budgie-daemon pcmanfm gsd-xsettings dbus-launch; do pkill -x $name");
+    expect(command).toContain("$2 ~ /^(node|chrome|chromium)/ && /(cdp-relay\\.mjs|--remote-debugging-port=9222)/");
+    expect(command).toContain('echo $$ >"$HOME/.skynet/desktop.pid"');
+    expect(command).toContain("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1");
     expect(command).toContain('dbus-launch --exit-with-session "$HOME/.skynet/desktop-session.sh"');
     expect(command).toContain("budgie-wm >");
     expect(command).toContain("pcmanfm --desktop --profile useagent");

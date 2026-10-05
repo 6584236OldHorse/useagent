@@ -36,7 +36,8 @@ describe("sandbox boot entrypoint", () => {
     const single = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     expect(script).toContain('[ -s "/root/.skynet/cdp-relay.token" ] || { head -c 32 /dev/urandom | od -An -tx1 | tr -d \' \\n\' >"/root/.skynet/cdp-relay.token"; chmod 600 "/root/.skynet/cdp-relay.token"; }');
     expect(script).toContain('touch "/root/.skynet/desktop-boot"');
-    expect(script).toContain('nohup "/root/.local/bin/useagent-desktop-launch" >"/root/.skynet/desktop-launch.log" 2>&1 &');
+    expect(script).toContain('setsid "/root/.local/bin/useagent-desktop-launch" >"/root/.skynet/desktop-launch.log" 2>&1 </dev/null &');
+    expect(script).toContain('kill -0 "$desktop" 2>/dev/null || break');
     expect(script).toContain(`until sh -c ${single(buildDesktopReadinessCommand())}; do`);
     expect(script).toContain('rm -f "/root/.skynet/desktop-boot"');
     expect(script.indexOf("useagent-desktop-launch")).toBeGreaterThan(script.indexOf("/api/orchestration/shell || true"));

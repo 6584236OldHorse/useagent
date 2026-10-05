@@ -72,9 +72,13 @@ export function buildRuntimeEnvironmentBootScript(
     `  curl -sS -m 60 -b "${RUNTIME_COOKIE_JAR}" -H 'accept: application/json' -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/orchestration/shell || true`,
     // The desktop comes up after the runtime, off every run's path: the pane connects to a
     // desktop that is already there instead of watching it start.
-    `  nohup "${desktopLaunchPath(layout)}" >"${skynet}/desktop-launch.log" 2>&1 &`,
+    // Its own session and process group, so the plane's relaunch can stop it as one unit.
+    `  setsid "${desktopLaunchPath(layout)}" >"${skynet}/desktop-launch.log" 2>&1 </dev/null &`,
+    "  desktop=$!",
     "  i=0",
     `  until ${shell(buildDesktopReadinessCommand())}; do`,
+    // A launcher that died leaves nothing to wait for: the marker goes and the plane repairs.
+    '    kill -0 "$desktop" 2>/dev/null || break',
     '    i=$((i + 1)); [ "$i" -ge 600 ] && break',
     "    sleep 0.1",
     "  done",

@@ -95,6 +95,18 @@ export function buildDesktopLaunchCommand(): string {
     "set -eu",
     `export DISPLAY=${BROWSER_DISPLAY}`,
     'mkdir -p "$HOME/.skynet"',
+    // Any earlier desktop goes first: the one whose pid is recorded (its process group) and
+    // every service by name, so a relaunch never stacks on a live display. Names only, and
+    // the browser and relay by their binaries: this shell's own command text has the same words.
+    'old=$(cat "$HOME/.skynet/desktop.pid" 2>/dev/null || true)',
+    '[ -n "$old" ] && [ "$old" != "$$" ] && { kill -TERM -- "-$old" 2>/dev/null || true; }',
+    "for name in websockify x11vnc budgie-panel budgie-wm budgie-daemon pcmanfm gsd-xsettings dbus-launch; do pkill -x $name 2>/dev/null || true; done",
+    "ps -eo pid=,comm=,args= | awk '$2 ~ /^(node|chrome|chromium)/ && /(cdp-relay\\.mjs|--remote-debugging-port=9222)/ {print $1}' | xargs -r kill -TERM 2>/dev/null || true",
+    "pkill -x Xorg 2>/dev/null || true",
+    "for i in $(seq 1 40); do xdpyinfo -display :1 >/dev/null 2>&1 || break; sleep 0.25; done",
+    "xdpyinfo -display :1 >/dev/null 2>&1 && { pkill -KILL -x Xorg 2>/dev/null || true; sleep 0.5; }",
+    "rm -f /tmp/.X1-lock /tmp/.X11-unix/X1",
+    'echo $$ >"$HOME/.skynet/desktop.pid"',
     "export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=Budgie:GNOME LANG=C.UTF-8",
     // A system bus, best effort: the components only warn without one, but the terminal's service needs it.
     "pgrep -x dbus-daemon >/dev/null 2>&1 || { mkdir -p /run/dbus && dbus-daemon --system --fork >/dev/null 2>&1 || true; }",
