@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { changedFilesFromTimeline } from "@/components/session-ui/adapter";
-import { type ApiStep, filesFromSteps, parseFileEntries, stepFailed } from "./types";
+import { filesFromSteps, stepFailed } from "./file-entries";
+import { type ApiStep, parseFileEntries } from "./types";
 
 // The runtime projection hands the UI file changes as `files:[{path, kind?}]`
 // under the tool input (codex apply_patch, opencode edit) or, once the backend

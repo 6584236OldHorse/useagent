@@ -18,7 +18,8 @@
 import type { ChildUsage } from "@/components/chat/child-usage";
 import type { TimelineNode } from "@/components/chat/timeline";
 import { summarizeToolStep } from "@/components/chat/tool-summary";
-import { deriveTrace, parseFileEntries, stepFailed } from "@/components/chat/types";
+import { stepFailed } from "@/components/chat/file-entries";
+import { deriveTrace, parseFileEntries } from "@/components/chat/types";
 import type { ChangedFile } from "./changed-files";
 import type { ContextWindowUsage } from "./context-window-meter";
 import type { WorkEntry } from "./work-entry";

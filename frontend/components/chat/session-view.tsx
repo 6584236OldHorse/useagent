@@ -59,13 +59,13 @@ import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context"
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
 
 import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { filesFromSteps } from "@/components/chat/file-entries";
 import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
   type MemoryScope,
   normalizeEngine,
-  filesFromSteps,
   type RunStatus,
   supportsPreSessionModelSelection,
 } from "@/components/chat/types";

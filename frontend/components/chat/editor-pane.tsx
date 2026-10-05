@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { cx as cn } from "@/utils/cx";
 import { CodeBlock } from "@/components/ai/code-block";
 import { FileKindBadge, fileTypeIcon } from "@/components/chat/tool-step-row";
-import { type ApiStep, type FileEntry, filesFromSteps } from "@/components/chat/types";
+import { filesFromSteps } from "@/components/chat/file-entries";
+import type { ApiStep, FileEntry } from "@/components/chat/types";
 
 /**
  * The top pane of the editor|terminal split: a tab strip of every file the run
