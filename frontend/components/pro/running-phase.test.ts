@@ -6,6 +6,7 @@ import type { ApiStep, StepKind } from "@/components/chat/types";
 import {
   advanceLiveGrowth,
   deriveRunningStatus,
+  deriveRunningStartedAt,
   deriveRunningWork,
   type LiveChannel,
   NEXT_STEP,
@@ -47,6 +48,35 @@ function step(idx: number, kind: StepKind, label: string, code: Record<string, u
 
 const bash = (idx: number, command: string, callID: string) =>
   step(idx, "command", command, { tool: "bash", input: { command }, native: { sessionID: "ses_root", callID } });
+
+test("execution start is durable across delayed queue dispatch and replay", () => {
+  // Synthetic execution start; settled duration_ms can use a later worker timing origin.
+  const accepted = { created_at: "2026-09-13T22:31:24.701Z" };
+  const start = {
+    ...step(0, "task", "Preparing context and runtime", { phase: "preparing" }, "boot"),
+    created_at: "2026-09-13T22:34:48.724Z",
+  };
+  const running = { run: accepted, steps: [start, bash(1, "pwd", "call-1")] };
+  expect(deriveRunningStartedAt({ steps: [] })).toBeNull();
+  expect(deriveRunningStartedAt(running)).toBe(start.created_at);
+  expect(Date.parse("2026-09-13T22:36:09.115Z") - Date.parse(deriveRunningStartedAt(running) ?? "")).toBe(80_391);
+  const replay = JSON.parse(JSON.stringify(running)) as typeof running;
+  replay.steps.reverse();
+  expect(deriveRunningStartedAt(replay)).toBe(start.created_at);
+});
+
+test("chat has a start marker; absent, invalid and non-start rows never invent elapsed", () => {
+  const chat = step(0, "task", "Preparing chat context", { phase: "retrieval" }, "chat");
+  expect(deriveRunningStartedAt({ steps: [chat] })).toBe(chat.created_at);
+  expect(deriveRunningStartedAt(null)).toBeNull();
+  for (const candidate of [
+    { ...chat, created_at: "invalid" },
+    { ...chat, code_json: "{invalid" },
+    { ...chat, idx: 1 },
+    { ...chat, kind: "done" as const },
+    bash(0, "pwd", "call-1"),
+  ]) expect(deriveRunningStartedAt({ steps: [candidate] })).toBeNull();
+});
 
 function turn(over: { steps?: ApiStep[]; frames?: NativeFrame[]; liveText?: string; liveReasoning?: string } = {}): RunningTurn {
   return {

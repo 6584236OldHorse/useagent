@@ -31,6 +31,7 @@ import {
 import { InboundAttachments } from "@/components/chat/inbound-attachments";
 import { NativeApprovalCard } from "@/components/chat/native-approval-card";
 import { PermissionModeTag } from "@/components/pro/permission-mode-chip";
+import { deriveRunningStartedAt } from "@/components/pro/running-phase";
 import type { NativeSnapshot } from "@/components/chat/native-store";
 import { QuestionCard } from "@/components/chat/question-card";
 import {
@@ -323,7 +324,7 @@ const TurnBlock = memo(function TurnBlock({
               nodes={timeline}
               live={live}
               settledReply={status === "completed" && timelineReply ? summary : null}
-              workingSince={run.created_at}
+              workingSince={deriveRunningStartedAt(turn) ?? undefined}
               showFollowups={isLatestTurn}
               trace={trace}
             />
@@ -348,7 +349,7 @@ const TurnBlock = memo(function TurnBlock({
                     <Timeline
                       nodes={turnNodesFromSteps(steps, true, status)}
                       live
-                      workingSince={run.created_at}
+                      workingSince={deriveRunningStartedAt(turn) ?? undefined}
                       trace={trace}
                     />
                   )
@@ -510,8 +511,7 @@ export const Conversation = memo(function Conversation({
   stopping?: boolean;
   stopError?: string | null;
   onStop?: () => void;
-  /** ISO start of the RUNNING turn (its run.created_at) - powers the composer
-   *  status pill's elapsed timer. */
+  /** Durable execution start of the running turn, not its queue acceptance time. */
   runStartedAt?: string | null;
   /** Externally seed the reply composer (e.g. "Ask agent to redo" on a conflicted
    *  proposal); each request carries a fresh nonce so repeats re-apply. */

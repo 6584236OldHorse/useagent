@@ -32,7 +32,7 @@ import type { ChildStatus, NativeFrame } from "@/components/chat/native-events";
 import { nativeOf } from "@/components/chat/native-ids";
 import { isNarration } from "@/components/chat/timeline";
 import { clip, summarizeToolStep } from "@/components/chat/tool-summary";
-import { type ApiStep, asRecord, deriveTrace, isRenderableTimelineStep } from "@/components/chat/types";
+import { type ApiStep, asRecord, deriveTrace, isRenderableTimelineStep, parseStepCode } from "@/components/chat/types";
 
 export type RunningPhase = "thinking" | "working" | "delegating";
 
@@ -55,6 +55,19 @@ export type RunningTurn = Pick<Turn, "steps" | "liveText" | "liveReasoning" | "e
     | undefined;
   readonly canonical?: readonly CanonicalEventLike[] | undefined;
 };
+
+/** The worker persists these start markers after dispatch, never at queue
+ * acceptance. Without one, the execution start is unknown (including legacy
+ * and mock runs); do not substitute the run's acceptance timestamp. */
+export function deriveRunningStartedAt(turn: Pick<RunningTurn, "steps"> | null): string | null {
+  const start = turn?.steps.find((step) => {
+    if (step.idx !== 0 || step.kind !== "task") return false;
+    const phase = asRecord(parseStepCode(step))?.phase;
+    return (step.chip === "boot" && phase === "preparing") ||
+      (step.chip === "chat" && phase === "retrieval");
+  });
+  return start && Number.isFinite(Date.parse(start.created_at)) ? start.created_at : null;
+}
 
 /** Which live channel of the turn grew most recently: a text or reasoning
  *  delta, or neither (root activity landed last, or nothing was observed yet). */
