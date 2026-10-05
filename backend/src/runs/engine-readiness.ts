@@ -1,4 +1,5 @@
 import { ENGINE_IDS, type EngineId } from "../db/schema";
+import { modelOfferedTo } from "../provider-gateway/provider-accounts";
 import {
   allowedModelsForEngine,
   defaultModelForEngine,
@@ -382,25 +383,29 @@ export function resolveAcceptedEngine(
   return { ok: false, status: 400, error: "engine is required" };
 }
 
+/** `account` is the reader's email: a provider restricted by PROVIDER_ACCOUNTS
+ *  leaves the catalog of every account it does not list (and of no account). */
 export function engineModelsForReadyEngines(
   env: Record<string, string | undefined> = process.env,
+  account: string | null = null,
 ): Partial<Record<UserFacingEngineId, readonly string[]>> {
   const engines = readyUserFacingEngines(env);
   const models: Partial<Record<UserFacingEngineId, readonly string[]>> = {};
   for (const engine of engines) {
     models[engine] = allowedModelsForEngine(engine, env)
-      .filter((model) => modelProviderReadyForEngine(engine, model, env));
+      .filter((model) => modelProviderReadyForEngine(engine, model, env) && modelOfferedTo(engine, model, account, env));
   }
   return models;
 }
 
 export function engineModelsForConfiguredEngines(
   env: Record<string, string | undefined> = process.env,
+  account: string | null = null,
 ): Partial<Record<UserFacingEngineId, readonly string[]>> {
   const models: Partial<Record<UserFacingEngineId, readonly string[]>> = {};
   for (const engine of configuredUserFacingEngines(env)) {
     models[engine] = allowedModelsForEngine(engine, env)
-      .filter((model) => modelProviderReadyForEngine(engine, model, env));
+      .filter((model) => modelProviderReadyForEngine(engine, model, env) && modelOfferedTo(engine, model, account, env));
   }
   return models;
 }

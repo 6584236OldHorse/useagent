@@ -14,6 +14,7 @@ import {
   type UnattendedRunOrigin,
 } from "../runs/origin";
 import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
@@ -323,6 +324,10 @@ async function acceptRunCommandWithOrigin(
   const fingerprint = acceptedFingerprint(intent, input.threadRelationship);
   const payload = serializeRunCommandPayload(input, intent, fingerprint, source);
   const commandId = crypto.randomUUID();
+  // Read before the thread lock: a pool read made while a transaction holds its
+  // connection can starve the pool. False only for a provider PROVIDER_ACCOUNTS
+  // withholds from this actor, which is then refused like any unknown model.
+  const modelOffered = await modelOfferedToUser(input.run.engine, input.run.model, input.actorId);
 
   let outcome: RunCommandOutcome | null;
   try {
@@ -367,7 +372,7 @@ async function acceptRunCommandWithOrigin(
         const modelAllowed = persistedPolicy
           ? isPersistedModelAllowedForEngine(input.run.engine, input.run.model)
           : isModelAllowedForEngine(input.run.engine, input.run.model);
-        if (!modelAllowed) {
+        if (!modelAllowed || !modelOffered) {
           throw new Error(
             `model ${input.run.model} is not allowed for engine ${input.run.engine}`,
           );

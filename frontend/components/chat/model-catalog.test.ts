@@ -27,8 +27,12 @@ describe("engine model catalog", () => {
   test("keeps conservative local OpenCode models when server readiness is unknown", () => {
     const fallback = fallbackEnabledEngineConfig();
     expect(fallback.engines).toEqual(["opencode"]);
+    // Before the manifest answers, a provider the server may offer to some
+    // accounts only is not listed; everything else is.
     expect(fallback.models.opencode).toEqual(
-      selectableModelsForEngine("opencode").map((model) => model.value),
+      selectableModelsForEngine("opencode")
+        .map((model) => model.value)
+        .filter((value) => !CEREBRAS_MODELS.some((model) => model.value === value)),
     );
     expect(fallback.readinessKnown).toBe(false);
     expect(fallback.readiness).toEqual({});

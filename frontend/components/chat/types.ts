@@ -112,6 +112,7 @@ export {
   modelOptionsForEngine,
   normalizeEngine,
   partitionModelOptions,
+  offlineModelsForEngine,
   selectableModelsForEngine,
   supportsPreSessionModelSelection,
 } from "./model-catalog";

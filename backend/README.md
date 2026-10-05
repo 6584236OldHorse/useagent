@@ -234,6 +234,10 @@ The important variables are:
   connections) and read a vendor name on a run; everyone else gets 404 there and
   reads "Cloud". Unset, nobody does. Stored connections and preferences keep
   applying to runs. Development mode keeps it open.
+- `PROVIDER_ACCOUNTS=cerebras:owner@example.com,second@example.com;openai:third@example.com`
+  offers a model provider only to the listed accounts. A provider named there
+  leaves every catalog, refuses runs like an unknown model, has no Settings card
+  and gets no gateway token for anyone else; a provider not named is open to all.
 - `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.

@@ -53,6 +53,9 @@ export async function fetchSandboxConfig(): Promise<SandboxConfig> {
 export interface DeploymentConfig {
   readonly enabledSandboxEngines: string[];
   readonly deploymentProviders: Partial<Record<ProviderConnectionProvider, boolean>>;
+  /** Providers this account is offered, when the server restricts any (PROVIDER_ACCOUNTS);
+   *  null when the manifest carries no list, meaning every provider. */
+  readonly offeredProviders: string[] | null;
 }
 
 /** The parts of GET /api/config the provider settings read: which sandbox
@@ -60,10 +63,13 @@ export interface DeploymentConfig {
 export async function fetchDeploymentConfig(): Promise<DeploymentConfig> {
   const res = await backendFetch("/api/config", { cache: "no-store" });
   if (!res.ok) throw new Error(`deployment-config ${res.status}`);
-  const data = (await res.json()) as { engines?: unknown; providers?: unknown };
+  const data = (await res.json()) as { engines?: unknown; providers?: unknown; offeredProviders?: unknown };
   return {
     enabledSandboxEngines: safeEnabledSandboxEngines(data.engines),
     deploymentProviders: safeDeploymentProviders(data.providers),
+    offeredProviders: Array.isArray(data.offeredProviders)
+      ? data.offeredProviders.filter((item): item is string => typeof item === "string")
+      : null,
   };
 }
 

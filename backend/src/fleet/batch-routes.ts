@@ -55,7 +55,7 @@ fleetBatchRoutes.post("/", async (c) => {
     const replay = await preflightFleetBatchReplay(common);
     if (replay) return c.json(fleetBatchResponse(replay, true), 200);
 
-    const resolved = await resolveFleetBatchTasks(common.orgId, validated.tasks);
+    const resolved = await resolveFleetBatchTasks(common.orgId, validated.tasks, actorId);
     if (!resolved.ok) return c.json(resolved.body, resolved.status);
 
     const accepted = await acceptFleetBatch({

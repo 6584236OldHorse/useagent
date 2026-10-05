@@ -7,7 +7,7 @@ import {
   isFreeModel,
   modelLabel,
   normalizeEngine,
-  selectableModelsForEngine,
+  offlineModelsForEngine,
 } from "@/components/chat/types";
 import { invalidateCapabilityCatalog, useCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import {
@@ -188,7 +188,7 @@ export function fallbackEnabledEngineConfig() {
   return {
     engines: ["opencode"] as EngineId[],
     models: {
-      opencode: selectableModelsForEngine("opencode").map((model) => model.value),
+      opencode: offlineModelsForEngine("opencode").map((model) => model.value),
     } satisfies EngineModelCatalog,
     readiness: {} as EngineReadinessCatalog,
     runtimes: {} as Partial<Record<EngineId, CapabilityEngineRuntime>>,

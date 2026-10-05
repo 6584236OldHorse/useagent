@@ -348,3 +348,22 @@ describe("readiness remedy text", () => {
     });
   });
 });
+
+describe("PROVIDER_ACCOUNTS and the model catalogs", () => {
+  test("a restricted provider's models leave the catalog of every account it does not list", () => {
+    const ready = { ENABLED_ENGINES: "opencode", PROVIDER_HEALTH_CEREBRAS: "verified" };
+    const env = { ...ready, PROVIDER_ACCOUNTS: "cerebras:owner@example.com" };
+    const all = engineModelsForConfiguredEngines(ready).opencode ?? [];
+    const cerebras = all.filter((model) => model.startsWith("cerebras/"));
+    expect(cerebras.length).toBeGreaterThan(0);
+    const owner = engineModelsForConfiguredEngines(env, "owner@example.com").opencode ?? [];
+    const other = engineModelsForConfiguredEngines(env, "someone@example.com").opencode ?? [];
+    const nobody = engineModelsForConfiguredEngines(env, null).opencode ?? [];
+    for (const model of cerebras) {
+      expect(owner).toContain(model);
+      expect(other).not.toContain(model);
+      expect(nobody).not.toContain(model);
+    }
+    expect(other.filter((model) => !model.startsWith("cerebras/"))).toEqual(all.filter((model) => !model.startsWith("cerebras/")));
+  });
+});

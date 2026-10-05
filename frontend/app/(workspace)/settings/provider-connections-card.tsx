@@ -14,15 +14,14 @@ import { cx } from "@/utils/cx";
 import { ProviderConnectionPanel } from "./provider-connection-panel";
 import {
   isActiveConnection,
-  MODEL_PROVIDER_CONNECTION_PROVIDERS,
   providerConnectionViews,
 } from "./provider-connections-data";
 import { useProviderConnections } from "./use-provider-connections";
 
 export function ProviderConnectionsCard() {
-  const { connections, deploymentProviders, enabledSandboxEngines, error, load, loading, refreshing } =
+  const { connections, deploymentProviders, enabledSandboxEngines, error, load, loading, offeredProviders, refreshing } =
     useProviderConnections();
-  const views = useMemo(() => providerConnectionViews(connections), [connections]);
+  const views = useMemo(() => providerConnectionViews(connections, offeredProviders), [connections, offeredProviders]);
   const connectedCount = views.filter(
     (view) => isActiveConnection(view.apiKey) || isActiveConnection(view.chatGptOAuth),
   ).length;
@@ -57,7 +56,7 @@ export function ProviderConnectionsCard() {
             <RiCloseCircleLine aria-hidden className="size-4 text-foreground-icon-tertiary" />
           )}
           <span>
-            {connectedCount} of {MODEL_PROVIDER_CONNECTION_PROVIDERS.length} providers connected
+            {connectedCount} of {views.length} providers connected
             {deploymentCount > 0 ? `, ${deploymentCount} provided by this deployment` : ""}
           </span>
         </div>

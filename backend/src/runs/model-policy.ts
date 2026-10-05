@@ -3,6 +3,7 @@ import { chatModelCatalog } from "../chat/models";
 import { chatModel } from "../chat/stream";
 import { freeModelLane, isAllowedFreeModel } from "./free-model-lane";
 import { openCodeZenModelId } from "../provider-gateway/provider";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 
 export const KIMI_K3_MODEL = "moonshotai/kimi-k3";
 export const DEEPSEEK_V4_FLASH_MODEL = "deepseek/deepseek-v4-flash";
@@ -188,4 +189,17 @@ export function isReplyModelAllowedForEngine(
 ): boolean {
   return isModelAllowedForEngine(engine, model, env) ||
     (model === parentModel && isPersistedModelAllowedForEngine(engine, model, env));
+}
+
+/** The reply policy for one account: a model whose provider PROVIDER_ACCOUNTS
+ *  withholds from this user is no model at all, inherited or asked for. */
+export async function replyModelAdmittedForUser(
+  engine: EngineId,
+  model: string,
+  parentModel: string | null,
+  userId: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): Promise<boolean> {
+  return isReplyModelAllowedForEngine(engine, model, parentModel, env) &&
+    (await modelOfferedToUser(engine, model, userId, env));
 }

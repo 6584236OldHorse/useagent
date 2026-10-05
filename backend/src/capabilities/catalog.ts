@@ -17,6 +17,7 @@ import {
   type UserFacingEngineId,
 } from "../runs/engine-readiness";
 import { allowedModelsForEngine, defaultModelForEngine } from "../runs/model-policy";
+import { modelOfferedTo } from "../provider-gateway/provider-accounts";
 import { reasoningEffortSupport } from "../runs/reasoning-effort";
 import type { NativeCodexModelCatalog } from "../provider-connections/codex-model-catalog";
 import { engineAuthMode } from "../runs/engine-auth-mode";
@@ -36,6 +37,8 @@ export interface CapabilityCatalogOptions {
   readonly productChildThreadsConfigured?: boolean;
   readonly botsConfigured?: boolean;
   readonly codexModelCatalog?: NativeCodexModelCatalog;
+  /** The reader's email; a provider PROVIDER_ACCOUNTS restricts is listed only for the accounts it names. */
+  readonly account?: string | null;
 }
 
 export interface CapabilityCatalogModel {
@@ -142,6 +145,7 @@ function buildEngine(
   env: Record<string, string | undefined>,
   gatewayConfigured: boolean,
   codexModelCatalog?: NativeCodexModelCatalog,
+  account: string | null = null,
 ): CapabilityCatalogEngine {
   const baseReadiness = engineReadiness(engine, env);
   const subscriptionCatalogUnavailable = engine === "codex" &&
@@ -164,9 +168,9 @@ function buildEngine(
   const nativeModels = engine === "codex"
     ? new Map(codexModelCatalog?.models.map((model) => [model.id, model]) ?? [])
     : new Map();
-  const modelIds = engine === "codex"
+  const modelIds = (engine === "codex"
     ? [...new Set([...allowedModelIds, ...nativeModels.keys()])]
-    : allowedModelIds;
+    : allowedModelIds).filter((id) => modelOfferedTo(engine as EngineId, id, account, env));
   const models = modelIds.map((id) => {
     const policyAllowed = policyModels.has(id);
     const nativeModel = nativeModels.get(id);
@@ -264,7 +268,7 @@ export function buildCapabilityCatalog(options: CapabilityCatalogOptions): Capab
     scope: "pre_run",
     bots: options.botsConfigured === true,
     engines: USER_FACING_ENGINES.map((engine) =>
-      buildEngine(engine, env, options.gatewayConfigured, options.codexModelCatalog),
+      buildEngine(engine, env, options.gatewayConfigured, options.codexModelCatalog, options.account ?? null),
     ),
     tools: { gatewayConfigured: options.gatewayConfigured, families: familyConfigured, declared: tools },
     nativeSlashCommands: { catalog: "session_runtime", currentRun: null },
