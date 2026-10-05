@@ -71,6 +71,7 @@ export function RunFeedbackForm({
               size="small"
               leadingIcon={option.icon}
               aria-pressed={verdict === option.value}
+              disabled={busy}
               className="rounded-full"
               onClick={() => onVerdict(option.value)}
             >
@@ -83,6 +84,7 @@ export function RunFeedbackForm({
           rows={4}
           value={text}
           maxLength={FEEDBACK_TEXT_MAX}
+          disabled={busy}
           placeholder="What went well or wrong? (optional)"
           aria-label="Feedback note"
           onChange={(event) => onText(event.target.value)}

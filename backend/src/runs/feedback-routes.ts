@@ -32,15 +32,20 @@ export const FEEDBACK_WINDOW_MS = 10 * 60_000;
 
 // ponytail: process-local per-user window. The supported deployment is one
 // backend per database, so this is the whole picture; move it to a table if
-// replicas ever exist.
-const recent = new Map<string, number[]>();
+// replicas ever exist. Exported for the bound test only.
+export const feedbackWindow = new Map<string, number[]>();
 
-/** Admit one submission for `userId`, or say when the window frees up. */
+/** Admit one submission for `userId`, or say when the window frees up. Anyone
+ *  whose window has fully elapsed is forgotten, so the map holds only people
+ *  active in the last window. */
 export function admitFeedback(
   userId: string,
   now = Date.now(),
 ): { ok: true } | { ok: false; retryAfterMs: number } {
-  const stamps = (recent.get(userId) ?? []).filter((at) => at > now - FEEDBACK_WINDOW_MS);
+  const recent = feedbackWindow;
+  const since = now - FEEDBACK_WINDOW_MS;
+  for (const [id, stamps] of recent) if (stamps.every((at) => at <= since)) recent.delete(id);
+  const stamps = (recent.get(userId) ?? []).filter((at) => at > since);
   if (stamps.length >= FEEDBACK_MAX_PER_WINDOW) {
     recent.set(userId, stamps);
     return { ok: false, retryAfterMs: stamps[0]! + FEEDBACK_WINDOW_MS - now };
@@ -174,8 +179,8 @@ runFeedbackRoutes.post("/:id/feedback", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { verdict?: unknown; text?: unknown } | null;
   const verdict = body?.verdict;
   if (!isVerdict(verdict)) return c.json({ error: "verdict must be good or bad" }, 400);
-  const text = body?.text ?? "";
-  if (typeof text !== "string" || text.length > FEEDBACK_TEXT_MAX) {
+  const text = body?.text === undefined ? "" : body.text;
+  if (typeof text !== "string" || text.length > FEEDBACK_TEXT_MAX || text.includes("\u0000")) {
     return c.json({ error: `text must be a string of at most ${FEEDBACK_TEXT_MAX} characters` }, 400);
   }
   const run = await getRunForOrg(c.get("orgId"), c.req.param("id"));
