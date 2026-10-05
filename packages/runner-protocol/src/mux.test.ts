@@ -280,7 +280,8 @@ describe("review findings", () => {
   test("a peer that sends past the window is reset", async () => {
     const sent: string[] = [];
     const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, { onStreamOpen: () => {} }, { window: 8 });
-    plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {} }));
+    // The peer advertised a window, so it knows the rules; twelve bytes into eight is a violation.
+    plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {}, window: 64 }));
     await settled();
     expect(plane.openStreams).toBe(1);
     for (let i = 0; i < 3; i += 1) plane.receive(new Uint8Array([1, 0, 0, 0, 1, 9, 9, 9, 9]));
@@ -397,6 +398,78 @@ describe("review findings", () => {
     const error = await plane.rpc("x", {}).catch((e: unknown) => e);
     expect((error as RpcError).code).toBe("internal");
     expect((error as RpcError).message).toMatch(/serialised/);
+    const sneaky = connectPair({}, { onRpc: async () => ({ toJSON: (key: string) => (key === "" ? 1 : undefined) }) });
+    const hidden = await sneaky.plane.rpc("x", {}).catch((e: unknown) => e);
+    expect((hidden as RpcError).code).toBe("internal");
+  });
+
+  test("a raw result frame without a result reads as null", async () => {
+    const plane = new Mux("plane", { send: () => {} });
+    const call = plane.rpc("x", {});
+    plane.receive(JSON.stringify({ t: "rpc.result", id: 1 }));
+    await expect(call).resolves.toBeNull();
+  });
+
+  test("windows are validated on the wire and locally", async () => {
+    expect(() => new Mux("plane", { send: () => {} }, {}, { window: 0 })).toThrow(RangeError);
+    expect(() => new Mux("plane", { send: () => {} }, {}, { window: 1.5 })).toThrow(RangeError);
+    const plane = new Mux("plane", { send: () => {} }, {}, { streamOpenTimeoutMs: 30 });
+    const opening = plane.openStream({}).then(() => "resolved", (e: unknown) => e);
+    plane.receive(JSON.stringify({ t: "stream.opened", id: 2, window: "bad" }));
+    plane.receive(JSON.stringify({ t: "stream.opened", id: 2, window: { toString: 7 } }));
+    plane.receive(JSON.stringify({ t: "stream.opened", id: 2, window: 0 }));
+    // Malformed frames are ignored; the open then times out instead of hanging or throwing.
+    expect(((await opening) as StreamRefusedError).code).toBe("timeout");
+  });
+
+  test("asymmetric windows hold in both directions and forged credit stays capped", async () => {
+    let accepted!: MuxStream;
+    const { plane, runner } = connectPair({}, {
+      onStreamOpen: (_target, stream) => {
+        accepted = stream;
+      },
+    });
+    (plane as unknown as { window: number }).window = 3;
+    (runner as unknown as { window: number }).window = 5;
+    const stream = await plane.openStream({});
+    // Runner to plane: the runner may have at most 3 bytes in flight; a forged credit of 1000 at the runner
+    // is capped at the plane's window, so a 12-byte write stays pending while the plane does not read.
+    runner.receive(JSON.stringify({ t: "stream.credit", id: stream.id, bytes: 1000 }));
+    let runnerDone = false;
+    const runnerWrite = accepted.write(new Uint8Array(12)).then(() => { runnerDone = true; });
+    await settled();
+    expect(runnerDone).toBe(false);
+    expect(plane.openStreams).toBe(1);
+    // Plane to runner: 5 in flight plus one prefetched chunk; a 20-byte write needs the runner to read.
+    let planeDone = false;
+    const planeWrite = stream.write(new Uint8Array(20)).then(() => { planeDone = true; });
+    await settled();
+    expect(planeDone).toBe(false);
+    const fromRunner = readAllFromStream(stream);
+    const fromPlane = readAllFromStream(accepted);
+    await Promise.all([runnerWrite, planeWrite]);
+    stream.end();
+    accepted.end();
+    expect((await fromRunner).byteLength).toBe(12);
+    expect((await fromPlane).byteLength).toBe(20);
+  });
+
+  test("a peer that advertised no window may send the protocol default", async () => {
+    let accepted!: MuxStream;
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, {
+      onStreamOpen: (_target, stream) => {
+        accepted = stream;
+      },
+    }, { window: 8 });
+    // An older peer opens without a window and sends nine bytes at once.
+    plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {} }));
+    await settled();
+    plane.receive(new Uint8Array([1, 0, 0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    expect(plane.openStreams).toBe(1);
+    expect(sent.some((m) => m.includes('"stream.reset"'))).toBe(false);
+    plane.receive(JSON.stringify({ t: "stream.close", id: 1 }));
+    expect((await readAllFromStream(accepted)).byteLength).toBe(9);
   });
 
   test("an unserialisable rpc result answers that call with an error and keeps the link", async () => {

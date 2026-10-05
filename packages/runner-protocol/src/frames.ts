@@ -185,6 +185,11 @@ function isStreamId(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff;
 }
 
+/** A window, when present, is a positive safe integer; anything else makes the frame malformed. */
+function isOptionalWindow(value: unknown): boolean {
+  return value === undefined || (Number.isSafeInteger(value) && (value as number) > 0);
+}
+
 function isCapacity(value: unknown): value is RunnerCapacity {
   return (
     isRecord(value) &&
@@ -223,10 +228,11 @@ export function parseControlFrame(text: string): ControlFrame | null {
     case "rpc":
       return isStreamId(value.id) && typeof value.method === "string" ? (value as unknown as RpcFrame) : null;
     case "rpc.result":
-    case "stream.open":
-    case "stream.opened":
     case "stream.close":
       return isStreamId(value.id) ? (value as unknown as ControlFrame) : null;
+    case "stream.open":
+    case "stream.opened":
+      return isStreamId(value.id) && isOptionalWindow(value.window) ? (value as unknown as ControlFrame) : null;
     case "rpc.error":
     case "stream.refused":
       return isStreamId(value.id) && typeof value.code === "string" && typeof value.message === "string"

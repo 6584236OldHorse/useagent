@@ -107,6 +107,8 @@ interface StreamState {
   sendCredit: number;
   /** The peer's receive window, from its open or opened frame. */
   peerWindow: number;
+  /** What this side accepts in flight: its own window, or the protocol default for a peer that advertised none. */
+  recvWindow: number;
   /** Bytes received and not yet credited back; a peer past the window is reset. */
   recvOutstanding: number;
   creditWaiters: Array<() => void>;
@@ -135,7 +137,9 @@ export class Mux {
   ) {
     // Stream ids never collide: the plane opens even ids, the runner odd ones.
     this.nextStreamId = role === "plane" ? 2 : 1;
-    this.window = options.window ?? DEFAULT_WINDOW;
+    const window = options.window ?? DEFAULT_WINDOW;
+    if (!Number.isSafeInteger(window) || window < 1) throw new RangeError("window must be a positive integer");
+    this.window = window;
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
     this.streamOpenTimeoutMs = options.streamOpenTimeoutMs ?? DEFAULT_STREAM_OPEN_TIMEOUT_MS;
   }
@@ -229,7 +233,7 @@ export class Mux {
     const state = this.streams.get(data.streamId);
     if (!state || state.remoteClosed || data.payload.byteLength === 0) return;
     state.recvOutstanding += data.payload.byteLength;
-    if (state.recvOutstanding > this.window) {
+    if (state.recvOutstanding > state.recvWindow) {
       this.finishStream(state, new Error("peer exceeded the stream window"));
       return;
     }
@@ -291,7 +295,7 @@ export class Mux {
         return;
       }
       case "stream.open":
-        void this.acceptStream(frame.id, frame.target, frame.window ?? ASSUMED_PEER_WINDOW);
+        void this.acceptStream(frame.id, frame.target, frame.window);
         return;
       case "stream.opened": {
         const pending = this.opening.get(frame.id);
@@ -299,7 +303,7 @@ export class Mux {
         if (!pending || !state) return;
         this.opening.delete(frame.id);
         clearTimeout(pending.timer);
-        this.grantPeerWindow(state, frame.window ?? ASSUMED_PEER_WINDOW);
+        this.grantPeerWindow(state, frame.window);
         pending.resolve(state.stream);
         return;
       }
@@ -354,8 +358,9 @@ export class Mux {
     let encoded: string;
     try {
       const result = (await this.handlers.onRpc(method, params)) ?? null;
-      if (JSON.stringify(result) === undefined) throw new RpcError("internal", "result cannot be serialised");
       encoded = encodeControlFrame({ t: "rpc.result", id, result });
+      // What was actually encoded is what counts: a toJSON that yields nothing drops the member.
+      if (!Object.hasOwn(JSON.parse(encoded) as object, "result")) throw new RpcError("internal", "result cannot be serialised");
     } catch (error) {
       const code = error instanceof RpcError ? error.code : "internal";
       const message = error instanceof Error ? error.message : String(error);
@@ -365,16 +370,21 @@ export class Mux {
     this.sendRaw(encoded);
   }
 
-  /** The peer told us how much it accepts in flight; writes may start. */
-  private grantPeerWindow(state: StreamState, window: number): void {
-    state.peerWindow = Math.max(1, Math.floor(window));
+  /**
+   * The peer told us how much it accepts in flight; writes may start. A peer
+   * that advertised nothing predates the field: it sends against the protocol
+   * default, so that is what this side must accept from it.
+   */
+  private grantPeerWindow(state: StreamState, window: number | undefined): void {
+    state.peerWindow = window ?? ASSUMED_PEER_WINDOW;
+    state.recvWindow = window === undefined ? Math.max(this.window, ASSUMED_PEER_WINDOW) : this.window;
     state.sendCredit = state.peerWindow;
     const waiters = state.creditWaiters;
     state.creditWaiters = [];
     for (const wake of waiters) wake();
   }
 
-  private async acceptStream(id: number, target: unknown, peerWindow: number): Promise<void> {
+  private async acceptStream(id: number, target: unknown, peerWindow: number | undefined): Promise<void> {
     // The peer's ids have the other parity; anything else is a protocol error, not a stream.
     if (this.streams.has(id) || id % 2 === (this.role === "plane" ? 0 : 1)) {
       this.send({ t: "stream.refused", id, code: "invalid_params", message: "stream id in use or not the peer's to open" });
@@ -409,6 +419,7 @@ export class Mux {
       inboundWaiter: null,
       sendCredit: 0,
       peerWindow: 0,
+      recvWindow: this.window,
       recvOutstanding: 0,
       creditWaiters: [],
       localClosed: false,
