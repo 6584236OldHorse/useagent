@@ -83,9 +83,9 @@ is separate from byte identity.
 The V2 runtime keeps its state in `userdata/statev2.sqlite`. On first boot it would
 import a V1 `state.sqlite` with only thread shells and a transcript excerpt, and a
 V1 runtime cannot read the V2 database. So the launch refuses to start when
-`userdata/state.sqlite` exists: a V1 sandbox is recreated, never migrated, and a
-rollback to a V1 runtime also means fresh sandboxes. The image carries no runtime
-state.
+`userdata/state.sqlite` exists: a V1 sandbox is recreated, never migrated. The
+switch to V2 is fix-forward; there is no path back to a V1 runtime. The image
+carries no runtime state.
 
 ## History
 
