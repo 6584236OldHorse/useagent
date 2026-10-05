@@ -1,7 +1,8 @@
-// CONTRACT-SHAPED: these V2 frames are built from the runtime contract
-// (packages/contracts/src/orchestrationV2.ts at upstream ce90eec1f), not
-// recorded from a running runtime. Re-check them against the spike's recorded
-// frames (~/output/t3-v2/frames) and replace them with recordings.
+// Protocol 2 fixtures built from the runtime contract (upstream ce90eec1f,
+// packages/contracts/src/orchestrationV2.ts) and checked on 2026-10-03 against
+// frames recorded from runtime dd2b1389590f with Codex and OpenCode 2: every
+// field the driver reads matches. Claude, file changes, plans, errors and
+// compaction were not yet seen live.
 import { describe, expect, test } from "bun:test";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { dispatchRuntimeCommand } from "./runtime-dispatch";
