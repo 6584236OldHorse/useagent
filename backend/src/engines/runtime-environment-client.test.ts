@@ -240,8 +240,9 @@ describe("T3 environment client", () => {
     ]);
 
     expect(commands.filter((command) => command === firstAccess)).toHaveLength(1);
+    // A ready runtime on this release's artifact is not checksummed again.
     expect(commands.filter((command) => command === buildNativeRuntimeArtifactProbe(ROOT_LAYOUT)))
-      .toHaveLength(1);
+      .toHaveLength(0);
     expect(commands.filter((command) => command === buildRuntimeEnvironmentAuthenticationCommand()))
       .toHaveLength(1);
     expect(commands.filter((command) => command === buildRuntimeEnvironmentRequestCommand(request)))
@@ -284,9 +285,9 @@ describe("T3 environment client", () => {
       ),
     ).resolves.toEqual({ projects: [] });
     expect(commands).toContain(buildRuntimeEnvironmentAuthenticationCommand(BOX_LAYOUT));
-    expect(commands).toHaveLength(6);
+    expect(commands).toHaveLength(5);
     expect(commands[0]).toBe(firstAccess);
-    expect(commands[1]).toBe(buildNativeRuntimeArtifactProbe(BOX_LAYOUT));
+    expect(commands[1]).toBe(buildRuntimeEnvironmentReadinessCommand());
   });
 
   test("prewarms private access and makes one shell request so a claimed sandbox skips it", async () => {
@@ -321,14 +322,13 @@ describe("T3 environment client", () => {
     ).resolves.toBeUndefined();
     // Access first, then exactly one shell request to build the runtime's state ahead of a run.
     expect(commands).toEqual([
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentAuthenticationCommand(),
       expect.stringContaining("/api/orchestration/shell"),
     ]);
     // The warm-up gets the boot script's budget, not a running runtime's.
-    expect(commands[4]).toContain("-m 60");
+    expect(commands[3]).toContain("-m 60");
   });
 
   test("revalidates cached access and retries once when a request fails", async () => {
@@ -377,7 +377,6 @@ describe("T3 environment client", () => {
         ROOT_LAYOUT,
       ),
       expect.stringContaining("/api/orchestration/shell"),
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       expect.stringContaining("/api/orchestration/shell"),
@@ -474,12 +473,10 @@ describe("T3 environment client", () => {
     ).resolves.toBe("0123456789abcdef");
 
     expect(commands).toEqual([
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),

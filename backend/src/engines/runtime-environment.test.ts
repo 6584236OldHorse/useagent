@@ -260,6 +260,46 @@ describe("T3 Cube environment", () => {
     ]);
   });
 
+  test("a healthy runtime already on the current artifact is not checksummed again", async () => {
+    const commands: string[] = [];
+    const launched: string[] = [];
+    let readiness = 0;
+    const process = {
+      createSession: async () => {},
+      deleteSession: async () => {},
+      executeSessionCommand: async (_name: string, request: { command: string }) => {
+        launched.push(request.command);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+      executeCommand: async (command: string) => {
+        commands.push(command);
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: 0, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+    };
+    await ensureRuntimeEnvironment({ id: `cube-t3-verified-${crypto.randomUUID()}`, process }, new AbortController().signal);
+    expect(commands.some((command) => command.includes("# native-runtime-verified"))).toBe(false);
+    expect(launched).toEqual([]);
+
+    // The repair path still proves the artifact on disk before it launches it.
+    commands.length = 0;
+    const repairing = {
+      ...process,
+      executeCommand: async (command: string) => {
+        commands.push(command);
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: readiness++ === 0 ? 1 : 0, result: "" };
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: 1, result: "" };
+        // The stopped runtime no longer answers.
+        if (command.startsWith("curl -fsS -m 3 -o /dev/null")) return { exitCode: 1, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+    };
+    await ensureRuntimeEnvironment({ id: `cube-t3-repair-${crypto.randomUUID()}`, process: repairing }, new AbortController().signal);
+    const verified = commands.findIndex((command) => command.includes("# native-runtime-verified"));
+    expect(verified).toBeGreaterThan(commands.indexOf(buildRuntimeEnvironmentReadinessCommand()));
+    expect(launched).toHaveLength(1);
+  });
+
   test("repairs an unhealthy resident environment and proves readiness", async () => {
     const deleted: string[] = [];
     const created: string[] = [];

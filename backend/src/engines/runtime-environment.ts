@@ -268,7 +268,9 @@ async function provisionRuntimeEnvironment(
   try {
     const layout = runtimeEnvironmentLayout(sandbox);
     if (signal.aborted) throw new Error("Provider runtime start aborted");
-    await ensureNativeRuntimeArtifact(sandbox, layout, signal);
+    // Readiness requires the artifact marker of this release, which only a
+    // launch from a verified install writes; the whole-tree checksum is for the
+    // repair path below, not for a runtime that is already up on it.
     let healthy = await runtimeEnvironmentHealthy(sandbox);
     let outcome: RunTimingOutcome = healthy ? RUN_TIMING_OUTCOMES.ready : RUN_TIMING_OUTCOMES.repaired;
     if (!healthy && (await runtimeEnvironmentBooting(sandbox))) {
@@ -284,6 +286,7 @@ async function provisionRuntimeEnvironment(
       if (healthy) outcome = RUN_TIMING_OUTCOMES.booted;
     }
     if (!healthy) {
+      await ensureNativeRuntimeArtifact(sandbox, layout, signal);
       // A healthy old binary can still own the port even when provenance fails.
       await stopRuntimeEnvironment(sandbox, signal);
       await deleteRuntimeEnvironmentSessionIfPresent(sandbox);
