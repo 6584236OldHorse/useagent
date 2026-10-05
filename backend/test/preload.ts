@@ -50,14 +50,10 @@ delete process.env.CODE_INDEX_INTERVAL_MIN;
 
 process.env.WORKER_STEP_DELAY_MS = process.env.WORKER_STEP_DELAY_MS ?? "5";
 
-// The Free model lane refreshes itself from OpenRouter's public catalog on
-// manifest traffic. Pin the SHARED cache's fetcher to an instant failure so no
-// test ever leaves the process (the lane then serves its curated seed); suites
-// that exercise the refresh install their own fixture fetcher per test.
-const { setFreeModelCatalogFetcherForTest } = await import(
-  "../src/runs/free-model-lane"
-);
-setFreeModelCatalogFetcherForTest(async () => new Response(null, { status: 503 }));
+// The Free-model qualifier reads OpenRouter's public catalog and starts probe
+// runs on its tick. The unit suite never leaves the process, so its kill
+// switch is set; the lane serves the generation the test database migrated in.
+process.env.FREE_MODEL_QUALIFIER = "off";
 // Same for the gateway's read of the primary's product flags: a fixture origin
 // such as 127.0.0.1:3201 may be a live server on a developer machine.
 const { setPrimaryProductFlagsFetcherForTest } = await import(

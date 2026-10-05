@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import {
   CEREBRAS_GEMMA_MODEL,
   CEREBRAS_QWEN_MODEL,
@@ -17,9 +17,16 @@ import {
   isReplyModelAllowedForEngine,
   OPENCODE_ALLOWED_MODELS,
 } from "./model-policy";
-import { FREE_MODEL_LANE_SEED } from "./free-model-lane";
+import { FREE_MODEL_LANE_SEED, freeModelLaneCache } from "./free-model-lane";
 
 describe("paid model policy", () => {
+  // The app import in other suites adopts the generation the test database
+  // migrated in (the seed models in the migration's order); these tests pin
+  // the seed itself.
+  beforeEach(() => {
+    freeModelLaneCache.reset();
+  });
+
   test("uses engine-owned defaults", () => {
     expect(DEFAULT_OPENCODE_MODEL).toBe(FAST_OPENCODE_MODEL);
     expect(DEFAULT_CODEX_MODEL).toBe(FAST_CODEX_MODEL);

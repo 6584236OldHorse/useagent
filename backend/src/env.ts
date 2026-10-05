@@ -443,9 +443,24 @@ export function githubConfigured(): boolean {
 export function githubTenantOrgId(): string | null {
   return (
     process.env.GITHUB_TENANT_ORG_ID?.trim() ||
+    primaryOrgId() ||
+    (allowDevOrg() ? "org-skynet-dev" : null)
+  );
+}
+
+/**
+ * The organization an operator named as the deployment's own: it owns
+ * deployment-wide work with no tenant of its own (free-model qualification
+ * runs, the shared GitHub connection above). The host bootstrap sets
+ * `USEAGENT_PRIMARY_ORG_ID`; older installs carry it in `SLACK_DEFAULT_ORG_ID`.
+ * Null on a machine nobody configured, so a developer's backend never spends
+ * sandbox time on deployment chores.
+ */
+export function primaryOrgId(): string | null {
+  return (
     process.env.USEAGENT_PRIMARY_ORG_ID?.trim() ||
     process.env.SLACK_DEFAULT_ORG_ID?.trim() ||
-    (allowDevOrg() ? "org-skynet-dev" : null)
+    null
   );
 }
 

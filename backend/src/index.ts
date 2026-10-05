@@ -15,6 +15,7 @@ import {
   env,
   githubConfigured,
   memoryConfig,
+  primaryOrgId,
   slackConfig,
 } from "./env";
 import { isPublicApiPath, orgScope } from "./middleware/org";
@@ -104,18 +105,15 @@ import {
   engineModelsForReadyEngines,
   readyUserFacingEngines,
 } from "./runs/engine-readiness";
-import {
-  forceRefreshFreeModelLane,
-  freeModelLane,
-  freeModelLaneCache,
-  freeModelRegistryReadEnabled,
-  refreshFreeModelLane,
-} from "./runs/free-model-lane";
+import { freeModelLane, freeModelLaneCache } from "./runs/free-model-lane";
 import {
   freeModelQualifierEnabled,
   hydrateFreeModelLaneFromRegistry,
+  QUALIFIER_ADMISSION_WAIT_MS,
+  respondToManualRefresh,
   startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
+  type FreeModelQualifier,
 } from "./runs/free-model-qualifier-worker";
 import {
   createInternalOpenCodeQualificationDriver,
@@ -125,6 +123,7 @@ import { acceptRunCancel } from "./commands/cancel";
 import {
   deploymentInflightSnapshot,
   getRunAdmission,
+  getRunAdmissionWithin,
   setRunAdmission,
 } from "./commands/admission";
 import { getRunWithSteps } from "./runs/repo";
@@ -187,8 +186,8 @@ if (threadRelationshipsEnabled()) {
 // fail boot closed in READ rather than silently serving an unindexed scan.
 await ensureCanonicalExecutionTranscriptIndexForBoot();
 
-// Default OFF. When explicitly enabled, hydrate the synchronous model-policy
-// cache from the last atomically published DB generation before serving config.
+// Hydrate the synchronous model-policy cache from the last published Free-lane
+// generation before serving config; the hydrator then follows it every minute.
 await hydrateFreeModelLaneFromRegistry();
 startFreeModelRegistryHydrator();
 configureProductChildPump(pumpThread);
@@ -366,11 +365,6 @@ app.route(
 // `capabilities` are honest config-gated booleans (a name is NOT a secret) so
 // surfaces like /agent/plugins can show what is actually wired vs not.
 app.get("/api/config", (c) => {
-  // Kick the TTL-gated single-flight Free-lane catalog refresh
-  // (stale-while-revalidate): this manifest request serves the current lane
-  // instantly; a fresh catalog result lands for subsequent requests. The
-  // refresh never rejects, so it can never fail /api/config.
-  if (!freeModelRegistryReadEnabled()) void refreshFreeModelLane();
   // Configured engines stay discoverable even while a provider needs attention;
   // the additive readiness map explains why without weakening the fail-closed
   // POST /api/runs dispatch gate. mock/daytona/claude-sdk remain internal aliases.
@@ -419,41 +413,21 @@ app.get("/api/config", (c) => {
 
 // Manual Free-lane refresh (the picker's "Refresh free models" affordance).
 // Org-session authed by the universal adapter (NOT in the public allowlist).
-// Busts the catalog TTL while keeping single-flight plus a process-global
-// cool-down that is at least as strict as a per-org bound (the catalog is
-// org-independent, so one refresh serves every org). Returns the refreshed
-// manifest so the picker can swap its list in place.
+// Runs a qualifier tick now: the catalog is discovered before this responds
+// (bounded: a tick held behind the admission lock answers 202 pending), the
+// probe runs it queues finish in the background and publish on their own. A
+// process-global cool-down protects OpenRouter and the probe budget (the lane
+// is deployment-wide, so one refresh serves every org). Always returns the
+// current manifest so the picker can swap its list in place.
+let freeModelQualifier: FreeModelQualifier | null = null;
 app.post("/api/config/models/refresh", async (c) => {
-  if (freeModelRegistryReadEnabled()) {
-    return c.json({
-      error: "managed_by_qualifier",
-      free: freeModelLane(),
-      models: engineModelsForReadyEngines(),
-      configuredModels: engineModelsForConfiguredEngines(),
-    }, 409);
-  }
-  const attempt = forceRefreshFreeModelLane();
-  if (!attempt.admitted) {
-    return c.json({ error: "rate_limited", retry_after_ms: attempt.retryAfterMs }, 429);
-  }
-  const outcome = await attempt.done;
-  if (!outcome.updated) {
-    return c.json({
-      refreshed: false,
-      stale: true,
-      reason: outcome.reason,
-      free: freeModelLane(),
-      models: engineModelsForReadyEngines(),
-      configuredModels: engineModelsForConfiguredEngines(),
-    }, 502);
-  }
+  const response = await respondToManualRefresh(freeModelQualifier);
   return c.json({
-    refreshed: true,
-    stale: false,
+    ...response.body,
     free: freeModelLane(),
     models: engineModelsForReadyEngines(),
     configuredModels: engineModelsForConfiguredEngines(),
-  });
+  }, response.status);
 });
 
 // Better Auth owns login, sessions, and organization membership.
@@ -559,35 +533,39 @@ app.route("/api/commands", commandsRoutes);
 // Automations default disabled, so nothing auto-fires until a human turns it on.
 startScheduler();
 
-// Durable full-agent Free-model qualification, independently default OFF from
-// the DB-read switch. Admission is checked every tick and before every probe,
-// so deployment drain/close cannot start qualification traffic.
+// Durable full-agent Free-model qualification: on by default, FREE_MODEL_QUALIFIER=off
+// is the kill switch. Discovery runs every tick; probe runs need an organization
+// to own them (FREE_MODEL_QUALIFIER_ORG_ID, else the deployment's primary
+// organization) and are low priority. Admission is checked every tick and
+// before every probe, so deployment drain/close cannot start qualification traffic.
 if (freeModelQualifierEnabled()) {
-  const qualifierOrgId = process.env.FREE_MODEL_QUALIFIER_ORG_ID?.trim();
-  if (!qualifierOrgId) throw new Error("FREE_MODEL_QUALIFIER_ORG_ID is required");
-  const driver = createInternalOpenCodeQualificationDriver(
-    { orgId: qualifierOrgId },
-    {
-      accept: acceptInternalRunCommand,
-      pump: pumpThread,
-      read: getRunWithSteps,
-      cancel: async (orgId, runId) => {
-        const outcome = await acceptRunCancel({ orgId, actorId: null, runId });
-        if (outcome.status === "accepted" || outcome.status === "already") {
-          signalCancel(runId, "Model qualification timed out");
-          await pumpThread(outcome.threadId);
-        }
-      },
-      admission: getRunAdmission,
-    },
-  );
-  startFreeModelQualifierWorker({
+  const qualifierOrgId = process.env.FREE_MODEL_QUALIFIER_ORG_ID?.trim() || primaryOrgId();
+  if (!qualifierOrgId) {
+    console.warn(
+      "[free-model-qualifier] no organization owns qualification runs (set USEAGENT_PRIMARY_ORG_ID); discovery only",
+    );
+  }
+  const driver = qualifierOrgId
+    ? createInternalOpenCodeQualificationDriver(
+        { orgId: qualifierOrgId },
+        {
+          accept: acceptInternalRunCommand,
+          pump: pumpThread,
+          read: getRunWithSteps,
+          cancel: async (orgId, runId) => {
+            const outcome = await acceptRunCancel({ orgId, actorId: null, runId });
+            if (outcome.status === "accepted" || outcome.status === "already") {
+              signalCancel(runId, "Model qualification timed out");
+              await pumpThread(outcome.threadId);
+            }
+          },
+          admission: () => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS),
+        },
+      )
+    : null;
+  freeModelQualifier = startFreeModelQualifierWorker({
     driver,
-    adoptPublishedLane: (state) => {
-      if (freeModelRegistryReadEnabled()) {
-        freeModelLaneCache.adoptRegistryLane(state.currentModelIds, { allowEmpty: true });
-      }
-    },
+    adoptPublishedLane: (state) => freeModelLaneCache.adoptRegistryLane(state.currentModelIds),
   });
 }
 

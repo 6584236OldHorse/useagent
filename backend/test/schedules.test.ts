@@ -13,8 +13,6 @@ import { runs, skillRevisions } from "../src/db/schema";
 import { createOrgSession, json, waitFor } from "./helpers";
 import {
   freeModelLaneCache,
-  HOSTED_VERIFIED_FREE_MODELS,
-  refreshFreeModelLane,
 } from "../src/runs/free-model-lane";
 import { RUN_PROMPT_MAX_CHARS } from "../src/commands/prompt-policy";
 
@@ -428,20 +426,12 @@ describe("schedules API", () => {
     expect(replay).toMatchObject({ runId, created: false, firingRecorded: true });
   });
 
-  test("a stored dynamic free model still fires after the catalog cache restarts", async () => {
+  test("a stored dynamic free model still fires after the lane rotates it out", async () => {
     const s = await createOrgSession("schedule-free-model-restart");
-    const model = HOSTED_VERIFIED_FREE_MODELS[0];
+    const model = "vendor/rotated-out:free";
     freeModelLaneCache.reset();
     try {
-      await refreshFreeModelLane({
-        fetcher: async () => Response.json({
-          data: [{
-            id: model,
-            context_length: 200_000,
-            supported_parameters: ["tools"],
-          }],
-        }),
-      });
+      freeModelLaneCache.adoptRegistryLane([model]);
       const created = await createSchedule(s.cookies, {
         name: "Durable free model",
         cron: "37 5 * * *",

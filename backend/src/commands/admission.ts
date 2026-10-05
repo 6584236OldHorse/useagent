@@ -106,6 +106,17 @@ export async function getRunAdmission(): Promise<RunAdmissionState> {
   return db.transaction(readUnderSharedLock);
 }
 
+/** The admission read for background work that must not wait behind a
+ * deployment's exclusive hold: Postgres aborts the lock wait after
+ * lockTimeoutMs (no connection is left waiting) and the read rejects, so the
+ * caller decides what to do without the state. */
+export async function getRunAdmissionWithin(lockTimeoutMs: number): Promise<RunAdmissionState> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`);
+    return readUnderSharedLock(tx);
+  });
+}
+
 /** Acquire the shared transaction barrier and reject new acceptance while a
  * deployment owns the durable closed state. Call inside the run insert
  * transaction to make close-vs-accept races deterministic. */

@@ -715,6 +715,13 @@
       "when": 1792800000017,
       "tag": "0107_session_command_catalogs",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1792800000018,
+      "tag": "0108_free_model_probe_budget",
+      "breakpoints": true
     }
   ]
 }
