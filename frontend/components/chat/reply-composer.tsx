@@ -110,7 +110,7 @@ export function ReplyComposer({
           draftKey={draftKey}
           prefill={prefill}
         />
-        {status}
+        {status && <div className="mt-2">{status}</div>}
       </div>
     </div>
   );
