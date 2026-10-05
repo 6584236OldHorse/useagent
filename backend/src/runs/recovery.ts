@@ -4,19 +4,14 @@ import {
 } from "../engines";
 import type {
   HarnessCheckpoint,
-  HarnessInterimEvent,
   HarnessReconciliation,
   HarnessSessionHandle,
 } from "../engines/types";
 import { getLastStepAt, getRun, STALE_SUMMARY } from "./repo";
 import { finalizeRun, resolveDurableFinalizationOutcome } from "./finalize";
-import {
-  CaptureFenceError,
-  type WriteFence,
-  providerEventExists,
-  recordProviderEvent,
-  scopedProviderEventId,
-} from "./provider-events";
+import type { WriteFence } from "./provider-events";
+import { ingestReconciliationEvents, recordReconcilingMarker, LostClaimError } from "./recovery-event-capture";
+export { ingestReconciliationEvents, RUN_RECONCILING } from "./recovery-event-capture";
 import { orgSecretRedactor } from "../secrets/store";
 import {
   bumpReconcile,
@@ -60,9 +55,6 @@ import {
 } from "../sandboxes/expected-binding";
 import { refuseRecoveredApprovals, type RecoveredApprovalDependencies } from "./recovered-approvals";
 
-/** The event type for the durable "reconciling after restart" marker. Distinct
- *  from the terminal events so the timeline can show a run is being re-probed. */
-export const RUN_RECONCILING = "run.reconciling";
 export const INCOMPATIBLE_PROVIDER_SESSION_SUMMARY =
   "This run stopped after an engine protocol upgrade. Retry the turn to start a fresh native session.";
 
@@ -353,89 +345,6 @@ async function parkRunningRun(
   }
 }
 
-/** Payload of the durable "reconciling after restart" marker. `reason` is
- *  "boot-restart" for the initial park frame and "reprobe" for a re-probe
- *  heartbeat; the heartbeat also carries `lastProbeAt` + `eventsRecovered`. */
-interface ReconcilingMarkerPayload {
-  reason: "boot-restart" | "reprobe";
-  sinceMs: number;
-  deadlineMs: number;
-  lastProbeAt?: number;
-  eventsRecovered?: number;
-}
-
-/** Upsert the durable "reconciling after restart" marker on the native lane so
- *  the timeline shows the run is being re-probed. Frozen frame contract (#63):
- *  provider "skynet", eventType "run.reconciling". The id is STABLE per run, so
- *  the boot-park frame and every re-probe heartbeat address the SAME row — one
- *  marker that keeps advancing (each upsert mints a fresh seq → SSE subscribers
- *  see a live heartbeat) instead of a frozen frame or a pile of duplicate rows.
- *  Fire-and-forget; never throws. */
-function recordReconcilingMarker(
-  runId: string,
-  threadId: string,
-  payload: ReconcilingMarkerPayload,
-  fence?: WriteFence,
-): Promise<void> {
-  // A heartbeat from a tick that lost its claim is fenced out like any other write.
-  return recordProviderEvent({
-    id: `reconciling_${runId}`,
-    runId,
-    threadId,
-    provider: "skynet",
-    eventType: RUN_RECONCILING,
-    payload,
-  }, fence ? { fence, required: true } : {}).catch(() => {});
-}
-
-/** Append native events a reconciliation surfaced to the canonical run, so SSE
- *  subscribers watch progress and terminal tail activity is durable before seal.
- *  Idempotent: recordProviderEvent upserts on the stable provider event id
- *  (the run-scoped OpenCode part id), the SAME key the live lane uses, so
- *  re-probes and the pre-restart lane never create a duplicate row or collide
- *  with another run. Payloads are redacted like the live lane. Returns the
- *  number durably present after this probe; strict terminal ingestion throws so
- *  the caller retains the run for retry instead of sealing incomplete history. */
-export async function ingestReconciliationEvents(
-  entry: Pick<ReconcileEntry, "runId" | "threadId">,
-  redact: Awaited<ReturnType<typeof orgSecretRedactor>>,
-  events: readonly HarnessInterimEvent[],
-  strict = false,
-  fence?: WriteFence,
-): Promise<number> {
-  let recovered = 0;
-  for (const ev of events) {
-    try {
-      if (ev.runScopedId && !ev.id.startsWith(`pe_${entry.runId}_`)) {
-        throw new Error(`Recovered event id does not match run ${entry.runId}`);
-      }
-      const eventId = ev.runScopedId ? ev.id : scopedProviderEventId(entry.runId, ev.id);
-      await recordProviderEvent({
-          id: eventId,
-          runId: entry.runId,
-          threadId: entry.threadId,
-          provider: ev.provider,
-          eventType: ev.eventType,
-          nativeSessionId: ev.sessionId ?? null,
-          nativeParentSessionId: ev.parentSessionId ?? null,
-          nativeMessageId: ev.messageId ?? null,
-          nativePartId: ev.partId ?? null,
-          nativeCallId: ev.callId ?? null,
-          payload: redact.unknown(ev.payload),
-        },
-        // A fenced write is required so the fence loss reaches this loop instead of the log.
-        { critical: strict, required: strict || fence !== undefined, fence },
-      );
-      if (await providerEventExists(eventId)) recovered++;
-      else if (strict) throw new Error(`Recovered event ${eventId} was not durable`);
-    } catch (error) {
-      if (error instanceof CaptureFenceError) throw new LostClaimError(entry.runId, recovered);
-      if (strict) throw error;
-      /* a single malformed event must never abort the probe */
-    }
-  }
-  return recovered;
-}
 
 // ---------------------------------------------------------------------------
 // Adaptive background reconcile loop (#63). Re-probes parked runs on a short
@@ -474,13 +383,6 @@ async function rescheduleEntry(entry: ReconcileEntry): Promise<boolean> {
 const claimFence = (entry: ReconcileEntry): WriteFence =>
   (tx) => reconcileClaimHeldForUpdate(entry.runId, entry.leaseUntil, tx);
 
-/** Thrown when a tick finds, while writing recovered events, that its claim is gone.
- *  Carries how many events of the batch were durable before that, so the count survives. */
-class LostClaimError extends Error {
-  constructor(runId: string, readonly recovered = 0) {
-    super(`reconcile claim lost for run ${runId}`);
-  }
-}
 
 /** Finalize a parked run only while this tick still owns its row. The fenced delete of
  *  the parked row IS the ownership guard and runs inside the finalization transaction

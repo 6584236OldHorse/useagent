@@ -26,7 +26,6 @@ import { uid } from "./helpers";
 import { providerSessionBinding } from "@useagent/agent-harness/canonical";
 import { providerProtocolIdentity } from "@useagent/agent-harness/control";
 import { t3ProviderDrivers } from "../src/engines/t3-provider-driver";
-import { t3ProviderDrivers } from "../src/engines/t3-provider-driver";
 
 // The ADAPTIVE reconciler (#63): boot PARKS a transient run instead of honest-
 // failing it, and a background loop re-probes within a budget. Covers park-on-
@@ -221,6 +220,18 @@ describe("background re-probe loop", () => {
 });
 
 describe("continuity during re-probe (interim events + heartbeat)", () => {
+  test("a reachable probe cannot heartbeat after a concurrent settlement", async () => {
+    const { runId, threadId } = await seedRunning();
+    await park(runId, threadId);
+    await runDueReconciles(async () => {
+      await setRunStatus(runId, "completed");
+      return { status: "in_progress" };
+    });
+    expect((await getRun(runId))?.status).toBe("completed");
+    expect(await db.select().from(providerEvents).where(and(
+      eq(providerEvents.runId, runId), eq(providerEvents.eventType, RUN_RECONCILING),
+    ))).toHaveLength(0);
+  });
   const interimEvents: HarnessInterimEvent[] = [
     {
       id: "pe_part1",

@@ -17,8 +17,10 @@
 // sidecar keyed by identity.nativeEventId (the "bounded raw sidecar").
 
 import {
+  type AssistantNarrationEvent,
   isNarration,
   parseMarker,
+  projectAssistantNarration,
   reconcileTimelineArtifacts,
   type TimelineArtifactReceipt,
   type TimelineMarker,
@@ -35,13 +37,22 @@ export interface CanonicalEventLike {
     readonly provider?: string;
     readonly nativeEventId?: string;
     readonly nativeSessionId?: string;
-    readonly nativeParentSessionId?: string;
+    readonly nativeParentSessionId?: string | null;
     readonly nativeSeq?: number;
     readonly nativeMessageId?: string;
     readonly nativePartId?: string;
   };
   readonly messageId?: string;
   readonly text?: string;
+  readonly role?: string;
+  readonly turnId?: string;
+  readonly snapshot?: {
+    readonly revision: string;
+    readonly segment: number;
+    readonly segmentCount: number;
+    readonly final: boolean;
+    readonly streaming: boolean;
+  };
   readonly childId?: string;
   readonly parentChildId?: string;
   readonly launchToolCallId?: string;
@@ -351,6 +362,59 @@ export function buildTimelineFromCanonical(
   const unpartedText = new Map<string, { text: string; firstSeq: number; order: number }>();
   const unpartedReasoning = new Map<string, { text: string; firstSeq: number }>();
 
+  const narrationEvents = ordered.flatMap<AssistantNarrationEvent>(
+    (event): AssistantNarrationEvent[] => {
+      const sessionId = event.identity?.nativeSessionId;
+      const parentSessionId = event.identity?.nativeParentSessionId;
+      const messageId = event.messageId ?? event.identity?.nativeMessageId;
+      if (
+        !sessionId ||
+        parentSessionId === undefined ||
+        !messageId ||
+        typeof event.role !== "string" ||
+        typeof event.turnId !== "string"
+      )
+        return [];
+      const identity = {
+        seq: event.identity?.nativeSeq ?? event.seq,
+        sessionId,
+        parentSessionId,
+        messageId,
+        role: event.role,
+        turnId: event.turnId,
+      };
+      if (event.kind === "message.started") return [{ kind: "anchor" as const, ...identity }];
+      const snapshot = event.snapshot;
+      if (
+        event.kind !== "message.delta" ||
+        typeof event.text !== "string" ||
+        !snapshot ||
+        typeof snapshot.revision !== "string" ||
+        typeof snapshot.segment !== "number" ||
+        typeof snapshot.segmentCount !== "number" ||
+        typeof snapshot.final !== "boolean" ||
+        typeof snapshot.streaming !== "boolean"
+      )
+        return [];
+      return [{ kind: "snapshot" as const, ...identity, text: event.text, ...snapshot }];
+    },
+  );
+  for (const message of projectAssistantNarration(narrationEvents)) {
+    if (!message.text) continue;
+    ranked.push({
+      node: {
+        kind: "text",
+        key: `message:${message.messageId}`,
+        text: message.text,
+        messageId: message.messageId,
+        final: message.final,
+      },
+      k0: message.anchorSeq,
+      k1: 0,
+      k2: message.updateSeq,
+    });
+  }
+
   const artifactReceipts: TimelineArtifactReceipt[] = [];
   for (const e of ordered) {
     if (
@@ -400,6 +464,7 @@ export function buildTimelineFromCanonical(
     if (e.kind === "artifact.created" || e.kind === "artifact.delivered") continue;
     // ── assistant text bursts (root, step-messages only; child text -> its pane) ─
     if (e.kind === "message.delta") {
+      if (e.snapshot !== undefined) continue;
       const sid = e.identity?.nativeSessionId;
       const mid = e.messageId;
       if (sid && childSessions.has(sid)) continue; // subagent chatter

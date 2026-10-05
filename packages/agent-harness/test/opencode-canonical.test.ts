@@ -697,6 +697,50 @@ describe("T3 activity fidelity", () => {
     payload,
   });
 
+  test("maps durable root narration onto provider-neutral canonical message metadata", () => {
+    const started = t3Frame("message:start", 1, "t3.message.started", {
+      role: "assistant",
+      turnId: "turn-1",
+    }, null, { messageId: "message-1" });
+    const updated = t3Frame("message:0", 2, "t3.message.updated", {
+      role: "assistant",
+      turnId: "turn-1",
+      text: "Durable narration.",
+      revision: "revision-1",
+      segment: 0,
+      segmentCount: 1,
+      final: false,
+      streaming: true,
+    }, null, { messageId: "message-1" });
+    const result = translateOpenCode([started, updated], CTX);
+
+    expect(result.events).toMatchObject([
+      {
+        kind: "message.started",
+        messageId: "message-1",
+        role: "assistant",
+        turnId: "turn-1",
+        identity: { nativeSessionId: "ses_t3", nativeParentSessionId: null, nativeMessageId: "message-1" },
+      },
+      {
+        kind: "message.delta",
+        messageId: "message-1",
+        text: "Durable narration.",
+        role: "assistant",
+        turnId: "turn-1",
+        snapshot: {
+          revision: "revision-1",
+          segment: 0,
+          segmentCount: 1,
+          final: false,
+          streaming: true,
+        },
+        identity: { nativeSessionId: "ses_t3", nativeParentSessionId: null, nativeMessageId: "message-1" },
+      },
+    ]);
+    expect(result.events.some((event) => "rawEventType" in event || "rawPayload" in event)).toBe(false);
+  });
+
   test("does not expose transport placeholders as canonical tool names", () => {
     for (const [index, placeholder] of ["task", "mcp tool call"].entries()) {
       const result = translateOpenCode([

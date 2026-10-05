@@ -107,17 +107,17 @@ const runSequencers = new Map<string, RunSequencer>();
  *  ledger and the seal it degrades. */
 const CAPTURE_RETRY_DELAYS_MS = [100, 400] as const;
 
-async function persistWithRetry(input: ProviderEventInput, seq: RunSequencer, fence?: WriteFence): Promise<void> {
+async function persistWithRetry(inputs: readonly ProviderEventInput[], seq: RunSequencer, fence?: WriteFence): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await (fence ? persistFencedAndPublish(input, seq, fence) : persistAndPublish(input, seq));
+      await persistBatchAndPublish(inputs, seq, fence);
       return;
     } catch (err) {
       if (err instanceof CaptureFenceError) throw err;
       const delay = CAPTURE_RETRY_DELAYS_MS[attempt];
       if (delay === undefined) throw err;
       console.warn(
-        `[provider-events] capture attempt ${attempt + 1} failed (${input.eventType}); retrying in ${delay}ms:`,
+        `[provider-events] capture attempt ${attempt + 1} failed (${inputs[0]?.eventType}); retrying in ${delay}ms:`,
         errorMessage(err),
       );
       await new Promise((r) => setTimeout(r, delay));
@@ -247,6 +247,20 @@ export function recordProviderEvent(
   input: ProviderEventInput,
   opts: { critical?: boolean; required?: boolean; fence?: WriteFence } = {},
 ): Promise<void> {
+  return recordProviderEvents([input], opts);
+}
+
+/** A message revision's bounded segments commit together. The existing per-run
+ * sequencer and fence also cover batches, so sealing cannot capture half a reply. */
+export function recordProviderEvents(
+  inputs: readonly ProviderEventInput[],
+  opts: { critical?: boolean; required?: boolean; fence?: WriteFence } = {},
+): Promise<void> {
+  const input = inputs[0];
+  if (!input) return Promise.resolve();
+  if (inputs.some((event) => event.runId !== input.runId || event.threadId !== input.threadId)) {
+    return Promise.reject(new Error("Provider capture batch must belong to one run and thread"));
+  }
   let seq = runSequencers.get(input.runId);
   if (!seq) {
     seq = { chain: Promise.resolve(), nextSeq: null };
@@ -254,7 +268,7 @@ export function recordProviderEvent(
   }
   const entry = seq;
   const fence = opts.fence;
-  const attempt = entry.chain.then(() => persistWithRetry(input, entry, fence));
+  const attempt = entry.chain.then(() => persistWithRetry(inputs, entry, fence));
   const done = attempt.catch((err) => {
       if (err instanceof CaptureFenceError) return; // the fenced caller sees the rejection; nothing was written
       const msg = errorMessage(err);
@@ -428,12 +442,6 @@ export function runSettlementFence(runId: string): WriteFence {
   };
 }
 
-async function persistAndPublish(input: ProviderEventInput, seq: RunSequencer): Promise<void> {
-  const { frame, assignedSeq } = await persistFrame(input, seq, db);
-  await writeGraphAfterDurable(input, assignedSeq);
-  publishNativeFrame(input.runId, frame);
-}
-
 /** Graph writes are additive and fail-open, and they publish their own org signal, so
  *  they run only after the native event is durable and always outside the write's own
  *  transaction: a graph error can neither roll the native upsert back nor notify a
@@ -448,17 +456,31 @@ async function writeGraphAfterDurable(input: ProviderEventInput, assignedSeq: nu
  *  the fence and the upsert share one transaction, so a competing claim on the fenced row
  *  either waits behind the lock or has already moved on, and a stale writer cannot land
  *  anything. The frame is published only after the transaction commits. */
-async function persistFencedAndPublish(
-  input: ProviderEventInput,
+async function persistBatchAndPublish(
+  inputs: readonly ProviderEventInput[],
   seq: RunSequencer,
-  fence: WriteFence,
+  fence?: WriteFence,
 ): Promise<void> {
-  const { frame, assignedSeq } = await db.transaction(async (tx) => {
-    if (!(await fence(tx))) throw new CaptureFenceError(input.runId);
-    return persistFrame(input, seq, tx);
-  });
-  await writeGraphAfterDurable(input, assignedSeq);
-  publishNativeFrame(input.runId, frame);
+  const persist = async (exec: Executor) => {
+    const persisted = [];
+    for (const input of inputs) {
+      const result = input.provider === "t3" && input.eventType === "t3.message.started"
+        ? await persistProviderEventIfAbsent(input, seq, exec)
+        : await persistFrame(input, seq, exec);
+      if (result) persisted.push({ input, ...result });
+    }
+    return persisted;
+  };
+  const persisted = fence || inputs.length > 1
+    ? await db.transaction(async (tx) => {
+        if (fence && !(await fence(tx))) throw new CaptureFenceError(inputs[0]!.runId);
+        return persist(tx);
+      })
+    : await persist(db);
+  for (const { input, frame, assignedSeq } of persisted) {
+    await writeGraphAfterDurable(input, assignedSeq);
+    publishNativeFrame(input.runId, frame);
+  }
 }
 
 /** Persist one frame (idempotent upsert by native identity) on `exec` and return the frame
