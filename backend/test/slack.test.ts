@@ -1950,8 +1950,8 @@ describe("slack durable inbox", () => {
       ts,
     }) as SlackEnvelope;
     const inboxKey = slackInboxKey(envelope);
-    await db.insert(spendAccounts).values({ orgId: DEV_ORG_ID, userId: DEV_USER_ID, spentUsd: 100 })
-      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 100 } });
+    await db.insert(spendAccounts).values({ orgId: DEV_ORG_ID, userId: DEV_USER_ID, spentUsd: 50 })
+      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 50 } });
     try {
       expect((await postSlack(envelope)).status).toBe(200);
       const refusal = await waitFor(async () => {
