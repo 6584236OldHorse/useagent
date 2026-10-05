@@ -284,8 +284,7 @@ export function buildRuntimeProviderBootstrapCommand(
     `  BUN_CACHE="$(mktemp -d "\${TMPDIR:-/tmp}/useagent-${engine}-bun.XXXXXX")"`,
     '  cleanup_native_bun() { rm -rf -- "$BUN_CACHE"; }',
     "  trap cleanup_native_bun EXIT HUP INT TERM",
-    // The package's postinstall puts the platform's native binary in place of the placeholder;
-    // bun runs it only for a trusted package. The identity probe below refuses a placeholder.
+    // --trust runs the postinstall that swaps the placeholder for the native binary; the probe checks it.
     '  BUN_INSTALL_CACHE_DIR="$BUN_CACHE" BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR" BUN_INSTALL_BIN="$NATIVE_PREFIX/bin" "$BUN_EXECUTABLE" add --global --exact --trust --no-progress "$NATIVE_PACKAGE"',
     "  cleanup_native_bun",
     "  trap - EXIT HUP INT TERM",
