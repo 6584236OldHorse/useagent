@@ -10,7 +10,7 @@ The backend is the control plane for useAgent. It listens on `:3201` by default 
 | Auth and organization identity | [`src/auth.ts`](src/auth.ts), [`src/db/auth-schema.ts`](src/db/auth-schema.ts) |
 | Runs, threads, SSE, finalization, recovery | [`src/runs/routes.ts`](src/runs/routes.ts), [`src/runs/finalize.ts`](src/runs/finalize.ts), [`src/runs/canonicalization-outbox.ts`](src/runs/canonicalization-outbox.ts) |
 | Engines and adapters | [`src/engines/index.ts`](src/engines/index.ts), [`src/engines/*.ts`](src/engines) |
-| Sandbox providers | [`src/sandboxes/provider.ts`](src/sandboxes/provider.ts), [`src/sandboxes/daytona-provider.ts`](src/sandboxes/daytona-provider.ts), [`src/sandboxes/cube-provider.ts`](src/sandboxes/cube-provider.ts) |
+| Sandbox providers | [`src/sandboxes/provider.ts`](src/sandboxes/provider.ts), [`src/sandboxes/binding.ts`](src/sandboxes/binding.ts), [`src/runners/`](src/runners) (a developer's own machine as the `local` provider) |
 | Trusted capability gateways | [`src/provider-gateway/*.ts`](src/provider-gateway), [`src/knowledge/gateway/*.ts`](src/knowledge/gateway) |
 | User provider identity and Codex subscription relay | [`src/provider-connections/*.ts`](src/provider-connections), [`src/engines/t3-codex-subscription.ts`](src/engines/t3-codex-subscription.ts) |
 | Knowledge, wiki, memory | [`src/knowledge/*.ts`](src/knowledge), [`src/memory/*.ts`](src/memory), [`src/wiki-gen/*.ts`](src/wiki-gen) |
@@ -102,7 +102,9 @@ provider-neutral contract (`SandboxProvider`, `SandboxHandle`, the
 helper); `packages/sandbox-daytona`, `packages/sandbox-cube` and
 `packages/sandbox-box` each export one plugin that owns its API client, env
 config, credential validation, preview auth headers and runtime layout (home
-directory, root or not). `src/sandboxes/plugins.ts` is the registry and
+directory, root or not); `packages/sandbox-local` is the plugin for a
+developer's own machine, an RPC client over the runner link the backend holds
+(`src/runners/`, `packages/runner`). `src/sandboxes/plugins.ts` is the registry and
 `src/sandboxes/provider.ts` the env-coupled selector (`SANDBOX_PROVIDER`);
 nothing else in the backend switches on a vendor name.
 
@@ -115,20 +117,26 @@ sign-off; the in-memory fakes hide vendor quirks.
 The matrix describes implemented source capabilities, not current hosted
 proof.
 
-| Capability | Daytona | Cube | Box | Notes |
-|---|---|---|---|---|
-| Commands | Yes | Yes | Yes | Box runs sync commands under a 600 s cap and longer ones detached with an exit marker. |
-| Persistent command sessions | Yes | Yes | Yes | Box sessions are pid-file process groups under `/home/user/.useagent`. |
-| PTY | Yes | Yes | Yes | The frontend terminal uses this path; Box uses its managed interactive SSH transport. |
-| File upload and download | Yes | Yes | Yes | Used for repo materialization and artifacts. |
-| Preview links | Yes | Yes | Yes | Auth headers come from the plugin: token headers for Daytona and Cube, a port-auth cookie for Box. |
-| Native computer use API | Yes | No | No | |
-| Desktop workstation | Yes | Yes | No | Cube drives the workstation through the trusted gateway. |
-| Recording | Yes | Yes | No | Daytona uses native recording. Cube uses the X11 and FFmpeg path. |
-| Resume after timeout | Yes | Yes | Yes | Box archives on its absolute TTL and resumes on the next start. |
-| Runs as root | Yes | Yes | No | Box runs as `user`; all providers retain the same native engine drivers under their declared home/workspace layout. |
-| Labels | Native | Native | Control plane | Box labels live in `sandbox_labels`; the box cannot rewrite them. |
-| Pause, checkpoint, snapshot primitives in the shared interface | No | No | No | This is still a bounded roadmap item. |
+| Capability | Daytona | Cube | Box | Local | Notes |
+|---|---|---|---|---|---|
+| Commands | Yes | Yes | Yes | Yes | Box runs sync commands under a 600 s cap and longer ones detached with an exit marker. Local runs them detached inside the container with pid, log and exit files. |
+| Persistent command sessions | Yes | Yes | Yes | Yes | Box sessions are pid-file process groups under `/home/user/.useagent`. Local sessions live under `/tmp/useagent/sessions` with a FIFO for input. |
+| PTY | Yes | Yes | Yes | Yes | The frontend terminal uses this path; Box uses its managed interactive SSH transport; Local execs inside the container and applies resizes from inside. |
+| File upload and download | Yes | Yes | Yes | Yes | Used for repo materialization and artifacts. Local moves files as byte streams over the link. |
+| Preview links | Yes | Yes | Yes | Yes | Auth headers come from the plugin: token headers for Daytona and Cube, a port-auth cookie for Box. Local links are loopback forwarders on the plane, so the proxies are unchanged. |
+| Native computer use API | Yes | No | No | No | |
+| Desktop workstation | Yes | Yes | No | Untested | Cube drives the workstation through the trusted gateway. The local image carries the desktop stack; it has not been certified. |
+| Recording | Yes | Yes | No | Untested | Daytona uses native recording. Cube uses the X11 and FFmpeg path. |
+| Resume after timeout | Yes | Yes | Yes | Yes | Box archives on its absolute TTL and resumes on the next start. The runner stops idle containers by their auto-stop label and starts them again on demand. |
+| Runs as root | Yes | Yes | No | No | Box and Local run as `user` (uid 1000); all providers retain the same native engine drivers under their declared home/workspace layout. |
+| Labels | Native | Native | Control plane | Control plane | Box and Local labels live in `sandbox_labels`; the sandbox cannot rewrite them. |
+| Pause, checkpoint, snapshot primitives in the shared interface | No | No | No | No | This is still a bounded roadmap item. |
+
+The `local` column is certified by hand on one machine with
+`deploy/local-sandbox/certify/`; the record is
+`deploy/hetzner/evidence/local/certification-2026-09-08.md`. The hosted
+release gate proves the matrix on Cube and cannot attach a developer's
+machine.
 
 The library default is Daytona unless `SANDBOX_PROVIDER=cube` or `box` is
 set. The current Hetzner bootstrap configures Cube explicitly. Box is verified
