@@ -94,8 +94,24 @@ export function decodeRunnerPolicy(value: unknown): RunnerPolicy | null {
 
 export function localRunnerId(sandboxId: string | null): string | null {
   if (!sandboxId?.startsWith("local:")) return null;
-  const [, runnerId, containerId, ...rest] = sandboxId.split(":");
-  return runnerId && containerId && rest.length === 0 ? runnerId : null;
+  const rest = sandboxId.slice("local:".length);
+  const separator = rest.indexOf(":");
+  return separator > 0 && separator < rest.length - 1 ? rest.slice(0, separator) : null;
+}
+
+export function canRevokeRunner(
+  runner: Runner,
+  userId: string | null,
+  canManagePolicy: boolean | null,
+): boolean {
+  return (
+    runner.status !== "revoked" &&
+    (runner.ownerUserId === userId || canManagePolicy === true)
+  );
+}
+
+export function markRunnerRevoked(runners: readonly Runner[], id: string): Runner[] {
+  return runners.map((runner) => (runner.id === id ? { ...runner, status: "revoked" } : runner));
 }
 
 export function runnerLocationLabel(

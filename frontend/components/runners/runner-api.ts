@@ -74,20 +74,14 @@ export async function updateRunnerPolicy(
 }
 
 export async function canManageRunnerPolicy(
-  userId: string,
   organizationId: string,
   fetcher: Fetcher = backendFetch,
 ): Promise<boolean> {
-  const membersResponse = await fetcher(
-    `/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`,
+  const roleResponse = await fetcher(
+    `/api/auth/organization/get-active-member-role?organizationId=${encodeURIComponent(organizationId)}`,
     { cache: "no-store" },
   );
-  if (!membersResponse.ok) return false;
-  const body = (await membersResponse.json()) as { members?: unknown };
-  if (!Array.isArray(body.members)) return false;
-  const membership = body.members.find(
-    (value) =>
-      value && typeof value === "object" && (value as { userId?: unknown }).userId === userId,
-  ) as { role?: unknown } | undefined;
-  return membership?.role === "owner" || membership?.role === "admin";
+  if (!roleResponse.ok) return false;
+  const body = (await roleResponse.json()) as { role?: unknown };
+  return body.role === "owner" || body.role === "admin";
 }

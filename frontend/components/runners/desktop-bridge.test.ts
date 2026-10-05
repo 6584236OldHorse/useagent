@@ -3,6 +3,7 @@ import {
   connectDesktopRunner,
   machineLabel,
   resolveRunnerPlatform,
+  runnerConnectionAction,
   type UseAgentDesktopBridge,
 } from "./desktop-bridge";
 
@@ -29,6 +30,16 @@ describe("desktop runner platform", () => {
   test("uses plain machine labels", () => {
     expect(machineLabel("darwin")).toBe("This Mac");
     expect(machineLabel("win32")).toBe("This Windows PC");
+  });
+
+  test("does not reconnect a runner that is starting, pulling, or online", () => {
+    expect(runnerConnectionAction({ state: "starting" }, "darwin").active).toBe(true);
+    expect(runnerConnectionAction({ state: "pulling" }, "darwin").active).toBe(true);
+    expect(runnerConnectionAction({ state: "online" }, "darwin")).toEqual({
+      active: true,
+      label: "Connected",
+    });
+    expect(runnerConnectionAction({ state: "offline" }, "darwin").active).toBe(false);
   });
 
   test("hands the one-time enrolment token directly to the bridge", async () => {

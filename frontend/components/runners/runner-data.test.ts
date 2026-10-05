@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  canRevokeRunner,
   localRunnerId,
+  markRunnerRevoked,
   type Runner,
   runnerLocationLabel,
   runnerLoginAvailable,
@@ -22,6 +24,7 @@ const runner = {
 describe("runner location", () => {
   test("resolves only the frozen local sandbox id shape", () => {
     expect(localRunnerId("local:rn_a:container_1")).toBe("rn_a");
+    expect(localRunnerId("local:rn_a:sha256:abc")).toBe("rn_a");
     expect(localRunnerId("local:rn_a")).toBeNull();
     expect(localRunnerId("cube:rn_a:container_1")).toBeNull();
   });
@@ -33,6 +36,16 @@ describe("runner location", () => {
     );
     expect(runnerLocationLabel("sandbox_1", "cube", [runner])).toBe("cube");
     expect(runnerLocationLabel("sandbox_1", undefined, [runner])).toBe("Unknown runtime");
+  });
+});
+
+describe("runner actions", () => {
+  test("offers revoke only to the owner or an organization admin", () => {
+    expect(canRevokeRunner(runner, "user_a", false)).toBe(true);
+    expect(canRevokeRunner(runner, "user_b", true)).toBe(true);
+    expect(canRevokeRunner(runner, "user_b", false)).toBe(false);
+    expect(canRevokeRunner({ ...runner, status: "revoked" }, "user_a", true)).toBe(false);
+    expect(markRunnerRevoked([runner], runner.id)).toEqual([{ ...runner, status: "revoked" }]);
   });
 });
 

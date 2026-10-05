@@ -18,7 +18,7 @@ import {
   revokeRunner,
   updateRunnerPolicy,
 } from "./runner-api";
-import type { Runner, RunnerPolicy } from "./runner-data";
+import { markRunnerRevoked, type Runner, type RunnerPolicy } from "./runner-data";
 
 function useRunnerSettingsState() {
   const { loading: sessionLoading, session } = useSession();
@@ -64,7 +64,7 @@ function useRunnerSettingsState() {
       return;
     }
     let cancelled = false;
-    void canManageRunnerPolicy(session.user.id, organizationId)
+    void canManageRunnerPolicy(organizationId)
       .then((allowed) => {
         if (!cancelled) setCanManagePolicy(allowed);
       })
@@ -78,7 +78,7 @@ function useRunnerSettingsState() {
 
   const revoke = useCallback(async (id: string) => {
     await revokeRunner(id);
-    setRunners((current) => current.filter((runner) => runner.id !== id));
+    setRunners((current) => markRunnerRevoked(current, id));
   }, []);
 
   const savePolicy = useCallback(async (patch: Partial<RunnerPolicy>) => {

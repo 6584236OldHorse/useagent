@@ -106,16 +106,13 @@ describe("runner API", () => {
 
   test("checks the Better Auth active organization membership for an admin", async () => {
     const calls: string[] = [];
-    const allowed = await canManageRunnerPolicy("user_a", "org_active", async (path) => {
+    const allowed = await canManageRunnerPolicy("org_active", async (path) => {
       calls.push(path);
-      return Response.json({
-        members: [
-          { userId: "user_b", role: "member" },
-          { userId: "user_a", role: "admin" },
-        ],
-      });
+      return Response.json({ role: "admin" });
     });
     expect(allowed).toBe(true);
-    expect(calls).toEqual(["/api/auth/organization/list-members?organizationId=org_active"]);
+    expect(calls).toEqual([
+      "/api/auth/organization/get-active-member-role?organizationId=org_active",
+    ]);
   });
 });

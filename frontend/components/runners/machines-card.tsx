@@ -11,9 +11,10 @@ import {
   desktopBridge,
   machineLabel,
   resolveRunnerPlatform,
+  runnerConnectionAction,
   type UseAgentDesktopBridge,
 } from "./desktop-bridge";
-import type { Runner, RunnerPolicy } from "./runner-data";
+import { canRevokeRunner, type Runner, type RunnerPolicy } from "./runner-data";
 import { useRunnerSettings } from "./runner-settings-context";
 
 function RunnerStatusChip({ status }: { readonly status: Runner["status"] }) {
@@ -30,7 +31,7 @@ function value(value: string | null): string {
 }
 
 function MachineRow({ runner }: { readonly runner: Runner }) {
-  const { revoke } = useRunnerSettings();
+  const { canManagePolicy, revoke, userId } = useRunnerSettings();
   const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState(false);
   return (
@@ -70,7 +71,7 @@ function MachineRow({ runner }: { readonly runner: Runner }) {
           </p>
         ) : null}
       </div>
-      {runner.status !== "revoked" ? (
+      {canRevokeRunner(runner, userId, canManagePolicy) ? (
         <Button
           variant="danger"
           size="xs"
@@ -172,6 +173,7 @@ function DesktopConnection({ bridge }: { readonly bridge: UseAgentDesktopBridge 
     status?.state === "pulling" && typeof status.progress === "number"
       ? Math.max(0, Math.min(100, Math.round(status.progress * 100)))
       : null;
+  const action = runnerConnectionAction(status, bridge.platform);
 
   return (
     <div className="rounded-xl border border-border-button-default bg-background-secondary-default p-4">
@@ -186,11 +188,11 @@ function DesktopConnection({ bridge }: { readonly bridge: UseAgentDesktopBridge 
         <Button
           className="rounded-full self-start"
           size="small"
-          disabled={!resolved || !platform || connecting || monitoring}
+          disabled={!resolved || !platform || connecting || monitoring || action.active}
           leadingIcon={connecting || monitoring ? RiLoader4Line : undefined}
           onClick={() => void connect()}
         >
-          Connect this {bridge.platform === "darwin" ? "Mac" : "machine"}
+          {action.label}
         </Button>
       </div>
       {progress !== null ? (

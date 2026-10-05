@@ -56,6 +56,20 @@ export function machineLabel(platform: UseAgentDesktopBridge["platform"]): strin
   return "This Linux machine";
 }
 
+export function runnerConnectionAction(
+  status: DesktopRunnerStatus | null,
+  platform: UseAgentDesktopBridge["platform"],
+): { active: boolean; label: string } {
+  return {
+    active:
+      status?.state === "starting" || status?.state === "pulling" || status?.state === "online",
+    label:
+      status?.state === "online"
+        ? "Connected"
+        : `Connect this ${platform === "darwin" ? "Mac" : "machine"}`,
+  };
+}
+
 export async function connectDesktopRunner(
   bridge: UseAgentDesktopBridge,
   platform: RunnerPlatform,
