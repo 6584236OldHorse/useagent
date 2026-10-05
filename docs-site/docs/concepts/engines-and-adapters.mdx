@@ -1,11 +1,11 @@
 ---
 title: Engines and native drivers
-description: How Codex, Claude Code, OpenCode, and Pi keep their native protocol while useAgent projects them into one product event contract.
+description: How Codex, Claude Code, OpenCode, and Pi keep their native protocol while UseAgent projects them into one product event contract.
 sidebar:
   order: 4
 ---
 
-An engine is the provider's agent loop. useAgent does not replace that loop or
+An engine is the provider's agent loop. UseAgent does not replace that loop or
 force every provider through one runtime protocol. It owns the durable thread,
 authorization, sandbox binding, event delivery, UI projection, and recovery
 around the engine.
@@ -16,7 +16,7 @@ Codex, Claude Code, OpenCode, and Pi always use their provider-native driver,
 session identity, lifecycle, and event grammar. Choosing Box, Cube, or Daytona
 changes only the computer that hosts the runtime.
 
-The common UI protocol is useAgent's canonical event and client contract. It is
+The common UI protocol is UseAgent's canonical event and client contract. It is
 **not ACP**, and there is no registered generic ACP execution engine.
 
 | Engine | Native execution path | Session shape |
@@ -66,13 +66,13 @@ with the deployment's Codex allowlist.
 
 ## Provider-native children
 
-Some engines report their own child tasks or collaboration sessions. useAgent
+Some engines report their own child tasks or collaboration sessions. UseAgent
 records and displays that provider evidence, including child identity and
 transcript status when available. A native child remains read-only unless the
 driver exposes a verified resume/steer contract for that exact session.
 
 That differs from a [product child thread](/concepts/runs-threads-commands#product-child-threads),
-which is an ordinary admitted useAgent thread and can receive follow-up turns.
+which is an ordinary admitted UseAgent thread and can receive follow-up turns.
 
 ## Expected outcome
 

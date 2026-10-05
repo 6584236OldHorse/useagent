@@ -7,7 +7,7 @@ sidebar:
 
 Bots turn a repeated responsibility into a named product surface. A bot carries
 an engine, optional model, standing rules, repository set, memory scope, and an
-optional pinned skill. Its work still runs as ordinary useAgent threads and
+optional pinned skill. Its work still runs as ordinary UseAgent threads and
 runs; the bot does not bypass admission, authorization, or event recording.
 
 ## Prerequisites
@@ -64,7 +64,7 @@ is paired with a structured bot id in the request.
 The first mention from a parent thread opens a delegated product child thread
 for that bot. Later mentions continue that same delegated thread. The parent
 shows a receipt tied to the exact child turn, and the child remains an ordinary
-messageable useAgent thread.
+messageable UseAgent thread.
 
 Handoffs inherit the parent thread's repositories. They do not reuse the bot's
 home-thread repository set, which keeps delegated work scoped to the context

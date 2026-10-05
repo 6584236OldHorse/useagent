@@ -1,6 +1,6 @@
-# useAgent Pro docs
+# UseAgent Pro docs
 
-The product documentation site for useAgent Pro. Built with
+The product documentation site for UseAgent Pro. Built with
 [Blume](https://github.com/haydenbleasel/blume), a markdown-first docs framework
 on Astro and Vite.
 
