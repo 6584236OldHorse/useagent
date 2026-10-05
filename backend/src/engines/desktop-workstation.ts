@@ -110,7 +110,9 @@ export function buildDesktopLaunchCommand(): string {
     'echo $$ >"$HOME/.skynet/desktop.pid"',
     "export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=Budgie:GNOME LANG=C.UTF-8",
     // A system bus, best effort: the components only warn without one, but the terminal's service needs it.
-    "pgrep -x dbus-daemon >/dev/null 2>&1 || { mkdir -p /run/dbus && dbus-daemon --system --fork >/dev/null 2>&1 || true; }",
+    // On an unprivileged layout the bus must still be root's: system services such as UPower
+    // (the panel's status applet) activate only through a root bus, so fall back to sudo.
+    "pgrep -x dbus-daemon >/dev/null 2>&1 || { mkdir -p /run/dbus && dbus-daemon --system --fork; } >/dev/null 2>&1 || sudo -n sh -c 'mkdir -p /run/dbus && dbus-daemon --system --fork' >/dev/null 2>&1 || true",
     // A real X server on the dummy driver (1920x1080 at 60 Hz from the image's xorg.conf.d).
     'Xorg :1 -noreset -nolisten tcp -ac >"$HOME/.skynet/xorg.log" 2>&1 &',
     "for i in $(seq 1 40); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.25; done",
