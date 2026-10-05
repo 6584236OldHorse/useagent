@@ -4,7 +4,10 @@ import type {
   FreeModelRegistryStateRow,
 } from "../db/schema";
 import type { ClaimedFreeModelCandidate } from "./free-model-registry-repo";
-import type { FreeModelQualificationResult } from "./free-model-qualification-driver";
+import {
+  FREE_MODEL_QUALIFICATION_TIMEOUT_MS,
+  type FreeModelQualificationResult,
+} from "./free-model-qualification-driver";
 import {
   desiredPublishedLane,
   discoverFreeModelCandidates,
@@ -18,6 +21,8 @@ import {
   startFreeModelRegistryHydrator,
   type CatalogDiscoveryResult,
   type FreeModelQualifierRepository,
+  QUALIFIER_BOOT_DELAY_MS,
+  QUALIFIER_LEASE_MS,
 } from "./free-model-qualifier-worker";
 
 const NOW = 1_800_000_000_000;
@@ -821,5 +826,21 @@ describe("free-model qualifier worker", () => {
     expect(publishes.map((p) => p.systemFailure ? "preserved" : p.modelIds.join(","))).toEqual([router.modelId, "preserved"]);
     expect(adopted).toEqual([[router.modelId]]);
     expect((await repository.loadRegistry()).state?.currentModelIds).toEqual([router.modelId]);
+  });
+  test("the timing fits a real probe: a claim outlives the deadline and the boot tick waits for admission", () => {
+    // Production's first probe hit the old three-minute deadline with a cold sandbox.
+    expect(FREE_MODEL_QUALIFICATION_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(QUALIFIER_LEASE_MS).toBeGreaterThan(FREE_MODEL_QUALIFICATION_TIMEOUT_MS);
+    // The promote reopens admission about seven seconds after boot.
+    expect(QUALIFIER_BOOT_DELAY_MS).toBeGreaterThanOrEqual(30_000);
+    let first = 0;
+    startFreeModelQualifierWorker({
+      driver: null,
+      repository: fakeRepository({ state: registryState([]), candidates: [] }).repository,
+      discover: discovery(),
+      admission: openAdmission,
+      schedule: (_run, firstMs) => { first = firstMs; },
+    }, {});
+    expect(first).toBe(QUALIFIER_BOOT_DELAY_MS);
   });
 });

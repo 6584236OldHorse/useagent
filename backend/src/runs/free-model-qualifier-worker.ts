@@ -30,18 +30,22 @@ import {
 } from "./free-model-lane";
 import { providerProven } from "./engine-readiness";
 import { providerCredentialName } from "../provider-gateway/provider";
-import type {
-  FreeModelQualificationDriver,
-  FreeModelQualificationResult,
+import {
+  FREE_MODEL_QUALIFICATION_TIMEOUT_MS,
+  type FreeModelQualificationDriver,
+  type FreeModelQualificationResult,
 } from "./free-model-qualification-driver";
 
-const QUALIFIER_LEASE_MS = 5 * 60_000;
+/** A claim outlives the probe's deadline, else a slow probe's record is refused. */
+export const QUALIFIER_LEASE_MS = FREE_MODEL_QUALIFICATION_TIMEOUT_MS + 5 * 60_000;
 /** How long a tick waits for the admission lock: a deployment's exclusive hold
  * past this ends the tick as "admission unavailable" instead of parking it. */
 export const QUALIFIER_ADMISSION_WAIT_MS = 5_000;
 const QUALIFIER_INTERVAL_MIN = 15;
 const QUALIFIER_MAX_PROBES_PER_TICK = 4;
-const QUALIFIER_BOOT_DELAY_MS = 1_000;
+/** The promote reopens admission a few seconds after the backend boots; a tick
+ * inside that window only logs "admission closed". */
+export const QUALIFIER_BOOT_DELAY_MS = 30_000;
 /** Manual (picker) refresh cool-down. Process-global: the catalog and the
  * probe budget are deployment-wide, so one refresh serves every org. */
 const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
