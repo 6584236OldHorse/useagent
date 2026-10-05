@@ -42,6 +42,9 @@ services:
       FRONTEND_ORIGIN: http://localhost:3400
       BETTER_AUTH_URL: http://localhost:3400
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env.compose}
+      AUTH: ${NEXT_PUBLIC_AUTH:-${AUTH:-clerk}}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET:-}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?set SECRETS_ENCRYPTION_KEY in .env.compose}
       USEAGENT_OPERATOR_SECRET: ${USEAGENT_OPERATOR_SECRET:?set USEAGENT_OPERATOR_SECRET in .env.compose}
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:?set a sandbox-reachable HTTPS gateway origin}
@@ -114,6 +117,8 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         RELEASE_COMMIT: ${RELEASE_COMMIT:?set RELEASE_COMMIT in .env.compose}
+        NEXT_PUBLIC_AUTH: ${NEXT_PUBLIC_AUTH:-${AUTH:-clerk}}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
     image: useagent-local/frontend:${RELEASE_COMMIT}
     depends_on:
       backend:
@@ -130,6 +135,9 @@ services:
       PORT: 3400
       USEAGENT_API_ORIGIN: http://backend:3201
       NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT: ${RELEASE_COMMIT}
+      NEXT_PUBLIC_AUTH: ${NEXT_PUBLIC_AUTH:-${AUTH:-clerk}}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
     ports:
       - "127.0.0.1:3400:3400"
     restart: unless-stopped

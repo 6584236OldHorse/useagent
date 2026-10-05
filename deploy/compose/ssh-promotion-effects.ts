@@ -298,6 +298,19 @@ export function composePromotionCommand(
 	);
 }
 
+export function frontendEnvironmentPreparationCommand(
+	backendEnvFile: string,
+	frontendEnvFile: string,
+): string {
+	return (
+		`set -eu; set -a; . ${shellQuote(backendEnvFile)}; set +a; ` +
+		`auth_mode=\${AUTH:-clerk}; case "$auth_mode" in clerk) : "\${CLERK_SECRET_KEY:?Clerk auth requires CLERK_SECRET_KEY}" ;; better-auth) ;; *) echo 'invalid AUTH' >&2; exit 2;; esac; ` +
+		`tmp=$(mktemp ${shellQuote(`${frontendEnvFile}.XXXXXX`)}); trap 'rm -f -- "$tmp"' EXIT; ` +
+		`printf '%s\\n' "CLERK_SECRET_KEY=\${CLERK_SECRET_KEY:-}" > "$tmp"; ` +
+		`chmod 600 "$tmp"; mv -f -- "$tmp" ${shellQuote(frontendEnvFile)}; trap - EXIT`
+	);
+}
+
 function parseMigrationInventory(output: string): MigrationFile[] {
 	return output
 		.trim()
@@ -380,6 +393,7 @@ export class SshPromotionEffects implements PromotionEffects {
 			USEAGENT_FRONTEND_PORT: String(ports.frontend),
 			USEAGENT_BACKEND_ENV_FILE: this.#config.backendEnvFile,
 			USEAGENT_GATEWAY_ENV_FILE: this.#config.gatewayEnvFile,
+			USEAGENT_FRONTEND_ENV_FILE: `${directory}/frontend.env`,
 			USEAGENT_GATEWAY_PUBLIC_URL: this.#config.publicGatewayUrl,
 		};
 		const envText = Object.entries(env)
@@ -387,6 +401,12 @@ export class SshPromotionEffects implements PromotionEffects {
 			.join("");
 		const caddy = caddyOverride ?? (await this.#renderCaddy(record));
 		await this.#remote.writeAtomic(`${directory}/release.env`, envText);
+		await this.#remote.run(
+			frontendEnvironmentPreparationCommand(
+				this.#config.backendEnvFile,
+				`${directory}/frontend.env`,
+			),
+		);
 		await this.#remote.writeAtomic(
 			`${directory}/compose.prod.yaml`,
 			this.#composeFile,

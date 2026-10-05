@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ReleaseRecord } from "./release-config";
 import {
 	backendScratchPreparationCommands,
+	frontendEnvironmentPreparationCommand,
 	RemoteHost,
 	type SshPromotionConfig,
 } from "./ssh-promotion-effects";
-import type { ReleaseRecord } from "./release-config";
 
 const config: SshPromotionConfig = {
 	sshHost: "root@example.test",
@@ -26,6 +30,51 @@ const config: SshPromotionConfig = {
 };
 
 describe("SSH promotion transport", () => {
+	test("stages only Clerk's frontend runtime secret", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "useagent-frontend-env-"));
+		try {
+			const backendEnv = join(directory, "backend.env");
+			const frontendEnv = join(directory, "frontend.env");
+			await writeFile(
+				backendEnv,
+				[
+					"CLERK_SECRET_KEY=sk_test_example",
+					"DATABASE_URL=must-not-cross-the-boundary",
+				].join("\n"),
+			);
+
+			const result = Bun.spawnSync(
+				[
+					"bash",
+					"-c",
+					frontendEnvironmentPreparationCommand(backendEnv, frontendEnv),
+				],
+				{ stdout: "pipe", stderr: "pipe" },
+			);
+			expect(result.exitCode).toBe(0);
+			expect(await readFile(frontendEnv, "utf8")).toBe(
+				["CLERK_SECRET_KEY=sk_test_example", ""].join("\n"),
+			);
+
+			await writeFile(
+				backendEnv,
+				"AUTH=better-auth\nDATABASE_URL=still-private\n",
+			);
+			const legacyResult = Bun.spawnSync(
+				[
+					"bash",
+					"-c",
+					frontendEnvironmentPreparationCommand(backendEnv, frontendEnv),
+				],
+				{ stdout: "pipe", stderr: "pipe" },
+			);
+			expect(legacyResult.exitCode).toBe(0);
+			expect(await readFile(frontendEnv, "utf8")).toBe("CLERK_SECRET_KEY=\n");
+		} finally {
+			await rm(directory, { recursive: true });
+		}
+	});
+
 	test("reuses one task-scoped SSH connection without a global socket", () => {
 		const args = new RemoteHost(config).sshArgs();
 		expect(args).toContain("ControlMaster=auto");

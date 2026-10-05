@@ -97,6 +97,8 @@ services:
       io.useagent.release.color: ${USEAGENT_RELEASE_COLOR}
       io.useagent.release.commit: ${USEAGENT_RELEASE_COMMIT}
       io.useagent.release.service: frontend
+    env_file:
+      - ${USEAGENT_FRONTEND_ENV_FILE:-/etc/useagent/frontend.env}
     environment:
       NODE_ENV: production
       HOSTNAME: 127.0.0.1

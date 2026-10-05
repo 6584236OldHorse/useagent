@@ -17,6 +17,15 @@ FROM ${NODE_IMAGE} AS build
 ARG RELEASE_COMMIT
 RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 ENV NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT=${RELEASE_COMMIT}
+ARG NEXT_PUBLIC_AUTH=clerk
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_AUTH=${NEXT_PUBLIC_AUTH} \
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+RUN case "${NEXT_PUBLIC_AUTH}" in \
+      clerk) test -n "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}" ;; \
+      better-auth) ;; \
+      *) exit 2 ;; \
+    esac
 # Client execution-graph kill switch, a build-time input: on unless a build passes off.
 ARG NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=read
 ENV NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=${NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT}
@@ -37,6 +46,8 @@ RUN ln -s frontend/node_modules /app/node_modules \
 
 FROM ${NODE_IMAGE} AS runtime
 ARG RELEASE_COMMIT
+ARG NEXT_PUBLIC_AUTH=clerk
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 
 LABEL org.opencontainers.image.source="https://github.com/useagenthq/useagent" \
@@ -46,7 +57,9 @@ LABEL org.opencontainers.image.source="https://github.com/useagenthq/useagent" \
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3400 \
-    NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT=${RELEASE_COMMIT}
+    NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT=${RELEASE_COMMIT} \
+    NEXT_PUBLIC_AUTH=${NEXT_PUBLIC_AUTH} \
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
 
 WORKDIR /app
 COPY --from=build /app/frontend/.next-build/standalone ./
