@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import sharp from "sharp";
 import type { ArtifactDescriptor } from "../../artifacts/repo";
+import { sequenceBatches } from "./computer-use-tools";
 import type { SandboxHandle } from "../../sandboxes/provider";
 import { setSandboxArtifactPublisherForTest } from "./artifact-tools";
 import {
@@ -434,5 +435,21 @@ describe("computer-use gateway tools", () => {
       text: "modifiers must contain only ctrl, alt, shift, or cmd",
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("computer_sequence navigate", () => {
+  test("a URL is opened over the browser control transport, never typed", () => {
+    const batches = sequenceBatches([
+      { action: "click", x: 10, y: 10, button: "left", double: false },
+      { action: "navigate", url: "https://x.com/bhowconda" },
+      { action: "wait", ms: 250 },
+      { action: "key", key: "Return", modifiers: [] },
+    ]);
+    expect(batches).toEqual([
+      { shell: [{ action: "click", x: 10, y: 10, button: "left", double: false }] },
+      { navigate: "https://x.com/bhowconda" },
+      { shell: [{ action: "wait", ms: 250 }, { action: "key", key: "Return", modifiers: [] }] },
+    ]);
   });
 });

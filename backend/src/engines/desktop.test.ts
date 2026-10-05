@@ -91,12 +91,14 @@ describe("shared sandbox desktop", () => {
     expect(legacyDrainProbe).toContain("&& break; sleep 0.25; done");
     expect(launchLines[legacyDrainProbeIndex + 1]).toContain("--remote-debugging-pipe");
     expect(launchLines[legacyDrainProbeIndex + 2]).toContain("connect_ex(('127.0.0.1',9222))");
-    expect(launchLines[legacyDrainProbeIndex + 3]).toStartWith("browser=");
+    expect(launchLines[legacyDrainProbeIndex + 3]).toStartWith("printf '%s' '#!/bin/sh");
+    // Chrome starts once and comes back on demand through the relay; no restart loop.
+    expect(command).toContain('sh "$HOME/.skynet/browser-launch.sh" &');
+    expect(command).not.toContain("while true");
     expect(command).toContain("http://127.0.0.1:9222/json/version");
     expect(command).toContain('node "$HOME/.skynet/cdp-relay.mjs"');
     expect(command).toContain("--disable-gpu");
-    expect(command).toContain("while true; do");
-    expect(command).toContain('>>"$HOME/.skynet/chrome.log" 2>&1 || true');
+    expect(command).toContain('>>"$HOME/.skynet/chrome.log" 2>&1');
     expect(command).toContain("x11vnc -display :1 -localhost -nopw -forever -shared -rfbport 5900");
     expect(command).toContain("socket.create_connection(('127.0.0.1',5900),1)");
     expect(command).toContain("s.recv(4)==b'RFB '");
@@ -110,7 +112,9 @@ describe("shared sandbox desktop", () => {
     const command = buildDesktopReadinessCommand();
 
     expect(command).toContain("/vnc.html");
-    expect(command).toContain("/json/version");
+    // A closed browser is not a broken desktop: readiness asks the relay for its health only.
+    expect(command).toContain("/healthz");
+    expect(command).not.toContain("9222/json/version");
     expect(command).toContain('00000000:4B16');
     for (const process of [
       "budgie-wm",
@@ -223,8 +227,9 @@ describe("shared sandbox desktop", () => {
     expect(commands).not.toEqual(expect.arrayContaining([expect.stringContaining("npm install")]));
   });
 
-  test("repairs the desktop when noVNC, RFB, the session, CDP, or its relay is unhealthy", async () => {
+  test("repairs the desktop when noVNC, RFB, the session, or the relay is unhealthy, and not for a closed browser", async () => {
     for (const firstHealth of [
+      // A browser that is not running is not a fault: the relay starts it on the next browser use.
       "VNC=1\nRFB=1\nCDP=0\nCDP_RELAY=1\nSESSION=1",
       "VNC=1\nRFB=0\nCDP=1\nCDP_RELAY=1\nSESSION=1",
       "VNC=0\nRFB=1\nCDP=1\nCDP_RELAY=1\nSESSION=1",
@@ -263,6 +268,11 @@ describe("shared sandbox desktop", () => {
         browserTools: false,
         browserExecutable: "/usr/bin/chromium",
       });
+      if (firstHealth.includes("CDP=0")) {
+        expect(launched).toHaveLength(0);
+        expect(created).toEqual([]);
+        continue;
+      }
       expect(deleted).toEqual(["skynet-browser-mcp", "skynet-desktop"]);
       expect(created).toEqual(["skynet-desktop"]);
       expect(launched).toHaveLength(1);
@@ -270,7 +280,7 @@ describe("shared sandbox desktop", () => {
       expect(healthChecks).toBe(1);
       expect(commands.at(-1)).toContain("/vnc.html");
       expect(commands.at(-1)).toContain("socket.create_connection(('127.0.0.1',5900),1)");
-      expect(commands.at(-1)).toContain("/json/version");
+      expect(commands.at(-1)).toContain("/healthz");
     }
   });
 

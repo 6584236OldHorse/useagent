@@ -2,20 +2,28 @@ import { randomBytes } from "node:crypto";
 import type { SandboxHandle } from "../sandboxes/provider";
 
 export const DESKTOP_CDP_RELAY_PORT = 19_222;
-export const DESKTOP_CDP_RELAY_VERSION = "1";
+export const DESKTOP_CDP_RELAY_VERSION = "2";
+/** Loopback listener the sandbox's own browser tools use; it starts Chrome when it is not running. */
+export const DESKTOP_CDP_LOCAL_PORT = 9223;
+/** Where the desktop launcher writes the one-shot Chrome start script. */
+export const BROWSER_LAUNCH_SCRIPT = "$HOME/.skynet/browser-launch.sh";
 
 const RELAY_TOKEN_NAME = "cdp-relay.token";
 const relayTokens = new Map<string, string>();
 
 export function desktopCdpRelaySource(): string {
-  return String.raw`import { timingSafeEqual } from "node:crypto";
+  return String.raw`import { spawn } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
+import { homedir } from "node:os";
 
 const PORT = ${DESKTOP_CDP_RELAY_PORT};
+const LOCAL_PORT = ${DESKTOP_CDP_LOCAL_PORT};
 const VERSION = ${JSON.stringify(DESKTOP_CDP_RELAY_VERSION)};
 const TOKEN = readFileSync(new URL("./${RELAY_TOKEN_NAME}", import.meta.url), "utf8").trim();
+const LAUNCH = homedir() + "/.skynet/browser-launch.sh";
 
 function authorized(request) {
   const expected = Buffer.from("Bearer " + TOKEN);
@@ -29,34 +37,46 @@ function reject(response, status, body) {
   response.end(body);
 }
 
-const server = createServer((request, response) => {
-  if (!authorized(request)) return reject(response, 401, "unauthorized");
-  const path = new URL(request.url ?? "/", "http://localhost").pathname;
-  if (request.method !== "GET" || !["/json/list", "/json/version"].includes(path)) {
-    return reject(response, 404, "not found");
-  }
-  const upstream = httpRequest({
-    hostname: "127.0.0.1",
-    port: 9222,
-    path: request.url,
-    method: "GET",
-  }, (upstreamResponse) => {
-    response.writeHead(upstreamResponse.statusCode ?? 502, {
-      ...upstreamResponse.headers,
-      "x-skynet-cdp-relay-version": VERSION,
+function browserAnswers() {
+  return new Promise((resolve) => {
+    const probe = httpRequest({ hostname: "127.0.0.1", port: 9222, path: "/json/version", method: "GET", timeout: 1500 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
     });
+    probe.on("error", () => resolve(false));
+    probe.on("timeout", () => { probe.destroy(); resolve(false); });
+    probe.end();
+  });
+}
+
+// The browser is started when something needs it and left alone otherwise: a
+// window the user closed stays closed until the next browser use.
+let starting = null;
+function ensureBrowser() {
+  if (starting) return starting;
+  starting = (async () => {
+    if (await browserAnswers()) return true;
+    const child = spawn("sh", [LAUNCH], { detached: true, stdio: "ignore" });
+    child.unref();
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (await browserAnswers()) return true;
+    }
+    return false;
+  })().finally(() => { starting = null; });
+  return starting;
+}
+
+function proxyRequest(request, response) {
+  const upstream = httpRequest({ hostname: "127.0.0.1", port: 9222, path: request.url, method: "GET" }, (upstreamResponse) => {
+    response.writeHead(upstreamResponse.statusCode ?? 502, { ...upstreamResponse.headers, "x-skynet-cdp-relay-version": VERSION });
     upstreamResponse.pipe(response);
   });
   upstream.on("error", () => reject(response, 502, "upstream unavailable"));
   upstream.end();
-});
+}
 
-server.on("upgrade", (request, socket, head) => {
-  if (!authorized(request)) return socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-  const path = new URL(request.url ?? "/", "http://localhost").pathname;
-  if (!path.startsWith("/devtools/page/")) {
-    return socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-  }
+function proxyUpgrade(request, socket, head) {
   const upstream = connect(9222, "127.0.0.1", () => {
     const headers = [];
     for (let index = 0; index < request.rawHeaders.length; index += 2) {
@@ -71,9 +91,46 @@ server.on("upgrade", (request, socket, head) => {
   });
   upstream.on("error", () => socket.destroy());
   socket.on("error", () => upstream.destroy());
+}
+
+// The plane's authenticated entry: bounded page routes, plus a health answer that leaves the browser alone.
+const server = createServer(async (request, response) => {
+  if (!authorized(request)) return reject(response, 401, "unauthorized");
+  const path = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (request.method === "GET" && path === "/healthz") {
+    response.writeHead(200, { "content-type": "application/json", "x-skynet-cdp-relay-version": VERSION });
+    return response.end(JSON.stringify({ relay: VERSION }));
+  }
+  if (request.method !== "GET" || !["/json/list", "/json/version"].includes(path)) {
+    return reject(response, 404, "not found");
+  }
+  if (!(await ensureBrowser())) return reject(response, 502, "browser did not start");
+  proxyRequest(request, response);
+});
+
+server.on("upgrade", async (request, socket, head) => {
+  if (!authorized(request)) return socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+  const path = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (!path.startsWith("/devtools/page/")) {
+    return socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+  }
+  if (!(await ensureBrowser())) return socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  proxyUpgrade(request, socket, head);
 });
 
 server.listen(PORT, "0.0.0.0");
+
+// The sandbox's own browser tools come in on loopback without a token; they get the same on-demand start.
+const local = createServer(async (request, response) => {
+  if (request.method !== "GET") return reject(response, 404, "not found");
+  if (!(await ensureBrowser())) return reject(response, 502, "browser did not start");
+  proxyRequest(request, response);
+});
+local.on("upgrade", async (request, socket, head) => {
+  if (!(await ensureBrowser())) return socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  proxyUpgrade(request, socket, head);
+});
+local.listen(LOCAL_PORT, "127.0.0.1");
 `;
 }
 
@@ -85,7 +142,7 @@ export function desktopCdpRelayProbeCommand(): string {
   return (
     "python3 -c \"import pathlib,urllib.request; " +
     "token=pathlib.Path.home().joinpath('.skynet/cdp-relay.token').read_text().strip(); " +
-    `request=urllib.request.Request('http://127.0.0.1:${DESKTOP_CDP_RELAY_PORT}/json/version',headers={'authorization':'Bearer '+token}); ` +
+    `request=urllib.request.Request('http://127.0.0.1:${DESKTOP_CDP_RELAY_PORT}/healthz',headers={'authorization':'Bearer '+token}); ` +
     `response=urllib.request.urlopen(request,timeout=3); assert response.headers.get('x-skynet-cdp-relay-version') == '${DESKTOP_CDP_RELAY_VERSION}'\"`
   );
 }

@@ -122,7 +122,6 @@ async function provisionSandboxDesktopView(
     const healthy =
       /^VNC=1$/m.test(output) &&
       /^RFB=1$/m.test(output) &&
-      /^CDP=1$/m.test(output) &&
       /^CDP_RELAY=1$/m.test(output) &&
       /^SESSION=1$/m.test(output);
     const browserTools = /^MCP=1$/m.test(output);
@@ -185,7 +184,7 @@ async function provisionSandboxDesktopView(
         browserExecutable,
         reason: signal.aborted
           ? "run aborted while starting desktop"
-          : "noVNC, RFB, the desktop session, or browser CDP failed readiness",
+          : "noVNC, RFB, the desktop session, or the browser relay failed readiness",
       });
     }
 

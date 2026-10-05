@@ -1,3 +1,4 @@
+import { navigateVisibleBrowserPage } from "../../engines/browser-mcp";
 import { ensureSandboxDesktopView } from "../../engines/desktop";
 import { getRunForOrg } from "../../runs/repo";
 import { type SandboxHandle, sandboxProviderKind, sandboxRuntimeLayout } from "../../sandboxes/provider";
@@ -25,6 +26,7 @@ export type ComputerSequenceAction =
   | { readonly action: "type"; readonly text: string; readonly delayMs: number }
   | { readonly action: "key"; readonly key: string; readonly modifiers: readonly string[] }
   | { readonly action: "hotkey"; readonly keys: string }
+  | { readonly action: "navigate"; readonly url: string }
   | { readonly action: "scroll"; readonly x: number; readonly y: number; readonly direction: Direction; readonly amount: number }
   | { readonly action: "wait"; readonly ms: number };
 
@@ -230,6 +232,18 @@ function modifiers(value: unknown): string[] {
   return value;
 }
 
+function httpUrl(value: unknown, name: string): string {
+  const text = string(value, name, 2048);
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error(`${name} must be an absolute http or https URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`${name} must be an absolute http or https URL`);
+  return parsed.toString();
+}
+
 function record(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${name} must be an object`);
@@ -281,6 +295,8 @@ function parseSequenceAction(value: unknown, index: number): ComputerSequenceAct
         action: "hotkey",
         keys: keyName(action.keys, `actions[${index}].keys`),
       };
+    case "navigate":
+      return { action: "navigate", url: httpUrl(action.url, `actions[${index}].url`) };
     case "scroll": {
       return {
         action: "scroll",
@@ -296,7 +312,7 @@ function parseSequenceAction(value: unknown, index: number): ComputerSequenceAct
         ms: integer(action.ms ?? 250, `actions[${index}].ms`, 0, MAX_SEQUENCE_WAIT_MS),
       };
     default:
-      throw new Error(`actions[${index}].action must be one of click, move, drag, type, key, hotkey, scroll, wait`);
+      throw new Error(`actions[${index}].action must be one of click, move, drag, type, key, hotkey, navigate, scroll, wait`);
   }
 }
 
@@ -374,6 +390,8 @@ function cubeSequenceCommand(action: ComputerSequenceAction): string {
       return x11KeyCommand(action.key, action.modifiers);
     case "hotkey":
       return x11HotkeyCommand(action.keys);
+    case "navigate":
+      throw new Error("navigate runs over the browser control transport, not the shell");
     case "scroll":
       return `xdotool mousemove ${action.x} ${action.y} click --repeat ${action.amount} ` +
         `--delay 40 ${action.direction === "up" ? 4 : 5}`;
@@ -386,6 +404,24 @@ export function buildCubeSequenceCommand(
   actions: readonly ComputerSequenceAction[],
 ): string {
   return actions.map(cubeSequenceCommand).join(" && ");
+}
+
+/** Shell batches with navigations between them: a URL travels over the browser
+ *  control transport, never through keystrokes into the address bar. */
+export function sequenceBatches(
+  actions: readonly ComputerSequenceAction[],
+): readonly ({ readonly shell: readonly ComputerSequenceAction[] } | { readonly navigate: string })[] {
+  const batches: ({ shell: ComputerSequenceAction[] } | { navigate: string })[] = [];
+  for (const action of actions) {
+    if (action.action === "navigate") {
+      batches.push({ navigate: action.url });
+      continue;
+    }
+    const last = batches[batches.length - 1];
+    if (last && "shell" in last) last.shell.push(action);
+    else batches.push({ shell: [action] });
+  }
+  return batches;
 }
 
 function buttonNumber(button: Button): number {
@@ -432,7 +468,10 @@ const productionService: ComputerUseService = {
   screenshot,
   async sequence(claims, actions, captureScreenshot) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, buildCubeSequenceCommand(actions));
+    for (const batch of sequenceBatches(actions)) {
+      if ("navigate" in batch) await navigateVisibleBrowserPage(sandbox, batch.navigate);
+      else await cubeCommand(sandbox, buildCubeSequenceCommand(batch.shell));
+    }
     return captureScreenshot ? await captureSandboxScreenshot(sandbox) : null;
   },
   async click(claims, x, y, button, double) {
@@ -485,7 +524,7 @@ export const COMPUTER_USE_TOOLS = [
   {
     name: "computer_sequence",
     description:
-      "Primary desktop action tool. Run 1-8 OS-level actions in one ordered batch and optionally return one private post-sequence screenshot. Batch every predictable action chain, including click+type+submit and focus+hotkey+type+key, instead of issuing atomic calls. Stop the batch at the first point that genuinely needs new visual inspection. Actions support click, move, drag, type, key, hotkey, scroll, and wait.",
+      "Primary desktop action tool. Run 1-8 OS-level actions in one ordered batch and optionally return one private post-sequence screenshot. Batch every predictable action chain, including click+type+submit and focus+hotkey+type+key, instead of issuing atomic calls. Stop the batch at the first point that genuinely needs new visual inspection. Actions support click, move, drag, type, key, hotkey, navigate, scroll, and wait. To open a URL use navigate; never type a URL into the address bar.",
     inputSchema: {
       type: "object",
       properties: {
@@ -498,7 +537,7 @@ export const COMPUTER_USE_TOOLS = [
             properties: {
               action: {
                 type: "string",
-                enum: ["click", "move", "drag", "type", "key", "hotkey", "scroll", "wait"],
+                enum: ["click", "move", "drag", "type", "key", "hotkey", "navigate", "scroll", "wait"],
               },
               x: { type: "integer" },
               y: { type: "integer" },
@@ -506,6 +545,7 @@ export const COMPUTER_USE_TOOLS = [
               start_y: { type: "integer" },
               end_x: { type: "integer" },
               end_y: { type: "integer" },
+              url: { type: "string", description: "navigate only: absolute http or https URL to open in the visible browser page" },
               button: { type: "string", enum: ["left", "middle", "right"] },
               double: { type: "boolean" },
               text: { type: "string" },

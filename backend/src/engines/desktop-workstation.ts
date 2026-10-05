@@ -1,5 +1,6 @@
 import { BROWSER_CDP_ENDPOINT, BROWSER_DISPLAY } from "./browser-mcp";
 import {
+  BROWSER_LAUNCH_SCRIPT,
   desktopCdpRelayProbeCommand,
   providerCdpRelayProbeCommand,
 } from "./desktop-cdp-relay";
@@ -66,6 +67,22 @@ const LEGACY_CHROME_PIPE_GONE_COMMAND = `test -z "$(${LEGACY_CHROME_PIPE_PIDS_CO
 const CDP_PORT_CLOSED_COMMAND =
   "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(1 if s.connect_ex(('127.0.0.1',9222)) == 0 else 0)\"";
 
+/** The one-shot Chrome start the launcher runs first and the relay runs on demand. */
+export function buildBrowserLaunchScript(): string {
+  return [
+    "#!/bin/sh",
+    `export DISPLAY=${BROWSER_DISPLAY}`,
+    'mkdir -p "$HOME/.skynet/browser-profile"',
+    "browser=$(command -v google-chrome 2>/dev/null || command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null)",
+    'exec "$browser" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check ' +
+      "--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 " +
+      "'--remote-allow-origins=*' " +
+      '--user-data-dir="$HOME/.skynet/browser-profile" --restore-last-session --start-maximized about:blank ' +
+      '>>"$HOME/.skynet/chrome.log" 2>&1',
+    "",
+  ].join("\n");
+}
+
 /** One long-lived process group owns the virtual display, Budgie workstation, browser,
  * VNC server, and noVNC bridge. The browser is deliberately NOT owned by an MCP
  * child, so restarting OpenCode/Claude/Codex or their MCP transport cannot close
@@ -97,21 +114,11 @@ export function buildDesktopLaunchCommand(): string {
     `for i in $(seq 1 20); do ${LEGACY_CHROME_PIPE_GONE_COMMAND} && ${CDP_PORT_CLOSED_COMMAND} && break; sleep 0.25; done`,
     LEGACY_CHROME_PIPE_GONE_COMMAND,
     CDP_PORT_CLOSED_COMMAND,
-    "browser=$(command -v google-chrome 2>/dev/null || command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null)",
-    'mkdir -p "$HOME/.skynet/browser-profile"',
-    // Chrome can be killed by a renderer/browser crash on large dynamic sites.
-    // Keep its lifecycle under the desktop process session so the next MCP call
-    // can reconnect to CDP instead of retrying ECONNREFUSED until the run dies.
-    "(",
-    "  while true; do",
-    '    "$browser" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check ' +
-      "--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 " +
-      "'--remote-allow-origins=*' " +
-      '--user-data-dir="$HOME/.skynet/browser-profile" --restore-last-session --start-maximized about:blank ' +
-      '>>"$HOME/.skynet/chrome.log" 2>&1 || true',
-    "    sleep 0.5",
-    "  done",
-    ") &",
+    // Chrome is started once here and on demand afterwards by the relay, when a
+    // browser tool or the plane needs it. A window the user closes stays closed.
+    `printf '%s' ${shellQuote(buildBrowserLaunchScript())} >"${BROWSER_LAUNCH_SCRIPT}"`,
+    `chmod +x "${BROWSER_LAUNCH_SCRIPT}"`,
+    `sh "${BROWSER_LAUNCH_SCRIPT}" &`,
     `for i in $(seq 1 80); do curl -fsS -m 1 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && break; sleep 0.25; done`,
     `curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version`,
     'node "$HOME/.skynet/cdp-relay.mjs" >>"$HOME/.skynet/cdp-relay.log" 2>&1 &',
@@ -124,12 +131,12 @@ export function buildDesktopLaunchCommand(): string {
   ].join("\n");
 }
 
+/** The desktop is ready without a running browser: the relay starts one when it is needed. */
 export function buildDesktopReadinessCommand(): string {
   return (
     `curl -fsS -m 3 -o /dev/null http://127.0.0.1:${DESKTOP_PORT}/vnc.html && ` +
     `${rfbProbeCommand()} && ` +
     `${desktopSessionProbeCommand()} && ` +
-    `curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && ` +
     `${desktopCdpRelayProbeCommand()} && ` +
     providerCdpRelayProbeCommand()
   );
