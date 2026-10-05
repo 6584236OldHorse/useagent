@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { sandboxMinutesEntries } from "../db/schema";
+import { userEmail } from "../provider-gateway/provider-accounts";
 
 // ---------------------------------------------------------------------------
 // Sandbox minutes allowance. Every organisation member may hold sandboxes for
@@ -60,8 +61,27 @@ export async function assertSandboxMinutes(orgId: string, userId: string | null,
   const cap = sandboxMinutesPerUser();
   if (!userId || cap <= 0) return;
   const { used } = await usedMinutes(orgId, userId, exec);
-  if (used >= cap) throw new SandboxMinutesExceededError(used, cap);
+  if (used >= cap && !(await operatorAccount(userId))) throw new SandboxMinutesExceededError(used, cap);
 }
+
+/** The accounts that run the deployment (OPERATOR_ACCOUNTS) are never capped.
+ *  Read only for a member already at the cap, so the common path pays nothing.
+ *  No development exception: an unset list exempts nobody. */
+async function operatorAccount(
+  userId: string,
+  env: Record<string, string | undefined> = process.env,
+  emailOf: (userId: string) => Promise<string | null> = userEmail,
+): Promise<boolean> {
+  const accounts = (env.OPERATOR_ACCOUNTS ?? "")
+    .split(",")
+    .map((account) => account.trim().toLowerCase())
+    .filter(Boolean);
+  if (accounts.length === 0) return false;
+  const email = await emailOf(userId);
+  return Boolean(email) && accounts.includes(email!.trim().toLowerCase());
+}
+
+export const __sandboxMinutesTest = { operatorAccount };
 
 /**
  * Charge a settled run to its member from the leases it held: each lease from
