@@ -191,6 +191,8 @@ export interface RunCharge {
   readonly cost: number;
   readonly tokens: number;
   readonly source: SettledSpendSource;
+  /** The provider's generation id a chat usage row named, if any. */
+  readonly generationId: string | null;
 }
 
 /**
@@ -219,6 +221,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   let tokens = 0;
   let priced = false;
   let settled = false;
+  let generationId: string | null = null;
   const perIdentity = new Map<string, UsageFigure>();
   for (const row of rows) {
     let stored: Record<string, unknown> | null = null;
@@ -234,6 +237,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
       // snapshot the composer ring reads, not a per-call ledger. That lane is
       // priced from its activities below.
       if (row.provider === "t3") continue;
+      if (typeof stored.generationId === "string" && stored.generationId) generationId ??= stored.generationId;
       const figure = stepFinishFigure(stored);
       const bounded = boundedCost(figure.cost, `run ${runId} event ${row.id}`);
       if (bounded !== null) {
@@ -267,7 +271,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   if (source === "unpriced" && tokens > 0) {
     console.warn(`[spend] run ${runId} reported ${tokens} tokens but no cost; charged as unpriced`);
   }
-  return { cost, tokens, source };
+  return { cost, tokens, source, generationId };
 }
 
 // ── Charging ────────────────────────────────────────────────────────────────
@@ -345,8 +349,8 @@ export async function openSpendCharge(input: {
   readonly key: string;
   readonly orgId: string;
   readonly userId: string;
-}): Promise<void> {
-  await db
+}, exec: Executor = db): Promise<void> {
+  await exec
     .insert(spendEntries)
     .values({ chargeKey: input.key, orgId: input.orgId, userId: input.userId, costUsd: 0, tokens: 0, source: "pending" })
     .onConflictDoNothing();
@@ -360,8 +364,8 @@ export async function discardSpendCharge(key: string): Promise<void> {
 /** Note the provider's generation id on an open charge as soon as the stream
  *  names it, so a charge the process never completes can still be priced from
  *  the provider's record. */
-export async function noteSpendGeneration(key: string, generationId: string): Promise<void> {
-  await db
+export async function noteSpendGeneration(key: string, generationId: string, exec: Executor = db): Promise<void> {
+  await exec
     .update(spendEntries)
     .set({ generationId })
     .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
@@ -453,6 +457,15 @@ export async function accrueRunSpend(
 ): Promise<void> {
   if (!run.orgId || !run.userId) return;
   const charge = await priceRunUsage(run.id, exec);
+  if (charge.source === "unpriced" && charge.generationId) {
+    // Billed (the provider named a generation) but not priced here: never a
+    // zero. The run's charge stays open with its generation, and the sweep
+    // prices it from the provider's record or counts it unresolved.
+    await openSpendCharge({ key: run.id, orgId: run.orgId, userId: run.userId }, exec);
+    if (charge.generationId) await noteSpendGeneration(run.id, charge.generationId, exec);
+    console.warn(`[spend] run ${run.id} is billed but not priced yet; left pending for the sweep`);
+    return;
+  }
   await chargeSpend({ key: run.id, orgId: run.orgId, userId: run.userId, ...charge }, exec);
 }
 

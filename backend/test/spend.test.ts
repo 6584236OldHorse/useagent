@@ -220,7 +220,7 @@ describe("spend allowance", () => {
         payload: JSON.stringify({ tokens: { input: 40_000, output: 900, total: 41_000 }, contextWindow: 200_000 }),
       },
     ]);
-    expect(await priceRunUsage(run.id)).toEqual({ cost: 0.3, tokens: 375, source: "usage" });
+    expect(await priceRunUsage(run.id)).toMatchObject({ cost: 0.3, tokens: 375, source: "usage" });
     await finalizeRun(run.id, "completed", "done", 10);
     expect((await account())!.spent).toBeCloseTo(before + 0.3, 6);
     expect(await entry(run.id)).toMatchObject({ costUsd: 0.3, tokens: 375, source: "usage" });
@@ -234,7 +234,7 @@ describe("spend allowance", () => {
         data: { item: { state: { costUsd: 0.25, typedUsage: { inputTokens: 10, outputTokens: 5 } } } },
       } }),
     ]);
-    expect(await priceRunUsage(run.id)).toEqual({ cost: 0.25, tokens: 15, source: "usage" });
+    expect(await priceRunUsage(run.id)).toMatchObject({ cost: 0.25, tokens: 15, source: "usage" });
   });
 
   test("a token count past the integer column is clamped, not a failed settlement", async () => {
@@ -250,7 +250,7 @@ describe("spend allowance", () => {
         toolCallId: "call-9", typedUsage: { inputTokens: 12, outputTokens: 3 },
       } }),
     ]);
-    expect(await priceRunUsage(run.id)).toEqual({ cost: 0, tokens: 15, source: "unpriced" });
+    expect(await priceRunUsage(run.id)).toMatchObject({ cost: 0, tokens: 15, source: "unpriced" });
     await finalizeRun(run.id, "completed", "done", 10);
     expect(await entry(run.id)).toMatchObject({ costUsd: 0, tokens: 15, source: "unpriced" });
   });

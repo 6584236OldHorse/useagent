@@ -129,16 +129,23 @@ describe("chat turn accounting", () => {
     expect(await usageEvent(run.id)).toMatchObject({ cost: 0.2, costSource: "stream_usage" });
   });
 
-  test("a stream with no figure at all is recorded as unpriced, not a silent zero", async () => {
+  test("a stream whose generation the provider has not priced yet stays pending with it, never a silent zero, and the sweep prices it from the record", async () => {
     mockProvider([chunk("Hi"), usage(null), "[DONE]"], null);
     const run = await chatRun();
     for await (const _delta of chatTurnStream(run, messages, house, new AbortController().signal)) { /* consume */ }
     const event = await usageEvent(run.id);
-    expect(event).toMatchObject({ costSource: "unpriced", tokens: { total: 42 } });
+    expect(event).toMatchObject({ costSource: "unpriced", tokens: { total: 42 }, generationId: "gen-abc" });
     expect(event).not.toHaveProperty("cost");
     await finalizeRun(run.id, "completed", "Hi", 10);
-    const [entry] = await db.select().from(spendEntries).where(eq(spendEntries.chargeKey, run.id));
-    expect(entry).toMatchObject({ costUsd: 0, tokens: 42, source: "unpriced" });
+    const entry = async () => (await db.select().from(spendEntries).where(eq(spendEntries.chargeKey, run.id)))[0];
+    expect(await entry()).toMatchObject({ source: "pending", generationId: "gen-abc", costUsd: 0 });
+    // The record turns up: the sweep reads it with the deployment key and
+    // settles the run at the provider's figure.
+    process.env.OPENROUTER_API_KEY = "house-key";
+    mockProvider([], 0.31);
+    await Bun.sleep(10);
+    await settlePendingChatCharges(0);
+    expect(await entry()).toMatchObject({ costUsd: 0.31, source: "provider_generation" });
   });
 });
 
@@ -512,4 +519,27 @@ describe("POST /api/chat accounting", () => {
     }
     expect(await unresolvedOf(other.orgId, otherUser)).toBe(0);
   });
+
+  test("a run-backed chat on a member key that lost its stream after the generation id settles through the sweep at the provider's figure, never at zero", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(0);
+    const memberKey = { value: "member-key", source: "user_connection" as const };
+    const entry = async (key: string) => (await db.select().from(spendEntries).where(eq(spendEntries.chargeKey, key)))[0];
+    // The member's key streams a generation id and text, then loses the stream.
+    mockProvider([chunk("Hel", "gen-lost-run"), { error: { message: "upstream reset" } }], 0.37);
+    const run = await chatRun();
+    await expect((async () => {
+      for await (const _delta of chatTurnStream(run, messages, memberKey, new AbortController().signal)) { /* consume */ }
+    })()).rejects.toThrow();
+    await finalizeRun(run.id, "failed", "stream lost", 10);
+    // Finalization leaves the run's charge open with its generation instead of settling a zero.
+    expect(await entry(run.id)).toMatchObject({ source: "pending", generationId: "gen-lost-run", costUsd: 0 });
+    expect(await spent()).toBeCloseTo(0, 6);
+    // The sweep prices it from the provider's record: the figure the house key recovers directly.
+    await Bun.sleep(10);
+    await settlePendingChatCharges(0);
+    expect(await entry(run.id)).toMatchObject({ costUsd: 0.37, source: "provider_generation" });
+    expect(await spent()).toBeCloseTo(0.37, 6);
+  });
+
 });
