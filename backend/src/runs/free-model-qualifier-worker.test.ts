@@ -777,4 +777,49 @@ describe("free-model qualifier worker", () => {
     expect(probe.requests).toEqual([promo.modelId]);
     expect(records[0]).toMatchObject({ modelId: promo.modelId, outcome: "success" });
   });
+  test("a Zen catalog with nothing free left is still a read, so every Zen model leaves the lane", async () => {
+    const openrouterCatalog = { data: [{ id: "vendor/new:free", context_length: 100_000, supported_parameters: ["tools"] }] };
+    const allPaid = { opencode: { models: { promo: { cost: { input: 1, output: 2 }, tool_call: true, limit: { context: 200_000 } } } } };
+    const enabled = { OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" };
+    const read = await discoverFreeModelCandidates(async (url: string) =>
+      Response.json(url.includes("openrouter") ? openrouterCatalog : allPaid), enabled);
+    expect(read).toEqual({
+      ok: true,
+      candidates: [{ id: "vendor/new:free", contextLength: 100_000, provider: "openrouter" }],
+      sources: ["openrouter", "opencode"],
+    });
+    // A catalog with no Zen model list at all is not a read: Zen models keep their place.
+    const unreadable = await discoverFreeModelCandidates(async (url: string) =>
+      Response.json(url.includes("openrouter") ? openrouterCatalog : { other: {} }), enabled);
+    expect(unreadable.ok && unreadable.sources).toEqual(["openrouter"]);
+  });
+
+  test("a probe batch ending in a system failure cannot keep a repriced Zen model advertised", async () => {
+    const promo = candidate("opencode/promo:free", {
+      provider: "opencode",
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const router = candidate("vendor/x:free", { state: "qualified", everQualified: true, successStreak: 2 });
+    const { repository, publishes } = fakeRepository({
+      state: registryState([promo.modelId, router.modelId]),
+      candidates: [promo, router],
+      claims: [claim(router)],
+    });
+    const adopted: string[][] = [];
+    const result = await runFreeModelQualifierTick({
+      driver: driver({ classification: "system_failure", latencyMs: 5, httpStatus: 429, errorCode: "rate_limited" }).driver,
+      repository,
+      discover: async () => discovered([router.modelId], ["openrouter", "opencode"]),
+      admission: openAdmission,
+      nowMs: () => NOW,
+      adoptPublishedLane: (state) => adopted.push([...state.currentModelIds]),
+    });
+    expect(result.systemFailure).toBe(true);
+    // The trim published before the probe; the failure then preserved the trimmed lane.
+    expect(publishes.map((p) => p.systemFailure ? "preserved" : p.modelIds.join(","))).toEqual([router.modelId, "preserved"]);
+    expect(adopted).toEqual([[router.modelId]]);
+    expect((await repository.loadRegistry()).state?.currentModelIds).toEqual([router.modelId]);
+  });
 });

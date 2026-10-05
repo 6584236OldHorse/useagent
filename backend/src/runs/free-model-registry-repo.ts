@@ -406,20 +406,6 @@ export async function publishFreeModelLane(
   });
 }
 
-/** Whether the published lane advertises this model right now: the gateway's
- * house-key rule for OpenCode Zen, whose free marker is ours, not upstream's. */
-export async function isAdvertisedFreeModel(
-  modelId: string,
-  exec: Executor = db,
-): Promise<boolean> {
-  const [row] = await exec
-    .select({ advertised: freeModelCandidates.advertised })
-    .from(freeModelCandidates)
-    .where(eq(freeModelCandidates.modelId, modelId))
-    .limit(1);
-  return row?.advertised === true;
-}
-
 export async function loadCurrentFreeModelLane(
   lane = FREE_MODEL_LANE,
   exec: Executor = db,

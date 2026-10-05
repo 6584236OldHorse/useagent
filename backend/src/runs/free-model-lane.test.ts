@@ -90,12 +90,16 @@ describe("discoverOpenCodeZenFreeModels (models.dev catalog)", () => {
     ]);
   });
 
-  test("returns [] for empty or malformed payloads", () => {
-    expect(discoverOpenCodeZenFreeModels({})).toEqual([]);
-    expect(discoverOpenCodeZenFreeModels({ opencode: {} })).toEqual([]);
-    expect(discoverOpenCodeZenFreeModels({ opencode: { models: [] } })).toEqual([]);
-    expect(discoverOpenCodeZenFreeModels(null)).toEqual([]);
-    expect(discoverOpenCodeZenFreeModels("html error page")).toEqual([]);
+  test("a catalog without Zen's model list is unreadable; one with nothing free is an answer", () => {
+    expect(discoverOpenCodeZenFreeModels({})).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: {} })).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: { models: [] } })).toBeNull();
+    expect(discoverOpenCodeZenFreeModels(null)).toBeNull();
+    expect(discoverOpenCodeZenFreeModels("html error page")).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: { models: {} } })).toEqual([]);
+    expect(discoverOpenCodeZenFreeModels({
+      opencode: { models: { "was-free": { cost: { input: 1, output: 2 }, tool_call: true, limit: { context: 262_144 } } } },
+    })).toEqual([]);
   });
 });
 

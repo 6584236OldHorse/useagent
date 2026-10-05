@@ -132,7 +132,7 @@ async function fetchCatalogCandidates(
   fetcher: CatalogFetcher,
   url: string,
   source: FreeModelProvider,
-  discover: (catalog: unknown) => FreeModelCandidate[],
+  discover: (catalog: unknown) => FreeModelCandidate[] | null,
 ): Promise<CatalogDiscoveryResult> {
   try {
     const response = await fetcher(url, {
@@ -150,9 +150,12 @@ async function fetchCatalogCandidates(
       return { ok: false, errorCode, httpStatus: response.status };
     }
     const candidates = discover(await response.json());
-    return candidates.length > 0
-      ? { ok: true, candidates, sources: [source] }
-      : { ok: false, errorCode: "invalid_response", httpStatus: response.status };
+    // OpenRouter always lists free slugs, so an empty result is a bad read.
+    // Zen's discovery says null for a bad read and [] for "nothing free now".
+    if (candidates === null || (source === "openrouter" && candidates.length === 0)) {
+      return { ok: false, errorCode: "invalid_response", httpStatus: response.status };
+    }
+    return { ok: true, candidates, sources: [source] };
   } catch {
     return { ok: false, errorCode: "transport_error", httpStatus: null };
   }
@@ -357,6 +360,26 @@ export async function runFreeModelQualifierTick(
       source: candidate.provider === "opencode" ? "models_dev_catalog" : "openrouter_catalog",
     })),
   );
+  // A Zen model the catalog no longer calls free leaves the lane before any
+  // probe runs, so a probe batch that ends in a system failure (which preserves
+  // the lane) cannot keep it advertised. Nothing else moves here: the rest of
+  // the lane is re-derived only at the end of a successful tick, as before.
+  if (discovery.sources.includes("opencode")) {
+    const before = await repository.loadRegistry();
+    const current = before.state?.currentModelIds ?? [];
+    const providerOf = new Map(before.candidates.map((row) => [row.modelId, row.provider]));
+    const repriced = current.filter((modelId) =>
+      !stillFreeAtSource(modelId, providerOf.get(modelId) ?? "openrouter", discovery));
+    if (repriced.length > 0) {
+      const survivors = desiredPublishedLane(before, discovery).filter((modelId) => current.includes(modelId));
+      const published = await repository.publish({
+        modelIds: survivors,
+        allowEmpty: true,
+        ...(before.state ? { expectedGeneration: before.state.generation } : {}),
+      });
+      deps.adoptPublishedLane?.(published.state);
+    }
+  }
   let claimed = 0;
   let recorded = 0;
   let systemFailure = false;
@@ -417,8 +440,7 @@ export async function runFreeModelQualifierTick(
 
   const registry = await repository.loadRegistry();
   const desired = desiredPublishedLane(registry, discovery);
-  const current = registry.state?.currentModelIds ?? [];
-  if (sameLane(current, desired)) {
+  if (sameLane(registry.state?.currentModelIds ?? [], desired)) {
     return {
       status: "completed",
       discovered,

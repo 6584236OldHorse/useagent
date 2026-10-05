@@ -145,23 +145,18 @@ describe("resolveProviderCredentialForRun precedence", () => {
     expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
   });
 
-  test("production house fallback serves an OpenCode Zen model only while the lane advertises it", async () => {
-    const zenDeps = (advertised: boolean) => deps({
+  test("production house fallback serves OpenCode Zen free models on the Zen key, never Zen's paid ones", async () => {
+    const zenDeps = deps({
       resolveUserConnection: async () => null,
       resolveOrgSecret: async () => null,
       env: { OPENCODE_API_KEY: "zen-house", OPENROUTER_API_KEY: "sk-house" },
       devModeEnabled: () => false,
-      advertisedFreeModel: async () => advertised,
     });
     const free = { orgId: "org-a", userId: "user-a", provider: "opencode" as const, model: "opencode/big-pickle:free" };
-    expect(await resolveProviderCredentialForRun(free, zenDeps(true)))
+    expect(await resolveProviderCredentialForRun(free, zenDeps))
       .toEqual({ value: "zen-house", source: "backend_env" });
-    // Repriced upstream and dropped by the lane: the marker alone buys nothing.
-    expect(await resolveProviderCredentialForRun(free, zenDeps(false))).toBeNull();
-    expect(await resolveProviderCredentialForRun(
-      { ...free, model: "opencode/claude-opus-5" },
-      zenDeps(true),
-    )).toBeNull();
+    expect(await resolveProviderCredentialForRun({ ...free, model: "opencode/claude-opus-5" }, zenDeps))
+      .toBeNull();
   });
 
   test("production house fallback is restricted to provider-qualified OpenRouter free models", async () => {

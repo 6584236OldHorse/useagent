@@ -86,13 +86,15 @@ const ZEN_GATEWAY_ADAPTER = "@ai-sdk/openai-compatible";
 
 /** OpenCode Zen's free models from the models.dev catalog: zero cost both
  * ways, tool calls, a usable context, not retired, on the adapter the gateway
- * proxies. Zen ids are plain words; anything else cannot become a lane id. */
+ * proxies. Zen ids are plain words; anything else cannot become a lane id.
+ * Null when the catalog carries no Zen model list at all (a malformed read);
+ * an empty list is a real answer: nothing on Zen is free right now. */
 export function discoverOpenCodeZenFreeModels(
   catalog: unknown,
   cap = DISCOVERY_CAP,
-): FreeModelCandidate[] {
+): FreeModelCandidate[] | null {
   const models = record(record(record(catalog)?.opencode)?.models);
-  if (!models) return [];
+  if (!models) return null;
   const candidates: FreeModelCandidate[] = [];
   for (const [id, raw] of Object.entries(models)) {
     const entry = record(raw);
