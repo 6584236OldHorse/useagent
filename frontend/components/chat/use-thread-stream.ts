@@ -100,22 +100,31 @@ export function resetRetainedThreadStoresForTest(): void {
   retained.clear();
 }
 
+/** What the store holds of one sealed run's native lane: the newest seq, and as the
+ *  hold's fingerprint the number of frames and the total of their seqs. */
+export interface NativeHold {
+  readonly seq: number;
+  readonly count: number;
+  readonly seqTotal: number;
+}
+
 export interface ResumeCursor {
   readonly canonicalAfter: number;
   readonly canonicalId: string | null;
-  /** Per run whose canonical lane the store saw complete, the newest native seq it holds. */
-  readonly nativeAfter: ReadonlyMap<string, number>;
+  /** Per run whose canonical lane the store saw complete, what it holds of the native lane. */
+  readonly nativeAfter: ReadonlyMap<string, NativeHold>;
 }
 
 /** What the store already holds, as the server's resume cursors: the newest canonical
  *  delivery seq across the thread with the event id at that row, so the server can prove
- *  it still holds the same history, and per SEALED run the newest native seq, which the
- *  server honours against the seal's watermark. A live run's native frames always replay
- *  from zero (their seq is not a commit order). */
+ *  it still holds the same history, and per SEALED run the newest native seq with the
+ *  fingerprint of the frames held, which the server checks against the seal's watermark
+ *  and its own rows below the cursor before it skips them. A live run's native frames
+ *  always replay from zero (their seq is not a commit order). */
 export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
   let canonicalAfter = 0;
   let canonicalId: string | null = null;
-  const nativeAfter = new Map<string, number>();
+  const nativeAfter = new Map<string, NativeHold>();
   for (const [runId, view] of snapshot.byId) {
     for (const e of view.canonical) {
       if (e.deliverySeq > canonicalAfter) {
@@ -123,7 +132,13 @@ export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
         canonicalId = e.eventId;
       }
     }
-    if (view.canonicalComplete && view.native.nativeCursor >= 0) nativeAfter.set(runId, view.native.nativeCursor);
+    if (view.canonicalComplete && view.native.nativeCursor >= 0) {
+      nativeAfter.set(runId, {
+        seq: view.native.nativeCursor,
+        count: view.native.nativeFrames.length,
+        seqTotal: view.native.nativeFrames.reduce((total, frame) => total + frame.seq, 0),
+      });
+    }
   }
   return { canonicalAfter, canonicalId, nativeAfter };
 }
@@ -142,7 +157,9 @@ export function threadEventsUrl(rootRunId: string, cursor: ResumeCursor, epoch: 
       params.set("canonicalAfter", String(cursor.canonicalAfter));
       params.set("canonicalId", cursor.canonicalId as string);
     }
-    for (const [runId, seq] of cursor.nativeAfter) params.append("nativeAfter", `${runId}:${seq}`);
+    for (const [runId, hold] of cursor.nativeAfter) {
+      params.append("nativeAfter", `${runId}:${hold.seq}:${hold.count}:${hold.seqTotal}`);
+    }
   }
   const query = params.toString();
   return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;

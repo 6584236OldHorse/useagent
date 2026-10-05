@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { and, asc, count, eq, gt } from "drizzle-orm";
+import { and, asc, count, eq, gt, lte, sum } from "drizzle-orm";
 import { NATIVE_SCHEMA_VERSION } from "@useagent/agent-client/wire";
 import type { NativeFrame } from "@useagent/agent-client/wire";
 import { db } from "../db/client";
@@ -124,4 +124,12 @@ export async function countNativeFrames(runId: string): Promise<number> {
   const [row] = await db.select({ count: count() }).from(providerEvents)
     .where(eq(providerEvents.runId, runId));
   return row?.count ?? 0;
+}
+
+/** A run's native frames at or below a seq, as the two numbers a browser reports about
+ *  what it retained: how many frames, and the total of their seqs. */
+export async function nativeFingerprint(runId: string, upToSeq: number): Promise<{ count: number; seqTotal: number }> {
+  const [row] = await db.select({ count: count(), seqTotal: sum(providerEvents.seq) }).from(providerEvents)
+    .where(and(eq(providerEvents.runId, runId), lte(providerEvents.seq, upToSeq)));
+  return { count: row?.count ?? 0, seqTotal: Number(row?.seqTotal ?? 0) };
 }

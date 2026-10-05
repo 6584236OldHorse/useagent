@@ -10,8 +10,9 @@ import { publishThreadChange } from "../src/runs/thread-signals";
 import { acceptRunCommand } from "../src/commands";
 import { persistAndPublish } from "../src/runs/canonical-events";
 import { STREAM_EPOCH } from "../src/runs/thread-resume";
+import { eq } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { canonicalizationOutbox } from "../src/db/schema";
+import { canonicalizationOutbox, providerEvents } from "../src/db/schema";
 import { translateOpenCode, type OpenCodeFrame } from "../src/engines/opencode-canonical";
 
 // Deterministic tests for the ADDITIVE thread SSE stream
@@ -526,7 +527,7 @@ describe("thread-events — resume cursor", () => {
     const { org, root, seqs, ids } = await seedSealed();
     // A frame landed after the seal (an artifact receipt, a follow-up): seq 3, above the watermark.
     await recordProviderEvent({ id: `${root}::late`, runId: root, threadId: root, provider: "skynet", eventType: "followups.suggested", nativePartId: "late", payload: { suggestions: [] } });
-    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[2]), canonicalId: ids[2]!, epoch: STREAM_EPOCH })}&nativeAfter=${root}:2`, org.cookies);
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[2]), canonicalId: ids[2]!, epoch: STREAM_EPOCH })}&nativeAfter=${root}:2:3:3`, org.cookies);
     await settled(c);
     expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: seqs[2], reset: false } } });
     expect(nativeSeqs(c, root)).toEqual([3]);
@@ -535,29 +536,50 @@ describe("thread-events — resume cursor", () => {
 
   test("a native cursor without a canonical cursor is still honoured on this process's epoch", async () => {
     const { org, root } = await seedSealed();
-    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2`, org.cookies);
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2:3:3`, org.cookies);
     await settled(c);
     expect(nativeSeqs(c, root)).toEqual([]);
     expect(c.frames.filter((x) => x.event === "canonical").length).toBe(3);
   });
 
+  // hold = <seq>:<count>:<seqTotal>, what a browser reports of the frames it retained.
   for (const [name, setup] of [
-    ["below the seal watermark", async () => ({ ...(await seedSealed(2)), cursor: "1", epoch: STREAM_EPOCH })],
-    ["for a run that is not sealed", async () => ({ ...(await seedResumable()), cursor: "2", epoch: STREAM_EPOCH })],
-    ["minted by another backend process", async () => ({ ...(await seedSealed(2)), cursor: "2", epoch: "some-earlier-boot" })],
-    ["sent without an epoch", async () => ({ ...(await seedSealed(2)), cursor: "2", epoch: "" })],
+    ["below the seal watermark", async () => ({ ...(await seedSealed(2)), hold: "1:2:1", epoch: STREAM_EPOCH })],
+    ["for a run that is not sealed", async () => ({ ...(await seedResumable()), hold: "2:3:3", epoch: STREAM_EPOCH })],
+    ["minted by another backend process", async () => ({ ...(await seedSealed(2)), hold: "2:3:3", epoch: "some-earlier-boot" })],
+    ["sent without an epoch", async () => ({ ...(await seedSealed(2)), hold: "2:3:3", epoch: "" })],
+    ["with a fingerprint of fewer frames than the server holds", async () => ({ ...(await seedSealed(2)), hold: "2:2:3", epoch: STREAM_EPOCH })],
   ] as const) {
     test(`a native cursor ${name} is ignored: the run replays from zero`, async () => {
-      const { org, root, cursor, epoch } = await setup();
-      const c = await open(`/api/runs/${root}/thread-events?${q(epoch ? { epoch } : {})}&nativeAfter=${root}:${cursor}`, org.cookies);
+      const { org, root, hold, epoch } = await setup();
+      const c = await open(`/api/runs/${root}/thread-events?${q(epoch ? { epoch } : {})}&nativeAfter=${root}:${hold}`, org.cookies);
       await c.waitFrame(() => canonicalSeqs(c).length === 3);
       expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
     });
   }
 
+  // The seal drains only this process's writes: the gateway process allocates its own
+  // seqs, so a frame can commit BELOW the browser's cursor after the run sealed, and a
+  // watermark check alone would skip it forever. The hold fingerprint catches it.
+  test("a frame the other writer committed below the cursor after the seal sends the run back to a full replay", async () => {
+    const { org, root } = await seedSealed();
+    await db.insert(providerEvents).values({ id: `${root}::late-low`, runId: root, threadId: root, seq: 1, provider: "skynet-memory", eventType: "memory.recalled", payload: "{}" });
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2:3:3`, org.cookies);
+    await settled(c);
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 1, 2]);
+  });
+
+  test("a frame re-sequenced below the cursor (same count, other seqs) sends the run back to a full replay", async () => {
+    const { org, root } = await seedSealed();
+    await db.update(providerEvents).set({ seq: 0 }).where(eq(providerEvents.id, `${root}::n2`));
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2:3:3`, org.cookies);
+    await settled(c);
+    expect(nativeSeqs(c, root)).toEqual([0, 0, 1]);
+  });
+
   test("a refused canonical cursor resets the connection and the native cursors with it", async () => {
     const { org, root, seqs, ids } = await seedSealed();
-    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, epoch: "some-earlier-boot" })}&nativeAfter=${root}:2`, org.cookies);
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, epoch: "some-earlier-boot" })}&nativeAfter=${root}:2:3:3`, org.cookies);
     await settled(c);
     expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: 0, reset: true } } });
     expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
@@ -565,7 +587,7 @@ describe("thread-events — resume cursor", () => {
 
   test("a live re-projection of a resumed run does not resend the frames the browser holds", async () => {
     const { org, root } = await seedSealed();
-    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2`, org.cookies);
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2:3:3`, org.cookies);
     await settled(c);
     // The thread signal re-projects the run (a settled refresh): the durable `run` frame
     // is re-sent, the native frames below the browser's cursor are not.

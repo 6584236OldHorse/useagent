@@ -52,7 +52,7 @@ import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
-import { nativeReplayStart, parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
+import { parseResumeCursor, resolveNativeResume, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -934,7 +934,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         //    run finalized between the reads announces completion via the live loop. A sealed
         //    run's native replay starts after the browser's cursor; the rest replay every frame.
         const completes = await completeCanonicalRuns(threadId);
-        nativeSince = nativeReplayStart(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
+        nativeSince = await resolveNativeResume(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
         for (const run of thread) {
           for (const frame of await getNativeFramesSince(run.id, nativeSince(run.id))) {
             if (closed) return;

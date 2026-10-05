@@ -148,8 +148,9 @@ describe("resume cursor (what the store already holds)", () => {
     expect(threadEventsUrl("A", resumeCursor(store.getSnapshot()), "boot-1")).toBe("/api/runs/A/thread-events");
     store.markCanonicalComplete("A");
     const cursor = resumeCursor(store.getSnapshot());
-    expect(cursor.nativeAfter).toEqual(new Map([["A", 2]]));
-    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2");
+    // The hold's fingerprint travels with the cursor: three frames, seqs 0 + 1 + 2.
+    expect(cursor.nativeAfter).toEqual(new Map([["A", { seq: 2, count: 3, seqTotal: 3 }]]));
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2%3A3%3A3");
     // Without the epoch that minted the store's rows, no cursor of either lane is sent.
     expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
   });
