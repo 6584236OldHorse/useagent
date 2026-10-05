@@ -130,8 +130,8 @@ function post(body: Record<string, unknown>, headers: Record<string, string> = {
 }
 
 describe("spend allowance", () => {
-  test("the default is $100 and 0 (or junk) turns the cap off", () => {
-    expect(spendAllowanceDefaultUsd({})).toBe(100);
+  test("the default is $50 and 0 (or junk) turns the cap off", () => {
+    expect(spendAllowanceDefaultUsd({})).toBe(50);
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "250.5" })).toBe(250.5);
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "0" })).toBe(0);
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "lots" })).toBe(0);
@@ -271,15 +271,15 @@ describe("spend allowance", () => {
     const accepted = await post({ prompt: "before the cap", engine: "mock" }, { "Idempotency-Key": key });
     expect(accepted.status).toBe(201);
 
-    await setSpent(session.orgId, userId, 100);
+    await setSpent(session.orgId, userId, 50);
 
     const refused = await post({ prompt: "over the cap", engine: "mock" });
     expect(refused.status).toBe(402);
     expect(refused.body.error).toBe("spend_allowance_exceeded");
     expect(refused.body.message).toBe(
-      "You have spent $100.00 of your $100.00 allowance. New tasks are paused until it is raised.",
+      "You have spent $50.00 of your $50.00 allowance. New tasks are paused until it is raised.",
     );
-    expect(refused.body).toMatchObject({ spent: 100, allowance: 100 });
+    expect(refused.body).toMatchObject({ spent: 50, allowance: 50 });
 
     // The follow-up ingress refuses the same way.
     const reply = await json<{ error?: string }>(
@@ -296,8 +296,8 @@ describe("spend allowance", () => {
     // GET /api/spend shows the member's own figures.
     const mine = await json<{ spent: number; allowance: number | null }>("/api/spend", { cookies: session.cookies });
     expect(mine.status).toBe(200);
-    expect(mine.body.spent).toBeCloseTo(100, 6);
-    expect(mine.body.allowance).toBe(100);
+    expect(mine.body.spent).toBeCloseTo(50, 6);
+    expect(mine.body.allowance).toBe(50);
 
     // Kill switch: no cap, and the snapshot says so.
     process.env.SPEND_ALLOWANCE_USD = "0";
@@ -331,7 +331,7 @@ describe("spend allowance", () => {
     const batchUser = await memberOf(batchSession.orgId);
     const parent = await post({ prompt: "parent before the cap", engine: "mock" }, {}, batchSession.cookies);
     expect(parent.status).toBe(201);
-    await setSpent(batchSession.orgId, batchUser, 100);
+    await setSpent(batchSession.orgId, batchUser, 50);
 
     const previousRollout = process.env.FLEET_BATCH_ROLLOUT;
     process.env.FLEET_BATCH_ROLLOUT = "write";
@@ -347,7 +347,7 @@ describe("spend allowance", () => {
     }
     expect(batch.status).toBe(402);
     expect(batch.body.error).toBe("spend_allowance_exceeded");
-    expect(batch.body.message).toContain("$100.00 of your $100.00");
+    expect(batch.body.message).toContain("$50.00 of your $50.00");
 
     await expect(acceptProductChildBatch({
       orgId: batchSession.orgId, actorId: batchUser, parentRunId: parent.body.id!, parentThreadId: parent.body.id!,

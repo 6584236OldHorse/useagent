@@ -1961,7 +1961,7 @@ describe("slack durable inbox", () => {
           .where(eq(slackOutbox.idempotencyKey, `slack-spend-refused:${TEAM}:${channel}:${ts}`));
         return rows[0] ?? null;
       });
-      expect(refusal.payload).toContain("You have spent $100.00 of your $100.00 allowance");
+      expect(refusal.payload).toContain("You have spent $50.00 of your $50.00 allowance");
       const settled = await waitFor(async () => {
         const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
         return row?.state === "completed" ? row : null;
