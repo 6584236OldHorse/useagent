@@ -2636,12 +2636,72 @@ describe("slack workspace identity (fail closed)", () => {
     expect(await findRunByPrompt(`summarize this workspace ${marker}`)).toBeNull();
     await waitFor(async () =>
       rec.messages.find(
-        (message) =>
-          message.channel === channel &&
-          message.text.includes("Slack user is not linked") &&
-          message.text.includes("SLACK_USER_BINDINGS"),
+        (message) => message.channel === channel && message.text.includes("asked this workspace's admins to let you in"),
       ) ?? null,
     );
+  });
+
+  test("an unknown sender is recorded, an admin lets them in, and their next message runs as them", async () => {
+    const slackUserId = `U-${uid("newcomer")}`;
+    const channel = `D${uid("dm")}`;
+    const first = uid("first");
+    await postSlack(eventCallback({
+      type: "message",
+      channel,
+      channel_type: "im",
+      user: slackUserId,
+      text: `hello ${first}`,
+      ts: `${uid("ts")}.1`,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await findRunByPrompt(`hello ${first}`)).toBeNull();
+    // The bound admin (U-HUMAN, an owner of the dev org) hears about it by DM.
+    await waitFor(async () =>
+      rec.messages.find((m) => m.channel === "U-HUMAN" && m.text.includes("asked to use useAgent from Slack")) ?? null,
+    );
+    const listed = await json<{ requests: Array<{ id: string; name: string; email: string | null }> }>("/api/team/access-requests");
+    expect(listed.status).toBe(200);
+    const request = listed.body.requests.find((r) => r.name === slackUserId);
+    expect(request?.email).toBeNull(); // the recording client has no profile lookup
+
+    // A second message does not ask twice, it just says it is waiting.
+    const second = uid("second");
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `again ${second}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("Still waiting")) ?? null);
+    const again = await json<{ requests: Array<{ name: string }> }>("/api/team/access-requests");
+    expect(again.body.requests.filter((r) => r.name === slackUserId)).toHaveLength(1);
+
+    const email = `${uid("newcomer")}@example.test`;
+    const allowed = await json<{ status: string }>(`/api/team/access-requests/${request!.id}/allow`, { method: "POST", body: { email } });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.status).toBe("allowed");
+    await waitFor(async () => rec.messages.find((m) => m.channel === slackUserId && m.text.includes("You are in")) ?? null);
+
+    const third = uid("third");
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${third}`, ts: `${uid("ts")}.3` }));
+    const run = await waitFor(async () => findRunByPrompt(`work ${third}`));
+    const [newcomer] = await db.execute(sql`select id from "user" where email = ${email}`);
+    expect(run.user_id).toBe((newcomer as { id: string }).id);
+    expect(run.user_id).not.toBe(DEV_USER_ID);
+  });
+
+  test("a denied sender is remembered and not asked about again", async () => {
+    const slackUserId = `U-${uid("denied")}`;
+    const channel = `D${uid("dm")}`;
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `let me in ${uid("x")}`, ts: `${uid("ts")}.1` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
+    const listed = await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    const request = listed.body.requests.find((r) => r.name === slackUserId)!;
+    const denied = await json<{ status: string }>(`/api/team/access-requests/${request.id}/deny`, { method: "POST", body: {} });
+    expect(denied.body.status).toBe("denied");
+    const before = rec.messages.length;
+    const marker = uid("silent");
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hello ${marker}`, ts: `${uid("ts")}.2` }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await findRunByPrompt(`hello ${marker}`)).toBeNull();
+    expect(rec.messages.slice(before).filter((m) => m.channel === channel)).toHaveLength(0);
+    const after = await json<{ requests: Array<{ name: string }> }>("/api/team/access-requests");
+    expect(after.body.requests.some((r) => r.name === slackUserId)).toBe(false);
   });
 
   test("an event from an unmapped workspace is ignored", async () => {

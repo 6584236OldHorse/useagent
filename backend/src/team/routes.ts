@@ -1,7 +1,8 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/client";
-import { invitation } from "../db/auth-schema";
+import { invitation, member } from "../db/auth-schema";
+import { decideAccessRequest, listAccessRequests } from "../slack/access-requests";
 import type { AppEnv } from "../http";
 
 /**
@@ -43,4 +44,40 @@ teamRoutes.get("/invitations", async (c) => {
       createdAt: row.createdAt.toISOString(),
     })),
   });
+});
+
+/** Slack senders waiting to be let in, and the admin's answer. Owners and admins only. */
+async function managerId(c: { get(key: "orgId"): string | undefined; get(key: "userId"): string | undefined }): Promise<{ orgId: string; userId: string } | null> {
+  const orgId = c.get("orgId");
+  const userId = c.get("userId");
+  if (!orgId || !userId) return null;
+  const [row] = await db
+    .select({ role: member.role })
+    .from(member)
+    .where(and(eq(member.organizationId, orgId), eq(member.userId, userId)))
+    .limit(1);
+  const roles = (row?.role ?? "").split(",").map((role) => role.trim());
+  return roles.includes("owner") || roles.includes("admin") ? { orgId, userId } : null;
+}
+
+teamRoutes.get("/access-requests", async (c) => {
+  const manager = await managerId(c);
+  if (!manager) return c.json({ error: "forbidden" }, 403);
+  return c.json({ requests: await listAccessRequests(manager.orgId) });
+});
+
+teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
+  const manager = await managerId(c);
+  if (!manager) return c.json({ error: "forbidden" }, 403);
+  const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+  const outcome = await decideAccessRequest({
+    id: c.req.param("id"),
+    orgId: manager.orgId,
+    decidedBy: manager.userId,
+    allow: c.req.param("answer") === "allow",
+    email: typeof body.email === "string" ? body.email : null,
+  });
+  if (outcome === "not_found") return c.json({ message: "That request is no longer open" }, 404);
+  if (outcome === "email_required") return c.json({ message: "Enter the email address they will sign in with" }, 400);
+  return c.json({ status: outcome });
 });

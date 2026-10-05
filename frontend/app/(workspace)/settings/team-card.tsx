@@ -13,8 +13,11 @@ import { useAuthConfig, useSession } from "@/lib/auth";
 import { AVATAR_GRADIENT } from "./general-card";
 import { relTime } from "./relative-time";
 import {
+  type AccessRequest,
+  allowAccessRequest,
   cancelInvitation,
   canManageTeam,
+  denyAccessRequest,
   fetchTeam,
   invitationHref,
   inviteMember,
@@ -196,6 +199,23 @@ export function TeamCard() {
         })}
       </div>
 
+      {team.requests.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-caption-1-regular text-text-tertiary">Asking to join from Slack</p>
+          <div className="flex flex-col">
+            {team.requests.map((row) => (
+              <AccessRequestRow
+                key={row.id}
+                request={row}
+                busy={busy === row.id}
+                onAllow={(email) => act(row.id, () => allowAccessRequest(row.id, email))}
+                onDeny={() => act(row.id, () => denyAccessRequest(row.id))}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {team.invitations.length > 0 && (
         <div className="flex flex-col gap-2">
           <p className="text-caption-1-regular text-text-tertiary">Invited</p>
@@ -206,7 +226,6 @@ export function TeamCard() {
                 invitation={row}
                 manage={manage}
                 canResend={assignableRoles(myRole).includes(row.role)}
-                mailed={config?.invitationEmail ?? null}
                 busy={busy === row.id}
                 onResend={() => act(row.id, () => resendInvitation(team.organizationId, row))}
                 onCancel={() => act(row.id, () => cancelInvitation(team.organizationId, row.id))}
@@ -222,7 +241,7 @@ export function TeamCard() {
           onOpenChange={setInviting}
           organizationId={team.organizationId}
           roles={assignableRoles(myRole)}
-          emailDelivery={config?.invitationEmail ?? null}
+          emailDelivery={config?.invitationEmail ?? false}
           onInvited={() => void load()}
         />
       )}
@@ -234,7 +253,6 @@ function InvitationRow({
   invitation,
   manage,
   canResend,
-  mailed,
   busy,
   onResend,
   onCancel,
@@ -243,8 +261,6 @@ function InvitationRow({
   manage: boolean;
   /** Resending repeats the invited role, which only an owner may do for an owner invitation. */
   canResend: boolean;
-  /** Whether a resend sends mail; when it certainly does not, the action only renews the link. */
-  mailed: boolean | null;
   busy: boolean;
   onResend: () => void;
   onCancel: () => void;
@@ -263,7 +279,7 @@ function InvitationRow({
       <CopyLinkButton href={invitationHref(invitation.id, window.location.origin)} />
       {manage && canResend && (
         <Button variant="ghost" size="xs" disabled={busy} onClick={onResend}>
-          {mailed === false ? "Renew link" : "Resend"}
+          Resend
         </Button>
       )}
       {manage && (
@@ -275,14 +291,62 @@ function InvitationRow({
   );
 }
 
-/** What to tell the inviter about the link: honest about mail when the server
- *  has said whether it sends any, neutral while that is unknown. */
-export function deliveryCopy(email: string, delivery: boolean | null): string {
-  if (delivery === true)
-    return `Invitation ready for ${email}. It goes out by email when delivery works; this link works either way.`;
-  if (delivery === false)
-    return `This deployment does not send email. Share this link with ${email}.`;
-  return `Invitation ready for ${email}. Share this link with them.`;
+/** A Slack sender nobody has let in yet. Allow needs the email they will sign in
+ *  with; Slack hands it over when the app may read emails, else the admin types it. */
+function AccessRequestRow({
+  request,
+  busy,
+  onAllow,
+  onDeny,
+}: {
+  request: AccessRequest;
+  busy: boolean;
+  onAllow: (email: string | null) => void;
+  onDeny: () => void;
+}) {
+  const [email, setEmail] = useState(request.email ?? "");
+  const known = request.email !== null;
+  return (
+    <div
+      data-testid="team-access-request"
+      className="flex flex-wrap items-center gap-3 border-b border-separator-border py-2.5 last:border-b-0"
+    >
+      <Avatar
+        size="md"
+        color="blue"
+        src={request.image ?? undefined}
+        alt={request.name}
+        initials={(request.name.charAt(0) || "?").toUpperCase()}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-body-2-medium text-text-primary">{request.name}</p>
+        <p className="truncate text-caption-1-regular text-text-secondary">
+          {known ? request.email : "Email unknown"} · asked {relTime(request.createdAt)}
+        </p>
+      </div>
+      {!known && (
+        <Input
+          aria-label={`Email for ${request.name}`}
+          type="email"
+          placeholder="name@company.com"
+          value={email}
+          onChange={setEmail}
+          className="w-56"
+        />
+      )}
+      <Button
+        variant="primary"
+        size="xs"
+        disabled={busy || !email.trim()}
+        onClick={() => onAllow(email.trim() || null)}
+      >
+        Allow
+      </Button>
+      <Button variant="ghost" size="xs" disabled={busy} onClick={onDeny}>
+        Deny
+      </Button>
+    </div>
+  );
 }
 
 function CopyLinkButton({ href }: { href: string }) {
@@ -319,7 +383,7 @@ function InviteDialog({
   onOpenChange: (open: boolean) => void;
   organizationId: string;
   roles: readonly MemberRole[];
-  emailDelivery: boolean | null;
+  emailDelivery: boolean;
   onInvited: () => void;
 }) {
   const [email, setEmail] = useState("");
@@ -368,7 +432,9 @@ function InviteDialog({
           {created ? (
             <>
               <p className="text-body-2-regular text-text-primary">
-                {deliveryCopy(created.email, emailDelivery)}
+                {emailDelivery
+                  ? `Invitation ready for ${created.email}. It goes out by email when delivery works; this link works either way.`
+                  : `This deployment does not send email. Share this link with ${created.email}.`}
               </p>
               <div className="flex items-center gap-2 rounded-lg border border-border-button-default px-3 py-2">
                 <code className="min-w-0 flex-1 truncate text-caption-1-regular text-text-secondary">

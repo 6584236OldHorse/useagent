@@ -56,6 +56,8 @@ import {
   type RunResource,
 } from "../resources/run-intake";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
+import { requestSlackAccess } from "./access-requests";
+import { resolveSlackClient } from "./client";
 
 /** Compatibility no-op: ingress dedupe now lives in the durable Slack inbox. */
 export function resetSlackDeduperForTest(): void {
@@ -335,14 +337,26 @@ export async function handleSlackEvent(
   // per-Slack-user mapping before dedupe or any durable work.
   const userId = options.identity.actorId;
   if (!userId) {
-    await enqueuePostMessage({
-      idempotencyKey: `slack-sender-guidance:${teamId}:${channel}:${ts}`,
-      orgId,
+    if (!event.user) return { status: "permanent_noop", reason: "sender_not_linked" };
+    const verdict = await requestSlackAccess({
       teamId,
-      channel,
-      threadTs: slackThreadTs,
-      text: "Your Slack user is not linked to a product account. Ask an operator to add a SLACK_USER_BINDINGS mapping and retry.",
+      slackUserId: event.user,
+      orgId,
+      client: resolveSlackClient({ apiUrl: config.apiUrl, botToken }),
     });
+    if (verdict !== "denied") {
+      await enqueuePostMessage({
+        idempotencyKey: `slack-sender-guidance:${teamId}:${channel}:${ts}`,
+        orgId,
+        teamId,
+        channel,
+        threadTs: slackThreadTs,
+        text:
+          verdict === "asked"
+            ? "I do not know you yet, so I have asked this workspace's admins to let you in. Once they do, mention me again and I will get to work."
+            : "Still waiting for an admin to let you in. Mention me again once they have.",
+      });
+    }
     return { status: "permanent_noop", reason: "sender_not_linked" };
   }
 
