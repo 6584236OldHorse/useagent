@@ -741,9 +741,8 @@ export async function prepareRuntimeProviderBridge(
       if (!subscription) throw new Error("codex_subscription_runtime_missing");
       const lease = await prepareCodexSubscription({ sandbox, ctx, workdir, runtime: subscription });
       return {
+        ...lease,
         authPath: "subscription",
-        authEpoch: lease.authEpoch,
-        hasCurrentEpochThreadBinding: lease.hasCurrentEpochThreadBinding,
         readiness: null,
         pendingProviderConfigurationRevision,
         modelLimitsChanged: false,

@@ -520,15 +520,15 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           }
         }
 
-        // Codex subscription patches its per-run relay config into the sandbox's
-        // T3 settings.json above (provider_bridge). T3 only applies settings via
+        // A new Codex subscription session patches its relay config into T3's
+        // settings.json above (provider_bridge; a kept one changes nothing). T3 applies settings via
         // an asynchronous settings-watch reconcile, so a turn dispatched before
         // that reconcile binds to the pre-reconcile, relay-less codex instance and
         // falls back to a local, unauthenticated app-server (no first activity).
         // Scoped to subscription Codex. Provider-gateway Codex does not create
         // a per-run instance, and Claude has its own marker barrier above. The
         // no-first-activity watchdog below remains the final safety net.
-        if (providerBridgeLease?.authPath === "subscription") {
+        if (providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused) {
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             // A sandbox whose runtime is down cannot publish the status cache,

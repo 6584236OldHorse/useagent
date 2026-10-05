@@ -18,6 +18,8 @@ interface TunnelData {
 export interface CodexCodeModeBridge {
   /** The `--code-mode-host` URL for the app-server. */
   readonly url: string;
+  /** Dial the sandbox with this run's bearer from now on (open tunnels stay). */
+  rotateBearer(bearerToken: string): void;
   close(): void;
 }
 
@@ -37,6 +39,7 @@ export function openCodexCodeModeBridge(input: {
     throw new Error("Codex code-mode bridge upstream host mismatch");
   }
   if (!input.bearerToken) throw new Error("Codex code-mode bridge requires a bearer");
+  let bearerToken = input.bearerToken;
   const maxConnections = input.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
   const maxPendingBytes = input.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
   const sockets = new Set<Socket<TunnelData>>();
@@ -54,7 +57,7 @@ export function openCodexCodeModeBridge(input: {
         }
         sockets.add(socket);
         const remote = new WebSocket(input.upstreamUrl, {
-          headers: { ...input.headers, authorization: `Bearer ${input.bearerToken}` },
+          headers: { ...input.headers, authorization: `Bearer ${bearerToken}` },
         });
         remote.binaryType = "arraybuffer";
         socket.data.upstream = remote;
@@ -115,6 +118,10 @@ export function openCodexCodeModeBridge(input: {
 
   return {
     url: `http://127.0.0.1:${listener.port}`,
+    rotateBearer(next) {
+      if (!next) throw new Error("Codex code-mode bridge requires a bearer");
+      bearerToken = next;
+    },
     close() {
       if (closed) return;
       closed = true;

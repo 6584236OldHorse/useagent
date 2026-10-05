@@ -5,10 +5,15 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxHandle, SandboxExecuteResult } from "../sandboxes/provider";
-import type { CodexSubscriptionRelayBinding } from "../provider-connections/codex-subscription-relay";
+import type {
+  CodexRelayRun,
+  openCodexRelaySession,
+} from "../provider-connections/codex-subscription-relay";
+import type { openCodexCodeModeBridge } from "../provider-connections/codex-code-mode-bridge";
 import type { CodexSubscriptionRuntimeSelection } from "../provider-connections/service";
 import type { ProviderThreadBindingScope } from "../provider-connections/repo";
 import type { EngineRunContext } from "./types";
+import { liveCodexThreadSessions, resetCodexThreadSessionsForTest } from "./codex-thread-sessions";
 import {
   awaitCodexProviderReady,
   buildCodexExecServerCommand,
@@ -29,19 +34,52 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Sessions are kept per thread and sandbox; every test here uses the same pair.
+  resetCodexThreadSessionsForTest();
   if (priorGatewayUrl === undefined) delete process.env.PROVIDER_GATEWAY_PUBLIC_URL;
   else process.env.PROVIDER_GATEWAY_PUBLIC_URL = priorGatewayUrl;
   if (priorGatewaySecret === undefined) delete process.env.PROVIDER_GATEWAY_SECRET;
   else process.env.PROVIDER_GATEWAY_SECRET = priorGatewaySecret;
 });
 
+/** Relay sessions opened by a preparation, and the runs each was activated for. */
+function relaySessions(log: string[] = []) {
+  const opened: Array<{ input: Parameters<typeof openCodexRelaySession>[0]; runs: CodexRelayRun[]; closed: boolean }> = [];
+  const open: typeof openCodexRelaySession = (input) => {
+    const record = { input, runs: [] as CodexRelayRun[], closed: false };
+    opened.push(record);
+    return {
+      url: "wss://useagent.example.test/api/internal/codex-relay/opaque",
+      activate: (run) => void record.runs.push(run),
+      deactivate() {},
+      get connected() { return false; },
+      get closed() { return record.closed; },
+      close: () => {
+        record.closed = true;
+        log.push("relay");
+      },
+    };
+  };
+  return { open, opened };
+}
+
+/** A code-mode bridge that records the bearers it was given. */
+function codeModeBridges(log: string[] = [], bearers: string[] = []): typeof openCodexCodeModeBridge {
+  return (input) => {
+    bearers.push(input.bearerToken);
+    return {
+      url: "http://127.0.0.1:43112",
+      rotateBearer: (bearer) => void bearers.push(bearer),
+      close: () => void log.push("code-mode"),
+    };
+  };
+}
+
 describe("T3 Codex subscription lease", () => {
-  test("binds the host relay to the exact run and remote execution environment", async () => {
+  test("binds the host relay to the thread's session, the run and the remote execution environment", async () => {
     const harness = fakeSandbox();
     const closed: string[] = [];
-    let relayBinding: CodexSubscriptionRelayBinding | undefined;
-    let relayRuntime: CodexSubscriptionRuntimeSelection | undefined;
-    let relayExecServerUrl: string | undefined;
+    const relays = relaySessions(closed);
     let threadBindingScope: ProviderThreadBindingScope | undefined;
 
     const lease = await prepareCodexSubscription({
@@ -62,15 +100,8 @@ describe("T3 Codex subscription lease", () => {
           });
           return { url: "ws://127.0.0.1:43111/grant", close: () => closed.push("bridge") };
         },
-        issueRelay: (input) => {
-          relayBinding = input.binding;
-          relayRuntime = input.runtime;
-          relayExecServerUrl = input.execServerUrl;
-          return {
-            url: "wss://useagent.example.test/api/internal/codex-relay/opaque",
-            close: () => closed.push("relay"),
-          };
-        },
+        openCodeModeBridge: codeModeBridges(closed),
+        openRelaySession: relays.open,
       },
     });
 
@@ -81,23 +112,30 @@ describe("T3 Codex subscription lease", () => {
     );
     expect(harness.sessionCommands[1]?.command).toContain('"--listen" "grpc://127.0.0.2:37736"');
     expect(harness.previewPorts).toEqual([37_734, 37_737]);
-    expect(relayBinding).toEqual({
-      orgId: "org-1",
-      userId: "user-1",
-      threadId: "thread-1",
-      runId: "run-1",
-      connectionId: "connection-1",
-      authEpoch: "credential-generation-123",
-      model: "gpt-5.5",
-      sandboxId: "sandbox-1",
-      sandboxGeneration: "useagent-runtime-v8",
-      environmentId: "skynet-sandbox-1-run-1",
-      cwd: "/root/work",
+    expect(relays.opened).toHaveLength(1);
+    expect(relays.opened[0]!.input).toMatchObject({
+      scope: {
+        orgId: "org-1",
+        userId: "user-1",
+        threadId: "thread-1",
+        connectionId: "connection-1",
+        authEpoch: "credential-generation-123",
+        sandboxId: "sandbox-1",
+        sandboxGeneration: "useagent-runtime-v8",
+        environmentId: "skynet-sandbox-1-thread-1",
+        cwd: "/root/work",
+      },
+      runtime: runtime(),
+      execServerUrl: "ws://127.0.0.1:43111/grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
+      reusable: true,
     });
-    expect(relayRuntime).toEqual(runtime());
-    expect(relayExecServerUrl).toBe("ws://127.0.0.1:43111/grant");
+    expect(relays.opened[0]!.runs).toEqual([
+      expect.objectContaining({ runId: "run-1", model: "gpt-5.5" }),
+    ]);
     expect(lease.authEpoch).toBe("credential-generation-123");
     expect(lease.hasCurrentEpochThreadBinding).toBe(true);
+    expect(lease.sessionReused).toBe(false);
     expect(threadBindingScope).toEqual({
       orgId: "org-1",
       userId: "user-1",
@@ -112,27 +150,113 @@ describe("T3 Codex subscription lease", () => {
     expect(providerPatch).toContain("CODEX_INSTANCE_B64");
     expect(providerPatch).not.toContain("/host/codex-home");
     expect(providerPatch).not.toContain("preview-secret");
-    expect(providerPatch).not.toContain("USEAGENT_TOOL_GATEWAY_BEARER_TOKEN");
     expect(
       harness.commands.some(({ command }) => command.includes("provider-gateway-generation")),
     ).toBe(true);
 
+    // The run is done; the session stays for the thread's next run.
     await lease.close();
-    await lease.close();
+    expect(closed).toEqual([]);
+    expect(liveCodexThreadSessions()).toBe(1);
+    expect(harness.commands.some(({ command }) => command.includes("delete current.providerInstances.codex"))).toBe(false);
+    resetCodexThreadSessionsForTest();
+    expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
+  });
 
-    expect(closed).toEqual(["relay", "bridge"]);
-    expect(harness.deletedSessions).toEqual([
-      "skynet-codex-exec-server",
-      "skynet-codex-exec-server",
+  test("a follow-up run reuses the thread's kept session with nothing to reconcile", async () => {
+    const relays = relaySessions();
+    const bearers: string[] = [];
+    const dependencies = {
+      loadThreadBinding: async () => "provider-thread-1",
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+      openCodeModeBridge: codeModeBridges([], bearers),
+      openRelaySession: relays.open,
+    };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    await first.close();
+
+    const warm = fakeSandbox({ execServerListening: true, codeModeListening: true });
+    const second = await prepareCodexSubscription({
+      sandbox: warm.sandbox,
+      ctx: { ...context(), runId: "run-2", model: "gpt-5.6-luna" },
+      workdir: "/root/work",
+      runtime: runtime(),
+      dependencies,
+    });
+
+    expect(second.sessionReused).toBe(true);
+    expect(relays.opened).toHaveLength(1);
+    expect(relays.opened[0]!.runs.map(({ runId, model }) => [runId, model])).toEqual([
+      ["run-1", "gpt-5.5"],
+      ["run-2", "gpt-5.6-luna"],
     ]);
-    expect(harness.commands.at(-1)?.command).toContain(
-      "delete current.providerInstances.codex",
-    );
+    // One sandbox round trip: the next bearer's digest and the services probe.
+    expect(warm.commands).toHaveLength(1);
+    expect(warm.createdSessions).toEqual([]);
+    expect(warm.previewPorts).toEqual([]);
+    expect(bearers).toHaveLength(2);
+    expect(bearers[1]).not.toBe(bearers[0]);
+    expect(warm.commands[0]?.command).toContain(createHash("sha256").update(bearers[1]!).digest("hex"));
+    await second.close();
+    expect(liveCodexThreadSessions()).toBe(1);
+  });
+
+  test("restarted sandbox services retire the kept session and start a new one", async () => {
+    const closed: string[] = [];
+    const relays = relaySessions(closed);
+    const dependencies = {
+      loadThreadBinding: async () => null,
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close: () => void closed.push("bridge") }),
+      openCodeModeBridge: codeModeBridges(closed),
+      openRelaySession: relays.open,
+    };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    await first.close();
+    const restarted = fakeSandbox({ execServerListening: true });
+    const second = await prepareCodexSubscription({
+      sandbox: restarted.sandbox, ctx: { ...context(), runId: "run-2" }, workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+
+    expect(second.sessionReused).toBe(false);
+    expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
+    expect(relays.opened).toHaveLength(2);
+    expect(restarted.createdSessions).toEqual(["skynet-codex-code-mode"]);
+    await second.close();
+  });
+
+  test("a run beyond the host's session caps gets a session of its own that ends with it", async () => {
+    const closed: string[] = [];
+    const relays = relaySessions(closed);
+    const dependencies = {
+      loadThreadBinding: async () => null,
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close: () => void closed.push("bridge") }),
+      openCodeModeBridge: codeModeBridges(closed),
+      openRelaySession: relays.open,
+    };
+    // Four threads of the same member hold their sessions.
+    for (const thread of ["a", "b", "c", "d"]) {
+      await prepareCodexSubscription({
+        sandbox: fakeSandbox().sandbox, ctx: { ...context(), threadId: thread }, workdir: "/root/work", runtime: runtime(), dependencies,
+      });
+    }
+    const harness = fakeSandbox();
+    const lease = await prepareCodexSubscription({
+      sandbox: harness.sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    expect(liveCodexThreadSessions()).toBe(4);
+    await lease.close();
+    expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
+    expect(harness.commands.at(-1)?.command).toContain("delete current.providerInstances.codex");
+    expect(harness.deletedSessions).toEqual(["skynet-codex-exec-server", "skynet-codex-exec-server"]);
   });
 
   test("reuses the exec server an earlier turn left listening", async () => {
     const harness = fakeSandbox({ execServerListening: true, codeModeListening: true });
-    let relayExecServerUrl: string | undefined;
+    const relays = relaySessions();
 
     const lease = await prepareCodexSubscription({
       sandbox: harness.sandbox,
@@ -142,10 +266,8 @@ describe("T3 Codex subscription lease", () => {
       dependencies: {
         loadThreadBinding: async () => null,
         openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
-        issueRelay: (input) => {
-          relayExecServerUrl = input.execServerUrl;
-          return { url: "wss://useagent.example.test/api/internal/codex-relay/opaque", close() {} };
-        },
+        openCodeModeBridge: codeModeBridges(),
+        openRelaySession: relays.open,
       },
     });
 
@@ -153,7 +275,7 @@ describe("T3 Codex subscription lease", () => {
     expect(harness.createdSessions).toEqual([]);
     expect(harness.sessionCommands).toEqual([]);
     expect(harness.previewPorts).toEqual([37_734, 37_737]);
-    expect(relayExecServerUrl).toBe("ws://127.0.0.1:43111/grant");
+    expect(relays.opened[0]!.input.execServerUrl).toBe("ws://127.0.0.1:43111/grant");
     expect(harness.commands[0]?.command).toContain("code-mode-forwarder.sha256");
     expect(harness.commands[0]?.command).toContain("const deadline=Date.now()+0;");
     expect(harness.commands).toHaveLength(3);
@@ -200,8 +322,9 @@ describe("T3 Codex subscription lease", () => {
 
   test("points the app-server's code mode at the sandbox host through this run's bearer", async () => {
     const harness = fakeSandbox({ execServerListening: true });
-    let bridgeInput: Parameters<typeof import("../provider-connections/codex-code-mode-bridge").openCodexCodeModeBridge>[0] | undefined;
-    let relayCodeModeUrl: string | undefined;
+    const relays = relaySessions();
+    const bearers: string[] = [];
+    let bridgeUpstream: string | undefined;
 
     const lease = await prepareCodexSubscription({
       sandbox: harness.sandbox,
@@ -212,32 +335,29 @@ describe("T3 Codex subscription lease", () => {
         loadThreadBinding: async () => null,
         openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
         openCodeModeBridge: (input) => {
-          bridgeInput = input;
-          return { url: "http://127.0.0.1:43112", close() {} };
+          bridgeUpstream = input.upstreamUrl;
+          return codeModeBridges([], bearers)(input);
         },
-        issueRelay: (input) => {
-          relayCodeModeUrl = input.codeModeHostUrl;
-          return { url: "wss://useagent.example.test/api/internal/codex-relay/opaque", close() {} };
-        },
+        openRelaySession: relays.open,
       },
     });
 
     // Only the code-mode host and forwarder were missing; the exec-server was reused.
     expect(harness.createdSessions).toEqual(["skynet-codex-code-mode"]);
     expect(harness.sessionCommands[0]?.command).toContain("code-mode-forwarder.js");
-    expect(relayCodeModeUrl).toBe("http://127.0.0.1:43112");
-    expect(bridgeInput?.upstreamUrl).toBe("wss://preview.example.test/");
-    expect(bridgeInput?.bearerToken).toMatch(/^[0-9a-f]{64}$/);
-    const digest = createHash("sha256").update(bridgeInput!.bearerToken).digest("hex");
+    expect(relays.opened[0]!.input.codeModeHostUrl).toBe("http://127.0.0.1:43112");
+    expect(bridgeUpstream).toBe("wss://preview.example.test/");
+    expect(bearers[0]).toMatch(/^[0-9a-f]{64}$/);
+    const digest = createHash("sha256").update(bearers[0]!).digest("hex");
     expect(harness.commands[0]?.command).toContain(digest);
-    expect(harness.commands[0]?.command).not.toContain(bridgeInput!.bearerToken);
+    expect(harness.commands[0]?.command).not.toContain(bearers[0]!);
 
     await lease.close();
   });
 
   test("fails the turn when another process holds the exec-server port", async () => {
     const harness = fakeSandbox({ execServerPortForeign: true });
-    let relayIssued = false;
+    const relays = relaySessions();
 
     await expect(prepareCodexSubscription({
       sandbox: harness.sandbox,
@@ -249,14 +369,11 @@ describe("T3 Codex subscription lease", () => {
         openExecBridge: () => {
           throw new Error("bridge must not open");
         },
-        issueRelay: () => {
-          relayIssued = true;
-          throw new Error("relay must not issue");
-        },
+        openRelaySession: relays.open,
       },
     })).rejects.toThrow("another process");
 
-    expect(relayIssued).toBe(false);
+    expect(relays.opened).toEqual([]);
     expect(harness.sessionCommands).toEqual([]);
   });
 
@@ -273,10 +390,8 @@ describe("T3 Codex subscription lease", () => {
           url: "ws://127.0.0.1:43111/grant",
           close() {},
         }),
-        issueRelay: () => ({
-          url: "wss://useagent.example.test/api/internal/codex-relay/opaque",
-          close() {},
-        }),
+        openCodeModeBridge: codeModeBridges(),
+        openRelaySession: relaySessions().open,
       },
     });
 
@@ -320,14 +435,13 @@ describe("T3 Codex subscription lease", () => {
           url: "ws://127.0.0.1:43111/grant",
           close: () => closed.push("bridge"),
         }),
-        issueRelay: () => ({
-          url: "wss://useagent.example.test/api/internal/codex-relay/opaque",
-          close: () => closed.push("relay"),
-        }),
+        openCodeModeBridge: codeModeBridges(closed),
+        openRelaySession: relaySessions(closed).open,
       },
     })).rejects.toThrow("provider configuration failed");
 
-    expect(closed).toEqual(["relay", "bridge"]);
+    expect(closed).toEqual(["relay", "code-mode", "bridge"]);
+    expect(liveCodexThreadSessions()).toBe(0);
     expect(harness.deletedSessions).toEqual([
       "skynet-codex-exec-server",
       "skynet-codex-exec-server",
@@ -336,7 +450,7 @@ describe("T3 Codex subscription lease", () => {
 
   test("removes a session when the exec server launch fails", async () => {
     const harness = fakeSandbox({ launchExit: 127 });
-    let relayIssued = false;
+    const relays = relaySessions();
 
     await expect(prepareCodexSubscription({
       sandbox: harness.sandbox,
@@ -348,14 +462,11 @@ describe("T3 Codex subscription lease", () => {
         openExecBridge: () => {
           throw new Error("bridge must not open");
         },
-        issueRelay: () => {
-          relayIssued = true;
-          throw new Error("relay must not issue");
-        },
+        openRelaySession: relays.open,
       },
     })).rejects.toThrow("Codex exec-server failed to start");
 
-    expect(relayIssued).toBe(false);
+    expect(relays.opened).toEqual([]);
     expect(harness.deletedSessions).toEqual([
       "skynet-codex-exec-server",
       "skynet-codex-exec-server",
@@ -364,7 +475,7 @@ describe("T3 Codex subscription lease", () => {
 
   test("fails closed before minting a capability without tenant identity", async () => {
     const harness = fakeSandbox();
-    let issued = false;
+    const relays = relaySessions();
 
     await expect(prepareCodexSubscription({
       sandbox: harness.sandbox,
@@ -379,14 +490,11 @@ describe("T3 Codex subscription lease", () => {
           url: "ws://127.0.0.1:43111/grant",
           close() {},
         }),
-        issueRelay: () => {
-          issued = true;
-          throw new Error("unreachable");
-        },
+        openRelaySession: relays.open,
       },
     })).rejects.toThrow("organization identity is required");
 
-    expect(issued).toBe(false);
+    expect(relays.opened).toEqual([]);
     expect(harness.createdSessions).toEqual([]);
     expect(harness.deletedSessions).toEqual([]);
   });

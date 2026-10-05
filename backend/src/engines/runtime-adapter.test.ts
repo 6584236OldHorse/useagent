@@ -1032,6 +1032,8 @@ describe("T3 run adapter gate", () => {
     // Scoped to the subscription bridge only. Provider-gateway Codex and the
     // other engines never publish the relay-backed subscription cache marker.
     expect(source).toContain('providerBridgeLease?.authPath === "subscription"');
+    // A run that reuses the thread's kept session changed no settings: no barrier.
+    expect(source).toContain('providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused');
     // (B) Content barrier is attempted first (fast path, no restart cost).
     expect(source).toContain(
       "awaitCodexProviderReady(sandbox, ctx.signal, CODEX_BARRIER_DEADLINE_MS)",

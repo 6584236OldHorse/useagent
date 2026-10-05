@@ -8,8 +8,9 @@ import {
 import { openCodexExecServerBridge } from "../provider-connections/codex-exec-server-bridge";
 import { openCodexCodeModeBridge } from "../provider-connections/codex-code-mode-bridge";
 import {
-  issueCodexSubscriptionRelayCapability,
-  type CodexSubscriptionRelayBinding,
+  openCodexRelaySession,
+  type CodexRelaySession,
+  type CodexRelaySessionScope,
 } from "../provider-connections/codex-subscription-relay";
 import type { CodexSubscriptionRuntimeSelection } from "../provider-connections/service";
 import { findProviderThreadBinding } from "../provider-connections/repo";
@@ -40,6 +41,14 @@ import {
   CODEX_CODE_MODE_SESSION,
   codexCodeModeOwners,
 } from "./codex-code-mode-sandbox";
+import {
+  claimCodexThreadSession,
+  codexThreadSessionKey,
+  evictCodexThreadSession,
+  keepCodexThreadSession,
+  releaseCodexThreadSession,
+  type CodexThreadSessionParts,
+} from "./codex-thread-sessions";
 
 const CODEX_EXEC_SERVER_PORT = 37_734;
 const CODEX_EXEC_SERVER_SESSION = "skynet-codex-exec-server";
@@ -71,22 +80,32 @@ function codexExecutable(layout: SandboxRuntimeLayout): string {
 export interface CodexSubscriptionLease {
   readonly authEpoch: string | null;
   readonly hasCurrentEpochThreadBinding: boolean;
+  /** The runtime still holds this thread's Codex session from an earlier run:
+   * its settings are current, so there is nothing to reconcile or wait for. */
+  readonly sessionReused?: boolean;
   close(): Promise<void>;
 }
 
 interface SubscriptionDependencies {
   readonly openExecBridge: typeof openCodexExecServerBridge;
   readonly openCodeModeBridge: typeof openCodexCodeModeBridge;
-  readonly issueRelay: typeof issueCodexSubscriptionRelayCapability;
+  readonly openRelaySession: typeof openCodexRelaySession;
   readonly loadThreadBinding: typeof findProviderThreadBinding;
 }
 
 const defaultDependencies: SubscriptionDependencies = {
   openExecBridge: openCodexExecServerBridge,
   openCodeModeBridge: openCodexCodeModeBridge,
-  issueRelay: issueCodexSubscriptionRelayCapability,
+  openRelaySession: openCodexRelaySession,
   loadThreadBinding: findProviderThreadBinding,
 };
+
+/** What a kept thread session holds on this host: the relay and both bridges. */
+interface SubscriptionSessionParts extends CodexThreadSessionParts {
+  readonly cwd: string;
+  readonly relay: CodexRelaySession;
+  readonly codeModeBridge: ReturnType<typeof openCodexCodeModeBridge>;
+}
 
 export async function prepareCodexSubscription(input: {
   readonly sandbox: SandboxHandle;
@@ -107,17 +126,31 @@ export async function prepareCodexSubscription(input: {
     connectionId: runtime.connectionId,
     authEpoch: runtime.authEpoch,
   }));
-  const environmentId = codexExecutionEnvironmentId(ctx.runId, sandbox.id);
   const layout = codexRuntimeLayout(sandbox);
-  let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
-  let codeModeBridge: ReturnType<typeof openCodexCodeModeBridge> | undefined;
-  let relay: ReturnType<typeof issueCodexSubscriptionRelayCapability> | undefined;
+  const scope: CodexRelaySessionScope = {
+    orgId,
+    userId,
+    threadId: productThreadId,
+    connectionId: runtime.connectionId,
+    authEpoch: runtime.authEpoch,
+    sandboxId: sandbox.id,
+    sandboxGeneration: RUNTIME_GENERATION,
+    environmentId: codexExecutionEnvironmentId(productThreadId, sandbox.id),
+    cwd: workdir,
+  };
+  const environmentId = scope.environmentId;
+  const toolGateway = codexToolGatewayDescriptor(ctx);
+  const run = {
+    runId: ctx.runId,
+    model: ctx.model?.trim() || DEFAULT_CODEX_MODEL,
+    toolGatewayBearer: toolGateway?.bearerToken ?? null,
+  };
+  const sessionKey = codexThreadSessionKey(scope);
 
   // One round trip: admit only this run's code-mode bearer from now on, then
   // ask who holds each service port. A retained sandbox keeps the services an
   // earlier turn started (the detached processes outlive their sessions), so
-  // only a missing one is launched. The run-bound environment id lives in the
-  // relay and T3 settings, not in the exec-server.
+  // only a missing one is launched.
   const owners = [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
   const codeModeBearer = randomBytes(32).toString("hex");
   const probe = await sandbox.process.executeCommand(
@@ -128,11 +161,35 @@ export async function prepareCodexSubscription(input: {
     10,
   ).catch(() => null);
   const verdicts = assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners));
+  const servicesUp = owners.every(({ port }) => verdicts[port] === LISTENER_OURS);
+
+  // A follow-up turn on a sandbox whose services never went away takes the
+  // thread's kept session: the runtime's Codex session is still connected to
+  // it, so the run only becomes the one it serves.
+  if (servicesUp) {
+    const kept = claimCodexThreadSession<SubscriptionSessionParts>(sessionKey);
+    if (kept && !kept.parts.relay.closed && kept.parts.cwd === workdir) {
+      kept.parts.codeModeBridge.rotateBearer(codeModeBearer);
+      kept.parts.relay.activate(run);
+      return {
+        authEpoch: runtime.authEpoch,
+        hasCurrentEpochThreadBinding,
+        sessionReused: true,
+        close: async () => releaseCodexThreadSession(kept),
+      };
+    }
+  }
+  // Restarted services or a stale session: whatever this host kept is unusable.
+  evictCodexThreadSession(sessionKey, servicesUp ? "stale" : "sandbox services restarted");
+
   const execServerListening = verdicts[CODEX_EXEC_SERVER_PORT] === LISTENER_OURS;
   const startCodeMode = {
     host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
     forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
   };
+  let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
+  let codeModeBridge: ReturnType<typeof openCodexCodeModeBridge> | undefined;
+  let relay: CodexRelaySession | undefined;
   if (!execServerListening) {
     await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
   }
@@ -161,7 +218,7 @@ export async function prepareCodexSubscription(input: {
       );
       if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
     }
-    if (!execServerListening || startCodeMode.host || startCodeMode.forwarder) {
+    if (!servicesUp) {
       const readiness = await sandbox.process.executeCommand(
         buildSandboxListenerProbeCommand(owners, 15_000),
         undefined,
@@ -192,26 +249,15 @@ export async function prepareCodexSubscription(input: {
       headers: { ...previewLinkBase(codeModePreview).headers },
       bearerToken: codeModeBearer,
     });
-    const binding: CodexSubscriptionRelayBinding = {
-      orgId,
-      userId,
-      threadId: productThreadId,
-      runId: ctx.runId,
-      connectionId: runtime.connectionId,
-      authEpoch: runtime.authEpoch,
-      model: ctx.model?.trim() || DEFAULT_CODEX_MODEL,
-      sandboxId: sandbox.id,
-      sandboxGeneration: RUNTIME_GENERATION,
-      environmentId,
-      cwd: workdir,
-    };
-    relay = dependencies.issueRelay({
-      binding,
+    relay = dependencies.openRelaySession({
+      scope,
       runtime,
       execServerUrl: execBridge.url,
       codeModeHostUrl: codeModeBridge.url,
-      toolGateway: codexToolGatewayDescriptor(ctx),
+      toolGateway: toolGateway ? { serverName: toolGateway.serverName, url: toolGateway.url } : null,
+      reusable: true,
     });
+    relay.activate(run);
     // Retained-sandbox validation requires both the immutable control-plane
     // generation label and this on-disk marker. Subscription-backed Codex does
     // not materialize the provider-gateway model config, so it stamps the
@@ -232,17 +278,41 @@ export async function prepareCodexSubscription(input: {
     throw error;
   }
 
+  const ownedRelay = relay;
+  const ownedCodeModeBridge = codeModeBridge;
+  const ownedExecBridge = execBridge;
+  const parts: SubscriptionSessionParts = {
+    environmentId,
+    cwd: workdir,
+    relay: ownedRelay,
+    codeModeBridge: ownedCodeModeBridge,
+    close() {
+      ownedRelay.close();
+      ownedCodeModeBridge.close();
+      ownedExecBridge.close();
+    },
+  };
+  // Kept for the thread's next runs when the host has room; otherwise this
+  // run's session is its own and goes with it, as before.
+  const kept = keepCodexThreadSession(sessionKey, userId, parts);
+  if (kept) {
+    return {
+      authEpoch: runtime.authEpoch,
+      hasCurrentEpochThreadBinding,
+      sessionReused: false,
+      close: async () => releaseCodexThreadSession(kept),
+    };
+  }
   let closed = false;
   return {
     authEpoch: runtime.authEpoch,
     hasCurrentEpochThreadBinding,
+    sessionReused: false,
     async close() {
       if (closed) return;
       closed = true;
       await removeCodexProviderInstance(sandbox).catch(() => {});
-      relay?.close();
-      codeModeBridge?.close();
-      execBridge?.close();
+      parts.close();
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
   };
@@ -433,8 +503,9 @@ function assertTrustedPreviewHost(
 }
 
 
-function codexExecutionEnvironmentId(runId: string, sandboxId: string): string {
-  const suffix = `${sandboxId}-${runId}`
+/** The remote environment a thread's runs share on one sandbox. */
+function codexExecutionEnvironmentId(threadId: string, sandboxId: string): string {
+  const suffix = `${sandboxId}-${threadId}`
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")

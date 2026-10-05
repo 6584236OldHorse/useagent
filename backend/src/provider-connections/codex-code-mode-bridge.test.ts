@@ -136,6 +136,29 @@ describe("Codex code-mode tunnel", () => {
     expect(cut).toBe(true);
   });
 
+  test("a rotated bridge dials with the next run's bearer", async () => {
+    await writeFile(tokenFile, `${sha256("second-run")}\n`);
+    const bridge = openCodexCodeModeBridge({
+      upstreamUrl: `ws://127.0.0.1:${forwarderPort}/`,
+      expectedUpstreamHost: `127.0.0.1:${forwarderPort}`,
+      headers: {},
+      bearerToken: "first-run",
+    });
+    bridge.rotateBearer("second-run");
+    let received = "";
+    const done = Promise.withResolvers<void>();
+    const client = await Bun.connect({
+      hostname: "127.0.0.1",
+      port: Number(new URL(bridge.url).port),
+      socket: { data(_socket, chunk) { received += Buffer.from(chunk).toString(); done.resolve(); }, close() { done.resolve(); } },
+    });
+    client.write("rotated");
+    await Promise.race([done.promise, Bun.sleep(2_000)]);
+    client.end();
+    bridge.close();
+    expect(received).toBe("rotated");
+  });
+
   test("accepts only a websocket upstream on the expected host", () => {
     const base = { headers: {}, bearerToken: "t" };
     expect(() => openCodexCodeModeBridge({ ...base, upstreamUrl: "https://a.test/", expectedUpstreamHost: "a.test" })).toThrow("websocket");
