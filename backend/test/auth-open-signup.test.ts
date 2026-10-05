@@ -24,7 +24,7 @@ const { SIGNUP_ATTEMPTS_PER_ADDRESS, SIGNUP_ATTEMPTS_PER_CLIENT, SIGN_IN_CONFIRM
 const { CONFIRMATION_TTL_MS, confirmationToken } = await import("../src/auth-invitations");
 const { db } = await import("../src/db/client");
 const { env } = await import("../src/env");
-const { account, invitation, member, organization, user } = await import("../src/db/auth-schema");
+const { account, invitation, member, organization, session, user } = await import("../src/db/auth-schema");
 const { slackAccessRequests, slackWorkspaces } = await import("../src/db/schema");
 const { decideAccessRequest } = await import("../src/slack/access-requests");
 const { setSlackClientForTest } = await import("../src/slack");
@@ -287,6 +287,7 @@ describe("open sign-up", () => {
     // the registration the attempt would have replaced is untouched.
     const refused = await signUpWith(target, email, {}, client);
     expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);
     expect(await row(email)).toMatchObject({ id: second!.id, emailVerified: false });
     expect(landing(await openLinkWith(target, email, second!.id))).toBe(verifiedAt);
   });
@@ -373,11 +374,50 @@ describe("open sign-up", () => {
     const claim = await row(email);
     expect(landing(await declineLink(email, claim!.id))).toBe(`${env.FRONTEND_ORIGIN}/login?declined=1`);
     expect(await row(email)).toBeUndefined();
-    // A confirmed account is not a claim: its cancel link does nothing to it.
+    // A confirmed account is not a claim: its cancel link does nothing to it, and says so.
     const kept = address("waits");
     const person = await row(kept);
-    expect(landing(await declineLink(kept, person!.id))).toBe(`${env.FRONTEND_ORIGIN}/login?declined=1`);
+    expect(landing(await declineLink(kept, person!.id))).toBe(`${env.FRONTEND_ORIGIN}/login?declined=nothing`);
     expect(await row(kept)).toMatchObject({ id: person!.id, emailVerified: true });
+  });
+
+  test("a password revoked by a provider takeover gets no session, even for a sign-in already past its credential check", async () => {
+    const email = address("race");
+    expect((await signUp(email, {}, own(81))).status).toBe(200); // the outsider's claim, password P
+    const claim = await row(email);
+    await inProduction(false, async () => {
+      const closed = createAuthServer(); // restarted with the switch off
+      await stubGoogle(closed);
+      const context = await closed.$context;
+      const verify = context.password.verify;
+      let reachedVerify!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        reachedVerify = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // The outsider's sign-in has loaded the credential and is checking P when
+      // the owner's Google sign-in takes the account over.
+      context.password.verify = async (input) => {
+        context.password.verify = verify;
+        reachedVerify();
+        await held;
+        return verify(input);
+      };
+      const outsider = signInWith(createSignupRoutes(closed), email, own(81));
+      await reached;
+      const owner = await closed.api.signInSocial({ body: { provider: "google", idToken: { token: email } } });
+      expect(owner.user.id).toBe(claim!.id);
+      release();
+      const refused = await outsider;
+      expect(refused.status).toBe(401);
+      expect(sessionCookie(refused)).toBe(false);
+    });
+    expect(await row(email)).toMatchObject({ id: claim!.id, emailVerified: true });
+    expect((await accounts(claim!.id)).map((linked) => linked.providerId)).toEqual(["google"]);
+    expect(await db.select().from(session).where(eq(session.userId, claim!.id))).toHaveLength(1); // the owner's, and only theirs
   });
 
   test("only a JSON body passes the door, whatever the address", async () => {

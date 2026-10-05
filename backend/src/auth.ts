@@ -4,7 +4,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
 import { and, eq } from "drizzle-orm";
-import { ensurePersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
+import { ensurePersonalOrgForUser, hasCredential, unverifiedClaim } from "./auth-hooks";
 import {
   INVITATION_EXPIRES_IN_SECONDS,
   confirmationLinks,
@@ -143,6 +143,15 @@ export function createAuthServer() {
             if (context?.path === "/sign-up/email") return;
             if (await unverifiedClaim(session.userId)) {
               throw APIError.from("FORBIDDEN", { code: "EMAIL_NOT_VERIFIED", message: "Confirm your email address first" });
+            }
+            // A password sign-in checked a credential it loaded earlier; a provider
+            // takeover (below) may have dropped it in between. The takeover drops
+            // the credential before it confirms the address, so after the claim
+            // check above there is no moment at which the account is confirmed
+            // and the credential still stands: whichever way the two interleave,
+            // a revoked password gets no session.
+            if (context?.path === "/sign-in/email" && !(await hasCredential(session.userId))) {
+              throw APIError.from("UNAUTHORIZED", { code: "INVALID_EMAIL_OR_PASSWORD", message: "Invalid email or password" });
             }
           },
         },

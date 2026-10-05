@@ -215,8 +215,9 @@ The important variables are:
 - `FRONTEND_ORIGIN=http://localhost:3400` for local browser auth and CORS.
 - `BETTER_AUTH_URL=http://localhost:3201` for auth redirects and
   `BETTER_AUTH_SECRET` for session signing. Set `GOOGLE_CLIENT_ID` and
-  `GOOGLE_CLIENT_SECRET` for Google sign-in. Production accepts existing users
-  only; their email/password sign-in remains available while Google is optional.
+  `GOOGLE_CLIENT_SECRET` for Google sign-in. Without `SIGNUP_OPEN` (below)
+  production accepts existing users only; their email/password sign-in remains
+  available while Google is optional.
 - `SIGNUP_OPEN=1` opens email/password sign-up behind a mailed confirmation
   (needs `CONNECTOR_EMAIL_HOST` and `CONNECTOR_EMAIL_FROM`); `SIGNUP_ALLOWED_DOMAINS`
   and `SIGNUP_INVITE_CODE` narrow it.

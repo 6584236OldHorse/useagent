@@ -148,8 +148,13 @@ export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
     const refusal = signupRefusal(email, body.inviteCode, process.env, await invitedSignupAllowed(email));
     if (refusal) return c.json({ message: refusal }, 403);
     const parked = await parkClaim(email);
-    const response = await auth.handler(withJsonBody(request, body));
+    let response = await auth.handler(withJsonBody(request, body));
     if (parked) await (response.ok ? db.delete(user).where(eq(user.id, parked)) : restoreParked(parked, email));
+    // The library's own limiter names its wait in a header of its own; say it the standard way too.
+    if (response.status === 429 && !response.headers.has("retry-after") && response.headers.has("x-retry-after")) {
+      response = new Response(response.body, response);
+      response.headers.set("retry-after", response.headers.get("x-retry-after")!);
+    }
     return response;
   });
 
@@ -222,12 +227,15 @@ export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
 
   /** The mail's "this was not me": the registration the token names goes away
    *  while it is still a claim. A confirmed account, or a claim a later sign-up
-   *  replaced, is untouched. */
+   *  replaced, is untouched, and the card says that nothing was cancelled. */
   routes.get("/api/auth/decline-signup", async (c) => {
     const claim = readConfirmationToken(c.req.query("token") ?? "");
     if (claim === "invalid" || claim === "expired") return c.redirect(afterVerificationUrl(`error=link_${claim}`));
-    await db.delete(user).where(and(eq(user.id, claim.id), eq(user.email, claim.email), claimCondition));
-    return c.redirect(afterVerificationUrl("declined=1"));
+    const gone = await db
+      .delete(user)
+      .where(and(eq(user.id, claim.id), eq(user.email, claim.email), claimCondition))
+      .returning({ id: user.id });
+    return c.redirect(afterVerificationUrl(gone.length ? "declined=1" : "declined=nothing"));
   });
 
   /** The library's own confirmation route is keyed by the address alone and

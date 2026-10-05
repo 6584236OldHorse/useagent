@@ -42,8 +42,11 @@ sign-up for that address replaces it and mails a fresh link; the newest link
 is the one that works, and an earlier one is refused. The mail says that the
 password was chosen by whoever filled in the form and carries a link that
 cancels the sign-up. A sign-up for an address that already has a confirmed
-account gets the same answer as a new one, without mail, so nothing about the
-account is revealed; the card says so. A Google identity that verifies the
+account gets the same answer as a new one, without mail, so the sign-up answer
+itself reveals nothing; the card says so. A known limit: a sign-in with the
+password just chosen then tells the cases apart, since a claim answers that
+the address is unconfirmed while a confirmed account answers that the password
+is wrong. A Google identity that verifies the
 address takes over a claim on it: the claim's password is dropped and the
 identity links, invited or not. A sign-in with the right password for an
 unconfirmed address mails the link again, at most five times per address per

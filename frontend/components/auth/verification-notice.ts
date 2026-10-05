@@ -34,5 +34,11 @@ export function verificationNotice(params: {
   }
   if (params.verified === "1") return { tone: "ok", text: "Your email address is confirmed. Sign in to continue." };
   if (params.declined === "1") return { tone: "ok", text: "That sign-up was cancelled. Nothing was created for your address." };
+  if (params.declined === "nothing") {
+    return {
+      tone: "problem",
+      text: "Nothing was cancelled: that sign-up was already confirmed, or a newer sign-up replaced it. If the account is not yours, sign in with your own password to take it over.",
+    };
+  }
   return null;
 }

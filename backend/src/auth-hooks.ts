@@ -1,5 +1,5 @@
 import { and, eq, notExists } from "drizzle-orm";
-import { session, user } from "./db/auth-schema";
+import { account, session, user } from "./db/auth-schema";
 import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
 import { withOrgLock } from "./org-lock";
@@ -71,6 +71,16 @@ export const claimCondition = and(
   notExists(db.select({ id: member.id }).from(member).where(eq(member.userId, user.id))),
   notExists(db.select({ id: session.id }).from(session).where(eq(session.userId, user.id))),
 );
+
+/** Whether the account still has a password to sign in with. */
+export async function hasCredential(userId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: account.id })
+    .from(account)
+    .where(and(eq(account.userId, userId), eq(account.providerId, "credential")))
+    .limit(1);
+  return row !== undefined;
+}
 
 export async function unverifiedClaim(userId: string): Promise<boolean> {
   const [row] = await db.select({ id: user.id }).from(user).where(and(eq(user.id, userId), claimCondition)).limit(1);
