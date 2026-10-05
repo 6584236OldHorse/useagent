@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { invitation, member, user } from "../src/db/schema";
 import { createOrgSession, json } from "./helpers";
@@ -463,4 +463,41 @@ test("a second resend within a minute is refused and changes nothing", async () 
   expect(second.status).toBe(429);
   const [row] = await db.select({ expiresAt: invitation.expiresAt }).from(invitation).where(eq(invitation.id, invite.body.id));
   expect(row!.expiresAt.toISOString()).toBe(first.body.expiresAt);
+});
+
+test("a workspace keeps at least one owner, even when two owners demote each other at once", async () => {
+  const a = await createOrgSession("owner-a");
+  const b = await createOrgSession("owner-b");
+  const [bUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, b.email));
+  const bMemberId = `member_${crypto.randomUUID()}`;
+  await db.insert(member).values({ id: bMemberId, organizationId: a.orgId, userId: bUser!.id, role: "owner", createdAt: new Date() });
+  const [aUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, a.email));
+  const [aMember] = await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, a.orgId), eq(member.userId, aUser!.id)));
+  const demote = (cookies: string, memberId: string) =>
+    json<{ message?: string }>("/api/auth/organization/update-member-role", {
+      method: "POST",
+      cookies,
+      body: { organizationId: a.orgId, memberId, role: "member" },
+    });
+  const [first, second] = await Promise.all([demote(a.cookies, bMemberId), demote(b.cookies, aMember!.id)]);
+  expect([first.status, second.status].sort()).toEqual([200, 400]);
+  const owners = await db.select({ role: member.role }).from(member).where(eq(member.organizationId, a.orgId));
+  expect(owners.filter((row) => row.role.split(",").map((r) => r.trim()).includes("owner"))).toHaveLength(1);
+  // The remaining owner can neither be removed nor leave.
+  const [left] = owners.filter((row) => row.role.includes("owner"));
+  expect(left).toBeDefined();
+  const remaining = first.status === 200 ? { cookies: a.cookies, memberId: aMember!.id } : { cookies: b.cookies, memberId: bMemberId };
+  const removal = await json<{ message?: string }>("/api/auth/organization/remove-member", {
+    method: "POST",
+    cookies: remaining.cookies,
+    body: { organizationId: a.orgId, memberIdOrEmail: remaining.memberId },
+  });
+  expect(removal.status).toBe(400);
+  expect(removal.body.message).toContain("at least one owner");
+  const leave = await json<{ message?: string }>("/api/auth/organization/leave", {
+    method: "POST",
+    cookies: remaining.cookies,
+    body: { organizationId: a.orgId },
+  });
+  expect(leave.status).toBe(400);
 });

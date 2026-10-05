@@ -94,17 +94,94 @@ async function managerFor(request: Request, body: Record<string, unknown>): Prom
   return { session, organizationId, roles: mine };
 }
 
-/** The same trimming gap applies when a role is changed. */
+// ponytail: process-local, which matches the documented one-backend deployment; a database lock if replicas ever appear.
+const orgLocks = new Map<string, Promise<unknown>>();
+/** Changes that can reduce an organisation's owners run one at a time per
+ *  organisation, so two owners demoting each other at once cannot both succeed. */
+function withOrgLock<T>(orgId: string, work: () => Promise<T>): Promise<T> {
+  const previous = orgLocks.get(orgId) ?? Promise.resolve();
+  const run = previous.then(work, work);
+  orgLocks.set(orgId, run.then(() => undefined, () => undefined));
+  return run;
+}
+
+const LAST_OWNER = "A workspace needs at least one owner. Make someone else an owner first.";
+
+/** Whether the member (by id, or by email for remove-member) is the organisation's only owner. */
+async function onlyOwner(organizationId: string, target: { memberId?: string; email?: string; userId?: string }): Promise<boolean> {
+  const owners = await db
+    .select({ id: member.id, userId: member.userId, email: user.email, role: member.role })
+    .from(member)
+    .innerJoin(user, eq(user.id, member.userId))
+    .where(eq(member.organizationId, organizationId));
+  const owning = owners.filter((row) => roles(row.role).includes("owner"));
+  if (owning.length !== 1) return false;
+  const [only] = owning;
+  return (
+    only!.id === target.memberId ||
+    only!.userId === target.userId ||
+    (target.email !== undefined && only!.email.toLowerCase() === target.email.toLowerCase())
+  );
+}
+
+async function organisationOf(request: Request, body: Record<string, unknown>): Promise<string | null> {
+  if (typeof body.organizationId === "string" && body.organizationId.trim()) return body.organizationId.trim();
+  const session = await auth.api.getSession({ headers: request.headers });
+  return session?.session.activeOrganizationId ?? null;
+}
+
+async function jsonBody(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const parsed = (await request.clone().json()) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return null;
+  }
+}
+
+/** The same trimming gap applies when a role is changed, and taking ownership
+ *  away from the last owner is refused. */
 routes.post("/api/auth/organization/update-member-role", async (c) => {
   const request = c.req.raw;
-  let role: unknown;
-  try {
-    role = ((await request.clone().json()) as { role?: unknown } | null)?.role;
-  } catch {
+  const body = await jsonBody(request);
+  if (!body) return auth.handler(request);
+  if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId || body.role === "owner") return auth.handler(request);
+  return withOrgLock(organizationId, async () => {
+    if (typeof body.memberId === "string" && (await onlyOwner(organizationId, { memberId: body.memberId }))) {
+      return c.json({ message: LAST_OWNER }, 400);
+    }
     return auth.handler(request);
-  }
-  if (role !== undefined && !exactRole(role)) return c.json({ message: ROLE_MESSAGE }, 400);
-  return auth.handler(request);
+  });
+});
+
+routes.post("/api/auth/organization/remove-member", async (c) => {
+  const request = c.req.raw;
+  const body = await jsonBody(request);
+  if (!body) return auth.handler(request);
+  const organizationId = await organisationOf(request, body);
+  if (!organizationId) return auth.handler(request);
+  return withOrgLock(organizationId, async () => {
+    const target = typeof body.memberIdOrEmail === "string" ? body.memberIdOrEmail : "";
+    if (target && (await onlyOwner(organizationId, { memberId: target, email: target }))) {
+      return c.json({ message: LAST_OWNER }, 400);
+    }
+    return auth.handler(request);
+  });
+});
+
+routes.post("/api/auth/organization/leave", async (c) => {
+  const request = c.req.raw;
+  const body = await jsonBody(request);
+  if (!body) return auth.handler(request);
+  const session = await auth.api.getSession({ headers: request.headers });
+  const organizationId = await organisationOf(request, body);
+  if (!session || !organizationId) return auth.handler(request);
+  return withOrgLock(organizationId, async () => {
+    if (await onlyOwner(organizationId, { userId: session.user.id })) return c.json({ message: LAST_OWNER }, 400);
+    return auth.handler(request);
+  });
 });
 const RESEND_WINDOW_MS = 60_000;
 const recentResends = new Map<string, number>();
