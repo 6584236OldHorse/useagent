@@ -613,7 +613,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           generation: T3_SESSION_GENERATION,
           authEpoch: providerBridgeLease.authEpoch,
           priorSessionId: threadExists ? threadId : undefined,
-          startMetadata: { workspaceRoot: workdir, runtimeMode, createdAt },
+          startMetadata: { workspaceRoot: workdir, runtimeMode, createdAt, shell },
           persistSession: async (providerSession) => {
             if (!ctx.saveProviderSession) {
               throw new Error("Session persistence is unavailable");

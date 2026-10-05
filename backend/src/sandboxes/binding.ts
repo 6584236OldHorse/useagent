@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { SandboxNotFoundError, type SandboxProvider, type SandboxProviderKind } from "@useagent/sandbox-contract";
+import { SandboxNotFoundError, type SandboxHandle, type SandboxProvider, type SandboxProviderKind } from "@useagent/sandbox-contract";
 import { parseLocalSandboxId } from "@useagent/runner-protocol";
 import type { RunLocation } from "@useagent/agent-client/wire";
 import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
@@ -23,6 +23,7 @@ import { getRunnerPolicy, localRunnersEnabled } from "../runners/policy";
 import { activeRunnerSeam } from "../runners/directory";
 import { withRunnerBridgeContext } from "../runners/bridge-context";
 import { ExpectedSandboxMismatchError, parseExpectedSandboxBinding, type ExpectedSandboxBinding } from "./expected-binding";
+import { getLiveSandbox, rememberVerifiedSandbox } from "../engines/sandbox-runtime";
 export { ExpectedSandboxMismatchError } from "./expected-binding";
 
 /**
@@ -394,10 +395,28 @@ export async function resolveSandboxBindingForThread(
   return binding;
 }
 
+/**
+ * The binding's sandbox. A full provider lookup verifies the runtime identity
+ * (and, on some providers, wakes the box) at the cost of several provider round
+ * trips; a handle this process already verified for the same id is reused when
+ * the server's own credential for the same provider reaches it. A personal
+ * credential always looks up again, so a changed connection is never bypassed.
+ * The caller resolves the binding first: every ownership and revocation check
+ * still runs.
+ */
+export async function sandboxForBinding(binding: SandboxBinding, sandboxId: string): Promise<SandboxHandle> {
+  if (binding.credential !== "env") return await binding.provider.get(sandboxId);
+  const live = getLiveSandbox(sandboxId);
+  if (live?.providerKind === binding.kind) return live;
+  const sandbox = await binding.provider.get(sandboxId);
+  if (sandbox.id === sandboxId) rememberVerifiedSandbox(sandbox);
+  return sandbox;
+}
+
 /** Reused by execution and recovery; never consults a default/fallback provider. */
 export async function resolveExpectedSandbox(expected: ExpectedSandboxBinding, threadId: string) {
   const binding = await resolveSandboxBindingForThread(expected.ownerOrgId, threadId, { expectedSandbox: expected });
-  const sandbox = await binding.provider.get(expected.sandboxId).catch((error: unknown) => {
+  const sandbox = await sandboxForBinding(binding, expected.sandboxId).catch((error: unknown) => {
     if (error instanceof SandboxNotFoundError) throw new ExpectedSandboxMismatchError();
     throw error;
   });
@@ -439,7 +458,7 @@ export async function resolveRunSandbox(run: {
         return await resolveExpectedSandbox(expected, run.threadId);
       }
       if (!run.sandboxId) throw new Error("run has no sandbox");
-      return await (await resolveSandboxBindingForSandbox(run.sandboxId)).provider.get(run.sandboxId);
+      return await sandboxForBinding(await resolveSandboxBindingForSandbox(run.sandboxId), run.sandboxId);
     },
   );
 }

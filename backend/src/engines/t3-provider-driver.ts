@@ -17,6 +17,7 @@ import { sessionCapabilities } from "./capabilities";
 import {
   isRuntimeEnvironmentMissingSessionError,
   requestRuntimeEnvironment,
+  RuntimeEnvironmentRequestError,
 } from "./runtime-environment-client";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 import {
@@ -38,14 +39,15 @@ import {
   PersonalSandboxConnectionUnavailableError,
   resolveExpectedSandbox,
   resolveSandboxBindingForSandbox,
+  sandboxForBinding,
 } from "../sandboxes/binding";
+import { forgetLiveSandbox } from "./sandbox-runtime";
 import { compactCommandIdentityIsCurrent } from "./runtime-compact-contract";
 import {
   parseExpectedSandboxBinding,
   type ExpectedSandboxBinding,
 } from "../sandboxes/expected-binding";
 
-const RUNTIME_POLL_INTERVAL_MS = 125;
 // Bumped with the memory rules in the fresh-session prefix: a session bound before
 // them is stale, so its next turn starts fresh and reads them once.
 export const T3_SESSION_GENERATION = 3;
@@ -59,6 +61,13 @@ interface T3StartMetadata {
   readonly workspaceRoot: string;
   readonly runtimeMode: RuntimeMode;
   readonly createdAt: string;
+  /** The shell the caller read just before starting, so the start does not read it again. */
+  readonly shell?: RuntimeShellSnapshot;
+}
+
+function isRuntimeShellSnapshot(value: unknown): value is RuntimeShellSnapshot {
+  const shell = value as Partial<RuntimeShellSnapshot> | null;
+  return typeof shell === "object" && shell !== null && Array.isArray(shell.projects) && Array.isArray(shell.threads);
 }
 
 function isRuntimeMode(value: unknown): value is RuntimeMode {
@@ -80,11 +89,12 @@ function t3StartMetadata(metadata: Record<string, unknown> | undefined): T3Start
   const workspaceRoot = metadata?.workspaceRoot;
   const runtimeMode = metadata?.runtimeMode;
   const createdAt = metadata?.createdAt;
+  const shell = isRuntimeShellSnapshot(metadata?.shell) ? metadata.shell : undefined;
   return typeof workspaceRoot === "string" &&
     workspaceRoot.startsWith("/") &&
     isRuntimeMode(runtimeMode) &&
     typeof createdAt === "string"
-    ? { workspaceRoot, runtimeMode, createdAt }
+    ? { workspaceRoot, runtimeMode, createdAt, ...(shell ? { shell } : {}) }
     : null;
 }
 
@@ -103,7 +113,7 @@ async function resolveRuntime(
 ): Promise<SandboxHandle | null> {
   if (runtime.kind !== "sandbox") return null;
   if (expected) return await resolveExpectedSandbox(expected, threadId!);
-  return await (await resolveSandboxBindingForSandbox(runtime.id)).provider.get(runtime.id);
+  return await sandboxForBinding(await resolveSandboxBindingForSandbox(runtime.id), runtime.id);
 }
 
 interface T3ProviderDriverDependencies {
@@ -147,22 +157,30 @@ async function resolveDriverRuntime(
   }
 }
 
-async function waitForShellState(
-  sandbox: SandboxHandle,
+/**
+ * Run one driver operation on the runtime sandbox. The resolve may hand back a
+ * handle this process already verified; one that fails before the runtime
+ * answers is dropped and the operation runs once more on a full resolve. Every
+ * operation here is safe to repeat: reads are reads, and T3 answers a repeated
+ * command id with the receipt of the first.
+ */
+async function withDriverRuntime<T>(
+  dependencies: T3ProviderDriverDependencies,
+  runtime: HarnessRuntime,
+  metadata: Record<string, unknown> | undefined,
+  threadId: string | undefined,
   signal: AbortSignal,
-  ready: (shell: RuntimeShellSnapshot) => boolean,
-  description: string,
-): Promise<void> {
-  while (!signal.aborted) {
-    const shell = await requestRuntimeEnvironment<RuntimeShellSnapshot>(
-      sandbox,
-      { method: "GET", path: "/api/orchestration/shell" },
-      signal,
-    );
-    if (ready(shell)) return;
-    await Bun.sleep(RUNTIME_POLL_INTERVAL_MS);
+  operation: (sandbox: SandboxHandle) => Promise<T>,
+): Promise<T | null> {
+  const sandbox = await resolveDriverRuntime(dependencies, runtime, metadata, threadId);
+  if (!sandbox) return null;
+  try {
+    return await operation(sandbox);
+  } catch (error) {
+    if (signal.aborted || error instanceof RuntimeEnvironmentRequestError || !forgetLiveSandbox(sandbox)) throw error;
   }
-  throw new Error(`Provider runtime ${description} creation aborted`);
+  const fresh = await resolveDriverRuntime(dependencies, runtime, metadata, threadId);
+  return fresh ? await operation(fresh) : null;
 }
 
 function session(
@@ -187,22 +205,17 @@ async function readThreadSnapshot(
   metadata?: Record<string, unknown>,
   threadId?: string,
 ): Promise<{ readonly sandbox: SandboxHandle; readonly snapshot: RuntimeThreadSnapshot } | null> {
-  const sandbox = await resolveDriverRuntime(
-    dependencies,
-    currentSession.runtime,
-    metadata,
-    threadId,
-  );
-  if (!sandbox) return null;
-  const snapshot = await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
+  return await withDriverRuntime(dependencies, currentSession.runtime, metadata, threadId, signal, async (sandbox) => ({
     sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(currentSession.nativeSessionId)}`,
-    },
-    signal,
-  );
-  return { sandbox, snapshot };
+    snapshot: await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
+      sandbox,
+      {
+        method: "GET",
+        path: `/api/orchestration/threads/${encodeURIComponent(currentSession.nativeSessionId)}`,
+      },
+      signal,
+    ),
+  }));
 }
 
 function snapshotMatchesAcceptedRun(
@@ -359,60 +372,47 @@ export function makeT3ProviderDriver(
         reasoningEffort: request.reasoningEffort,
       };
       try {
-        const sandbox = await resolveDriverRuntime(
-          dependencies,
-          request.runtime,
-          request.metadata,
-          request.threadId,
-        );
-        if (!sandbox) {
-          return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
-        }
-        const shell = await dependencies.requestEnvironment<RuntimeShellSnapshot>(
-          sandbox,
-          { method: "GET", path: "/api/orchestration/shell" },
-          signal,
-        );
         const projectId = runtimeProjectId(ctx);
         const threadId = runtimeThreadId(ctx);
-        if (!shell.projects.some((project) => project.id === projectId)) {
-          await dependencies.requestEnvironment(
+        // T3 projects a dispatched command inside the transaction that accepts
+        // it, so an accepted create is already in the shell: no read-back poll.
+        const started = await withDriverRuntime(dependencies, request.runtime, request.metadata, request.threadId, signal, async (sandbox) => {
+          const shell = metadata.shell ?? await dependencies.requestEnvironment<RuntimeShellSnapshot>(
             sandbox,
-            {
-              method: "POST",
-              path: "/api/orchestration/dispatch",
-              payload: buildRuntimeProjectCreateCommand(ctx, metadata.workspaceRoot, metadata.createdAt),
-            },
+            { method: "GET", path: "/api/orchestration/shell" },
             signal,
           );
-          await waitForShellState(
-            sandbox,
-            signal,
-            (current) => current.projects.some((project) => project.id === projectId),
-            "project",
-          );
-        }
-        if (!shell.threads.some((thread) => thread.id === threadId)) {
-          await dependencies.requestEnvironment(
-            sandbox,
-            {
-              method: "POST",
-              path: "/api/orchestration/dispatch",
-              payload: buildRuntimeThreadCreateCommand(
-                ctx,
-                engine,
-                metadata.createdAt,
-                metadata.runtimeMode,
-              ),
-            },
-            signal,
-          );
-          await waitForShellState(
-            sandbox,
-            signal,
-            (current) => current.threads.some((thread) => thread.id === threadId),
-            "thread",
-          );
+          if (!shell.projects.some((project) => project.id === projectId)) {
+            await dependencies.requestEnvironment(
+              sandbox,
+              {
+                method: "POST",
+                path: "/api/orchestration/dispatch",
+                payload: buildRuntimeProjectCreateCommand(ctx, metadata.workspaceRoot, metadata.createdAt),
+              },
+              signal,
+            );
+          }
+          if (!shell.threads.some((thread) => thread.id === threadId)) {
+            await dependencies.requestEnvironment(
+              sandbox,
+              {
+                method: "POST",
+                path: "/api/orchestration/dispatch",
+                payload: buildRuntimeThreadCreateCommand(
+                  ctx,
+                  engine,
+                  metadata.createdAt,
+                  metadata.runtimeMode,
+                ),
+              },
+              signal,
+            );
+          }
+          return true;
+        });
+        if (!started) {
+          return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         }
         return { status: "ok", value: session(driver, request.runtime, threadId) };
       } catch (error) {
@@ -518,37 +518,36 @@ export function makeT3ProviderDriver(
           "The provider runtime currently accepts prompt steering through this seam",
         );
       }
+      const input = request.input;
       try {
-        const sandbox = await resolveDriverRuntime(
-          dependencies,
-          request.session.runtime,
-          request.metadata,
-          request.threadId,
-        );
-        if (!sandbox) {
+        const signal = request.signal ?? AbortSignal.timeout(30_000);
+        const dispatched = await withDriverRuntime(dependencies, request.session.runtime, request.metadata, request.threadId, signal, async (sandbox) => {
+          await dependencies.requestEnvironment(
+            sandbox,
+            {
+              method: "POST",
+              path: "/api/orchestration/dispatch",
+              payload: buildRuntimeTurnStartCommand(
+                {
+                  runId: request.runId,
+                  threadId: request.threadId,
+                  model: input.model,
+                  reasoningEffort: input.reasoningEffort,
+                },
+                engine,
+                input.text,
+                steerCreatedAt(request.metadata),
+                false,
+                steerRuntimeMode(request.metadata),
+              ),
+            },
+            signal,
+          );
+          return true;
+        });
+        if (!dispatched) {
           return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         }
-        await dependencies.requestEnvironment(
-          sandbox,
-          {
-            method: "POST",
-            path: "/api/orchestration/dispatch",
-            payload: buildRuntimeTurnStartCommand(
-              {
-                runId: request.runId,
-                threadId: request.threadId,
-                model: request.input.model,
-                reasoningEffort: request.input.reasoningEffort,
-              },
-              engine,
-              request.input.text,
-              steerCreatedAt(request.metadata),
-              false,
-              steerRuntimeMode(request.metadata),
-            ),
-          },
-          request.signal ?? AbortSignal.timeout(30_000),
-        );
         return { status: "ok" };
       } catch (error) {
         return driverError(

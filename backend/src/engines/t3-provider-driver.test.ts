@@ -16,6 +16,12 @@ import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 import { createSecretRedactor } from "../secrets/redact";
 import { PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
+import {
+  forgetLiveThreadSandbox,
+  getLiveSandbox,
+  getLiveThreadSandbox,
+  rememberLiveThreadSandbox,
+} from "./sandbox-runtime";
 
 function sessionFor(driver: ReturnType<typeof makeT3ProviderDriver>): HarnessSession {
   return {
@@ -334,6 +340,94 @@ describe("T3 provider drivers", () => {
       value: { nativeSessionId: "skynet-thread-thread-1" },
     });
     expect(requests).toEqual([{ method: "GET", path: "/api/orchestration/shell" }]);
+  });
+
+  test("a fresh session reuses the shell the caller read and creates without polling", async () => {
+    const requests: RuntimeEnvironmentRequest[] = [];
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+      requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest): Promise<T> => {
+        requests.push(request);
+        return { sequence: requests.length } as T;
+      },
+    });
+
+    await expect(driver.start({
+      runId: "run-1",
+      threadId: "thread-1",
+      runtime: { kind: "sandbox", id: "cube-t3-resume" },
+      metadata: {
+        workspaceRoot: "/root/work",
+        runtimeMode: "full-access",
+        createdAt: "2026-10-02T00:00:00.000Z",
+        shell: { projects: [], threads: [] },
+      },
+    })).resolves.toMatchObject({ status: "ok", value: { nativeSessionId: "skynet-thread-thread-1" } });
+    expect(requests.map((request) => [request.method, request.path, request.payload?.type])).toEqual([
+      ["POST", "/api/orchestration/dispatch", "project.create"],
+      ["POST", "/api/orchestration/dispatch", "thread.create"],
+    ]);
+  });
+
+  describe("a handle this process already verified", () => {
+    const threadId = "thread-driver-reuse";
+    const live = { id: "cube-t3-resume", providerKind: "cube" } as SandboxHandle;
+    const fresh = { id: "cube-t3-resume", providerKind: "cube" } as SandboxHandle;
+
+    function reusingDriver(failOnLive: Error) {
+      const used: SandboxHandle[] = [];
+      let resolutions = 0;
+      const driver = makeT3ProviderDriver("codex", {
+        // The real resolve hands back the live handle while this process holds one.
+        resolveRuntime: async (runtime) => {
+          resolutions += 1;
+          return getLiveSandbox(runtime.id) ?? fresh;
+        },
+        requestEnvironment: async <T>(sandbox: SandboxHandle): Promise<T> => {
+          used.push(sandbox);
+          if (sandbox === live) throw failOnLive;
+          return {} as T;
+        },
+      });
+      return { driver, used, resolutions: () => resolutions };
+    }
+
+    function steer(driver: ReturnType<typeof makeT3ProviderDriver>) {
+      return driver.steer({
+        runId: "run-1",
+        threadId: "thread-1",
+        session: sessionFor(driver),
+        input: { kind: "prompt", text: "continue" },
+      });
+    }
+
+    test("is dropped when it fails before the runtime answers, and the dispatch runs once more on a full resolve", async () => {
+      rememberLiveThreadSandbox(threadId, live);
+      const { driver, used, resolutions } = reusingDriver(new Error("envd connection reset"));
+      try {
+        await expect(steer(driver)).resolves.toEqual({ status: "ok" });
+        expect(used).toEqual([live, fresh]);
+        expect(resolutions()).toBe(2);
+        expect(getLiveThreadSandbox(threadId)).toBeNull();
+      } finally {
+        forgetLiveThreadSandbox(threadId);
+      }
+    });
+
+    test("is kept and not retried when the runtime itself answered", async () => {
+      rememberLiveThreadSandbox(threadId, live);
+      const { driver, used, resolutions } = reusingDriver(
+        new RuntimeEnvironmentRequestError("The provider runtime POST request failed (HTTP 409)", { status: 409 }),
+      );
+      try {
+        await expect(steer(driver)).resolves.toMatchObject({ status: "error", code: "steer_failed" });
+        expect(used).toEqual([live]);
+        expect(resolutions()).toBe(1);
+        expect(getLiveThreadSandbox(threadId)).toBe(live);
+      } finally {
+        forgetLiveThreadSandbox(threadId);
+      }
+    });
   });
 
   test("owns native cancel and recovery through the same driver session", async () => {
