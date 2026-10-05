@@ -65,13 +65,25 @@ export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
     };
   }, [cloud]);
   if (!sandboxId && !sandboxProvider && !run.run_location) return null;
+  return runLocationPresentation(run, runners, deployment);
+}
+
+/** The words, title and glyph for a run, from what it carries and what the
+ *  runner list and the config have named. The place is classified by its
+ *  identity, never by the words: a machine may be enrolled under any name,
+ *  "Cloud" included. */
+export function runLocationPresentation(
+  run: LocatedRun,
+  runners: readonly Runner[],
+  deployment: SandboxProviderName | null,
+): RunLocationLabel {
+  const { sandbox_id: sandboxId, sandbox_provider: sandboxProvider, run_location: runLocation } = run;
+  const machine = runOnMachine(sandboxId, sandboxProvider, runLocation);
   const names =
     deployment && deployment.provider === sandboxProvider
       ? { ...PROVIDER_NAMES, [deployment.provider]: deployment.label }
       : PROVIDER_NAMES;
-  const label = runnerLocationLabel(sandboxId, sandboxProvider, runners, run.run_location);
-  // The place is classified by its identity, never by the words: a machine may
-  // be enrolled under any name, "Cloud" included.
+  const label = runnerLocationLabel(sandboxId, sandboxProvider, runners, runLocation);
   const vendor = machine ? null : sandboxVendorLabel(sandboxProvider, names);
   return {
     label,
