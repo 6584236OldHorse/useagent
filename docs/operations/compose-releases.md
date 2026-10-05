@@ -43,28 +43,71 @@ candidates may overlap where their database/runtime contracts permit, but the
 backend may not: provider sealing and realtime fan-out remain process-local and
 `REQUIRE_SINGLE_BACKEND=true` must stay enabled.
 
-The backend cutover is therefore serialized:
+## Promote a release
 
-1. Close run admission and drain the active backend.
-2. Stop the active backend.
-3. Start the candidate backend on the inactive-color port.
-4. Run migration, loopback health, release fingerprint, and bounded smoke gates.
-5. Validate Caddy and atomically switch its upstream.
-6. Keep the prior image and environment ready, with its backend stopped.
+`deploy/promote.ts` is the production release path. It runs from an operator
+machine, or from the `promote.yml` workflow, over SSH. It consumes the
+`release-manifest.json` that `images.yml` publishes for a `main` commit (the
+commit plus three digest-pinned images) and promotes those digests side by
+side. The operator environment is the one documented in
+`systemd-compose-adoption.md`: `USEAGENT_PROMOTE_HOST`,
+`USEAGENT_PROMOTE_APP_DOMAIN`, `USEAGENT_PROMOTE_GATEWAY_DOMAIN`, and an SSH
+key or SSH config.
 
-Rollback stops the candidate backend, restarts the prior backend, verifies its
-loopback health, then reverses Caddy and reopens admission. Never disable the
-single-backend guard to simulate overlapping blue/green backends.
+```bash
+bun run deploy/promote.ts promote --manifest release-manifest.json
+```
+
+With admission open, the command pulls the images by digest, checks that every
+image revision matches the manifest commit, classifies the migration set as
+expansion-safe, runs the migration one-shot, and starts the inactive-color
+frontend and gateway beside the live ones on their own loopback ports.
+Admission then closes for at most 30 seconds: drain the live backend for at
+most 10 seconds, stop it, start the candidate backend on the inactive-color
+port, verify its loopback fingerprint, validate and reload Caddy onto the new
+color, verify the three public fingerprints, commit the release history, and
+reopen admission. The previous color's frontend and gateway stop last. The
+command is bounded to five minutes end to end and holds the host promotion
+lock (`promote.lock` under the state root) throughout, so two promotions never
+overlap. Nothing is built or synchronized on the host.
+
+A failure before admission closes stops the staged edge and changes nothing
+else. A failure after it compensates back to the previous release before
+admission reopens. A `failed-closed` history is recovered by rerunning the same
+command. `bun run deploy/promote.ts rollback` flips to the recorded previous
+release without pulling or migrating anything: it stops the candidate backend,
+restarts the prior backend, verifies its loopback health, then reverses Caddy
+and reopens admission. Never disable the single-backend guard to simulate
+overlapping blue/green backends.
+
+Flags:
+
+- `--skip-gates` (default) promotes without provider certification. This is
+  the fast path: no source sync, no parity preflight, no evidence cache, no
+  paid runs.
+- `--gates` runs the operator-side post-promotion canaries inline once the
+  release is live and admission is open: `product-child-post-promotion-smoke.ts`,
+  `hosted-release-canary.ts` in its post-promotion phase, then
+  `advertised-model-canary.ts`. They need `USEAGENT_COOKIE_FILE`; the public
+  origin is derived from `USEAGENT_PROMOTE_APP_DOMAIN`. The first failure rolls
+  the release back through the controller's own `rollback` and the command
+  exits nonzero. The host-side parity matrix never runs inline.
+- `--drain` (default) waits up to 10 seconds for in-flight runs before the
+  backend swap. `--no-drain` skips only that wait; admission still closes for
+  the swap window and the candidate backend's boot recovery reconciles the
+  runs that were interrupted.
+
+The final stdout line is one JSON object with `status`, `gates`, `drain`, and
+the timing metrics; gate output goes to stderr.
+
+Certification on demand and on a schedule lives in the `gates.yml` workflow. It
+runs the full canary matrix against the promoted release and reports the
+rollback command instead of gating the promotion. `promote.yml` wraps the
+command above for a chosen `main` commit.
 
 Do not run an in-place `docker compose up` against the active color as a release
 procedure. Do not include Cube, host PostgreSQL, memory, OpenConnector, or Caddy
-in the application project during the first cutover.
-
-The production Compose definition is a dormant foundation until the private
-serialized-cutover orchestrator, container UID/mount preflight, and rollback
-rehearsal are complete. In particular, candidate preflight must prove the pinned
-`codex` executable is present and the mounted `CODEX_APP_SERVER_HOME_ROOT` is
-writable by the backend container user.
+in the application project.
 
 The gateway environment must contain only gateway-owned configuration. Current
 computer/recording/repository tools still need the single deployment-selected
