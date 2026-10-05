@@ -47,23 +47,16 @@ test("skipping is remembered per person: in this browser when it stores, for thi
 
 import { watchLanding } from "./first-run";
 
-function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh]) {
+function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], draft = { present: false }) {
   const opened: number[] = [];
   let answer: (() => void) | undefined;
-  let typing: (() => void) | undefined;
-  let unsubscribed = 0;
   const cleanup = watchLanding({
     userId: "landing-user",
     listWorkspaces: () =>
       new Promise((resolve) => {
         answer = () => resolve(workspaces.filter((w): w is NonNullable<typeof w> => w !== undefined));
       }),
-    onInput: (handler) => {
-      typing = handler;
-      return () => {
-        unsubscribed += 1;
-      };
-    },
+    hasDraft: () => draft.present,
     open: () => opened.push(Date.now()),
   });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -74,24 +67,27 @@ function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh]) 
       answer?.();
       await settle();
     },
-    type: () => typing?.(),
-    unsubscribedTimes: () => unsubscribed,
   };
 }
 
-test("landing: the first-run page opens when the check answers before any typing", async () => {
+test("landing: the first-run page opens when the check answers and the composer is empty", async () => {
   const run = landing();
   await run.answer();
   expect(run.opened).toHaveLength(1);
   run.cleanup();
-  expect(run.unsubscribedTimes()).toBe(1);
 });
 
-test("landing: typing before the answer keeps the composer; the draft is never unmounted", async () => {
-  const run = landing();
-  run.type();
-  await run.answer();
-  expect(run.opened).toHaveLength(0);
+test("landing: a draft present when the answer arrives keeps the composer, whenever it was made", async () => {
+  // Typed while the session was still loading: the draft exists before the watch starts.
+  const early = landing([fresh], { present: true });
+  await early.answer();
+  expect(early.opened).toHaveLength(0);
+  // Typed, pasted, seeded by a menu action or an attachment after the watch started.
+  const draft = { present: false };
+  const late = landing([fresh], draft);
+  draft.present = true;
+  await late.answer();
+  expect(late.opened).toHaveLength(0);
 });
 
 test("landing: an unmount before the answer, or a workspace that is not on a first run, opens nothing", async () => {

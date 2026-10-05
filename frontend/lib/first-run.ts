@@ -37,30 +37,29 @@ export function markFirstRunSkipped(userId: string): void {
 
 /**
  * Watches a landing on the composer page: the first-run page opens only when
- * the workspace check answers yes before the person has typed anything, so a
- * slow answer never replaces a draft. Returns the cleanup for an unmount.
+ * the workspace check answers yes and the composer holds no draft at that
+ * moment, whenever the draft was made (while the session was still loading,
+ * from a deep link, from a menu action), so nothing is ever replaced from under
+ * a person. Returns the cleanup for an unmount.
  */
 export function watchLanding(deps: {
   readonly userId: string;
   readonly listWorkspaces: () => Promise<Workspace[]>;
-  /** Subscribes to the first input on the page; returns the unsubscribe. */
-  readonly onInput: (handler: () => void) => () => void;
+  /** The composer's own state: prompt text or attachments present right now. */
+  readonly hasDraft: () => boolean;
   readonly open: () => void;
 }): () => void {
   if (firstRunSkipped(deps.userId)) return () => {};
   let cancelled = false;
-  let typed = false;
-  const unsubscribe = deps.onInput(() => {
-    typed = true;
-  });
   deps
     .listWorkspaces()
     .then((workspaces) => {
-      if (!cancelled && !typed && firstRunApplies(workspaces.find((workspace) => workspace.active))) deps.open();
+      if (!cancelled && !deps.hasDraft() && firstRunApplies(workspaces.find((workspace) => workspace.active))) {
+        deps.open();
+      }
     })
     .catch(() => undefined); // the landing page stands whatever the answer
   return () => {
     cancelled = true;
-    unsubscribe();
   };
 }

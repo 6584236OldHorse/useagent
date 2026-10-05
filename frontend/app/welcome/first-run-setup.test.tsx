@@ -4,7 +4,7 @@ import {
   type AppRouterInstance,
 } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FirstRunSetup, resolveFirstRun } from "./first-run-setup";
+import { FirstRunSetup, invitationsFor, resolveFirstRun } from "./first-run-setup";
 
 const router = {
   push() {},
@@ -33,30 +33,32 @@ function render(initial: Parameters<typeof FirstRunSetup>[0]["initial"]) {
   );
 }
 
-test("a first run with a failed invitations read renders the page, never a redirect: the loop between / and /welcome cannot form", async () => {
-  let invitationReads = 0;
-  const load = await resolveFirstRun({
-    listWorkspaces: async () => [workspace],
-    fetchInvitations: async () => {
-      invitationReads += 1;
+test("a first run renders from the workspace read alone; a failed invitations read leaves the page up, never a redirect: the loop between / and /welcome cannot form", async () => {
+  const load = await resolveFirstRun(async () => [workspace]);
+  expect(load).toEqual({ kind: "ready", workspace, invitations: undefined });
+  // The page shows naming and the way on while invitations are still loading...
+  const loading = render(load);
+  expect(loading).toContain("Loading invitations");
+  expect(loading).toContain("Save name");
+  expect(loading).toContain("Continue to workspace");
+  // ...and stays up with that section in an error state when their read fails.
+  let reads = 0;
+  expect(
+    await invitationsFor("org-1", async () => {
+      reads += 1;
       throw new Error("invitations 503");
-    },
-  });
-  expect(load).toEqual({ kind: "ready", workspace, invitations: null });
-  expect(invitationReads).toBe(1);
-  // The page it produces still offers the way on.
-  const html = render(load);
-  expect(html).toContain("Could not load the invitations.");
-  expect(html).toContain("Continue to workspace");
-  expect(html).toContain("Save name");
+    }),
+  ).toBeNull();
+  expect(reads).toBe(1);
+  const failed = render({ kind: "ready", workspace, invitations: null });
+  expect(failed).toContain("Could not load the invitations.");
+  expect(failed).toContain("Continue to workspace");
+  expect(failed).toContain("Save name");
 });
 
 test("a failed workspace read renders too, with a retry and a way on, instead of sending the person away", async () => {
-  const load = await resolveFirstRun({
-    listWorkspaces: async () => {
-      throw new Error("workspaces 503");
-    },
-    fetchInvitations: async () => ({ organizationId: "org-1", invitations: [] }),
+  const load = await resolveFirstRun(async () => {
+    throw new Error("workspaces 503");
   });
   expect(load).toEqual({ kind: "unavailable" });
   const html = render(load);
@@ -67,27 +69,12 @@ test("a failed workspace read renders too, with a retry and a way on, instead of
 });
 
 test("only a workspace read that says so sends the person to the landing page", async () => {
-  expect(
-    await resolveFirstRun({
-      listWorkspaces: async () => [{ ...workspace, defaultName: false }],
-      fetchInvitations: async () => ({ organizationId: "org-1", invitations: [invitation] }),
-    }),
-  ).toEqual({ kind: "not-first-run" });
+  expect(await resolveFirstRun(async () => [{ ...workspace, defaultName: false }])).toEqual({ kind: "not-first-run" });
 });
 
 test("invitations answered for another workspace are dropped, not shown under this one", async () => {
-  expect(
-    await resolveFirstRun({
-      listWorkspaces: async () => [workspace],
-      fetchInvitations: async () => ({ organizationId: "org-2", invitations: [invitation] }),
-    }),
-  ).toEqual({ kind: "ready", workspace, invitations: null });
-  expect(
-    await resolveFirstRun({
-      listWorkspaces: async () => [workspace],
-      fetchInvitations: async () => ({ organizationId: "org-1", invitations: [invitation] }),
-    }),
-  ).toEqual({ kind: "ready", workspace, invitations: [invitation] });
+  expect(await invitationsFor("org-1", async () => ({ organizationId: "org-2", invitations: [invitation] }))).toBeNull();
+  expect(await invitationsFor("org-1", async () => ({ organizationId: "org-1", invitations: [invitation] }))).toEqual([invitation]);
 });
 
 test("the first-run page offers the workspace name, the invitations and a way on; no allowance, no provider choice", () => {

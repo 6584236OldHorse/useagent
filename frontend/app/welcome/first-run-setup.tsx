@@ -23,8 +23,13 @@ import { firstRunApplies, markFirstRunSkipped } from "@/lib/first-run";
  */
 
 export type FirstRunLoad =
-  /** On a first run; invitations are null when their read failed or answered for another workspace. */
-  | { readonly kind: "ready"; readonly workspace: Workspace; readonly invitations: readonly PendingInvitation[] | null }
+  /** On a first run; invitations are undefined while they load and null when
+   *  their read failed or answered for another workspace. */
+  | {
+      readonly kind: "ready";
+      readonly workspace: Workspace;
+      readonly invitations: readonly PendingInvitation[] | null | undefined;
+    }
   /** The workspace read succeeded and says the landing page is the place for this person. */
   | { readonly kind: "not-first-run" }
   /** The workspace read failed; the page stays and offers a retry and a way on. */
@@ -35,7 +40,10 @@ type InvitationsRead = () => Promise<{ organizationId: string; invitations: Pend
 /** The workspace's pending invitations, or null when the read failed or the
  *  active workspace changed between the two requests (a mismatched answer is
  *  dropped rather than shown under the wrong name). */
-async function invitationsFor(workspaceId: string, read: InvitationsRead): Promise<readonly PendingInvitation[] | null> {
+export async function invitationsFor(
+  workspaceId: string,
+  read: InvitationsRead = fetchInvitations,
+): Promise<readonly PendingInvitation[] | null> {
   try {
     const { organizationId, invitations } = await read();
     return organizationId === workspaceId ? invitations : null;
@@ -44,22 +52,23 @@ async function invitationsFor(workspaceId: string, read: InvitationsRead): Promi
   }
 }
 
-/** What /welcome shows. Only a workspace read that succeeds and says "not a
- *  first run" sends the person to the landing page; a failed read of either
- *  kind renders here, so a failing request can never bounce them between the
- *  landing page (whose own check succeeds) and this one. */
+/** What /welcome shows, from the workspace read alone. Only a read that
+ *  succeeds and says "not a first run" sends the person to the landing page; a
+ *  failed read renders here, so a failing request can never bounce them
+ *  between the landing page (whose own check succeeds) and this one. The
+ *  invitations load beside the page afterwards and never hold it up. */
 export async function resolveFirstRun(
-  deps: { listWorkspaces: () => Promise<Workspace[]>; fetchInvitations: InvitationsRead } = { listWorkspaces, fetchInvitations },
+  read: () => Promise<Workspace[]> = listWorkspaces,
 ): Promise<FirstRunLoad> {
   let workspaces: Workspace[];
   try {
-    workspaces = await deps.listWorkspaces();
+    workspaces = await read();
   } catch {
     return { kind: "unavailable" };
   }
   const workspace = workspaces.find((row) => row.active);
   if (!firstRunApplies(workspace)) return { kind: "not-first-run" };
-  return { kind: "ready", workspace, invitations: await invitationsFor(workspace.id, deps.fetchInvitations) };
+  return { kind: "ready", workspace, invitations: undefined };
 }
 
 export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
@@ -84,10 +93,13 @@ export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
     }
     let cancelled = false;
     setState(undefined);
-    void resolveFirstRun().then((next) => {
+    void resolveFirstRun().then(async (next) => {
       if (cancelled) return;
       setState(next);
-      if (next.kind === "ready") setName(next.workspace.name);
+      if (next.kind !== "ready") return;
+      setName(next.workspace.name);
+      const invitations = await invitationsFor(next.workspace.id);
+      if (!cancelled) setState((current) => (current?.kind === "ready" ? { ...current, invitations } : current));
     });
     return () => {
       cancelled = true;
@@ -143,7 +155,12 @@ export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
     setError(null);
     try {
       await renameWorkspace(workspace.id, trimmed);
-      setState({ ...state, workspace: { ...workspace, name: trimmed, defaultName: false } });
+      // A functional update: an invitation refresh that landed meanwhile stays.
+      setState((current) =>
+        current?.kind === "ready"
+          ? { ...current, workspace: { ...current.workspace, name: trimmed, defaultName: false } }
+          : current,
+      );
       // Typing during the save leaves unsaved text in the field: no "Saved" beside it.
       if (typed.current.trim() === trimmed) setSaved(true);
     } catch (err) {
@@ -154,7 +171,7 @@ export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
   };
 
   const refreshInvitations = async () => {
-    const next = await invitationsFor(workspace.id, fetchInvitations);
+    const next = await invitationsFor(workspace.id);
     setState((current) => (current?.kind === "ready" ? { ...current, invitations: next } : current));
   };
 
@@ -200,7 +217,11 @@ export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
               Admins manage people, secrets and machines. Members run work.
             </p>
           </div>
-          {invitations === null ? (
+          {invitations === undefined ? (
+            <p role="status" className="text-caption-1-regular text-text-tertiary">
+              Loading invitations...
+            </p>
+          ) : invitations === null ? (
             <div className="flex items-center gap-3">
               <p role="alert" className="text-caption-1-regular text-text-error-primary">
                 Could not load the invitations.
