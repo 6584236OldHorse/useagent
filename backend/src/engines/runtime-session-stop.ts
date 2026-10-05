@@ -28,10 +28,19 @@ export function buildRuntimeSessionStopCommand(
  *  command arrived (a turn queued since the command's time, a session coming
  *  alive, an earlier turn that never settled), or that command id was declined
  *  before. Either way no stop happened, and neither is the current turn's
- *  failure. Body shape: `{reason, cause: {_tag, commandType, commandId, detail}}`. */
+ *  failure. The HTTP dispatch route answers every refused command with one
+ *  body and no cause, `{_tag: "EnvironmentInternalError", reason:
+ *  "orchestration_dispatch_failed"}`, so for this command it reads as declined;
+ *  a body that names its cause (`{reason, cause: {_tag, commandType, commandId}}`)
+ *  is judged by that cause. */
 export function runtimeDeclinedSessionStop(error: unknown): boolean {
   if (!(error instanceof RuntimeEnvironmentRequestError)) return false;
   const cause = error.response?.cause;
+  if (cause === undefined) {
+    return error.status === 500 &&
+      error.response?._tag === "EnvironmentInternalError" &&
+      error.response.reason === "orchestration_dispatch_failed";
+  }
   if (!cause || typeof cause !== "object") return false;
   const { _tag, commandType, commandId } = cause as Record<string, unknown>;
   if (_tag === "OrchestrationCommandInvariantError") return commandType === "thread.session.stop";

@@ -320,6 +320,40 @@ describe("T3 run adapter gate", () => {
     expect(calls).toEqual(["GET /api/orchestration/threads/thread-1?turnLimit=2", "POST /api/orchestration/dispatch"]);
   });
 
+  test("proceeds without acknowledgement on the runtime's real HTTP refusal, which carries no cause", async () => {
+    // Captured from the v0.0.45 runtime (fork 762f4b14b328): an onlyIfSettled stop on a
+    // thread that was never settled answers HTTP 500 with this exact body.
+    const captured = JSON.parse(
+      '{"_tag":"EnvironmentInternalError","code":"internal_error","reason":"orchestration_dispatch_failed","traceId":"01338d3b1ba68072b1b71eb01c162f0c"}',
+    ) as Readonly<Record<string, unknown>>;
+    const calls: string[] = [];
+    const applied = await reloadRetainedOpenCodeSession({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      threadId: "thread-1",
+      threadExists: true,
+      ...reloadCommandState,
+      dependencies: {
+        requestEnvironment: async <T>(
+          _sandbox: SandboxHandle,
+          request: RuntimeEnvironmentRequest,
+        ) => {
+          calls.push(`${request.method} ${request.path}`);
+          if (request.method === "POST") {
+            throw new RuntimeEnvironmentRequestError("The provider runtime POST request failed (HTTP 500)", {
+              status: 500,
+              response: captured,
+            });
+          }
+          return reloadSnapshot("ready", "completed") as T;
+        },
+        wait: async () => {},
+      } satisfies OpenCodeSessionReloadDependencies,
+    });
+    expect(applied).toBe(false);
+    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1?turnLimit=2", "POST /api/orchestration/dispatch"]);
+  });
+
   test("a refusal that is not about the stop still fails the reload", async () => {
     let reads = 0;
     await expect(reloadRetainedOpenCodeSession({

@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildDesktopReadinessCommand } from "./desktop-workstation";
 import { buildRuntimeEnvironmentBootScript, desktopLaunchPath, runtimeEnvironmentBootPath } from "./runtime-environment-boot";
 import { buildRuntimeEnvironmentAuthenticationCommand } from "./runtime-environment-client";
 import { buildRuntimeEnvironmentLaunchCommand, buildRuntimeEnvironmentReadinessCommand } from "./runtime-environment";
+import { sandboxRuntimeLayout } from "../sandboxes/provider";
 
 describe("sandbox boot entrypoint", () => {
   const env = { RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" };
@@ -52,5 +56,27 @@ describe("sandbox boot entrypoint", () => {
     expect(local).toContain('export HOME="/home/user"');
     expect(local).toContain('>"/home/user/.skynet/t3/boot.log"');
     expect(local).not.toContain("/root/");
+  });
+
+  test("restores the image's Bun to 755 before the runtime starts, so the plane's probe passes without an upload", async () => {
+    const cube = buildRuntimeEnvironmentBootScript({}, sandboxRuntimeLayout("cube"));
+    const line = '[ -f "/usr/local/bin/bun" ] && chmod 755 "/usr/local/bin/bun" 2>/dev/null || true';
+    expect(cube).toContain(line);
+    expect(cube.indexOf(line)).toBeLessThan(cube.indexOf("nohup sh -c"));
+    const directory = await mkdtemp(join(tmpdir(), "useagent-boot-bun-"));
+    try {
+      const bun = join(directory, "bun");
+      await Bun.write(bun, "#!/bin/sh\n");
+      await chmod(bun, 0o777);
+      const script = buildRuntimeEnvironmentBootScript({}, { home: directory, workdir: join(directory, "work"), runsAsRoot: false, bunExecutable: bun });
+      const chmodLine = script.split("\n").find((candidate) => candidate.includes("chmod 755"))!;
+      expect(Bun.spawnSync(["sh", "-c", chmodLine]).exitCode).toBe(0);
+      expect((await stat(bun)).mode & 0o777).toBe(0o755);
+      // A layout whose Bun is missing boots on.
+      await rm(bun);
+      expect(Bun.spawnSync(["sh", "-c", chmodLine]).exitCode).toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
