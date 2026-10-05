@@ -53,6 +53,7 @@ import {
 } from "@/components/chat/turn-trace-model";
 import { TurnWindow } from "@/components/chat/turn-window";
 import { CaptureDegradedNote, FailedNote } from "@/components/chat/turn-notices";
+import { useChildSteps } from "@/components/chat/use-child-steps";
 
 export { AgentAnswer } from "@/components/chat/agent-answer";
 export {
@@ -216,8 +217,11 @@ const TurnBlock = memo(function TurnBlock({
   canonicalTimeline: boolean;
 }) {
   const { run, steps, status, summary, live, liveText, liveReasoning } = turn;
+  // The steps a subagent ran render under its row in the fold below, never as
+  // the parent's own work: the same attribution the fold reads.
+  const childSteps = useChildSteps(turn);
   // One trace per turn: open while a plain thread's turn works, folded once it settled (and always for a bot).
-  const trace = turnTraceContext(turn, !assistantIdentity && live);
+  const trace = turnTraceContext(turn, !assistantIdentity && live, childSteps);
   // Capture whether this turn was streaming when it first mounted, so its
   // summary typewriters in on arrival but settled history renders instantly.
   const [wasLive] = useState(() => live);

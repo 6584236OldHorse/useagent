@@ -3,7 +3,7 @@ import type { ThreadRelationship } from "@useagent/agent-client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StoredCanonicalEvent } from "./canonical-timeline";
 import type { HandoffReceipt } from "./handoff-receipts";
-import type { ApiRun, RunStatus } from "./types";
+import type { ApiStep, ApiRun, RunStatus } from "./types";
 
 const { Conversation } = await import("./conversation");
 type Turn = import("./conversation").Turn;
@@ -534,4 +534,48 @@ test("durable OpenCode todowrite fallback renders the checklist instead of a gen
   expect(html).toContain("Create components");
   expect(html).toContain("Verify rendering");
   expect(html).not.toContain('data-session-ui="work-entry-row"');
+});
+
+test("a subagent's steps render once, under its row in the fold, never in the parent's trace", () => {
+  const step = (id: string, idx: number, kind: ApiStep["kind"], label: string, chip: string | null, code: Record<string, unknown>): ApiStep => ({
+    id,
+    run_id: "run-child",
+    idx,
+    kind,
+    label,
+    chip,
+    code_json: JSON.stringify(code),
+    created_at: `2026-08-17T09:00:0${idx}Z`,
+  });
+  const steps = [
+    step("spawn", 0, "task", "Subagent - k6 load test", "subagent", {
+      tool: "task",
+      input: { description: "k6 load test" },
+      native: { sessionID: "ses_root", callID: "call-k6", childSessionID: "ses_k6" },
+    }),
+    step("nested", 1, "command", "k6 run", null, {
+      tool: "bash",
+      input: { command: "k6 run loadtest.js" },
+      output: "41% throttled",
+      exit_code: 0,
+      duration_ms: 4_300,
+      native: { sessionID: "ses_k6" },
+    }),
+    step("own", 2, "command", "git status", null, {
+      tool: "bash",
+      input: { command: "git status" },
+      output: "clean",
+      native: { sessionID: "ses_root" },
+    }),
+  ];
+  const html = render([makeTurn("run-child", "running", undefined, steps)]);
+  const [trace, fold] = html.split('data-testid="subagents-fold"');
+  // The spawn stays the parent's row; the child's command belongs to the child.
+  expect(trace).toContain("k6 load test");
+  expect(trace).toContain(">git status<");
+  expect(trace).not.toContain("k6 run loadtest.js");
+  expect(fold).toContain('data-testid="subagent-fold-row"');
+  expect(fold).toContain(">k6 run loadtest.js<");
+  expect(fold).toContain(">4.3s<");
+  expect(html.match(/k6 run loadtest\.js/g)).toHaveLength(1);
 });

@@ -303,6 +303,16 @@ describe("trace rows", () => {
     expect(gitLog?.body?.kind).toBe("entry");
   });
 
+  test("steps a subagent ran are left to its row; the parent's own last step is the running one", () => {
+    const rows = stepRows(traceRowsFromWork([GIT_LOG, TYPECHECK], true, new Set(["s2"])));
+    expect(rows.map((row) => [row.key, row.status])).toEqual([["s1", "running"]]);
+    const work = [RECALL, GIT_LOG, MEMORY_SEARCH];
+    const own = traceRowsFromWork(work, false, new Set(["s1"]));
+    expect(traceHeader({ live: false, rows: own, work, durationMs: null }).detail).toBe(
+      "called 1 tool",
+    );
+  });
+
   test("while live the last node is the running row; a failure is never running", () => {
     const rows = stepRows(traceRowsFromWork([RECALL, GIT_LOG, MEMORY_SEARCH], true));
     expect(rows.map((row) => row.status)).toEqual(["done", "done", "running"]);

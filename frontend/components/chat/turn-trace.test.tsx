@@ -309,6 +309,15 @@ describe("turn trace", () => {
     expect(html).toContain(">generated-report.ts<");
   });
 
+  test("a subagent's steps never render as the parent's rows", () => {
+    const html = renderToStaticMarkup(
+      <Timeline nodes={NODES} live={false} trace={{ ...PLAIN, childSteps: new Set(["s2"]) }} />,
+    );
+    expect(rows(html)).toHaveLength(3);
+    expect(html).not.toContain("git log --since=yesterday");
+    expect(html).toContain(">· called 1 tool · 3m 12.0s<");
+  });
+
   test("a turn without work or reasoning renders no header at all", () => {
     const html = renderToStaticMarkup(<Timeline nodes={[ANSWER]} live={false} trace={PLAIN} />);
     expect(html).not.toContain('data-testid="turn-trace"');

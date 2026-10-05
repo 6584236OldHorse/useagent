@@ -383,16 +383,25 @@ const isBoot = (node: TimelineNode): node is Extract<TimelineNode, { kind: "tool
   node.kind === "tool" && deriveTrace(node.step).accent === "boot";
 
 /** The trace rows of a turn's work; while live the LAST node is the running
- *  one. Consecutive sandbox lifecycle steps fold into one boot row. */
-export function traceRowsFromWork(work: readonly TimelineNode[], live: boolean): TraceRow[] {
+ *  one. Consecutive sandbox lifecycle steps fold into one boot row. Steps a
+ *  subagent ran (`childSteps`, the fold's own attribution) render under that
+ *  child's row, never here as the parent's work. */
+export function traceRowsFromWork(
+  work: readonly TimelineNode[],
+  live: boolean,
+  childSteps?: ReadonlySet<string>,
+): TraceRow[] {
   const rows: TraceRow[] = [];
   let boot: Extract<TimelineNode, { kind: "tool" }>[] = [];
   const flushBoot = (running: boolean) => {
     if (boot.length > 0) rows.push(bootRow(boot, running));
     boot = [];
   };
-  for (const [index, node] of work.entries()) {
-    const last = index === work.length - 1;
+  const own = childSteps
+    ? work.filter((node) => !(node.kind === "tool" && childSteps.has(node.step.id)))
+    : work;
+  for (const [index, node] of own.entries()) {
+    const last = index === own.length - 1;
     if (isBoot(node)) {
       boot.push(node);
       if (last) flushBoot(live);

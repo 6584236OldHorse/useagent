@@ -300,6 +300,9 @@ export interface TraceContext {
   readonly durationMs: number | null;
   readonly defaultOpen: boolean;
   readonly failure?: TurnFailure | null;
+  /** Steps a subagent ran: they render under its row in the subagents fold,
+   *  never as the parent's own work. */
+  readonly childSteps?: ReadonlySet<string>;
 }
 
 const DEFAULT_TRACE: TraceContext = { durationMs: null, defaultOpen: true };
@@ -313,8 +316,9 @@ export function turnTraceContext(
     steps: readonly ApiStep[];
   },
   defaultOpen: boolean,
+  childSteps?: ReadonlySet<string>,
 ): TraceContext {
-  return { durationMs: turn.run.duration_ms, defaultOpen, failure: turnFailure(turn) };
+  return { durationMs: turn.run.duration_ms, defaultOpen, failure: turnFailure(turn), childSteps };
 }
 
 interface TimelineProps {
@@ -350,9 +354,9 @@ export function Timeline({
   // A failed run closes its rows with the terminal failure, so even a run that
   // failed before any work still traces why.
   const rows = useMemo(() => {
-    const workRows = traceRowsFromWork(work, live);
+    const workRows = traceRowsFromWork(work, live, trace.childSteps);
     return failure ? [...workRows, failureRow(failure)] : workRows;
-  }, [work, live, failure]);
+  }, [work, live, failure, trace.childSteps]);
   // Durable file.changed receipts live in the closing tail, while edit/write
   // tool calls live in work. Aggregate the complete turn so either source feeds
   // the same compact changed-files strip.
