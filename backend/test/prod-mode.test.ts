@@ -66,6 +66,33 @@ describe("production mode: fail closed", () => {
     expect(runs.status).toBe(200);
   });
 
+  test("existing password accounts can sign in but new accounts stay blocked", async () => {
+    const email = `${uid("existing-password")}@example.com`;
+    const password = "password-1234";
+    const seeded = await seedInDev(() =>
+      fetchApi("/api/auth/sign-up/email", {
+        method: "POST",
+        body: { name: "Existing Password User", email, password },
+      }),
+    );
+    expect(seeded.status).toBe(200);
+
+    const signedIn = await fetchApi("/api/auth/sign-in/email", {
+      method: "POST",
+      body: { email, password },
+    });
+    expect(signedIn.status).toBe(200);
+    const blocked = await fetchApi("/api/auth/sign-up/email", {
+      method: "POST",
+      body: {
+        name: "Blocked Password User",
+        email: `${uid("blocked-password")}@example.com`,
+        password,
+      },
+    });
+    expect(blocked.status).toBe(403);
+  });
+
   test("a session that belongs to no org → 403 no_organization", async () => {
     // Sign up (which auto-creates a personal org), then strip the membership to
     // simulate a genuinely org-less session (e.g. its only org was deleted): the

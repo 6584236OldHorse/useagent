@@ -1,13 +1,13 @@
 import { Hono } from "hono";
 import { auth } from "../auth";
-import { allowDevOrg, googleAuthEnabled, selfSignupEnabled } from "../env";
+import { allowDevOrg, googleAuthEnabled } from "../env";
 import type { AppEnv } from "../http";
 
 const routes = new Hono<AppEnv>();
 routes.get("/api/auth/provider-config", (c) =>
   c.json({
     google: googleAuthEnabled(),
-    emailPassword: selfSignupEnabled(),
+    emailPassword: true,
     allowDevOrg: allowDevOrg(),
   }),
 );

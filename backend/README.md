@@ -216,7 +216,7 @@ The important variables are:
 - `BETTER_AUTH_URL=http://localhost:3201` for auth redirects and
   `BETTER_AUTH_SECRET` for session signing. Set `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET` for Google sign-in. Production accepts existing users
-  only; email/password authentication is limited to development/test mode.
+  only; their email/password sign-in remains available while Google is optional.
 - `ENABLED_ENGINES` to opt extra engines into the backend picker.
 - `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
@@ -243,7 +243,7 @@ The important variables are:
 - The provider gateway and knowledge gateway are real backend services, not placeholders.
 - The worker routes production turns through the provider registry. Codex, Claude Code, OpenCode, and Pi retain their native `ProviderDriver` lifecycles on every supported sandbox provider.
 - Daytona, Cube, Box and an enrolled developer's machine (`local`) all run real sandboxes, with the capability differences in the matrix above.
-- Better Auth owns Google sign-in and organizations; existing local user, organization and membership IDs remain the tenancy model. Public signup is closed.
+- Better Auth owns sign-in and organizations; existing local user, organization and membership IDs remain the tenancy model. Existing-account password sign-in and configured Google sign-in are available; public signup is closed.
 - Desktop readiness and repair cover noVNC, RFB, the XFCE process set, browser CDP, and the restricted CDP relays. Failure degrades the advertised capability instead of failing the coding run.
 
 ### Bounded Roadmap

@@ -58,14 +58,14 @@ afterAll(async () => {
 });
 
 test("Google links a verified existing user and rejects an unknown user in production", async () => {
-  expect(auth.options.emailAndPassword?.enabled).toBe(false);
+  expect(auth.options.emailAndPassword).toMatchObject({ enabled: true, disableSignUp: true });
   process.env.NODE_ENV = "production";
   process.env.GOOGLE_CLIENT_ID = "google-test-client";
   process.env.GOOGLE_CLIENT_SECRET = "google-test-secret";
   const config = await handleAuthRequest(
     new Request("http://localhost:3211/api/auth/provider-config"),
   );
-  expect(await config.json()).toMatchObject({ google: true, emailPassword: false });
+  expect(await config.json()).toMatchObject({ google: true, emailPassword: true });
   for (const [name, value] of Object.entries(prior)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;

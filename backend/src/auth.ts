@@ -13,25 +13,25 @@ import {
 } from "./env";
 
 /**
- * Better Auth server with Google, organizations, and development-only password
- * fixtures. Production user creation is rejected; verified Google identities
- * can only link to an existing local user.
+ * Better Auth server with Google, existing-account password sign-in, and
+ * organizations. Production user creation is rejected; verified Google
+ * identities can only link to an existing local user.
  */
 export function createAuthServer() {
   const google = googleAuthConfig();
-  const allowPassword = selfSignupEnabled();
+  const allowSignup = selfSignupEnabled();
   return betterAuth({
     baseURL: env.BETTER_AUTH_URL,
     basePath: "/api/auth",
     secret: env.BETTER_AUTH_SECRET,
     database: drizzleAdapter(db, { provider: "pg", schema }),
-    emailAndPassword: { enabled: allowPassword, disableSignUp: !allowPassword },
+    emailAndPassword: { enabled: true, disableSignUp: !allowSignup },
     socialProviders: google
       ? {
           google: {
             clientId: google.clientId,
             clientSecret: google.clientSecret,
-            disableSignUp: !allowPassword,
+            disableSignUp: !allowSignup,
           },
         }
       : {},
