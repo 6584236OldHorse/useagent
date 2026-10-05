@@ -112,8 +112,12 @@ export function createTurnProjector(input: {
             fence: runSettlementFence(ctx.runId),
           });
         } catch (error) {
+          // The marker goes with the failed write, whatever failed it, so the
+          // activity stays unseen for the next projection (the stop cleanup's
+          // re-read, a continuation) instead of silently lost.
+          if (known) revisions.set(activity.id, known);
+          else revisions.delete(activity.id);
           if (!(error instanceof CaptureFenceError)) throw error;
-          revisions.delete(activity.id);
           sealed = true;
           console.info(`[turn-projector] run ${ctx.runId} is settled; projection stopped`);
           break;

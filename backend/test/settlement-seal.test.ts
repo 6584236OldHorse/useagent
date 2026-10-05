@@ -363,3 +363,56 @@ test("an older snapshot resuming after the stop cleanup applies nothing older ev
   expect(await priceRunUsage(runId)).toMatchObject({ cost: 0.5, tokens: 30, source: "usage" });
 });
 
+// A capture the database refuses leaves the activity unseen, so the stop
+// cleanup's re-read captures it once the database answers again.
+test("a capture the database refused is captured again by the stop cleanup instead of being marked as seen", async () => {
+  const session = await createOrgSession("seal-capture-fail");
+  const [who] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, session.orgId));
+  const runId = `seal_capfail_${crypto.randomUUID()}`;
+  await db.insert(runs).values({
+    id: runId, orgId: session.orgId, userId: who!.userId, prompt: "capture me", model: "claude-opus-5",
+    engine: "claude", status: "running", threadId: runId, origin: "internal:e2e",
+  });
+  const ctx = {
+    runId, threadId: runId, signal: new AbortController().signal,
+    emit: async () => "step-1",
+    setSummary() {},
+  } as unknown as EngineRunContext;
+  const projector = createTurnProjector({ ctx, redact: createSecretRedactor([]), engine: "codex", seen: new Map() });
+  const snapshot = {
+    snapshotSequence: 2,
+    thread: {
+      id: `skynet-thread-${runId}`,
+      latestTurn: { turnId: "turn-1", state: "completed" as const, assistantMessageId: null },
+      messages: [],
+      activities: [{
+        id: "tool-a", tone: "tool" as const, kind: "tool.completed", summary: "Tool tool-a",
+        payload: { toolCallId: "tool-a", status: "completed", typedUsage: { inputTokens: 10, outputTokens: 5, costUsd: 0.4 } },
+        turnId: "turn-1", sequence: 1,
+      }],
+      session: null,
+    },
+  };
+  // Every capture for this run fails while the trigger stands.
+  await db.execute(sql.raw(`
+    create or replace function pe_refuse_${runId.replaceAll("-", "_")}() returns trigger language plpgsql as $$
+    begin raise exception 'synthetic capture failure'; end $$`));
+  await db.execute(sql.raw(`
+    create or replace trigger pe_refuse before insert on provider_events
+    for each row when (new.run_id = '${runId}') execute function pe_refuse_${runId.replaceAll("-", "_")}()`));
+  try {
+    await expect(projector.apply(snapshot)).rejects.toThrow();
+  } finally {
+    await db.execute(sql`drop trigger if exists pe_refuse on provider_events`);
+  }
+  expect(await db.select({ id: providerEvents.id }).from(providerEvents).where(eq(providerEvents.runId, runId))).toHaveLength(0);
+  // The database answers again: the cleanup's re-read captures the activity.
+  const landed = await settleStoppedTurnUsage({
+    cancel: async () => undefined,
+    read: async () => snapshot,
+    apply: (snap, signal) => projector.apply(snap, undefined, { signal }),
+  });
+  expect(landed).toBe(true);
+  await drainProviderEvents(runId);
+  expect(await priceRunUsage(runId)).toMatchObject({ cost: 0.4, tokens: 15, source: "usage" });
+});
