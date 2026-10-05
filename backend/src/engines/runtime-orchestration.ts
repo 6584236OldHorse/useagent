@@ -13,6 +13,7 @@ import {
   type ProviderQuestionRequest,
 } from "./provider-question";
 import { approvalEventId, runtimeApprovalRequest } from "./runtime-approval";
+import { runtimeUsageProviderEvent } from "./runtime-usage-frame";
 import {
   firstSemanticT3ToolName,
   t3SummaryToolIdentity,
@@ -749,7 +750,7 @@ export function runtimeActivityProviderEvent(
     : activity.kind === "user-input.resolved" && requestId
       ? "question.replied"
       : `t3.activity.${activity.kind}`;
-  return {
+  return runtimeUsageProviderEvent(ctx, sessionId, activity, redact) ?? {
     id: approval
       ? approvalEventId(ctx.runId, approval.id, "requested")
       : activity.kind === "approval.resolved" && requestId

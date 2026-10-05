@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   deriveChildFidelity,
   deriveThreadContext,
+  latestThreadContext,
   NATIVE_SCHEMA_VERSION,
   type NativeFrame,
   parseNativeFrame,
@@ -355,5 +356,33 @@ describe("deriveThreadContext", () => {
     ];
     expect(deriveThreadContext(frames, new Set())).toEqual({ used: 700, cached: 0, window: null });
     expect(deriveThreadContext([parsed({ eventType: "part.text" })], new Set())).toBeNull();
+  });
+
+  test("reads the runtime lane's context-window frame with Codex app-server numbers", () => {
+    // The frame backend/test/runtime-usage-frame.test.ts proves the runtime
+    // projector stores for a recorded Codex thread/tokenUsage/updated notification.
+    const frame = finish({
+      eventId: "pe_run-1_t3_evt-usage-3",
+      seq: 3,
+      provider: "t3",
+      native: {
+        sessionId: "skynet-thread-thread-1",
+        parentSessionId: null,
+        messageId: null,
+        partId: "evt-usage-3",
+        callId: null,
+      },
+      payload: {
+        tokens: { input: 18336, output: 21, reasoning: 0, cache: { read: 17152 }, total: 18357 },
+        contextWindow: 258400,
+        activity: { id: "evt-usage-3", kind: "context-window.updated" },
+      },
+    });
+    const context = { used: 18357, cached: 17152, window: 258400 };
+    expect(deriveThreadContext([frame], new Set())).toEqual(context);
+    // The composer's own entry point sees the same ring for the thread's turn.
+    expect(latestThreadContext([
+      { run: {}, native: { nativeFrames: [frame], childSessionIds: new Set() } },
+    ])).toEqual(context);
   });
 });
