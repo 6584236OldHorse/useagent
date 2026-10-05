@@ -16,6 +16,9 @@ import {
   PI_CODING_AGENT_UPSTREAM_SHA,
   PI_CODING_AGENT_VERSION,
   PI_RUNTIME_LOCK_SHA256,
+  PI_RUNTIME_HOME,
+  PI_RUNTIME_ROOT,
+  PI_RUNTIME_USER,
 } from "./pi-runtime-config";
 import {
   providerGatewaySandboxIsCurrent,
@@ -374,6 +377,88 @@ describe("Pi runtime configuration", () => {
 
     expect(executeCommand).toHaveBeenCalledTimes(1);
     expect(uploadFile).not.toHaveBeenCalled();
+  });
+
+  test("creates the root runtime user when PATH omits system sbin", async () => {
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    process.env.PROVIDER_GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-secret-provider-secret-1234";
+    process.env.GATEWAY_PUBLIC_URL = "https://tools.example.test";
+    process.env.TOOL_GATEWAY_SECRET = "tools-secret-tools-secret-12345678";
+    const root = await mkdtemp(join(tmpdir(), "useagent-pi-system-user-"));
+    const fakeBin = join(root, "bin");
+    const systemSbin = join(root, "system-sbin");
+    const runtimeHome = join(root, "home/useagent-pi");
+    const runtimeRoot = join(root, "opt/useagent/pi-runtime");
+    const brokerRoot = join(root, "root/.useagent/pi-broker");
+    const workdir = join(root, "work");
+    const invoked = join(root, "useradd-invoked");
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    try {
+      await Promise.all([mkdir(fakeBin), mkdir(systemSbin)]);
+      await Promise.all([
+        writeFile(join(fakeBin, "id"), "#!/bin/sh\nexit 1\n"),
+        writeFile(join(fakeBin, "chown"), "#!/bin/sh\nexit 0\n"),
+        writeFile(
+          join(systemSbin, "useradd"),
+          `#!/bin/sh\nprintf '%s\\n' "$*" > ${JSON.stringify(invoked)}\n`,
+        ),
+      ]);
+      await Promise.all([
+        chmod(join(fakeBin, "id"), 0o700),
+        chmod(join(fakeBin, "chown"), 0o700),
+        chmod(join(systemSbin, "useradd"), 0o700),
+      ]);
+      let commandCount = 0;
+      const sandbox = {
+        id: "root-runtime",
+        labels: { [SANDBOX_GENERATION_LABEL]: SANDBOX_GENERATION },
+        fs: { uploadFile: mock(async () => {}) },
+        process: {
+          executeCommand: mock(async (command: string) => {
+            commandCount += 1;
+            if (commandCount !== 1) return { exitCode: 0, result: "" };
+            const isolated = command
+              .replaceAll("/usr/sbin/useradd", join(systemSbin, "useradd"))
+              .replaceAll("/sbin/useradd", join(systemSbin, "useradd"))
+              .replaceAll(PI_RUNTIME_HOME, runtimeHome)
+              .replaceAll(PI_RUNTIME_ROOT, runtimeRoot)
+              .replaceAll("/root/.useagent/pi-broker", brokerRoot)
+              .replaceAll("chmod 711 /root", `chmod 711 ${root}`)
+              .replaceAll(`-o ${PI_RUNTIME_USER} -g ${PI_RUNTIME_USER}`, `-o ${uid} -g ${gid}`)
+              .replaceAll("-o root -g root", `-o ${uid} -g ${gid}`)
+              .replaceAll(`${PI_RUNTIME_USER}:${PI_RUNTIME_USER}`, `${uid}:${gid}`);
+            const result = Bun.spawnSync(["/bin/sh", "-c", isolated], {
+              env: { ...process.env, PATH: `${fakeBin}:/usr/local/bin:/usr/bin:/bin` },
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            return { exitCode: result.exitCode, result: result.stderr.toString("utf8") };
+          }),
+        },
+      } as never;
+
+      await preparePiRuntime(
+        sandbox,
+        {
+          runId: "run",
+          threadId: "thread",
+          orgId: "org",
+          userId: "user",
+          model: "openai/gpt-5.6-sol",
+          prompt: "clean user prompt",
+          signal: new AbortController().signal,
+        } as never,
+        workdir,
+      );
+
+      expect(await readFile(invoked, "utf8")).toContain(
+        `--system --create-home --home-dir ${runtimeHome} --shell /bin/sh ${PI_RUNTIME_USER}`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("routes an initial declared Bun probe failure through the existing repair check", async () => {

@@ -247,7 +247,7 @@ export async function preparePiRuntime(
   const runtimeLockPath = `${runtimeManifestDir}/package-lock.json`;
   const directoriesCommand = layout.runsAsRoot
     ? `id -u ${PI_RUNTIME_USER} >/dev/null 2>&1 || ` +
-      `useradd --system --create-home --home-dir ${PI_RUNTIME_HOME} --shell /bin/sh ${PI_RUNTIME_USER}; ` +
+      `/usr/sbin/useradd --system --create-home --home-dir ${PI_RUNTIME_HOME} --shell /bin/sh ${PI_RUNTIME_USER}; ` +
       `chmod 711 /root && install -d -o ${PI_RUNTIME_USER} -g ${PI_RUNTIME_USER} -m 700 ` +
       `${shellQuote(agentDir)} ${shellQuote(workdir)} && ` +
       `chown -R ${PI_RUNTIME_USER}:${PI_RUNTIME_USER} ${shellQuote(workdir)} && ` +
