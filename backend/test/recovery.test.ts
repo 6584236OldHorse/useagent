@@ -130,8 +130,8 @@ describe("command-lane restart recovery", () => {
     const order: string[] = [];
 
     await recoverStaleRuns(
-      async () => {
-        order.push("probe");
+      async (handle) => {
+        order.push(`probe:${handle.sandboxId}`);
         return { status: "failed", summary: "backend restarted" };
       },
       async ({ sandboxId }) => {
@@ -139,7 +139,8 @@ describe("command-lane restart recovery", () => {
       },
     );
 
-    expect(order).toEqual(["cleanup:pi-sandbox", "probe"]);
+    // Recovery also visits dispatched commands other suites left behind; only this run's order matters.
+    expect(order.filter((entry) => entry.endsWith(":pi-sandbox"))).toEqual(["cleanup:pi-sandbox", "probe:pi-sandbox"]);
     expect((await getRun(runId))?.status).toBe("failed");
   });
 
