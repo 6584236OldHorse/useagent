@@ -8,8 +8,7 @@ import { cx } from "@/utils/cx";
 /**
  * "Continue with Google" — the primary sign-in affordance. Hands off to
  * better-auth's social flow (lib/auth.ts). When Google isn't configured on the
- * backend (`enabled={false}`) it renders disabled with an honest hint instead of
- * failing on click, so a local dev without keys sees exactly what's missing.
+ * backend (`enabled={false}`) it does not render.
  */
 export function GoogleSignInButton({
   enabled,
@@ -24,6 +23,8 @@ export function GoogleSignInButton({
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!enabled) return null;
 
   async function handleClick() {
     if (pending || disabled || !enabled) return;
@@ -43,7 +44,7 @@ export function GoogleSignInButton({
       <button
         type="button"
         onClick={handleClick}
-        disabled={!enabled || disabled || pending}
+        disabled={disabled || pending}
         aria-label="Continue with Google"
         className={cx(
           "inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-full border border-border-button-default bg-background-primary-default text-body-2-medium text-text-primary shadow-card outline-none transition-colors",
@@ -54,11 +55,6 @@ export function GoogleSignInButton({
         <RiGoogleFill className="size-[18px] shrink-0" aria-hidden />
         {pending ? "Redirecting…" : "Continue with Google"}
       </button>
-      {!enabled && (
-        <p className="text-caption-1-regular text-text-tertiary">
-          Google sign-in isn&apos;t configured on this server.
-        </p>
-      )}
       {error && (
         <p role="alert" className="text-caption-1-regular text-text-error-primary">
           {error}

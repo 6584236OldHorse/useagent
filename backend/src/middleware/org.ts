@@ -1,6 +1,6 @@
 import { createMiddleware } from "hono/factory";
 import { and, eq } from "drizzle-orm";
-import { IdentityAccessError, resolveSession, type IdentitySession } from "../auth/session";
+import { resolveSession, type IdentitySession } from "../auth/session";
 import { db } from "../db/client";
 import { member } from "../db/schema";
 import { allowDevOrg } from "../env";
@@ -100,10 +100,8 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
   let session: IdentitySession | null = null;
   try {
     session = await resolveSession(c.req.raw.headers);
-  } catch (error) {
-    if (error instanceof IdentityAccessError) return c.json({ error: error.code }, 403);
-    // Treat an unresolvable/invalid session as anonymous (handled below).
-    session = null;
+  } catch {
+    return c.json({ error: "identity_unavailable" }, 503);
   }
 
   if (session) {

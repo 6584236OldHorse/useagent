@@ -512,35 +512,26 @@ async function s9_auth(): Promise<Result> {
     const cfg = await fetch(`${FE}/api/config`, { headers: { Origin: "http://localhost:3200" } }).then((r) => r.json()).catch(() => null);
     const authMode = cfg?.auth;
     checks.push({
-      name: "config: reports a supported auth provider and allowDevOrg boolean",
-      ok: (authMode === "clerk" || authMode === "better-auth") && typeof cfg?.allowDevOrg === "boolean",
+      name: "config: reports Better Auth and allowDevOrg boolean",
+      ok: authMode === "better-auth" && typeof cfg?.allowDevOrg === "boolean",
       note: `auth=${String(authMode)} allowDevOrg=${String(cfg?.allowDevOrg)}`,
     });
 
     await page.goto(`${FE}/login`, { waitUntil: "domcontentloaded" });
-    if (authMode === "better-auth") {
-      const providerCfg = await fetch(`${FE}/api/auth/provider-config`, { headers: { Origin: "http://localhost:3200" } }).then((r) => r.json()).catch(() => null);
-      const googleConfigured = providerCfg?.google === true;
-      const google = page.locator('[aria-label="Continue with Google"]').first();
-      await google.waitFor({ state: "visible" });
-      checks.push({ name: "legacy login: Google control matches provider configuration", ok: (await google.isDisabled()) === !googleConfigured, note: `configured=${googleConfigured}` });
-      checks.push({ name: "legacy login: Google configuration hint is honest", ok: ((await page.getByText(/Google sign-in isn't configured/i).count()) > 0) === !googleConfigured });
-      checks.push({
-        name: "legacy login: email and password controls match provider configuration",
-        ok: providerCfg?.emailPassword === true &&
-          (await page.locator('input[type="email"]').count()) > 0 &&
-          (await page.locator('input[type="password"]').count()) > 0 &&
-          (await page.getByRole("button", { name: /^Sign in$/ }).count()) > 0,
-      });
-    } else if (authMode === "clerk") {
-      const identifier = page.locator('input[name="identifier"]').first();
-      await identifier.waitFor({ state: "visible", timeout: 15_000 });
-      checks.push({
-        name: "managed login: identifier entry and Continue action render",
-        ok: await identifier.isVisible() &&
-          (await page.getByRole("button", { name: /^Continue$/ }).count()) > 0,
-      });
-    }
+    const providerCfg = await fetch(`${FE}/api/auth/provider-config`, { headers: { Origin: "http://localhost:3200" } }).then((r) => r.json()).catch(() => null);
+    const googleConfigured = providerCfg?.google === true;
+    const google = page.locator('[aria-label="Continue with Google"]').first();
+    await google.waitFor({ state: "visible" });
+    checks.push({ name: "login: Google control matches provider configuration", ok: (await google.isDisabled()) === !googleConfigured, note: `configured=${googleConfigured}` });
+    checks.push({ name: "login: Google configuration hint is honest", ok: ((await page.getByText(/Google sign-in isn't configured/i).count()) > 0) === !googleConfigured });
+    const passwordControls =
+      (await page.locator('input[type="email"]').count()) > 0 &&
+      (await page.locator('input[type="password"]').count()) > 0 &&
+      (await page.getByRole("button", { name: /^Sign in$/ }).count()) > 0;
+    checks.push({
+      name: "login: email and password controls match provider configuration",
+      ok: passwordControls === (providerCfg?.emailPassword === true),
+    });
 
     // Anonymous API behavior follows the public deployment config.
     const unauth = await fetch(`${FE}/api/runs`, { headers: { Origin: "http://localhost:3200" } });
