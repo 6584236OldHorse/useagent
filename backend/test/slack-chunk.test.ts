@@ -68,4 +68,11 @@ describe("chunkSlackText", () => {
       expect(fenceLines.length % 2).toBe(0);
     }
   });
+
+  test("a hard cut inside an oversized line never splits a surrogate pair", () => {
+    const line = `${"a".repeat(3_899)}😀${"b".repeat(50)}`;
+    const chunks = chunkSlackText(line);
+    expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+    expect(chunks.map((c) => c.replace(/\n\n_\(continued…\)_$/, "")).join("")).toBe(line);
+  });
 });

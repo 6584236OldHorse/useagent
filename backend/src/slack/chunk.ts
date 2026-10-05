@@ -69,8 +69,15 @@ function segment(text: string): Segment[] {
 
 /** Hard-slice a run of text (a single line with no cut points) into raw parts. */
 function slice(text: string, budget: number): string[] {
+  // A hard cut inside an oversized paragraph never splits a surrogate pair.
   const parts: string[] = [];
-  for (let i = 0; i < text.length; i += budget) parts.push(text.slice(i, i + budget));
+  for (let at = 0; at < text.length; ) {
+    let end = Math.min(text.length, at + budget);
+    const unit = text.charCodeAt(end - 1);
+    if (end < text.length && unit >= 0xd800 && unit <= 0xdbff) end -= 1;
+    parts.push(text.slice(at, end));
+    at = end;
+  }
   return parts;
 }
 

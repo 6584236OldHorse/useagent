@@ -4,6 +4,11 @@
 import { enqueue } from "./repo";
 import { kickSlackOutbox } from "./delivery";
 import { chunkSlackText } from "../chunk";
+import { toSlackMrkdwn } from "../mrkdwn";
+import { codePointCut } from "../streaming";
+
+/** Units of the answer a stop row keeps as its notification preview. */
+const STOP_PREVIEW_UNITS = 1_000;
 import type { Executor } from "../../db/client";
 import type { SlackStreamChunk, SlackStreamTaskDisplayMode } from "../streaming";
 
@@ -18,6 +23,7 @@ export {
   backfillSlackOutboxOrgScope,
   resetStuckDelivering,
   getByKey as getSlackOutbox,
+  PAYLOAD_CAP as SLACK_OUTBOX_PAYLOAD_CAP,
 } from "./repo";
 export type { SlackOutboxRow } from "./repo";
 
@@ -182,13 +188,14 @@ export async function enqueueStopStreamTx(
     closingMarkdown?: string;
     blocks?: readonly unknown[];
     fallbackBlocks?: readonly unknown[];
-    /** The plain-text answer (mrkdwn) for the paths without a native stream;
-     *  chunked here, its first chunk doubling as the notification text. */
-    fallbackText: string;
     waitForIdempotencyKey?: string;
   },
 ): Promise<boolean> {
-  const fallbackChunks = chunkSlackText(entry.fallbackText);
+  // The row stores the head ONCE, as markdown; the plain form for the paths
+  // without a native stream is derived at delivery. Only a bounded preview
+  // (the notification text) is kept here, so it can never crowd the row.
+  const preview = chunkSlackText(toSlackMrkdwn((entry.narrationText ?? "") + (entry.closingMarkdown ?? "")))[0] ?? "Done.";
+  const text = preview.slice(0, codePointCut(preview, STOP_PREVIEW_UNITS));
   return enqueue(
     {
       kind: "stop_stream",
@@ -203,9 +210,8 @@ export async function enqueueStopStreamTx(
         ...(entry.narrationText ? { narrationText: entry.narrationText } : {}),
         ...(entry.closingMarkdown ? { closingMarkdown: entry.closingMarkdown } : {}),
         ...(entry.blocks ? { blocks: entry.blocks } : {}),
-        text: fallbackChunks[0] ?? entry.fallbackText,
+        text,
         ...(entry.fallbackBlocks ? { fallbackBlocks: entry.fallbackBlocks } : {}),
-        fallbackChunks,
         ...(entry.waitForIdempotencyKey
           ? { waitForIdempotencyKey: entry.waitForIdempotencyKey }
           : {}),

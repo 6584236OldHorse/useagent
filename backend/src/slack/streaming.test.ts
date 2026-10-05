@@ -59,6 +59,14 @@ describe("wire chunk shapes (documented contract)", () => {
     expect(markdownChunksFor("")).toEqual([]);
   });
 
+  test("a markdown chunk boundary never splits a surrogate pair", () => {
+    const text = `${"x".repeat(9_999)}😀${"y".repeat(20)}`;
+    const chunks = markdownChunksFor(text);
+    expect(chunks.map((c) => c.text).join("")).toBe(text);
+    expect(chunks.every((c) => c.text.isWellFormed())).toBe(true);
+    expect(chunks[0]!.text.length).toBe(9_999);
+  });
+
   test("task titles cap under Slack's 256-char limit", () => {
     const chunk = taskUpdateChunk({ id: "t", title: "y".repeat(400), status: "complete" });
     expect(chunk.title.length).toBeLessThanOrEqual(250);
@@ -203,6 +211,15 @@ describe("createNarrationBuffer (exact offsets, total cap)", () => {
     buffer.push("!");
     expect(buffer.take()).toEqual({ text: "!", offset: 11 });
     expect(buffer.streamed()).toBe(12);
+  });
+
+  test("the cap never leaves a lone surrogate on the stream", () => {
+    const buffer = createNarrationBuffer(10);
+    buffer.push("abcdefghi😀jk");
+    const segment = buffer.take();
+    expect(segment?.text).toBe("abcdefghi");
+    expect(segment?.text.isWellFormed()).toBe(true);
+    expect(buffer.streamed()).toBe(9);
   });
 
   test("the total cap bounds what a chatty run can stream", () => {

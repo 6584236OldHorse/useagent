@@ -27,9 +27,11 @@ import {
   enqueueUpdateCardTx,
   enqueueUploadFileTx,
   kickSlackOutbox,
+  SLACK_OUTBOX_PAYLOAD_CAP,
   slackArtifactDeliveryIdempotencyKey,
 } from "../slack/outbox";
-import { composeStreamClosing, STREAM_NARRATION_CAP } from "../slack/streaming";
+import { chunkSlackText } from "../slack/chunk";
+import { codePointCut, composeStreamClosing, STREAM_NARRATION_CAP } from "../slack/streaming";
 import { turnStream } from "./turn-stream";
 import { findScheduleForRun, settleFiring } from "../schedules/repo";
 import { publishRunLifecycleChange } from "./org-signals";
@@ -62,23 +64,52 @@ export function terminalCanonicalizationEligible(engine: string): boolean {
 
 type RunRow = typeof runs.$inferSelect;
 
-/** The longest prefix of `text` (at most `max` chars) whose plain mrkdwn form
- *  also fits `max`: an escape-heavy answer grows when converted, and an outbox
- *  row must hold both forms without shedding a single chunk. */
-function fittingPrefix(text: string, max: number): number {
-  let length = Math.min(text.length, max);
-  for (;;) {
-    const escaped = toSlackMrkdwn(text.slice(0, length)).length;
-    if (length === 0 || escaped <= max) return length;
-    length = Math.min(length - 1, Math.floor((length * max) / escaped));
+/** Serialized room a reply row may use for the answer text it stores: the
+ *  outbox cap less the row's other fields (ids, keys, and a notification
+ *  preview of at most a thousand units, six bytes each when escaped). */
+const REPLY_ROW_BUDGET = SLACK_OUTBOX_PAYLOAD_CAP - 8_000;
+const TAIL_ROW_BUDGET = SLACK_OUTBOX_PAYLOAD_CAP - 2_000;
+
+/** The longest prefix of `text` (at most `maxUnits` UTF-16 units) whose
+ *  STORED form, as `measure` sizes it, fits `budget`: rows are sized by what
+ *  they persist (JSON-escaped, chunked), never by source length, so nothing is
+ *  ever shed. The cut lands on a code point, preferring a line or a space. */
+function fitPrefix(text: string, maxUnits: number, budget: number, measure: (prefix: string) => number): number {
+  let lo = 0;
+  let hi = Math.min(text.length, maxUnits);
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(text.slice(0, mid)) <= budget) lo = mid;
+    else hi = mid - 1;
   }
+  while (lo > 0 && measure(text.slice(0, lo)) > budget) lo = Math.floor(lo * 0.9);
+  return cutAt(text, lo);
+}
+
+/** A cut at or before `at`: never inside a surrogate pair, and moved back to
+ *  the last line break (else the last space) close behind it when one is near,
+ *  so a split reads cleanly on both sides. */
+function cutAt(text: string, at: number): number {
+  if (at >= text.length) return text.length;
+  const end = codePointCut(text, at);
+  const back = text.slice(Math.max(0, end - 512), end);
+  const line = back.lastIndexOf("\n");
+  if (line >= 0) return end - back.length + line + 1;
+  const near = back.slice(-128);
+  const space = near.lastIndexOf(" ");
+  if (space >= 0) return end - near.length + space + 1;
+  return end;
 }
 
 /** Whether any run of the Slack thread's family other than `runId` is still
  *  queued or running: the family root's own turns and every product child
  *  thread under it. Read inside the finalize transaction, where this run is
- *  already terminal. */
+ *  already terminal, and serialized on the family root's row: two sibling
+ *  finalizers otherwise each see the other's uncommitted terminal state as
+ *  still running and both leave the card spinning with nobody left to
+ *  settle it. The second waits here until the first has committed. */
 async function familyHasLiveRuns(tx: Executor, orgId: string, familyThreadId: string, runId: string): Promise<boolean> {
+  await tx.select({ id: runs.id }).from(runs).where(eq(runs.id, familyThreadId)).for("update");
   const children = await tx
     .select({ threadId: threadRelationships.threadId })
     .from(threadRelationships)
@@ -147,13 +178,25 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     narration,
   });
   const body = narration + closing;
-  const headLength = fittingPrefix(body, STREAM_NARRATION_CAP);
-  // Narration and closing travel apart: delivery drops from the narration
-  // only what the stream already accepted, so a closing recovered after a
-  // restart (the buffer empty, the stream's offset persisted) is never
-  // mistaken for streamed text and emptied.
-  const narrationHead = narration.slice(0, headLength);
-  const closingHead = closing.slice(0, headLength - narrationHead.length);
+  // The head is sized by what the row STORES (the markdown, JSON-escaped):
+  // an escape-heavy answer must fit without a chunk being shed. Narration
+  // and closing travel apart: delivery drops from the narration only what
+  // the stream already accepted, so a closing recovered after a restart (the
+  // buffer empty, the stream's offset persisted) is never mistaken for
+  // streamed text; the closing joins the row only once the narration is
+  // whole, so the two never change order.
+  const stored = (prefix: string): number => JSON.stringify(prefix).length;
+  const narrationHead = fitPrefix(narration, STREAM_NARRATION_CAP, REPLY_ROW_BUDGET, stored);
+  const closingHead = narrationHead === narration.length
+    ? fitPrefix(closing, STREAM_NARRATION_CAP - narrationHead, REPLY_ROW_BUDGET - stored(narration), stored)
+    : 0;
+  // The stream's ACCEPTED boundary outranks the row's: what Slack already
+  // holds is never repeated by a tail. When escaping keeps the row shorter
+  // than the stream, the stop appends nothing of the narration and the tails
+  // start where the stream ends (the plain fallback then shows the row's
+  // head; the streamed message keeps what it accepted).
+  const accepted = codePointCut(narration, Math.min(slack.streamedChars, narration.length));
+  const tailStart = (narrationHead < narration.length ? Math.max(narrationHead, accepted) : narrationHead) + closingHead;
   const replyKey = `slack-reply:${slack.teamId}:${run.id}`;
 
   kickSlack = (await enqueueStopStreamTx(tx, {
@@ -164,16 +207,18 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     threadTs: slack.threadTs,
     runId: run.id,
     chunks: [],
-    narrationText: narrationHead,
-    closingMarkdown: closingHead,
-    fallbackText: toSlackMrkdwn(narrationHead + closingHead),
+    narrationText: narration.slice(0, narrationHead),
+    closingMarkdown: closing.slice(0, closingHead),
     ...(userMirror.status === "ready"
       ? { waitForIdempotencyKey: userMirror.idempotencyKey }
       : {}),
   })) || kickSlack;
   let tailAfter = replyKey;
-  for (let part = 0, at = headLength; at < body.length; part += 1) {
-    const length = Math.max(1, fittingPrefix(body.slice(at), STREAM_NARRATION_CAP));
+  for (let part = 0, at = tailStart; at < body.length; part += 1) {
+    const rest = body.slice(at);
+    // A tail row stores plain chunks: sized by their serialized form too.
+    const length = fitPrefix(rest, STREAM_NARRATION_CAP, TAIL_ROW_BUDGET, (prefix) =>
+      JSON.stringify(chunkSlackText(toSlackMrkdwn(prefix))).length) || Math.min(rest.length, 2);
     const tailKey = `slack-reply-tail:${slack.teamId}:${run.id}:${part}`;
     const tailCreated = await enqueuePostMessageTx(tx, {
       idempotencyKey: tailKey,
@@ -182,7 +227,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
       channel: slack.channel,
       threadTs: slack.threadTs,
       runId: run.id,
-      text: toSlackMrkdwn(body.slice(at, at + length)),
+      text: toSlackMrkdwn(rest.slice(0, length)),
       messageRole: "reply_tail",
       part,
       waitForIdempotencyKey: tailAfter,

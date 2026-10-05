@@ -59,10 +59,20 @@ function truncate(text: string, max: number): string {
  *  tail arithmetic at stopStream. Empty text yields no chunks. */
 export function markdownChunksFor(text: string): SlackMarkdownStreamChunk[] {
   const chunks: SlackMarkdownStreamChunk[] = [];
-  for (let at = 0; at < text.length; at += MARKDOWN_CHUNK_CAP) {
-    chunks.push({ type: "markdown_text", text: text.slice(at, at + MARKDOWN_CHUNK_CAP) });
+  for (let at = 0; at < text.length; ) {
+    const end = codePointCut(text, at + MARKDOWN_CHUNK_CAP);
+    chunks.push({ type: "markdown_text", text: text.slice(at, end) });
+    at = end;
   }
   return chunks;
+}
+
+/** `end` moved back one unit when it would split a surrogate pair, so no
+ *  stored or streamed string is ever ill-formed. Never moves past the text. */
+export function codePointCut(text: string, end: number): number {
+  if (end >= text.length) return text.length;
+  const unit = text.charCodeAt(end - 1);
+  return unit >= 0xd800 && unit <= 0xdbff ? end - 1 : end;
 }
 
 export function taskUpdateChunk(input: {
@@ -351,7 +361,9 @@ export function createNarrationBuffer(cap = STREAM_NARRATION_CAP): {
     take() {
       if (!pending) return null;
       const room = Math.max(0, cap - offset);
-      const text = pending.slice(0, room);
+      // The cap never splits a surrogate pair: the pair reaches Slack whole
+      // from the accepted offset at stop.
+      const text = pending.slice(0, codePointCut(pending, room));
       pending = "";
       if (!text) return null;
       const at = offset;

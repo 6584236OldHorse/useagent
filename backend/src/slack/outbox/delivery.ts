@@ -2,6 +2,8 @@ import type { SlackConfig } from "../../env";
 import { resolveSlackClient, type DeliveryResult, type SlackClient } from "../client";
 import { assertNever } from "../../util/exhaustive";
 import { readStagedBytes } from "../upload-staging";
+import { chunkSlackText } from "../chunk";
+import { toSlackMrkdwn } from "../mrkdwn";
 import { getArtifact } from "../../artifacts/repo";
 import { artifactStorage } from "../../artifacts/storage";
 import { recordProviderEvent } from "../../runs/provider-events";
@@ -359,9 +361,12 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       // Full final card (with the answer) for the card-update path; legacy rows
       // carried a single blocks set for both paths.
       const cardBlocks = Array.isArray(p.fallbackBlocks) ? p.fallbackBlocks : blocks;
+      // The plain (mrkdwn) form of the head is derived here from the one stored
+      // markdown copy, so the row never carries the answer twice; a legacy
+      // row, or a row whose fallback posting was cut short, carries its own.
       const fallbackChunks = Array.isArray(p.fallbackChunks)
         ? p.fallbackChunks.filter((c): c is string => typeof c === "string" && c.length > 0)
-        : [];
+        : chunkSlackText(toSlackMrkdwn(narrationText + closingMarkdown));
       if (!teamId || !channel || !threadTs || !runId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
@@ -511,15 +516,18 @@ async function deliverOne(
 ): Promise<SlackDeliveryOutcome> {
   let waitForIdempotencyKey: string | null = null;
   let dependencyRunId: string | null = null;
+  let replyTail = false;
   try {
     const payload = JSON.parse(row.payload) as {
       waitForIdempotencyKey?: unknown;
       runId?: unknown;
+      messageRole?: unknown;
     };
     waitForIdempotencyKey = typeof payload.waitForIdempotencyKey === "string"
       ? payload.waitForIdempotencyKey
       : null;
     dependencyRunId = typeof payload.runId === "string" ? payload.runId : null;
+    replyTail = row.kind === "post_message" && payload.messageRole === "reply_tail";
   } catch {
     // The normal attempt path classifies invalid payloads permanently.
   }
@@ -560,6 +568,14 @@ async function deliverOne(
       const nextAttemptAt = new Date(Date.now() + 250);
       await deferForDependency(row.id, nextAttemptAt);
       return { status: "retry", errorClass: "transient", nextAttemptAt };
+    }
+    // A reply's tail needs its head (the closed stream, the tail before it)
+    // DELIVERED, or the thread would show a fragment with nothing above it:
+    // a dead predecessor dead-letters the rest of the chain. The user mirror
+    // keeps failing open: a result must never wait on a mirror that died.
+    if (replyTail && dependency.state === "dead") {
+      await deadLetter(row, { errorClass: "permanent", lastError: "reply_tail_predecessor_dead" });
+      return { status: "dead", errorClass: "permanent" };
     }
   }
   if (row.kind === "update_card") {

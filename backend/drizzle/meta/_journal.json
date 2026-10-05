@@ -645,6 +645,13 @@
       "when": 1792800000003,
       "tag": "0093_slack_card_pacing",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1792800000005,
+      "tag": "0095_slack_card_applied_revision",
+      "breakpoints": true
     }
   ]
 }

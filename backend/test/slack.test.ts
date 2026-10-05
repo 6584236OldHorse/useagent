@@ -1368,7 +1368,7 @@ describe("slack native stream and Block Kit fallback", () => {
   });
 
   /** Enqueue the run's native stream start on its opening markdown. */
-  async function startNativeStream(t: { runId: string; channel: string; ts: string }, text: string): Promise<void> {
+  async function startNativeStream(t: { runId: string; channel: string; ts: string }, text: string, fallbackText = text): Promise<void> {
     await enqueueStartStream({
       idempotencyKey: `slack-stream:start:${TEAM}:${t.runId}`,
       orgId: DEV_ORG_ID,
@@ -1380,7 +1380,7 @@ describe("slack native stream and Block Kit fallback", () => {
       chunks: markdownChunksFor(text),
       recipientTeamId: TEAM,
       recipientUserId: "U-HUMAN",
-      fallbackText: text,
+      fallbackText,
     });
   }
 
@@ -1498,6 +1498,59 @@ describe("slack native stream and Block Kit fallback", () => {
     const second = JSON.parse((await getSlackOutbox(`slack-reply-tail:${TEAM}:${t.runId}:1`))!.payload) as { waitForIdempotencyKey?: string };
     expect(first.waitForIdempotencyKey).toBe(`slack-reply:${TEAM}:${t.runId}`);
     expect(second.waitForIdempotencyKey).toBe(`slack-reply-tail:${TEAM}:${t.runId}:0`);
+  });
+
+  test("an answer heavy in JSON escapes arrives complete on the plain path, nothing shed", async () => {
+    const t = await rootThread("backslashes");
+    const answer = `${"\\".repeat(12_000)}Z`;
+    await finalizeRun(t.runId, "completed", answer, 1);
+    const posts = await waitFor(async () => {
+      const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);
+      return mine.some((m) => m.text.endsWith("Z")) ? mine : null;
+    }, { timeoutMs: 14_000 });
+    const joined = posts.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("");
+    expect(joined).toBe(toSlackMrkdwn(answer));
+    expect(posts.some((m) => m.text.includes("truncated"))).toBe(false);
+  });
+
+  test("a row that cannot hold what the stream accepted never repeats it: the tails start where the stream ends", async () => {
+    const t = await rootThread("accepted boundary");
+    // Control characters cost six stored units each: the stream accepted
+    // 7,000 of them, more than the stop row can carry.
+    const heavy = "\u0001".repeat(7_000);
+    await startNativeStream(t, heavy, "opening");
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 7_000 ? true : null));
+    const answer = `${heavy}Z`;
+    turnStream.publish(t.runId, answer);
+    await finalizeRun(t.runId, "completed", answer, 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    expect(stopped.chunks).toEqual([]);
+    const tail = await waitFor(async () => {
+      kickSlackOutbox();
+      return rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks) ?? null;
+    }, { timeoutMs: 14_000 });
+    expect(tail.text).toBe("Z");
+    expect(rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks)).toHaveLength(1);
+  });
+
+  test("a split never lands inside a surrogate pair", async () => {
+    const t = await rootThread("emoji at the cut");
+    const answer = `${"a".repeat(11_999)}😀Z`;
+    await finalizeRun(t.runId, "completed", answer, 1);
+    const row = await getSlackOutbox(`slack-reply:${TEAM}:${t.runId}`);
+    const head = (JSON.parse(row!.payload) as { closingMarkdown?: string }).closingMarkdown ?? "";
+    expect(head.isWellFormed()).toBe(true);
+    expect(head).toBe("a".repeat(11_999));
+    const tail = await getSlackOutbox(`slack-reply-tail:${TEAM}:${t.runId}:0`);
+    const chunks = (JSON.parse(tail!.payload) as { chunks: string[] }).chunks;
+    expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+    expect(chunks[0]).toBe("😀Z");
+    const posts = await waitFor(async () => {
+      kickSlackOutbox();
+      const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);
+      return mine.some((m) => m.text.endsWith("Z")) ? mine : null;
+    }, { timeoutMs: 14_000 });
+    expect(posts.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("")).toBe(answer);
   });
 
   test("an escape-heavy answer on the plain path arrives complete, nothing shed", async () => {

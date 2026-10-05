@@ -61,7 +61,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(row!.kind).toBe("stop_stream");
     const payload = JSON.parse(row!.payload) as {
       channel: string;
-      fallbackChunks: string[];
+      closingMarkdown?: string;
+      text: string;
       threadTs?: string;
       runId: string;
       teamId: string;
@@ -70,7 +71,10 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(payload.teamId).toBe(TEAM);
     expect(payload.threadTs).toBe(ts);
     expect(payload.runId).toBe(runId);
-    expect(payload.fallbackChunks).toEqual(["here is the result"]); // completed → the summary
+    // completed → the summary, stored once as markdown; its plain form is
+    // derived at delivery (the notification text is its first chunk).
+    expect(payload.closingMarkdown).toBe("here is the result");
+    expect(payload.text).toBe("here is the result");
     // The working shimmer clears durably with the reply (the one status family a thread uses).
     const status = await getSlackOutbox(`slack-thread-status:final:${TEAM}:${runId}`);
     expect(status).not.toBeNull();
@@ -83,7 +87,9 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     await finalizeRun(runId, "failed", "boom", 0);
     const row = await getSlackOutbox(`slack-reply:${TEAM}:${runId}`);
     expect(row).not.toBeNull();
-    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual(["*Run failed*: boom"]);
+    const failed = JSON.parse(row!.payload) as { closingMarkdown?: string; text: string };
+    expect(failed.closingMarkdown).toBe("**Run failed**: boom");
+    expect(failed.text).toBe("*Run failed*: boom");
   });
 
   test("a non-Slack run enqueues NO reply", async () => {
@@ -315,12 +321,12 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     const payload = JSON.parse(reply?.payload ?? "{}") as {
       channel?: string;
       threadTs?: string;
-      fallbackChunks?: string[];
+      closingMarkdown?: string;
       blocks?: unknown[];
     };
     expect(payload.channel).toBe(root.channel);
     expect(payload.threadTs).toBe(root.ts);
-    expect(payload.fallbackChunks).toEqual(["Interaction design finished"]);
+    expect(payload.closingMarkdown).toBe("Interaction design finished");
     // The thread card settles from the family ROOT, never from the child: the
     // parent's title, session link and identity stay on the shared card.
     const cardRow = await getSlackOutbox(`slack-card:final:${TEAM}:${childId}`);
@@ -401,6 +407,79 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(await cardStatus(second)).toMatchObject({ status: "complete" });
   });
 
+  test("two sibling children finalizing at once still settle the family card", async () => {
+    const root = await slackRootRun("coordinate at once");
+    await insertThreadRelationship({
+      orgId: ORG,
+      threadId: root.runId,
+      parentThreadId: null,
+      familyThreadId: root.runId,
+      kind: "root",
+      title: "Coordinate at once",
+      sourceRunId: root.runId,
+    });
+    const child = async (prompt: string, title: string) => {
+      const id = crypto.randomUUID();
+      await insertCommandWithRun({
+        commandId: crypto.randomUUID(),
+        idempotencyKey: null,
+        orgId: ORG,
+        actorId: null,
+        payloadFingerprint: "c".repeat(64),
+        payload: "{}",
+        origin: null,
+        priority: 0,
+        run: {
+          id,
+          prompt,
+          model: "claude-opus-5",
+          engine: "mock",
+          parentRunId: null,
+          threadId: id,
+          repos: [],
+          resolvedResources: [],
+          attachmentIds: [],
+          memoryScope: "org",
+          skillId: null,
+          skillVersion: null,
+          skillContentHash: null,
+          commandName: null,
+          commandProvider: null,
+          commandSessionId: null,
+          commandCatalogRevision: null,
+        },
+        threadRelationship: {
+          parentThreadId: root.runId,
+          familyThreadId: root.runId,
+          kind: "delegated",
+          title,
+          sourceRunId: root.runId,
+          sourceExecutionId: null,
+        },
+      });
+      await setRunStatus(id, "running");
+      return id;
+    };
+    const first = await child("Design the calendar", "Calendar design");
+    const second = await child("Design the inbox", "Inbox design");
+    await setRunStatus(root.runId, "completed");
+
+    // Both finalize concurrently: each reads family liveness inside its own
+    // transaction. Serialized on the root's row, the second sees the first's
+    // terminal state, so one of them settles the card.
+    await Promise.all([
+      finalizeRun(first, "completed", "Calendar done", 100),
+      finalizeRun(second, "completed", "Inbox done", 100),
+    ]);
+    const revisions = await Promise.all([first, second].map(async (id) => {
+      const row = await getSlackOutbox(`slack-card:final:${TEAM}:${id}`);
+      const payload = JSON.parse(row?.payload ?? "{}") as { revision?: number; blocks?: Array<{ status?: string }> };
+      return { revision: payload.revision ?? 0, status: payload.blocks?.[0]?.status };
+    }));
+    const last = revisions.toSorted((a, b) => a.revision - b.revision).at(-1);
+    expect(last?.status).toBe("complete");
+  });
+
   test("reply enqueue is idempotent across re-finalization (crash-retry safe)", async () => {
     const { runId } = await slackRootRun("idempotent");
     await finalizeRun(runId, "completed", "sum", 1);
@@ -446,6 +525,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
 
     const row = await getSlackOutbox(`slack-reply:${TEAM}:${runId}`);
     expect(row).not.toBeNull();
-    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual(["reconciled reply"]);
+    const reconciled = JSON.parse(row!.payload) as { closingMarkdown?: string; text: string };
+    expect(reconciled.closingMarkdown).toBe("reconciled reply");
+    expect(reconciled.text).toBe("reconciled reply");
   });
 });

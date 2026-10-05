@@ -8,7 +8,9 @@ import type { SlackOutboxEnqueue } from "./types";
 // delivery.ts; this only reads/writes rows.
 // ---------------------------------------------------------------------------
 
-const PAYLOAD_CAP = 48_000;
+/** Serialized size a stored row may reach; reply rows are sized against it by
+ *  their callers so that nothing is ever shed. */
+export const PAYLOAD_CAP = 48_000;
 /** Appended to the last kept chunk when trailing chunks had to be dropped. */
 const TRUNCATION_MARKER = "\n\n_(truncated; full reply in the app)_";
 

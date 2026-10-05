@@ -261,14 +261,18 @@ export async function setSlackFallbackMessageTs(runId: string, fallbackMessageTs
  *  applied (and the run that produced it), and when it last changed. */
 export interface SlackThreadCard extends SlackThreadTarget {
   cardTs: string | null;
+  /** Monotonic high-water mark of the revisions applied. */
   cardRevision: number;
+  /** The exact revision the card shows, and the run that produced it. */
+  cardAppliedRevision: number | null;
   cardRevisionRunId: string | null;
   cardUpdatedAt: Date | null;
 }
 
-/** Remember the thread card's message ts and the revision just applied, as
- *  applied (one card per rooted Slack thread): a replay of that revision is
- *  then told from a due one by equality. */
+/** Remember the thread card's message ts and the revision just applied (one
+ *  card per rooted Slack thread): the high-water mark only ever rises, while
+ *  the applied identity is exact, so a replay is told by equality and a
+ *  superseded revision stays superseded whatever was reposted in between. */
 export async function setSlackCardTs(
   rootRunId: string,
   cardTs: string,
@@ -280,7 +284,11 @@ export async function setSlackCardTs(
       cardTs,
       cardUpdatedAt: new Date(),
       ...(revision
-        ? { cardRevision: revision.revision, cardRevisionRunId: revision.runId }
+        ? {
+            cardRevision: sql`greatest(${slackThreads.cardRevision}, ${revision.revision})`,
+            cardAppliedRevision: revision.revision,
+            cardRevisionRunId: revision.runId,
+          }
         : {}),
     })
     .where(eq(slackThreads.rootRunId, rootRunId));
@@ -295,6 +303,7 @@ export async function getSlackCardTsByRoot(rootRunId: string): Promise<SlackThre
       threadTs: slackThreads.threadTs,
       cardTs: slackThreads.cardTs,
       cardRevision: slackThreads.cardRevision,
+      cardAppliedRevision: slackThreads.cardAppliedRevision,
       cardRevisionRunId: slackThreads.cardRevisionRunId,
       cardUpdatedAt: slackThreads.cardUpdatedAt,
     })

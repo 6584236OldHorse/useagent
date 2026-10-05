@@ -1058,7 +1058,8 @@ describe("native slack streaming outbox", () => {
       await processDue(rec.client);
       expect(rec.updates).toHaveLength(2);
       const thread = await getSlackCardTsByRoot(runId);
-      expect(thread?.cardRevision).toBe(15); // the ledger records what was applied
+      expect(thread?.cardRevision).toBe(20); // the high-water mark never falls
+      expect(thread?.cardAppliedRevision).toBe(15); // the card shows B's terminal state
       expect(thread?.cardRevisionRunId).toBe("turn-b");
       // A replay of that terminal row (its update persisted, the row not yet
       // acknowledged) is already applied: no redelivery, no pacing bypass.
@@ -1066,6 +1067,21 @@ describe("native slack streaming outbox", () => {
       await enqueue({ kind: "update_card", idempotencyKey: replay, payload: { ...base, runId: "turn-b", revision: 15, ...card("complete") } });
       await processDue(rec.client);
       expect((await getSlackOutbox(replay))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(2);
+      // The high-water mark stayed at 20 while the applied identity is 15/B:
+      // an older turn's delayed revision is still superseded, even after the
+      // card had to be reposted.
+      expect(thread?.cardRevision).toBe(20);
+      expect(thread?.cardAppliedRevision).toBe(15);
+      rec.client.updateMessage = async () => ({ ok: false, class: "permanent", message: "message_not_found" });
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-repost"), payload: { ...base, runId: "turn-b", revision: 25, ...card("complete") } });
+      await processDue(rec.client);
+      expect(rec.posted).toHaveLength(2); // the card, then its repost
+      const stale = uid("card-a-stale");
+      await enqueue({ kind: "update_card", idempotencyKey: stale, payload: { ...base, runId: "turn-a", revision: 18, live: true, ...card("in_progress", "Ran a command") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(stale))?.state).toBe("delivered");
+      expect(rec.posted).toHaveLength(2);
       expect(rec.updates).toHaveLength(2);
     } finally {
       delete process.env.SLACK_CARD_PACE_MS;
@@ -1140,5 +1156,37 @@ describe("native slack streaming outbox", () => {
     await processDue(rec.client);
     expect(rec.posted.map((m) => m.text)).toEqual(["head", "tail zero", "tail zero", "tail one"]);
     expect((await getSlackOutbox(tail1))?.state).toBe("delivered");
+  });
+
+  test("a dead head dead-letters the reply tails behind it instead of posting fragments", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    // A stop row that can never deliver (no text): it dead-letters at once.
+    const stopKey = uid("dead-stop");
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: stopKey,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", closingMarkdown: "" },
+    });
+    const tail0 = uid("dead-tail-0");
+    const tail1 = uid("dead-tail-1");
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail0,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail zero"], messageRole: "reply_tail", part: 0, waitForIdempotencyKey: stopKey },
+    });
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail1,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail one"], messageRole: "reply_tail", part: 1, waitForIdempotencyKey: tail0 },
+    });
+    const rec = recorder(() => ({ ok: true }));
+    await processDue(rec.client);
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail1));
+    await processDue(rec.client);
+    expect((await getSlackOutbox(stopKey))?.state).toBe("dead");
+    expect((await getSlackOutbox(tail0))?.state).toBe("dead");
+    expect((await getSlackOutbox(tail0))?.lastError).toBe("reply_tail_predecessor_dead");
+    expect((await getSlackOutbox(tail1))?.state).toBe("dead");
+    expect(rec.posted).toHaveLength(0);
   });
 });

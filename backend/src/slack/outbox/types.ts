@@ -174,8 +174,10 @@ export type StopStreamPayload = {
   /** Full final card (with the answer) for the chat.update card fallback path.
    *  Legacy rows omit it; delivery falls back to `blocks`. */
   readonly fallbackBlocks?: readonly unknown[];
-  /** The full answer, chunked - plain-text fallback when no stream/card update works. */
-  readonly fallbackChunks: readonly string[];
+  /** The plain answer, chunked, when a row carries it (legacy rows, and a row
+   *  whose fallback posting was cut short); otherwise derived at delivery from
+   *  the markdown head. */
+  readonly fallbackChunks?: readonly string[];
   /** A same-run user mirror that must reach a terminal outbox state before the
    * result is eligible, so retries cannot put the result first. */
   readonly waitForIdempotencyKey?: string;

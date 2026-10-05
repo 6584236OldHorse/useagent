@@ -81,9 +81,14 @@ export function revisionVerdict(
   runId: string,
   live: boolean,
 ): "applied" | "superseded" | "due" {
-  if (!card || revision === null || revision > card.cardRevision) return "due";
-  if (revision === card.cardRevision) return "applied";
-  return !live && card.cardRevisionRunId === runId ? "due" : "superseded";
+  if (!card || revision === null) return "due";
+  if (revision === card.cardAppliedRevision) return "applied";
+  if (revision > card.cardRevision) return "due";
+  // At or below the high-water mark: only a turn's terminal revision under
+  // its OWN later live one (the card still shows that run's live state) is
+  // due; anything else was superseded, and stays so across reposts.
+  const ownLater = !live && card.cardRevisionRunId === runId && (card.cardAppliedRevision ?? 0) > revision;
+  return ownLater ? "due" : "superseded";
 }
 
 /** Card revisions are paced to Slack's chat.update guidance (one every few
