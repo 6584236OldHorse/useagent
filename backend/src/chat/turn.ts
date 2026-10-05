@@ -11,7 +11,8 @@ import {
 import { awaitWithSignal } from "../util/abortable-operation";
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
 import { errorMessage } from "../util/error-message";
-import { streamChat, type ChatMessage } from "./stream";
+import { SafeChatInputError } from "./input";
+import { SafeChatStreamError, streamChat, type ChatMessage } from "./stream";
 
 export type { ChatMessage };
 
@@ -57,6 +58,28 @@ export async function* chatTurnStream(
 export function chatFailure(error: unknown): { readonly label: string; readonly reason: string } {
   if (error instanceof ProviderCredentialMissingError) {
     return { label: "OpenRouter key needed", reason: error.message };
+  }
+  if (error instanceof SafeChatInputError) return { label: error.label, reason: error.reason };
+  if (error instanceof SafeChatStreamError) {
+    if (error.category === "authentication") {
+      return { label: "Provider authentication failed", reason: "the configured chat provider credential was rejected" };
+    }
+    if (error.category === "credits") {
+      return { label: "Provider credits required", reason: "the chat provider requires additional credits" };
+    }
+    if (error.category === "key_limit") {
+      return {
+        label: "Provider key limit reached",
+        reason: providerKeyLimitReason("key limit exceeded") ?? "the chat provider key limit was reached",
+      };
+    }
+    if (error.category === "policy") {
+      return { label: "Provider policy rejected the request", reason: "the chat provider rejected the request by policy" };
+    }
+    if (error.category === "rate_limit") {
+      return { label: "Provider rate limit reached", reason: "the chat provider rate limit was reached" };
+    }
+    return { label: "Provider unavailable", reason: "the chat provider is temporarily unavailable" };
   }
   const keyLimit = providerKeyLimitReason(errorMessage(error));
   return keyLimit

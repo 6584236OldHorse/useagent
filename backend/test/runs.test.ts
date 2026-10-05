@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
-import { buildThreadPreamble, buildUnseenTurnsContext } from "../src/runs/thread-history";
+import {
+  buildThreadPreamble,
+  buildUnseenTurnsContext,
+  selectThreadPreamble,
+} from "../src/runs/thread-history";
 import { RUN_CREATE_MAX_BODY_BYTES, RUN_PROMPT_MAX_CHARS } from "../src/runs/run-create-policy";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { createOrgSession, fetchApi, json, readSse, waitFor } from "./helpers";
@@ -1000,6 +1004,46 @@ describe("run threading", () => {
     );
     const soloRoot = await runToCompletion({ prompt: "solo" });
     expect(await buildThreadPreamble(soloRoot.thread_id, soloRoot.id)).toBe("");
+  });
+
+  test("returns only run ids that survive the thread preamble character trim", async () => {
+    const threadId = crypto.randomUUID();
+    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()] as const;
+    for (const [index, id] of ids.entries()) {
+      await db.insert(runs).values({
+        id,
+        orgId: DEV_ORG_ID,
+        userId: DEV_USER_ID,
+        prompt: `${index}:${"x".repeat(2_500)}`,
+        model: "mock-model",
+        engine: "mock",
+        status: "completed",
+        summary: "ok",
+        parentRunId: index === 0 ? null : ids[index - 1] ?? null,
+        threadId,
+        threadSeq: index,
+      });
+    }
+    const currentId = crypto.randomUUID();
+    await db.insert(runs).values({
+      id: currentId,
+      orgId: DEV_ORG_ID,
+      userId: DEV_USER_ID,
+      prompt: "current",
+      model: "mock-model",
+      engine: "mock",
+      status: "queued",
+      parentRunId: ids[2],
+      threadId,
+      threadSeq: ids.length,
+    });
+
+    const selected = await selectThreadPreamble(threadId, currentId);
+    expect(selected.selectedRunIds).toEqual([ids[2]]);
+    expect(selected.preamble).toContain(`2:${"x".repeat(100)}`);
+    expect(selected.preamble).not.toContain(`1:${"x".repeat(100)}`);
+    expect(selected.numberedPreamble).toContain(`prior user turn 1:\nUser: "2:${"x".repeat(100)}`);
+    expect(selected.numberedPreamble).not.toContain("prior user turn 2:");
   });
 
   test("turns that failed before any engine ran stay in the conversation, replayed once", async () => {

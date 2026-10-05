@@ -46,16 +46,31 @@ function renderTurn(r: Pick<RunRecord, "prompt" | "status" | "summary">): string
     : `No reply, that turn failed: ${quoted(r.summary ?? "unknown error")}`);
 }
 
+function framePreamble(blocks: readonly string[]): string {
+  return `This is an ONGOING conversation, and below is YOUR OWN history of it — the ` +
+    `previous turns between the user and you (oldest first, most recent last). ` +
+    `You DO have this context: when the user says "above", "earlier", or ` +
+    `"previously", they mean these turns — answer from them instead of saying ` +
+    `you lack history. (Only work outside this conversation is unknown to you ` +
+    `unless a team-memory block is provided above.)\n\n${blocks.join("\n\n")}\n\n---\n\n`;
+}
+
 /** Compose the engine context preamble for a run: walk its thread's PRIOR turns
  * (every other run in the thread, oldest→newest) and render each as
- * `User: <prompt>` plus the reply, or the failure when there was none. Returns
- * "" when there is no prior context (a thread root). */
-export async function buildThreadPreamble(
+ * `User: <prompt>` plus the reply, or the failure when there was none. The ids
+ * identify only turns that survive the same turn and character limits. */
+export interface ThreadPreambleSelection {
+  readonly preamble: string;
+  readonly numberedPreamble: string;
+  readonly selectedRunIds: readonly string[];
+}
+
+export async function selectThreadPreamble(
   threadId: string,
   currentRunId: string,
-): Promise<string> {
+): Promise<ThreadPreambleSelection> {
   const rows = await db
-    .select({ prompt: runs.prompt, status: runs.status, summary: runs.summary })
+    .select({ id: runs.id, prompt: runs.prompt, status: runs.status, summary: runs.summary })
     .from(runs)
     .where(
       and(
@@ -66,25 +81,31 @@ export async function buildThreadPreamble(
     )
     .orderBy(desc(runs.createdAt), desc(runs.id))
     .limit(THREAD_MAX_TURNS);
-  if (rows.length === 0) return "";
+  if (rows.length === 0) return { preamble: "", numberedPreamble: "", selectedRunIds: [] };
 
   // Keep the most recent turns, then trim oldest-first to the char budget.
-  let blocks = rows.toReversed().map(renderTurn);
-  while (blocks.length > 1 && blocks.join("\n\n").length > THREAD_MAX_CHARS) {
-    blocks = blocks.slice(1);
+  let selected = rows.toReversed().map((row) => ({ id: row.id, block: renderTurn(row) }));
+  while (selected.length > 1 && selected.map((row) => row.block).join("\n\n").length > THREAD_MAX_CHARS) {
+    selected = selected.slice(1);
   }
   // Framing is load-bearing: a weak "context:" note gets ignored and the engine
   // claims it "starts fresh" when asked what happened above. State plainly that
   // this IS its own history of THIS session and that "above / earlier /
   // previously" refers to it.
-  return (
-    `This is an ONGOING conversation, and below is YOUR OWN history of it — the ` +
-    `previous turns between the user and you (oldest first, most recent last). ` +
-    `You DO have this context: when the user says "above", "earlier", or ` +
-    `"previously", they mean these turns — answer from them instead of saying ` +
-    `you lack history. (Only work outside this conversation is unknown to you ` +
-    `unless a team-memory block is provided above.)\n\n${blocks.join("\n\n")}\n\n---\n\n`
-  );
+  return {
+    preamble: framePreamble(selected.map((row) => row.block)),
+    numberedPreamble: framePreamble(
+      selected.map((row, index) => `prior user turn ${index + 1}:\n${row.block}`),
+    ),
+    selectedRunIds: selected.map((row) => row.id),
+  };
+}
+
+export async function buildThreadPreamble(
+  threadId: string,
+  currentRunId: string,
+): Promise<string> {
+  return (await selectThreadPreamble(threadId, currentRunId)).preamble;
 }
 
 /** The prior turns a RESUMED native session never saw: the thread's runs that

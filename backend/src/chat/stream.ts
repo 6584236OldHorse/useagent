@@ -6,11 +6,67 @@
  * URL, and attribution headers, but sets `stream: true` and yields text deltas as
  * they arrive by parsing the SSE `data:` lines. Never buffers the whole response.
  */
-import type { ChatMessage } from "../wiki-gen/llm";
+import { providerKeyLimitReason } from "../provider-gateway/key-limit";
+import { responseBodyPrefix } from "../provider-gateway/retry";
+import type { ChatContentPart } from "./input";
 
-export type { ChatMessage };
+export interface ChatMessage {
+  readonly role: "system" | "user" | "assistant";
+  readonly content: string | readonly ChatContentPart[];
+}
 
 export class ChatStreamError extends Error {}
+
+export type SafeChatStreamErrorCategory =
+  | "authentication"
+  | "credits"
+  | "key_limit"
+  | "policy"
+  | "rate_limit"
+  | "availability";
+
+export class SafeChatStreamError extends Error {
+  constructor(
+    readonly status: number,
+    readonly category: SafeChatStreamErrorCategory,
+  ) {
+    super(`chat provider ${category} error`);
+    this.name = "SafeChatStreamError";
+  }
+}
+
+type OpenRouterMessage = {
+  readonly role: ChatMessage["role"];
+  readonly content: string | readonly (
+    | { readonly type: "text"; readonly text: string }
+    | { readonly type: "image_url"; readonly image_url: { readonly url: string } }
+  )[];
+};
+
+export function openRouterMessages(messages: readonly ChatMessage[]): OpenRouterMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: typeof message.content === "string"
+      ? message.content
+      : message.content.map((part) => part.type === "text"
+        ? part
+        : {
+            type: "image_url" as const,
+            image_url: {
+              url: `data:${part.contentType};base64,${Buffer.from(part.bytes).toString("base64")}`,
+            },
+          }),
+  }));
+}
+
+function safeStatusError(status: number, keyLimit = false): SafeChatStreamError {
+  if (status === 401) return new SafeChatStreamError(status, "authentication");
+  if (status === 402) return new SafeChatStreamError(status, "credits");
+  if (keyLimit) return new SafeChatStreamError(status, "key_limit");
+  if (status === 403) return new SafeChatStreamError(status, "policy");
+  if (status === 429) return new SafeChatStreamError(status, "rate_limit");
+  return new SafeChatStreamError(status, "availability");
+}
 
 // A current OpenRouter slug. Older slugs like `anthropic/claude-3.7-sonnet` 404
 // ("No endpoints found"). Override with CHAT_MODEL if a deployment wants a
@@ -69,12 +125,17 @@ export async function* streamChat(
       "HTTP-Referer": "https://github.com/useagenthq/useagent",
       "X-Title": "useAgent Chat",
     },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify({ model, messages: openRouterMessages(messages), stream: true }),
     signal,
   });
   if (!res.ok || !res.body) {
-    const detail = await res.text().catch(() => "");
-    throw new ChatStreamError(`openrouter ${res.status}: ${detail.slice(0, 200)}`);
+    if ([401, 402, 403, 429].includes(res.status) || res.status >= 500) {
+      const keyLimit = res.status === 403 && providerKeyLimitReason(
+        await responseBodyPrefix(res),
+      ) !== null;
+      throw safeStatusError(res.status, keyLimit);
+    }
+    throw new ChatStreamError("chat provider request failed");
   }
 
   const decoder = new TextDecoder();
@@ -97,7 +158,7 @@ export async function* streamChat(
         if (data === "[DONE]") return;
         try {
           const chunk = JSON.parse(data) as StreamChunk;
-          if (chunk.error) throw new ChatStreamError(`openrouter error: ${chunk.error.message}`);
+          if (chunk.error) throw new ChatStreamError("chat provider stream failed");
           const delta = chunk.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta.length > 0) yield delta;
         } catch (e) {
