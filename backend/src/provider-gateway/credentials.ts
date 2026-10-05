@@ -84,17 +84,6 @@ export async function resolveProviderCredentialForRun(
     const houseKey = (deps.env ?? process.env).OPENCODE_API_KEY?.trim();
     return houseKey ? { value: houseKey, source: "backend_env" } : null;
   }
-  // A Free-lane OpenRouter model costs nothing, so the deployment's key serves
-  // it when there is one: a member's own key, expired or not, must never be
-  // what makes a free model fail. Without a house key the member's key applies.
-  if (
-    input.provider === "openrouter" &&
-    input.model?.includes("/") &&
-    input.model.endsWith(":free")
-  ) {
-    const houseKey = (deps.env ?? process.env).OPENROUTER_API_KEY?.trim();
-    if (houseKey) return { value: houseKey, source: "backend_env" };
-  }
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,
@@ -103,23 +92,11 @@ export async function resolveProviderCredentialForRun(
     });
     if (userCredential) return { value: userCredential, source: "user_connection" };
   }
-  const resolved = await resolveProviderCredential(input.orgId, input.provider, deps);
-  if (resolved) return resolved;
-
-  // The public Free lane is the one production exception to the paid-provider
-  // tenant boundary: `:free` OpenRouter variants are free upstream and cost no
-  // shared provider quota, so the hosted key can make the advertised zero-cost
-  // lane usable without a per-user connection. Paid models remain
-  // tenant/BYOK-only in production.
-  if (
-    input.provider === "openrouter" &&
-    input.model?.includes("/") &&
-    input.model.endsWith(":free")
-  ) {
-    const houseKey = (deps.env ?? process.env).OPENROUTER_API_KEY?.trim();
-    if (houseKey) return { value: houseKey, source: "backend_env" };
-  }
-  return null;
+  // Free models are free on the member's own OpenRouter key, so they follow
+  // the same order as paid ones: the member's connection, then the
+  // organisation's secret, and in production nothing else. The deployment's
+  // own keys never serve a member's run.
+  return resolveProviderCredential(input.orgId, input.provider, deps);
 }
 
 /**
