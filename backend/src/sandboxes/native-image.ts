@@ -289,13 +289,16 @@ export interface NativeImageDockerfile {
   readonly files: readonly { readonly contextPath: string; readonly bytes: Buffer }[];
 }
 
-/** The recipe as a Dockerfile on top of `baseImageArg` (a build ARG the caller supplies). Each step
+/** The recipe as a Dockerfile on top of `baseImageArg` (a build ARG the caller supplies). The boot
+ * script is the entrypoint and the base command is restated as CMD when the caller knows it. Each step
  *  ships as a script file the Dockerfile copies and runs, so the classic builder (no heredocs) works. */
 export function renderNativeImageDockerfile(
   layout: SandboxRuntimeLayout,
   inputs: NativeImageInputs,
   baseImageArg = "USEAGENT_NATIVE_BASE_IMAGE",
   env: Readonly<Record<string, string | undefined>> = process.env,
+  /** The base image's own command; an ENTRYPOINT would otherwise drop it, and a provider's daemon may live in it. */
+  baseCommand: readonly string[] = [],
 ): NativeImageDockerfile {
   const files: { contextPath: string; bytes: Buffer }[] = [];
   const scripts = "/tmp/useagent-native-image";
@@ -335,6 +338,7 @@ export function renderNativeImageDockerfile(
     `LABEL org.useagent.native-image=${nativeImageName(inputs, env)}`,
     // A sandbox comes up with its runtime ready; providers that ignore the image entrypoint still work, the plane repairs.
     `ENTRYPOINT [${JSON.stringify(runtimeEnvironmentBootPath(layout))}]`,
+    ...(baseCommand.length ? [`CMD ${JSON.stringify(baseCommand)}`] : []),
   );
   return { dockerfile: `${lines.filter((line) => line !== "").join("\n")}\n`, files };
 }

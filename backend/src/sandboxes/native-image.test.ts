@@ -163,6 +163,9 @@ describe("native image Dockerfile", () => {
     expect(rendered.dockerfile).not.toContain("<<");
     // The image boots its runtime: the entrypoint is the installed boot script.
     expect(rendered.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]')).toBe(true);
+    // The base image's command survives the entrypoint when the bake knows it; a provider daemon may live there.
+    const withCommand = renderNativeImageDockerfile(CUBE_LAYOUT, inputs(), undefined, process.env, ["/usr/local/bin/start-sandbox.sh"]);
+    expect(withCommand.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]\nCMD ["/usr/local/bin/start-sandbox.sh"]')).toBe(true);
     const boot = rendered.files.find((file) => file.contextPath === "context/5-boot/useagent-sandbox-boot")!;
     expect(boot.bytes.toString("utf8").startsWith("#!/bin/sh\n")).toBe(true);
     const bun = rendered.files.find((file) => file.contextPath === "context/0-bun/step.sh")!;

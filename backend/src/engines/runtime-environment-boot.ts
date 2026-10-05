@@ -24,10 +24,11 @@ export function runtimeEnvironmentBootPath(layout: SandboxRuntimeLayout = ROOT_R
  * script does all of that while the sandbox boots: the runtime starts with the
  * flags the plane baked, readiness is the plane's own probe, the pairing leaves
  * the plane's cookie jar in place, and one shell request builds the runtime's
- * state. The plane then finds a ready runtime and moves straight on. The
- * runtime is a background child; the script keeps the container alive
- * separately, so a plane-driven restart (pkill, relaunch) leaves the container
- * up. A marker file shows the plane a boot in progress so it waits instead of
+ * state. The plane then finds a ready runtime and moves straight on. All of
+ * that runs in the background: the sandbox's own command (the image's, or the
+ * launcher's) is the main process from the first moment, so a provider that
+ * probes its daemon is never kept waiting, and a plane-driven restart (pkill,
+ * relaunch) leaves the container up. A marker file shows the plane a boot in progress so it waits instead of
  * restarting. Every step is best effort: a failure here leaves the sandbox idle
  * and the plane repairs it as before.
  */
@@ -44,16 +45,20 @@ export function buildRuntimeEnvironmentBootScript(
     `mkdir -p "${runtimeHome}"`,
     // The plane waits on this marker instead of restarting a runtime that is still coming up.
     `touch "${RUNTIME_BOOT_MARKER}"`,
-    `nohup ${shell(buildRuntimeEnvironmentLaunchCommand(env, layout))} >"${runtimeHome}/boot.log" 2>&1 &`,
-    "i=0",
-    `until ${shell(buildRuntimeEnvironmentReadinessCommand(env))}; do`,
-    '  i=$((i + 1)); [ "$i" -ge 600 ] && break',
-    "  sleep 0.1",
-    "done",
-    `rm -f "${RUNTIME_BOOT_MARKER}"`,
-    `${shell(buildRuntimeEnvironmentAuthenticationCommand(layout))} >>"${runtimeHome}/boot.log" 2>&1 || true`,
-    `curl -sS -m 60 -b "${RUNTIME_COOKIE_JAR}" -H 'accept: application/json' -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/orchestration/shell || true`,
-    // A launcher that hands the image a command (a provider daemon, the runner's own idle command) gets it run.
+    // The runtime comes up in the background; the sandbox's own command (the
+    // image's, or what the launcher passed) is the main process from the start,
+    // so a launcher that probes its daemon is not kept waiting on the runtime.
+    "(",
+    `  nohup ${shell(buildRuntimeEnvironmentLaunchCommand(env, layout))} >"${runtimeHome}/boot.log" 2>&1 &`,
+    "  i=0",
+    `  until ${shell(buildRuntimeEnvironmentReadinessCommand(env))}; do`,
+    '    i=$((i + 1)); [ "$i" -ge 600 ] && break',
+    "    sleep 0.1",
+    "  done",
+    `  rm -f "${RUNTIME_BOOT_MARKER}"`,
+    `  ${shell(buildRuntimeEnvironmentAuthenticationCommand(layout))} >>"${runtimeHome}/boot.log" 2>&1 || true`,
+    `  curl -sS -m 60 -b "${RUNTIME_COOKIE_JAR}" -H 'accept: application/json' -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/orchestration/shell || true`,
+    `) >>"${runtimeHome}/boot.log" 2>&1 &`,
     '[ "$#" -gt 0 ] && exec "$@"',
     "exec sleep infinity",
     "",
