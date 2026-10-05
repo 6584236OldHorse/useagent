@@ -35,6 +35,8 @@ describe("usage card figures", () => {
     );
     expect(bare?.used).toBe(500);
     expect(contextSegments(bare as ConversationContext)).toEqual([]);
+    // A direct caller that gives no input names no fresh bucket: only what it gave is drawn.
+    expect(contextSegments({ used: 500, cached: 100, window: 1000 })).toEqual([{ label: "Cached input", tokens: 100 }]);
   });
 
   test("the minutes row reads x of y with a share while a cap is set, x alone without", () => {
@@ -78,6 +80,12 @@ describe("UsageCard", () => {
     const html = renderToStaticMarkup(<UsageCard context={PI} minutes={{ used: 0, cap: 600 }} />);
     expect(html).toContain("42k / 1M");
     expect(html).toContain("(4%)");
+  });
+
+  test("a bare total under a known window shows the readout and no track", () => {
+    const html = renderToStaticMarkup(<UsageCard context={{ used: 500, cached: 0, window: 1000 }} minutes={null} />);
+    expect(html).toContain("500 / 1k");
+    expect(html).not.toContain("bg-chart-track");
   });
 
   test("OpenCode reports no window: the token readout only, no bar, no invented max", () => {

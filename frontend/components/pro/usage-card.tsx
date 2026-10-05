@@ -31,9 +31,11 @@ export function contextSegments(context: ConversationContext): ContextSegment[] 
   const output = context.output ?? 0;
   const reasoning = context.reasoning ?? 0;
   const cacheWrite = context.cacheWrite ?? 0;
-  // A frame that named no bucket at all (a bare total; the parser reads every
-  // missing bucket as 0) is not broken down into a fresh share it never gave.
-  const named = (context.input ?? 0) + cached + output + reasoning + cacheWrite > 0;
+  // A fresh share exists only when the frame carried an input figure: a caller
+  // that gives no input names no fresh bucket, and a frame that named no bucket
+  // at all (a bare total; the parser reads every missing bucket as 0) is not
+  // broken down into a share it never gave.
+  const named = context.input !== undefined && context.input + cached + output + reasoning + cacheWrite > 0;
   const fresh = named ? Math.max(0, context.used - cached - output - reasoning - cacheWrite) : 0;
   const buckets: { label: string; tokens: number }[] = [
     { label: "Fresh input", tokens: fresh },
