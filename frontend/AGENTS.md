@@ -1,6 +1,6 @@
-# useAgent frontend - agent guide
+# UseAgent frontend - agent guide
 
-**useAgent** is an open-source agent platform: autonomous engineers running
+**UseAgent** is an open-source agent platform: autonomous engineers running
 in isolated cloud sandboxes. The canonical UI kit is `components/base/**` (BoardUI-derived,
 licensed and vendored) plus its semantic tokens; every product surface builds on
 it. Dialog/overlay primitives (Modal, Drawer, command palette) live in
@@ -171,7 +171,7 @@ animation use **`motion/react`** (the `motion` package is installed):
 ## Brand mark
 
 `import { AsteriskMark } from '@/components/foundations/brand/asterisk-mark'`
-is the single source for useAgent's ✳ glyph. Size/color come from `className`.
+is the single source for UseAgent's ✳ glyph. Size/color come from `className`.
 Never inline a copy.
 
 ## Utilities (`utils/`)
@@ -190,7 +190,7 @@ Never inline a copy.
   boundary — keep the boundary at the component that owns them.
 - Icons: `@remixicon/react` only.
 - Reuse the vendored kit and brand utilities before writing new primitives.
-- User-visible strings say **"useAgent"**, never the template name.
+- User-visible strings say **"UseAgent"**, never the template name.
 - Do not remove the `@config '../tailwind.config.ts';` line from
   `app/globals.css` — it is what makes every semantic token resolve.
 - `AGENTS.md` is hand-maintained; `agentRules: false` in `next.config.ts` stops

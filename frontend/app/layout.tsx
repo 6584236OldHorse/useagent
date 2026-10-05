@@ -28,7 +28,7 @@ const fontDisplay = Inter_Tight({
 });
 
 export const metadata: Metadata = {
-  title: 'useAgent - one interface for every coding agent',
+  title: 'UseAgent - one interface for every coding agent',
   description: 'Run coding agents in isolated workspaces with durable context, automations, and audit trails.',
 };
 

@@ -7,5 +7,7 @@ import { toolServerDisplayName } from "@useagent/agent-harness/canonical";
  * A null provider also passes through unchanged.
  */
 export function providerDisplayName(provider: string | null): string | null {
-  return provider === null ? null : toolServerDisplayName(provider);
+  if (provider === null) return null;
+  const name = toolServerDisplayName(provider);
+  return name.replace(/^useAgent(?=$| )/, "UseAgent");
 }
