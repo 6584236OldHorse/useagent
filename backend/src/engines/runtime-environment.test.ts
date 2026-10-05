@@ -131,11 +131,11 @@ describe("T3 Cube environment", () => {
     expect(runtimeFirstActivityTimeoutMs({ RUNTIME_FIRST_ACTIVITY_TIMEOUT_MS: "1200" })).toBe(1200);
   });
 
-  test("bounds provider no-progress time with an operator-tunable timeout", () => {
-    expect(runtimeNoProgressTimeoutMs({})).toBe(600_000);
+  test("provider no-progress time is unbounded unless an operator sets it", () => {
+    expect(runtimeNoProgressTimeoutMs({})).toBe(Number.POSITIVE_INFINITY);
     expect(runtimeNoProgressTimeoutMs({ T3_NO_PROGRESS_TIMEOUT_MS: "2500" })).toBe(2500);
-    expect(runtimeNoProgressTimeoutMs({ T3_NO_PROGRESS_TIMEOUT_MS: "0" })).toBe(600_000);
-    expect(runtimeNoProgressTimeoutMs({ T3_NO_PROGRESS_TIMEOUT_MS: "nah" })).toBe(600_000);
+    expect(runtimeNoProgressTimeoutMs({ T3_NO_PROGRESS_TIMEOUT_MS: "0" })).toBe(Number.POSITIVE_INFINITY);
+    expect(runtimeNoProgressTimeoutMs({ T3_NO_PROGRESS_TIMEOUT_MS: "nah" })).toBe(Number.POSITIVE_INFINITY);
     expect(runtimeNoProgressTimeoutMs({ RUNTIME_NO_PROGRESS_TIMEOUT_MS: "3500" })).toBe(3500);
   });
 

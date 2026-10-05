@@ -70,6 +70,8 @@ export function createNoProgressWatchdog(
   };
   const arm = () => {
     clearTimeout(timer);
+    // Without a window, silence never trips the watchdog; retry warnings still do.
+    if (!Number.isFinite(timeoutMs)) return;
     timer = setTimeout(() => {
       const error = noProgressError(
         `${timeoutMs}ms without provider activity; retry warnings=${consecutiveRetryWarnings}`,

@@ -55,7 +55,8 @@ const RUNTIME_READINESS_DEADLINE_MS = 60_000;
 const RUNTIME_READINESS_DELAY_MS = 100;
 const RUNTIME_STOP_DEADLINE_MS = 15_000;
 const DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS = 45_000;
-const DEFAULT_NO_PROGRESS_TIMEOUT_MS = 600_000;
+// Off unless an operator sets it: a turn is bounded by its work, not by a clock.
+const DEFAULT_NO_PROGRESS_TIMEOUT_MS = Number.POSITIVE_INFINITY;
 type TimingRecorder = Pick<RunStageTimer, "begin">;
 type RuntimeEnvironmentSandbox = Pick<SandboxHandle, "id" | "providerKind"> & {
   readonly fs?: Pick<SandboxHandle["fs"], "uploadFile">;

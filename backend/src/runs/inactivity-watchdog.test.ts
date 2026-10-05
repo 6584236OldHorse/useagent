@@ -21,6 +21,21 @@ describe("outer run inactivity watchdog", () => {
     }
   });
 
+  test("no window means no timeout, however long the silence", async () => {
+    let timedOut = false;
+    const watchdog = createSlidingInactivityWatchdog(Number.POSITIVE_INFINITY, () => {
+      timedOut = true;
+    });
+    try {
+      await Bun.sleep(60);
+      watchdog.touch();
+      await Bun.sleep(60);
+      expect(timedOut).toBe(false);
+    } finally {
+      watchdog.dispose();
+    }
+  });
+
   test("genuine silence still times out and dispose cannot re-arm it", async () => {
     let timeouts = 0;
     const watchdog = createSlidingInactivityWatchdog(30, () => {
