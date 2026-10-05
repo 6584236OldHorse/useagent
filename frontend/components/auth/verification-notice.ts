@@ -37,7 +37,7 @@ export function verificationNotice(params: {
   if (params.declined === "nothing") {
     return {
       tone: "problem",
-      text: "Nothing was cancelled: that sign-up was already confirmed, or a newer sign-up replaced it. If the account is not yours, sign in with your own password to take it over.",
+      text: "Nothing was cancelled: that sign-up was already confirmed, or a newer sign-up for the address replaced it.",
     };
   }
   return null;

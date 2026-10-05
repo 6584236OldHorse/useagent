@@ -2,7 +2,6 @@ import { and, eq, notExists } from "drizzle-orm";
 import { account, session, user } from "./db/auth-schema";
 import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
-import { withOrgLock } from "./org-lock";
 
 /**
  * Signup side-effects for better-auth. One job: give every newly-created user
@@ -50,16 +49,24 @@ export async function createPersonalOrgForUser(user: {
 
 /** The personal organisation, once, whichever path reports the person: a
  *  confirmed sign-up, a provider identity linking, a second click on the same
- *  link. A person who already belongs somewhere keeps what they have. Given a
- *  transaction, the check and the creation ride in it. */
+ *  link, a development sign-up. Every such path takes the same lock first, the
+ *  person's user row, and reads memberships under it in the same transaction:
+ *  two paths cannot both find none, and none waits on anything but that row,
+ *  so there is nothing to deadlock on. Given a transaction (confirmation holds
+ *  the row already), it rides in it; otherwise it opens one. A person who
+ *  already belongs somewhere keeps what they have. */
 export async function ensurePersonalOrgForUser(
-  user: { id: string; name?: string | null; email: string },
+  person: { id: string; name?: string | null; email: string },
   exec: Executor = db,
 ): Promise<void> {
-  await withOrgLock(`user:${user.id}`, async () => {
-    const [membership] = await exec.select({ id: member.id }).from(member).where(eq(member.userId, user.id)).limit(1);
-    if (!membership) await createPersonalOrgForUser(user, exec);
-  });
+  const decide = async (tx: Executor): Promise<void> => {
+    const [locked] = await tx.select({ id: user.id }).from(user).where(eq(user.id, person.id)).for("update");
+    if (!locked) return; // gone in between: nobody to give a workspace to
+    const [membership] = await tx.select({ id: member.id }).from(member).where(eq(member.userId, person.id)).limit(1);
+    if (!membership) await createPersonalOrgForUser(person, tx);
+  };
+  if (exec === db) await db.transaction(decide);
+  else await decide(exec);
 }
 
 /** The user rows that are a claim on an address rather than a person: the

@@ -351,6 +351,44 @@ describe("open sign-up", () => {
     expect(await memberships(closedClaim!.id)).toHaveLength(1);
   });
 
+  test("a Google sign-in racing the confirmation click ends with one personal workspace and no hang", async () => {
+    const email = address("race-workspace");
+    expect((await signUp(email, {}, own(91))).status).toBe(200);
+    const claim = await row(email);
+    // Every path that may create the workspace takes the user row lock first.
+    // Holding that lock from outside queues the confirmation click and the
+    // Google sign-in behind it; letting go makes them race each other for it.
+    let locked!: () => void;
+    let release!: () => void;
+    const lockedNow = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx.select({ id: user.id }).from(user).where(eq(user.id, claim!.id)).for("update");
+      locked();
+      await released;
+    });
+    await lockedNow;
+    const confirming = openLink(email, claim!.id);
+    const linking = auth.api.signInSocial({ body: { provider: "google", idToken: { token: email } } });
+    await new Promise((resolve) => setTimeout(resolve, 300)); // both are waiting on the row now
+    release();
+    await holder;
+    const [confirmed, linked] = await Promise.race([
+      Promise.all([confirming, linking]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the confirmation click and the Google sign-in did not both finish")), 10_000)),
+    ]);
+    expect(confirmed.status).toBe(302);
+    expect(landing(confirmed)).toBe(verifiedAt);
+    expect(linked.user.id).toBe(claim!.id);
+    expect(await row(email)).toMatchObject({ id: claim!.id, emailVerified: true });
+    expect(await memberships(claim!.id)).toHaveLength(1);
+    expect((await accounts(claim!.id)).map((linkedAccount) => linkedAccount.providerId)).toEqual(["google"]);
+  });
+
   test("a link is judged by its signature before anything is looked up", async () => {
     const known = address("waits"); // confirmed above
     const pending = await row(known);

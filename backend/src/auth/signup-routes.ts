@@ -171,6 +171,7 @@ export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
     const answer = (await response.clone().json().catch(() => null)) as { code?: unknown } | null;
     if (answer?.code !== "EMAIL_NOT_VERIFIED") return response;
     const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (!email) return response; // a sign-in this route could not read is the library's answer alone
     let mail: SignInMail = { sent: false, reason: "closed" };
     if (openSignupConfig()) {
       const wait = signInMail(email);
