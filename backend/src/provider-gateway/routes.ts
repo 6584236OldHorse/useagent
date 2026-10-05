@@ -278,6 +278,7 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
         rawBody,
         target.outputLimitField,
         limits.maxOutputTokens,
+        target.provider,
       );
       if (!policy.ok) {
         const status = policy.error === "invalid_json" ? 400 : 403;
