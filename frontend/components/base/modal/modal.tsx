@@ -46,13 +46,18 @@ const ModalOverlay = React.forwardRef<
 });
 ModalOverlay.displayName = "ModalOverlay";
 
+/** Inline so it wins over the animate-in utilities whatever their order. */
+const INSTANT_ANIMATION: React.CSSProperties = { animationDuration: "0s" };
+
 const ModalContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
     overlayClassName?: string;
     showClose?: boolean;
+    /** Skip the enter and exit animation: a surface the keyboard opened lands at once. */
+    instant?: boolean;
   }
->(({ className, overlayClassName, children, showClose = true, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, ...rest }, forwardedRef) => {
+>(({ className, overlayClassName, children, showClose = true, instant = false, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, style, ...rest }, forwardedRef) => {
   const focusReturn = useFocusReturn();
   // Popovers opened from inside the dialog portal into its content, so the
   // focus trap and pointer-events lock do not shut them out.
@@ -66,11 +71,13 @@ const ModalContent = React.forwardRef<
     if (typeof forwardedRef === "function") forwardedRef(node);
     else if (forwardedRef) forwardedRef.current = node;
   };
+  const instantStyle = instant ? INSTANT_ANIMATION : undefined;
   return (
     <ModalPortal>
-      <ModalOverlay className={overlayClassName}>
+      <ModalOverlay className={overlayClassName} style={instantStyle}>
         <DialogPrimitive.Content
           ref={setRefs}
+          style={instant ? { ...style, ...INSTANT_ANIMATION } : style}
           onOpenAutoFocus={(event) => {
             onOpenAutoFocus?.(event);
             focusReturn.onOpenAutoFocus();

@@ -24,16 +24,20 @@ const CommandDialog = ({
   children,
   className,
   overlayClassName,
+  instant,
   ...rest
 }: DialogProps & {
   className?: string;
   overlayClassName?: string;
+  /** The palette was opened from the keyboard: no enter or exit animation. */
+  instant?: boolean;
 }) => {
   return (
     <Modal.Root {...rest}>
       <Modal.Content
         overlayClassName={cn("justify-start pt-20", overlayClassName)}
         showClose={false}
+        instant={instant}
         className={cx("flex max-h-full max-w-[600px] flex-col overflow-hidden rounded-2xl", className)}
       >
         <Command
