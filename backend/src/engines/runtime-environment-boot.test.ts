@@ -32,8 +32,10 @@ describe("sandbox boot entrypoint", () => {
   });
 
   test("the flags the runtime starts with follow the plane's environment at bake time", () => {
-    expect(script).toContain('"child-forwarding=on" > "/root/.skynet/t3/.useagent-runtime-flags"');
-    expect(buildRuntimeEnvironmentBootScript({})).toContain('"child-forwarding=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+    expect(script).toContain('"child-forwarding=on,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+    expect(buildRuntimeEnvironmentBootScript({})).toContain('"child-forwarding=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+    // The baked boot starts the runtime with third-party telemetry off.
+    expect(script).toContain("export T3CODE_TELEMETRY_ENABLED=false");
   });
 
   test("boots the desktop after the runtime is warm and marks the boot for the plane", () => {

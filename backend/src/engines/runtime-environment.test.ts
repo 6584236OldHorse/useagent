@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SandboxProcess } from "../sandboxes/provider";
+import { sandboxRuntimeLayout, type SandboxProcess } from "../sandboxes/provider";
 import {
   RUN_TIMING_OUTCOMES,
   RUN_TIMING_STAGES,
@@ -481,12 +481,24 @@ describe("T3 Cube environment", () => {
 
 describe("runtime flags marker", () => {
   test("the launch records the flags it started with and readiness checks the plane still wants them", () => {
-    expect(runtimeEnvironmentFlags({})).toBe("child-forwarding=off");
-    expect(runtimeEnvironmentFlags({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toBe("child-forwarding=on");
+    expect(runtimeEnvironmentFlags({})).toBe("child-forwarding=off,telemetry=off");
+    expect(runtimeEnvironmentFlags({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toBe("child-forwarding=on,telemetry=off");
     expect(buildRuntimeEnvironmentLaunchCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain(
-      `printf '%s\\n' "child-forwarding=on" > "/root/.skynet/t3/.useagent-runtime-flags"`,
+      `printf '%s\\n' "child-forwarding=on,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"`,
     );
-    expect(buildRuntimeEnvironmentReadinessCommand({})).toContain('.useagent-runtime-flags" 2>/dev/null)" = "child-forwarding=off"');
-    expect(buildRuntimeEnvironmentReadinessCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain('= "child-forwarding=on"');
+    expect(buildRuntimeEnvironmentReadinessCommand({})).toContain('.useagent-runtime-flags" 2>/dev/null)" = "child-forwarding=off,telemetry=off"');
+    expect(buildRuntimeEnvironmentReadinessCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain('= "child-forwarding=on,telemetry=off"');
+  });
+
+  test("every launch turns the runtime's third-party telemetry off, and an older launch is not ready", () => {
+    for (const kind of ["cube", "daytona", "local", "box"] as const) {
+      const launch = buildRuntimeEnvironmentLaunchCommand({}, sandboxRuntimeLayout(kind));
+      expect(launch).toContain("export T3CODE_TELEMETRY_ENABLED=false");
+      // The switch is exported before the runtime starts.
+      expect(launch.indexOf("export T3CODE_TELEMETRY_ENABLED=false")).toBeLessThan(launch.indexOf(" serve --host"));
+    }
+    // A runtime an older image booted wrote a marker without the switch; readiness refuses it.
+    const older = "child-forwarding=off";
+    expect(Bun.spawnSync(["sh", "-c", `test "${older}" = "${runtimeEnvironmentFlags({})}"`]).exitCode).not.toBe(0);
   });
 });

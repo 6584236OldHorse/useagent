@@ -48,8 +48,9 @@ const RUNTIME_FLAGS_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-flag
 /** Present while the image's boot entrypoint is still bringing the runtime up. */
 export const RUNTIME_BOOT_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-booting`;
 
+// Telemetry is always off; it rides the marker so a runtime started without the switch is never accepted as ready.
 export function runtimeEnvironmentFlags(env: Readonly<Record<string, string | undefined>> = process.env): string {
-  return `child-forwarding=${runtimeCodexChildForwardingEnabled(env) ? "on" : "off"}`;
+  return `child-forwarding=${runtimeCodexChildForwardingEnabled(env) ? "on" : "off"},telemetry=off`;
 }
 const RUNTIME_READINESS_DEADLINE_MS = 60_000;
 const RUNTIME_READINESS_DELAY_MS = 100;
@@ -211,6 +212,8 @@ export function buildRuntimeEnvironmentLaunchCommand(
     "export T3CODE_NO_BROWSER=true",
     "export T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false",
     "export T3CODE_LOG_WS_EVENTS=false",
+    // Customer sandboxes send no analytics to a third party (T3 batches to PostHog by default).
+    "export T3CODE_TELEMETRY_ENABLED=false",
     `mkdir -p "${runtimeHome}" "${layout.workdir}"`,
     `test -x "${nativeRuntimeExecutable(layout)}"`,
     `printf '%s\\n' "${TOOL_GATEWAY_SERVER_NAME}" > "${runtimeHome}/.useagent-required-mcp"`,
