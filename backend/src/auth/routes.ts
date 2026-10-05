@@ -339,9 +339,10 @@ routes.post("/api/auth/organization/cancel-invitation", async (c) => {
   });
 });
 
-/** Acceptance and rejection run under the organisation's lock too, so neither
- *  can interleave with a cancellation, a creation or an owner change. */
-for (const path of ["/api/auth/organization/accept-invitation", "/api/auth/organization/reject-invitation"]) {
+/** Rejection runs under the organisation's lock too, so it cannot interleave
+ *  with a cancellation, a creation or an owner change. Acceptance has its own
+ *  handler below, under the same lock. */
+for (const path of ["/api/auth/organization/reject-invitation"]) {
   routes.post(path, async (c) => {
     const request = c.req.raw;
     const body = await jsonBody(request);
@@ -392,31 +393,45 @@ routes.get("/api/auth/invitation-preview", async (c) => {
     expiresAt: row.expiresAt.toISOString(),
   });
 });
-/** Accepting an invitation an admin sent on a Slack sender's behalf binds that
- *  sender to the account that accepted: the address's owner has proven it. */
+/** Acceptance runs under the organisation's lock, the direct path, the library
+ *  and the Slack binding together, so nothing about the organisation moves in
+ *  between: a Slack message cannot reopen the request while the library is
+ *  still writing the membership. Accepting an invitation an admin sent on a
+ *  Slack sender's behalf binds that sender to the account that accepted: the
+ *  address's owner has proven it. */
 routes.post("/api/auth/organization/accept-invitation", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
+  if (!body || typeof body.invitationId !== "string") return auth.handler(request);
+  const invitationId = body.invitationId;
+  const [target] = await db
+    .select({ organizationId: invitation.organizationId })
+    .from(invitation)
+    .where(eq(invitation.id, invitationId))
+    .limit(1);
+  if (!target) return auth.handler(request);
   const session = await auth.api.getSession({ headers: request.headers });
-  if (session && body && typeof body.invitationId === "string") {
-    // Already a member here, invited on a Slack sender's behalf: the library
-    // would add a second membership, so the invitation is consumed directly,
-    // behind the same source check the library applies.
-    if (!trustedOrigin(request)) return c.json({ message: "Invalid origin" }, 403);
-    const organizationId = await acceptLinkedInvitationAsMember(body.invitationId, { id: session.user.id, email: session.user.email });
-    if (organizationId) {
-      await auth.api.setActiveOrganization({ headers: request.headers, body: { organizationId } }).catch(() => undefined);
-      return c.json({ status: "accepted", organizationId });
+  return withOrgLock(target.organizationId, async () => {
+    if (session) {
+      // Already a member here, invited on a Slack sender's behalf: the library
+      // would add a second membership, so the invitation is consumed directly,
+      // behind the same source check the library applies.
+      if (!trustedOrigin(request)) return c.json({ message: "Invalid origin" }, 403);
+      const organizationId = await acceptLinkedInvitationAsMember(invitationId, { id: session.user.id, email: session.user.email });
+      if (organizationId) {
+        await auth.api.setActiveOrganization({ headers: request.headers, body: { organizationId } }).catch(() => undefined);
+        return c.json({ status: "accepted", organizationId });
+      }
     }
-  }
-  const response = await auth.handler(request);
-  if (response.ok && session && body && typeof body.invitationId === "string") {
-    const bound = await bindInvitedSlackSender(body.invitationId, session.user.id);
-    // Accepted, but the membership is already gone (removed in between): the
-    // request goes back to the admins rather than waiting for nothing.
-    if (bound === "no_membership") await reopenInvitedRequest(body.invitationId);
-  }
-  return response;
+    const response = await auth.handler(request);
+    if (response.ok && session) {
+      const bound = await bindInvitedSlackSender(invitationId, session.user.id);
+      // Accepted, but the membership is already gone (removed in between): the
+      // request goes back to the admins rather than waiting for nothing.
+      if (bound === "no_membership") await reopenInvitedRequest(invitationId);
+    }
+    return response;
+  });
 });
 /** An invitation id must come from the invitation itself (the mail or the
  *  inviter), never from a lookup by the session's email claim: a Google account

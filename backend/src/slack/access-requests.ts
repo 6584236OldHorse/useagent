@@ -11,13 +11,14 @@
  * made when the person who owns that address accepts it on the web, so a typed
  * address can never claim somebody else's identity. Deny is remembered.
  */
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { slackAccessRequests, slackUsers, slackWorkspaces } from "../db/schema";
 import { env, googleAuthEnabled } from "../env";
+import { withOrgLock } from "../org-lock";
 import type { SlackClient } from "./client";
 import { kickSlackOutbox } from "./outbox/delivery";
 import { enqueuePostMessageTx } from "./outbox";
@@ -89,7 +90,7 @@ export async function requestSlackAccess(input: {
   if (existing?.status === "invited") {
     const state = await invitationState(existing.invitationId, db);
     if (state === "open") return "invited";
-    if (state === "accepted") return settleAccepted(existing.invitationId!);
+    if (state === "accepted") return settleAccepted(input.orgId, existing.invitationId!);
   }
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
@@ -149,22 +150,25 @@ export async function requestSlackAccess(input: {
     }
     return "asked";
   });
-  if (verdict === "accepted_unbound") return settleAccepted(existing!.invitationId!);
+  if (verdict === "accepted_unbound") return settleAccepted(input.orgId, existing!.invitationId!);
   if (verdict === "asked") kickSlackOutbox();
   return verdict;
 }
 
 /** An invitation accepted while the request still says invited (a message
  *  landed between the library's acceptance and our binding): finish the binding now. */
-async function settleAccepted(invitationId: string): Promise<AccessRequestVerdict> {
-  const acceptor = await acceptorOf(invitationId);
-  if (!acceptor) return "waiting";
-  const bound = await bindInvitedSlackSender(invitationId, acceptor);
-  if (bound === "bound") return "already_in";
-  // Accepted, but no membership to bind to: it was removed again, or the
-  // acceptance never finished. Never created here; the admins decide again.
-  if (bound === "no_membership") await reopenInvitedRequest(invitationId);
-  return "waiting";
+async function settleAccepted(orgId: string, invitationId: string): Promise<AccessRequestVerdict> {
+  // The organisation's turn: acceptance holds it from the library's write to
+  // the binding, so by the time this runs the membership is there or truly gone.
+  return withOrgLock(orgId, async () => {
+    const acceptor = await acceptorOf(invitationId);
+    const bound = acceptor ? await bindInvitedSlackSender(invitationId, acceptor) : "no_membership";
+    if (bound === "bound") return "already_in";
+    // Accepted, but nobody to bind: the membership was removed again, or the
+    // account is gone. Never created here; the admins decide again.
+    if (bound === "no_membership") await reopenInvitedRequest(invitationId);
+    return "waiting";
+  });
 }
 
 export interface AccessRequestRow {
@@ -180,6 +184,27 @@ export interface AccessRequestRow {
 }
 
 export async function listAccessRequests(orgId: string): Promise<AccessRequestRow[]> {
+  // An invitation cancelled, rejected, expired or deleted leaves its request
+  // marked invited and invisible: bring such requests back before listing.
+  await withOrgLock(orgId, async () => {
+    const stale = await db
+      .select({ id: slackAccessRequests.id, invitationId: slackAccessRequests.invitationId })
+      .from(slackAccessRequests)
+      .leftJoin(invitation, eq(invitation.id, slackAccessRequests.invitationId))
+      .where(
+        and(
+          eq(slackAccessRequests.orgId, orgId),
+          eq(slackAccessRequests.status, "invited"),
+          or(isNull(invitation.id), and(ne(invitation.status, "accepted"), or(ne(invitation.status, "pending"), lte(invitation.expiresAt, new Date())))),
+        ),
+      );
+    if (stale.length) {
+      await db
+        .update(slackAccessRequests)
+        .set({ status: "pending", invitationId: null, decidedBy: null, decidedAt: null })
+        .where(and(inArray(slackAccessRequests.id, stale.map((row) => row.id)), eq(slackAccessRequests.status, "invited")));
+    }
+  });
   const rows = await db
     .select({
       id: slackAccessRequests.id,
@@ -359,7 +384,7 @@ export async function acceptLinkedInvitationAsMember(invitationId: string, who: 
     return row.organizationId;
   });
   if (!consumed) return null;
-  await bindInvitedSlackSender(invitationId, who.id);
+  if ((await bindInvitedSlackSender(invitationId, who.id)) === "no_membership") await reopenInvitedRequest(invitationId);
   return consumed;
 }
 

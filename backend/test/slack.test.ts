@@ -2909,6 +2909,32 @@ describe("slack workspace identity (fail closed)", () => {
     expect(none).toBeUndefined();
   });
 
+  test("a lapsed invitation comes back on the admins' list on reload, and a vanished recipient reopens on the next message", async () => {
+    const client = { userInfo: async () => null } as unknown as SlackClient;
+    const listed = () => json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    // Cancelled invitation, no further Slack message: the Team reload repairs it.
+    const quiet = `U-${uid("quiet")}`;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: quiet, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client })).toBe("asked");
+    const quietRequest = (await listed()).body.requests.find((r) => r.name === quiet)!;
+    await json(`/api/team/access-requests/${quietRequest.id}/allow`, { method: "POST", body: { email: `${uid("quiet")}@example.test` } });
+    expect((await listed()).body.requests.some((r) => r.id === quietRequest.id)).toBe(false);
+    const [quietInv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${quietRequest.id}`);
+    await db.execute(sql`update invitation set status = 'canceled' where id = ${(quietInv as { invitation_id: string }).invitation_id}`);
+    expect((await listed()).body.requests.some((r) => r.id === quietRequest.id)).toBe(true);
+    // Accepted, then the recipient's account deleted before anything bound: the next message reopens.
+    const orphan = `U-${uid("orphan")}`;
+    const orphanChannel = `D${uid("dm")}`;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: orphan, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client })).toBe("asked");
+    const orphanRequest = (await listed()).body.requests.find((r) => r.name === orphan)!;
+    const orphanEmail = `${uid("orphan")}@example.test`;
+    await json(`/api/team/access-requests/${orphanRequest.id}/allow`, { method: "POST", body: { email: orphanEmail } });
+    const [orphanInv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${orphanRequest.id}`);
+    await db.execute(sql`update invitation set status = 'accepted' where id = ${(orphanInv as { invitation_id: string }).invitation_id}`);
+    await postSlack(eventCallback({ type: "message", channel: orphanChannel, channel_type: "im", user: orphan, text: `hi ${uid("o")}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => (await listed()).body.requests.find((r) => r.id === orphanRequest.id) ?? null);
+    expect(await db.execute(sql`select 1 from slack_users where team_id = ${TEAM} and slack_user_id = ${orphan}`)).toHaveLength(0);
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;
