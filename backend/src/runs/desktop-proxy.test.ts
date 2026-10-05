@@ -12,7 +12,7 @@ import { invalidatePreviewEndpoint, resolvePreviewEndpoint } from "./preview-pro
 import { betterAuthTrustedOrigins } from "../env";
 import type { AppEnv } from "../http";
 import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
-import { desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
+import { withoutClientControlBar, desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
 import { terminalRoutes } from "./terminal";
 import { portProxyRoutes } from "./port-proxy";
 
@@ -194,5 +194,15 @@ describe("desktop proxy recovery", () => {
       invalidatePreviewEndpoint(threadId, 6080);
       await db.delete(runs).where(eq(runs.orgId, orgId));
     }
+  });
+});
+
+describe("served desktop client page", () => {
+  test("hides the floating control bar and leaves other markup alone", () => {
+    const page = "<html><head><title>x</title></head><body><div id=\"noVNC_control_bar_anchor\"></div></body></html>";
+    const served = withoutClientControlBar(page);
+    expect(served).toContain("#noVNC_control_bar_anchor{display:none!important}</style></head>");
+    expect(served.replace(/<style>.*?<\/style>/, "")).toBe(page);
+    expect(withoutClientControlBar("not html")).toBe("not html");
   });
 });
