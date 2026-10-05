@@ -372,8 +372,8 @@ export function planUpdateFromStep(step: {
 }
 
 /** Chars of card JSON the stop restates at most, so finalization never builds
- *  a payload the outbox refuses: the newest cards win, and an open card past
- *  the budget still closes with a bare id/title/status. */
+ *  a payload the outbox refuses: the newest cards win, and a card past the
+ *  budget still closes with a bare id/title/status in its settled state. */
 export const TERMINAL_CARD_BUDGET = 6_000;
 
 /** Terminal task closures for stopStream: the recent tool cards restated from
@@ -397,8 +397,10 @@ export function terminalTaskChunks(input: {
     if (spent + size <= budget) {
       spent += size;
       restated.unshift(settled);
-    } else if (card.status === "in_progress") {
-      restated.unshift({ type: "task_update", id: card.id, title: card.title, status });
+    } else {
+      // Slack may only ever have seen this card in_progress (its completion
+      // append fenced at finalization), so even a settled card closes bare.
+      restated.unshift({ type: "task_update", id: card.id, title: card.title, status: settled.status });
     }
   }
   return [

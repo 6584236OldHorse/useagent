@@ -17,6 +17,7 @@ import {
   stepProgressChunks,
   taskSourcesField,
   taskUpdateChunk,
+  TERMINAL_CARD_BUDGET,
   terminalTaskChunks,
   toolTaskChunk,
 } from "./streaming";
@@ -244,16 +245,34 @@ describe("terminalTaskChunks", () => {
     ]);
   });
 
-  test("the restatement stays within its budget: newest cards first, an open card past it still closes", () => {
-    const big = (id: string, status: "in_progress" | "complete") =>
+  test("the restatement stays within its budget: newest cards first, every card past it still closes bare", () => {
+    const big = (id: string, status: "in_progress" | "complete" | "error") =>
       taskUpdateChunk({ id, title: "Searched the web", status, sources: [`https://x.dev/${"a".repeat(400)}`] });
-    const cards = [big("step_1", "in_progress"), big("step_2", "complete"), big("step_3", "complete")];
+    const cards = [big("step_1", "in_progress"), big("step_2", "error"), big("step_3", "complete")];
     // One card is ~950 chars of JSON: the budget fits exactly the newest one.
     expect(terminalTaskChunks({ phase: "completed", title: "T", cards, budget: 1_000 })).toEqual([
       { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
+      { type: "task_update", id: "step_2", title: "Searched the web", status: "error" },
       big("step_3", "complete"),
       { type: "task_update", id: "run", title: "T", status: "complete" },
     ]);
+  });
+
+  test("a card streamed in_progress whose oversized completion was fenced still closes at stop", () => {
+    // Slack saw the card spinning live; the completion append (five long
+    // sources) landed right before finalization and was fenced, so the stop
+    // is the only place left for the card to settle - complete, not dropped.
+    const sources = [1, 2, 3, 4, 5].map((k) => `https://x.dev/${k}/${"a".repeat(3_700)}`);
+    const done = taskUpdateChunk({ id: "step_1", title: "Searched the web", status: "complete", sources });
+    expect(JSON.stringify(done).length).toBeGreaterThan(TERMINAL_CARD_BUDGET);
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [done] })).toEqual([
+      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
+      { type: "task_update", id: "run", title: "T", status: "complete" },
+    ]);
+    const failed = taskUpdateChunk({ id: "step_2", title: "Ran a command", status: "error", sources });
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [failed] })[0]).toEqual(
+      { type: "task_update", id: "step_2", title: "Ran a command", status: "error" },
+    );
   });
 
   test("a failed run settles open cards and the root task as error", () => {

@@ -1493,11 +1493,14 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(JSON.stringify(stopped.chunks).length).toBeLessThan(20_000);
   });
 
-  test("ten plan rows after an open call do not hide it from finalization", async () => {
+  test("ten plan rows and ten native todowrite rows after an open call do not hide it from finalization", async () => {
     const t = await watchedThread("plan crowd");
     const call = await t.emit({ kind: "command", label: "bash", chip: null, code: { source: "t3", activityKind: "tool.started", tool: "bash", input: { command: "bun test" } } });
     for (let i = 0; i < 10; i++) {
       await t.emit({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } });
+      // A native todowrite call projects as a plain tool row (chip = its
+      // activity kind, tool = todowrite), which only toolTaskChunk drops.
+      await t.emit({ kind: "command", label: "todowrite", chip: "tool.completed", code: { source: "t3", activityKind: "tool.completed", tool: "todowrite", input: { todos: [{ content: `step ${i}`, status: "in_progress" }] }, output: "", error: false } });
     }
     await finalizeRun(t.runId, "completed", "Done.", 1);
     const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
