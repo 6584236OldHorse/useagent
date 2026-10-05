@@ -23,6 +23,14 @@ export interface SlackUserProfile {
   readonly image: string | null;
 }
 
+/** A conversation as conversations.info describes it: the kind from its flags
+ *  and, for a channel or private channel, its name. Both null when Slack answered
+ *  that it will not describe it (no scope, no such channel). */
+export interface SlackChannelInfo {
+  readonly kind: "dm" | "group_dm" | "channel" | "private_channel" | null;
+  readonly name: string | null;
+}
+
 export type DeliveryResult =
   | { ok: true; ts?: string }
   | { ok: false; class: "rate_limited"; retryAfterMs: number; message: string }
@@ -56,6 +64,11 @@ export interface SlackClient {
   /** The permanent link to one message (chat.getPermalink; no extra scope). Optional
    *  like userInfo; a missing method or a failed call means no link is known. */
   getPermalink?(args: { channel: string; messageTs: string; signal?: AbortSignal }): Promise<string | null>;
+  /** What a conversation is (conversations.info: its flags and, for channels,
+   *  its name; needs channels:read or groups:read). Optional like userInfo. Null
+   *  means Slack could not be asked this time; a settled answer with no name means
+   *  Slack will keep refusing (no scope, or no such channel) and nothing is owed. */
+  channelInfo?(args: { channel: string; signal?: AbortSignal }): Promise<SlackChannelInfo | null>;
   /**
    * Upload a file into a thread. Ported from the QM bot (files.uploadV2,
    * a reference implementation src/slack/attachments.ts:189) and a reference bot (files_upload_v2,
@@ -339,6 +352,33 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         });
         const data = (await res.json().catch(() => ({}))) as { ok?: boolean; permalink?: string };
         return data.ok && typeof data.permalink === "string" ? data.permalink : null;
+      } catch {
+        return null;
+      }
+    },
+    channelInfo: async ({ channel, signal }) => {
+      try {
+        const res = await fetch(`${config.apiUrl}conversations.info?channel=${encodeURIComponent(channel)}`, {
+          headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
+        });
+        if (res.status === 429) return null;
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: string;
+          channel?: { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean };
+        };
+        if (data.ok && data.channel) {
+          const c = data.channel;
+          const kind = c.is_im ? "dm" : c.is_mpim ? "group_dm" : c.is_private ? "private_channel" : "channel";
+          const named = kind === "channel" || kind === "private_channel";
+          return { kind, name: (named && c.name?.trim()) || null };
+        }
+        // Slack answered and will keep answering the same way: the token has no
+        // scope for this kind of conversation, or there is no such channel.
+        return data.error === "missing_scope" || data.error === "channel_not_found"
+          ? { kind: null, name: null }
+          : null;
       } catch {
         return null;
       }

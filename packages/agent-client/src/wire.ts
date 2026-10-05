@@ -199,6 +199,13 @@ export interface RunConnector {
   readonly sender_name: string | null;
   readonly sender_avatar_url: string | null;
   readonly permalink: string | null;
+  /** The kind of conversation the turn arrived from (Slack: a DM, a group DM,
+   *  a channel or a private channel). Absent on rows stamped before it existed;
+   *  the web then reads the kind off the permalink. */
+  readonly channel_kind?: "dm" | "group_dm" | "channel" | "private_channel" | null;
+  /** The channel's name without the leading #, once looked up; null for DMs,
+   *  group DMs and channels the workspace token cannot describe. */
+  readonly channel_name?: string | null;
 }
 
 // ── Runs + steps (GET /api/runs, GET /api/runs/:id?thread=1) ──────────────────

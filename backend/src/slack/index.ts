@@ -72,7 +72,14 @@ export async function handleSlackInboxClaim({
   if (outcome.status === "accepted" || outcome.status === "replayed") {
     const { teamId, channel, messageTs, slackUserId } = payload.identity;
     if (teamId && channel && messageTs) {
-      await recordSlackTurnIdentityIntent({ runId: outcome.runId, teamId, channel, messageTs, slackUserId });
+      await recordSlackTurnIdentityIntent({
+        runId: outcome.runId,
+        teamId,
+        channel,
+        messageTs,
+        slackUserId,
+        channelType: event?.channel_type ?? null,
+      });
       void stampSlackTurnIdentity(outcome.runId);
     }
     return { status: "completed" };

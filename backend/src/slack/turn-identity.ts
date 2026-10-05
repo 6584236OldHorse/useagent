@@ -22,7 +22,7 @@ import { runs, slackIdentityLookups } from "../db/schema";
 import { slackConfig } from "../env";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
 import { publishThreadChange } from "../runs/thread-signals";
-import { resolveSlackClient, type SlackClient, type SlackUserProfile } from "./client";
+import { resolveSlackClient, type SlackChannelInfo, type SlackClient, type SlackUserProfile } from "./client";
 
 export type SlackTurnIdentityOutcome = "stamped" | "already_stamped" | "unavailable";
 export type SlackTurnIdentityIntentOutcome = "recorded" | "already_recorded";
@@ -39,6 +39,33 @@ const RECOVERY_LIMIT = 200;
 const SENDER_PROFILE_TTL_MS = 5 * 60 * 1000;
 const SENDER_PROFILE_CACHE_MAX = 1000;
 const senderProfiles = new Map<string, { profile: SlackUserProfile; until: number }>();
+/** A channel's description resolves once per team and channel for the same
+ *  while; only an answer that named the channel is cached. */
+const channelDescriptions = new Map<string, { info: SlackChannelInfo; until: number }>();
+
+type ChannelKind = NonNullable<RunConnector["channel_kind"]>;
+
+/** The kind of conversation a message came from: Slack's channel_type when the
+ *  event carried one (message events do, app_mention events do not), else the
+ *  channel id's prefix. Null when neither says; the web then reads the kind off
+ *  the permalink. */
+function channelKindFor(channelType: string | null, channel: string): ChannelKind | null {
+  switch (channelType) {
+    case "im":
+      return "dm";
+    case "mpim":
+      return "group_dm";
+    case "group":
+      return "private_channel";
+    case "channel":
+      return "channel";
+    default:
+      if (channel.startsWith("D")) return "dm";
+      if (channel.startsWith("G")) return "private_channel";
+      if (channel.startsWith("C")) return "channel";
+      return null;
+  }
+}
 
 /** How long both Slack lookups may take together; a response that never
  *  completes is cut here and the socket released. */
@@ -75,9 +102,31 @@ async function senderProfile(
   return profile;
 }
 
+/** The channel's description, from the cache while fresh, else from Slack. */
+async function channelDescription(
+  client: SlackClient,
+  teamId: string,
+  channel: string,
+  signal: AbortSignal,
+): Promise<SlackChannelInfo | null> {
+  const key = `${teamId}:${channel}`;
+  const cached = channelDescriptions.get(key);
+  if (cached && cached.until > Date.now()) return cached.info;
+  const info = await within(client.channelInfo?.({ channel, signal }), signal);
+  if (info?.name && !signal.aborted) {
+    if (channelDescriptions.size >= SENDER_PROFILE_CACHE_MAX) channelDescriptions.clear();
+    channelDescriptions.set(key, { info, until: Date.now() + SENDER_PROFILE_TTL_MS });
+  }
+  return info;
+}
+
 /** Whether a stamp has everything the lookup row owes. */
-function stampComplete(connector: RunConnector, senderOwed: boolean): boolean {
-  return (!senderOwed || connector.sender_name !== null) && connector.permalink !== null;
+function stampComplete(connector: RunConnector, senderOwed: boolean, nameOwed: boolean): boolean {
+  return (
+    (!senderOwed || connector.sender_name !== null) &&
+    connector.permalink !== null &&
+    (!nameOwed || (connector.channel_name ?? null) !== null)
+  );
 }
 
 /** Record, durably and before the inbox claim completes, what the stamp owes.
@@ -88,6 +137,9 @@ export async function recordSlackTurnIdentityIntent(input: {
   readonly channel: string;
   readonly messageTs: string;
   readonly slackUserId: string | null;
+  /** Slack's channel_type for the message (im, channel, group, mpim); null when
+   *  the event carried none. */
+  readonly channelType: string | null;
 }): Promise<SlackTurnIdentityIntentOutcome> {
   const recorded = await db
     .insert(slackIdentityLookups)
@@ -97,6 +149,7 @@ export async function recordSlackTurnIdentityIntent(input: {
       channel: input.channel,
       messageTs: input.messageTs,
       slackUserId: input.slackUserId,
+      channelType: input.channelType,
     })
     .onConflictDoNothing({ target: slackIdentityLookups.runId })
     .returning({ runId: slackIdentityLookups.runId });
@@ -120,7 +173,10 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
       .limit(1);
     if (!run?.orgId) return "unavailable";
     const senderOwed = owed.slackUserId !== null;
-    if (run.connector && stampComplete(run.connector, senderOwed)) {
+    const kind = run.connector?.channel_kind ?? channelKindFor(owed.channelType, owed.channel);
+    // A channel's name is owed until Slack names it or says it never will.
+    let nameOwed = kind === "channel" || kind === "private_channel";
+    if (run.connector && stampComplete(run.connector, senderOwed, nameOwed)) {
       await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
       return "already_stamped";
     }
@@ -132,10 +188,16 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
     const client = resolveSlackClient({ apiUrl: config.apiUrl, botToken });
     const deadlineMs = lookupDeadlineMs();
     const signal = AbortSignal.timeout(deadlineMs);
-    const [profile, permalink] = await Promise.all([
+    const [profile, permalink, description] = await Promise.all([
       owed.slackUserId ? senderProfile(client, owed.teamId, owed.slackUserId, signal) : null,
       within(client.getPermalink?.({ channel: owed.channel, messageTs: owed.messageTs, signal }), signal),
+      nameOwed && (run.connector?.channel_name ?? null) === null
+        ? channelDescription(client, owed.teamId, owed.channel, signal)
+        : null,
     ]);
+    // Slack answered without a name: no scope for it, no such channel, or a
+    // conversation that turned out not to be a named channel. Nothing more is owed.
+    if (description && description.name === null) nameOwed = false;
     if (signal.aborted) {
       console.warn(
         `[slack] turn identity lookups for run ${runId} hit the ${deadlineMs}ms deadline; stamping what resolved`,
@@ -148,17 +210,27 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
         sender_name: known?.sender_name ?? profile?.name ?? null,
         sender_avatar_url: known?.sender_avatar_url ?? profile?.image ?? null,
         permalink: known?.permalink ?? permalink ?? null,
+        channel_kind: known?.channel_kind ?? description?.kind ?? kind,
+        channel_name: known?.channel_name ?? description?.name ?? null,
       };
+      const complete = stampComplete(connector, senderOwed, nameOwed);
       if (
         known &&
         known.sender_name === connector.sender_name &&
         known.sender_avatar_url === connector.sender_avatar_url &&
-        known.permalink === connector.permalink
+        known.permalink === connector.permalink &&
+        (known.channel_kind ?? null) === connector.channel_kind &&
+        (known.channel_name ?? null) === connector.channel_name
       ) {
-        // Nothing new resolved this time; the owed row waits for the next attempt.
+        // Nothing new resolved this time. Once nothing is owed any more (Slack
+        // said the name will never come) the row goes; otherwise it waits for
+        // the next attempt.
+        if (complete) {
+          await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+          return "already_stamped";
+        }
         return "unavailable";
       }
-      const complete = stampComplete(connector, senderOwed);
       // One transaction: the stamp lands (`updated_at` moves so an open session's
       // merge treats the fresh row as new) and, once nothing is owed, the row goes
       // with it. The stamp merges onto exactly the row it read, so a concurrent
@@ -191,7 +263,7 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
       const [latest] = await db.select({ connector: runs.connector }).from(runs).where(eq(runs.id, runId)).limit(1);
       if (!latest) return "unavailable";
       known = latest.connector;
-      if (known && stampComplete(known, senderOwed)) {
+      if (known && stampComplete(known, senderOwed, nameOwed)) {
         await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
         return "already_stamped";
       }
