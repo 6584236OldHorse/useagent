@@ -119,6 +119,7 @@ export class SshPromotionEffects implements PromotionEffects {
 	readonly #composeFile: string;
 	readonly #caddyTemplate: string;
 	readonly #crash: () => Promise<never>;
+	readonly #drain: boolean;
 	admissionClosedAt: number | null = null;
 	admissionOpenedAt: number | null = null;
 
@@ -131,6 +132,7 @@ export class SshPromotionEffects implements PromotionEffects {
 		readonly composeFile: string;
 		readonly caddyTemplate: string;
 		readonly operationId?: string;
+		readonly drain?: boolean;
 		readonly crash: () => Promise<never>;
 	}) {
 		this.#config = input.config;
@@ -144,6 +146,7 @@ export class SshPromotionEffects implements PromotionEffects {
 		this.#composeFile = input.composeFile;
 		this.#caddyTemplate = input.caddyTemplate;
 		this.#crash = input.crash;
+		this.#drain = input.drain ?? true;
 	}
 
 	now(): string {
@@ -502,7 +505,9 @@ export class SshPromotionEffects implements PromotionEffects {
 
 	async drainBackend(timeoutMs: number): Promise<boolean> {
 		const record = this.#historyAtStart.current;
-		if (!record) return true;
+		// --no-drain skips only the bounded wait. Admission is already closed and
+		// the candidate backend's boot recovery reconciles interrupted runs.
+		if (!record || !this.#drain) return true;
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() <= deadline) {
 			const response = await this.#operatorRequest(

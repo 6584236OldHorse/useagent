@@ -73,10 +73,11 @@ kamal app exec -d backend --primary --version <git-sha> "bun run migrate:release
 
 ## Cutover boundary
 
-Do not invoke `kamal deploy` against production yet. These phase-one
-destinations use host networking and the existing fixed loopback ports so Caddy
-does not change. A candidate container therefore cannot overlap the existing
-systemd service on the same port.
+Production promotes through the Compose lane (`deploy/promote.ts`, see
+`compose-releases.md`); do not invoke `kamal deploy` against production. These
+phase-one destinations use host networking and the existing fixed loopback
+ports so Caddy does not change. A candidate container therefore cannot overlap
+the existing systemd service on the same port.
 
 The production cutover remains blocked until the private release orchestrator:
 
