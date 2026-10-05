@@ -197,7 +197,10 @@ export interface RunCharge {
  */
 export async function priceRunUsage(runId: string, exec: Executor = db): Promise<RunCharge> {
   const rows = await exec
-    .select({ id: providerEvents.id, eventType: providerEvents.eventType, nativeCallId: providerEvents.nativeCallId, payload: providerEvents.payload })
+    .select({
+      id: providerEvents.id, provider: providerEvents.provider, eventType: providerEvents.eventType,
+      nativeCallId: providerEvents.nativeCallId, payload: providerEvents.payload,
+    })
     .from(providerEvents)
     .where(and(
       eq(providerEvents.runId, runId),
@@ -217,6 +220,11 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
     }
     if (!stored) continue;
     if (row.eventType === "part.step-finish") {
+      // The runtime lane stores the context in use after a call as its own
+      // step-finish frame (runtime-usage-frame.ts), revised in place: a
+      // snapshot the composer ring reads, not a per-call ledger. That lane is
+      // priced from its activities below.
+      if (row.provider === "t3") continue;
       const figure = stepFinishFigure(stored);
       const bounded = boundedCost(figure.cost, `run ${runId} event ${row.id}`);
       if (bounded !== null) {

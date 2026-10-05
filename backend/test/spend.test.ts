@@ -212,6 +212,13 @@ describe("spend allowance", () => {
       } }),
       // A tool call with no usage at all.
       activityRow(run.id, 5, { id: "c1", kind: "tool.completed", callId: "call-10", payload: { toolCallId: "call-10" } }),
+      // The context snapshot the runtime stores as a step-finish frame after a
+      // call (runtime-usage-frame.ts): the composer ring reads it, the charge does not.
+      {
+        id: `pe_${run.id}_t3_ctx1`, runId: run.id, threadId: run.id, seq: 6, provider: "t3",
+        eventType: "part.step-finish", nativeSessionId: "session-1", nativePartId: "ctx1",
+        payload: JSON.stringify({ tokens: { input: 40_000, output: 900, total: 41_000 }, contextWindow: 200_000 }),
+      },
     ]);
     expect(await priceRunUsage(run.id)).toEqual({ cost: 0.3, tokens: 375, source: "usage" });
     await finalizeRun(run.id, "completed", "done", 10);
