@@ -120,7 +120,7 @@ const savedSlackEnv: Record<string, string | undefined> = {};
 
 interface Recorded {
   reactions: Array<{ channel: string; timestamp: string; name: string }>;
-  messages: Array<{ channel: string; text: string; threadTs?: string; blocks?: unknown[] }>;
+  messages: Array<{ channel: string; text: string; threadTs?: string; blocks?: unknown[]; ts?: string }>;
   updates: Array<{ channel: string; ts: string; text: string; blocks?: unknown[] }>;
   sessionStatuses: Array<{ channel: string; threadTs: string; status: "processing" | "active" }>;
   threadStatuses: Array<{ channel: string; threadTs: string; status: string; loadingMessages?: readonly string[] }>;
@@ -211,10 +211,11 @@ beforeAll(async () => {
     postMessage: async (m) => {
       const overridden = postMessageOverride ? await postMessageOverride(m) : null;
       if (overridden) return overridden;
-      rec.messages.push(m);
       // Every post returns a ts, as Slack does: the card and the plain
       // fallback message are both updated in place later.
-      return { ok: true, ts: `${tsSeq++}.1` };
+      const ts = `${tsSeq++}.1`;
+      rec.messages.push({ ...m, ts });
+      return { ok: true, ts };
     },
     updateMessage: async (u) => {
       if (updateResult.ok) rec.updates.push(u);
@@ -1570,6 +1571,97 @@ describe("slack native stream and Block Kit fallback", () => {
         return mine.some((m) => m.text.endsWith("Z")) ? mine : null;
       }, { timeoutMs: 14_000 });
       expect(posts.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("")).toBe(toSlackMrkdwn(answer));
+    } finally {
+      postMessageOverride = null;
+    }
+  });
+
+  /** A thread's plain messages as a reader sees them once everything
+   *  landed: every post in ts order, each as its last in-place update left
+   *  it, continuation markers stripped. */
+  function threadReadout(t: { channel: string; ts: string }): string[] {
+    return rec.messages
+      .filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks?.length && m.ts)
+      .toSorted((a, b) => Number(a.ts) - Number(b.ts))
+      .map((m) => (rec.updates.findLast((u) => u.ts === m.ts)?.text ?? m.text).replace(/\n\n_\(continued…\)_$/, ""));
+  }
+
+  /** The stand-in for a stream Slack would not open: the plain message posted
+   *  in its place, then updated in place with the narration as it grows. */
+  async function standInHolding(t: { runId: string; channel: string; ts: string }, opening: string, narration: string): Promise<void> {
+    startStreamResult = { ok: false, class: "transient", message: "feature_not_enabled" };
+    try {
+      await startNativeStream(t, opening);
+      await waitFor(async () => ((await findSlackRunResponse(t.runId))?.fallbackMessageTs ? true : null));
+    } finally {
+      startStreamResult = null;
+    }
+    await enqueueAppendStream({
+      idempotencyKey: `slack-stream:text:${TEAM}:${t.runId}:1`,
+      orgId: DEV_ORG_ID,
+      teamId: TEAM,
+      channel: t.channel,
+      threadTs: t.ts,
+      runId: t.runId,
+      chunks: markdownChunksFor(narration.slice(opening.length)),
+      narrationOffset: opening.length,
+      fallbackText: narration,
+    });
+    await waitFor(async () => (rec.updates.some((u) => u.channel === t.channel && u.text === narration) ? true : null));
+  }
+
+  /** Longer than one Slack message: the stand-in cannot take it in place. */
+  const longAnswer = `START ${"a".repeat(4_500)} MIDDLE ${"b".repeat(2_400)} END`;
+
+  test("an answer that outgrows the stand-in lands once and in order: the stand-in becomes its first message", async () => {
+    const t = await rootThread("stand-in outgrown");
+    await standInHolding(t, "START ", `START ${"a".repeat(4_500)}`);
+    turnStream.publish(t.runId, longAnswer);
+    await finalizeRun(t.runId, "completed", longAnswer, 1);
+    const readout = await waitFor(async () => {
+      kickSlackOutbox();
+      const view = threadReadout(t);
+      return view.some((m) => m.endsWith("END")) ? view : null;
+    }, { timeoutMs: 14_000 });
+    expect(readout.join("")).toBe(longAnswer);
+    expect(readout.length).toBe(2);
+  });
+
+  test("a posting cut short past the stand-in resumes after it and never rewrites it", async () => {
+    const t = await rootThread("stand-in kept");
+    await standInHolding(t, "START ", `START ${"a".repeat(4_500)}`);
+    turnStream.publish(t.runId, longAnswer);
+    // The message carrying the end fails once, transiently.
+    let failed = false;
+    postMessageOverride = async (m) => {
+      if (m.channel === t.channel && m.text.endsWith("END") && !failed) {
+        failed = true;
+        return { ok: false, class: "transient", message: "internal_error" };
+      }
+      return null;
+    };
+    try {
+      await finalizeRun(t.runId, "completed", longAnswer, 1);
+      const replyKey = `slack-reply:${TEAM}:${t.runId}`;
+      await waitFor(async () => (failed ? true : null), { timeoutMs: 14_000 });
+      const row = await waitFor(async () => {
+        const r = await getSlackOutbox(replyKey);
+        return r && r.state === "pending" ? r : null;
+      });
+      await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, replyKey));
+      const readout = await waitFor(async () => {
+        kickSlackOutbox();
+        const view = threadReadout(t);
+        return view.some((m) => m.endsWith("END")) ? view : null;
+      }, { timeoutMs: 14_000 });
+      expect(readout.join("")).toBe(longAnswer);
+      expect(readout.length).toBe(2);
+      // The stand-in was rewritten with the head once; the retry only posted.
+      const standIn = (await findSlackRunResponse(t.runId))?.fallbackMessageTs;
+      expect(rec.updates.some((u) => u.ts === standIn && u.text.endsWith("END"))).toBe(false);
+      const cursor = JSON.parse(row.payload) as { fallbackChunks?: string[]; fallbackHeadPlaced?: boolean };
+      expect(cursor.fallbackHeadPlaced).toBe(true);
+      expect(cursor.fallbackChunks?.length).toBe(1);
     } finally {
       postMessageOverride = null;
     }

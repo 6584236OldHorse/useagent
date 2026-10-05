@@ -178,6 +178,10 @@ export type StopStreamPayload = {
    *  whose fallback posting was cut short); otherwise derived at delivery from
    *  the markdown head. */
   readonly fallbackChunks?: readonly string[];
+  /** Written by delivery with the cursor: the answer's first message is on
+   *  screen (the plain stand-in rewritten in place, or a chunk posted), so a
+   *  retry posts the remaining chunks after it and rewrites nothing. */
+  readonly fallbackHeadPlaced?: boolean;
   /** A same-run user mirror that must reach a terminal outbox state before the
    * result is eligible, so retries cannot put the result first. */
   readonly waitForIdempotencyKey?: string;

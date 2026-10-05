@@ -73,18 +73,26 @@ async function postFallbackChunks(
   channel: string,
   threadTs: string,
   fallbackChunks: readonly string[],
+  /** The answer's first message is already on screen (the plain stand-in
+   *  rewritten in place with the head): nothing left to post is success. */
+  headPlaced = false,
 ): Promise<DeliveryResult> {
   if (fallbackChunks.length === 0) {
-    return { ok: false, class: "permanent", message: "invalid_payload" };
+    return headPlaced ? { ok: true } : { ok: false, class: "permanent", message: "invalid_payload" };
   }
   for (let i = 0; i < fallbackChunks.length; i++) {
     const res = await client.postMessage({ channel, text: fallbackChunks[i]!, threadTs });
     if (!res.ok) {
-      // The cursor replaces the stored markdown head it was derived from, so
-      // a retrying row never grows past what it held at enqueue.
-      if (i > 0) {
+      // Once Slack holds part of the answer, the cursor replaces the stored
+      // markdown head it was derived from (a retrying row never grows past
+      // what it held at enqueue) and marks the head placed: the retry posts
+      // the remaining chunks after what landed and rewrites nothing.
+      if (i > 0 || headPlaced) {
         const { narrationText: _narration, closingMarkdown: _closing, ...rest } = payload;
-        await updatePayload(row.id, JSON.stringify({ ...rest, fallbackChunks: fallbackChunks.slice(i) }));
+        await updatePayload(
+          row.id,
+          JSON.stringify({ ...rest, fallbackChunks: fallbackChunks.slice(i), fallbackHeadPlaced: true }),
+        );
       }
       return res;
     }
@@ -389,16 +397,20 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         if (stopped.ok || stopped.class === "rate_limited") return stopped;
         await disableSlackNativeStream(runId);
       }
-      // The plain fallback message takes the answer in place only when it fits
-      // one message; a longer answer posts as fresh chunks so no part is lost.
-      if (response?.fallbackMessageTs && fallbackChunks.length <= 1) {
+      // The plain stand-in (posted when the stream would not open, holding
+      // the narration it accepted since) becomes the answer's first message:
+      // rewritten in place with the first chunk, the rest posted after it, so
+      // a long answer reads once and in order. A retry of a posting cut short
+      // never rewrites it (fallbackHeadPlaced): it resumes at the failed chunk.
+      if (response?.fallbackMessageTs && p.fallbackHeadPlaced !== true) {
         const updated = await client.updateMessage({
           channel,
           ts: response.fallbackMessageTs,
           text: fallbackChunks[0] ?? text,
           blocks: cardBlocks,
         });
-        if (updated.ok || updated.class !== "permanent") return updated;
+        if (updated.ok) return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks.slice(1), true);
+        if (updated.class !== "permanent") return updated;
       }
       return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks);
     }
