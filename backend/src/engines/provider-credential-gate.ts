@@ -1,8 +1,10 @@
 import type { EngineId } from "../db/schema";
 import {
+  credentialWaitSignal,
   resolveProviderCredentialForRun,
   type ProviderCredentialResolvers,
 } from "../provider-gateway/credentials";
+import { awaitWithSignal } from "../util/abortable-operation";
 import { providerForEngine, type ProviderId } from "../provider-gateway/provider";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 import { ENGINE_DISPLAY_NAMES } from "../runs/engine-readiness";
@@ -32,26 +34,29 @@ export function providerCredentialMissingMessage(engine: string, provider: Provi
  * model call BEFORE any sandbox is provisioned. A missing key then fails the
  * run in milliseconds with the remedy instead of after a paid boot and an
  * upstream 401. Engines on a subscription or hybrid auth path carry their own
- * credential and are left alone. */
+ * credential and are left alone. Every read runs on the run's own clock
+ * (credentialWaitSignal), so Stop and a deadline both end a blocked read. */
 export async function assertRunProviderCredential(
   engine: string,
-  ctx: Pick<EngineRunContext, "orgId" | "userId" | "model">,
+  ctx: Pick<EngineRunContext, "orgId" | "userId" | "model"> & { readonly signal?: AbortSignal },
   deps: ProviderCredentialResolvers & {
     readonly resolve?: typeof resolveProviderCredentialForRun;
     readonly resolveSubscription?: typeof getCodexSubscriptionRuntimeSelection;
   } = {},
 ): Promise<void> {
   if (!ctx.orgId) return;
+  const { orgId, userId } = ctx;
   const env = deps.env ?? process.env;
   const engineId = engine as EngineId;
   const authMode = engineAuthMode(engineId, env);
   if (!authMode) return;
+  const signal = credentialWaitSignal(ctx.signal);
   if (engineId === "codex" && (authMode === "subscription" || authMode === "hybrid")) {
-    const subscription = ctx.userId
-      ? await (deps.resolveSubscription ?? getCodexSubscriptionRuntimeSelection)({
-          orgId: ctx.orgId,
-          userId: ctx.userId,
-        })
+    const subscription = userId
+      ? await awaitWithSignal(
+          () => (deps.resolveSubscription ?? getCodexSubscriptionRuntimeSelection)({ orgId, userId }),
+          signal,
+        )
       : null;
     if (subscription) return;
     if (authMode === "subscription") {
@@ -67,9 +72,9 @@ export async function assertRunProviderCredential(
   const provider = providerForEngine(engineId, model);
   if (!provider) return;
   const resolve = deps.resolve ?? resolveProviderCredentialForRun;
-  const resolved = await resolve(
-    { orgId: ctx.orgId, userId: ctx.userId, provider, model },
-    deps,
+  const resolved = await awaitWithSignal(
+    () => resolve({ orgId, userId, provider, model }, deps),
+    signal,
   );
   if (resolved) return;
   throw new ProviderCredentialMissingError(providerCredentialMissingMessage(engine, provider));

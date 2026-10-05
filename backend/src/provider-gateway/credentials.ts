@@ -28,6 +28,18 @@ export interface ProviderCredentialResolvers {
   readonly devModeEnabled?: (env?: Record<string, string | undefined>) => boolean;
 }
 
+/** How long a run waits for its credential reads before failing the turn. */
+export const PROVIDER_CREDENTIAL_WAIT_MS = 10_000;
+
+/** The run's own clock for credential reads. Callers wrap the whole resolution
+ *  in awaitWithSignal with this signal: Stop aborts it, and a blocked read (a
+ *  lock on the secrets or connections tables) cannot hold the run past the
+ *  deadline. */
+export function credentialWaitSignal(signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(PROVIDER_CREDENTIAL_WAIT_MS);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
+
 async function defaultOrgSecret(orgId: string, name: string): Promise<string | null> {
   return (await decryptOrgSecretByName(orgId, name))?.value ?? null;
 }

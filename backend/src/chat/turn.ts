@@ -1,10 +1,40 @@
-import { ProviderCredentialMissingError } from "../engines/provider-credential-gate";
-import type { ResolvedProviderCredential } from "../provider-gateway/credentials";
+import {
+  ProviderCredentialMissingError,
+  providerCredentialMissingMessage,
+} from "../engines/provider-credential-gate";
+import {
+  credentialWaitSignal,
+  resolveChatProviderCredential,
+  type ProviderCredentialResolvers,
+  type ResolvedProviderCredential,
+} from "../provider-gateway/credentials";
+import { awaitWithSignal } from "../util/abortable-operation";
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
 import { errorMessage } from "../util/error-message";
 import { streamChat, type ChatMessage } from "./stream";
 
 export type { ChatMessage };
+
+/** The member's connected OpenRouter key, else the organisation's secret, read
+ *  on the run's own clock (Stop aborts the read; a blocked table cannot hold the
+ *  run). Throws the remedy when neither exists, before any upstream work. */
+export async function chatTurnCredential(
+  run: { readonly orgId: string; readonly userId: string | null },
+  signal: AbortSignal,
+  deps: ProviderCredentialResolvers & {
+    readonly resolve?: typeof resolveChatProviderCredential;
+  } = {},
+): Promise<ResolvedProviderCredential> {
+  const resolve = deps.resolve ?? resolveChatProviderCredential;
+  const resolved = await awaitWithSignal(
+    () => resolve({ orgId: run.orgId, userId: run.userId }, deps),
+    credentialWaitSignal(signal),
+  );
+  if (!resolved) {
+    throw new ProviderCredentialMissingError(providerCredentialMissingMessage("chat", "openrouter"));
+  }
+  return resolved;
+}
 
 /**
  * The chat turn as the worker drives it: the model's deltas under the

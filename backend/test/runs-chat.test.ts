@@ -66,7 +66,8 @@ describe("durable chat runs", () => {
     });
     expect(done.summary).toContain("Connect an OpenRouter key in Settings");
     expect(done.steps.map((step: any) => step.label)).toContain("OpenRouter key needed");
-    expect(calls.filter((url) => url.includes("/chat/completions"))).toEqual([]);
+    // Nothing upstream at all: the key is checked before retrieval.
+    expect(calls).toEqual([]);
   });
 
   test("streams direct chat through the durable run/thread/event model without a sandbox", async () => {
