@@ -1780,6 +1780,73 @@ html {
     --social-zendesk: 0 0% 100%;
   }
 
+  .neobrutal {
+    /* -------------------------------------------------------------------
+     * Neobrutal - poster-style LIGHT theme (black strokes, hard offset
+     * shadows, flat fills; palette after neobrutalism.dev: canvas #dfe5f2,
+     * main #88aaee, yellow #ffdc58, lime #a3e636, orange #fd9745,
+     * pink #ff6b6b). Same orientation as `:root`, so this block, like
+     * Sakura's, only re-tints the ramps: achromatic neutrals that end in
+     * true black, the blue ramp centred on the main blue with dark text
+     * stops (600+) for accent-as-text and the white CTA label, and the
+     * warmer error/warning anchors. Hex in comments is the sRGB value each
+     * HSL triple encodes.
+     * ------------------------------------------------------------------- */
+    --brand-orbit: 220 75% 73.33%; /* #88aaee */
+
+    --neutral-0: 0 0% 100%;               /* #ffffff cards, chrome */
+    --neutral-50: 221.05 42.22% 91.18%;   /* #dfe5f2 canvas */
+    --neutral-100: 222 41.67% 95.29%;     /* #eef1f8 panel fill */
+    --neutral-200: 221.54 18.84% 86.47%;  /* #d6dae3 */
+    --neutral-300: 222.35 16.5% 79.8%;    /* #c3c8d4 list separators */
+    --neutral-400: 222 9.8% 60%;          /* #8f95a3 disabled */
+    --neutral-500: 224 7.61% 38.63%;      /* #5b5f6a tertiary text */
+    --neutral-600: 0 0% 23.92%;           /* #3d3d3d secondary text */
+    --neutral-700: 0 0% 16.08%;           /* #292929 */
+    --neutral-800: 0 0% 10.2%;            /* #1a1a1a */
+    --neutral-900: 0 0% 5.88%;            /* #0f0f0f */
+    --neutral-950: 0 0% 0%;               /* #000000 text and strokes */
+    --neutral-alpha-24: 222 9.8% 60% / 24%;
+    --neutral-alpha-16: 222 9.8% 60% / 16%;
+    --neutral-alpha-10: 222 9.8% 60% / 10%;
+
+    /* Blue ramp: 300 is the main blue used for selection and fills; 500 and
+       600 are dark enough to carry a white label and to be read as text. */
+    --blue-950: 221.74 65.71% 13.73%;     /* #0c1a3a */
+    --blue-900: 222 63.64% 21.57%;        /* #14295a */
+    --blue-800: 220.42 63.76% 29.22%;     /* #1b3a7a */
+    --blue-700: 220.66 63.35% 37.45%;     /* #234a9c */
+    --blue-600: 220.56 62.83% 44.31%;     /* #2a58b8 accent as text */
+    --blue-500: 219.62 65.55% 53.33%;     /* #3a6fd6 primary base */
+    --blue-400: 219.56 72.97% 63.73%;     /* #5f8de6 */
+    --blue-300: 220 75% 73.33%;           /* #88aaee main */
+    --blue-200: 219.05 79.75% 84.51%;     /* #b8cef7 */
+    --blue-100: 219.38 80% 92.16%;        /* #dbe6fb */
+    --blue-50: 220 78.9% 96.27%;          /* #eef3fd */
+    --blue-alpha-24: 219.62 65.55% 53.33% / 24%;
+    --blue-alpha-16: 219.62 65.55% 53.33% / 16%;
+    --blue-alpha-10: 219.62 65.55% 53.33% / 10%;
+
+    --red-600: 0 73.95% 46.67%;           /* #cf1f1f error text */
+    --red-500: 0 84.04% 58.24%;           /* #ee3b3b */
+    --red-400: 0 100% 70.98%;             /* #ff6b6b pink fill */
+    --red-alpha-24: 0 84.04% 58.24% / 24%;
+    --red-alpha-16: 0 84.04% 58.24% / 16%;
+    --red-alpha-10: 0 84.04% 58.24% / 10%;
+
+    --orange-600: 28.7 91.19% 44.51%;     /* #d96d0a */
+    --orange-500: 28.04 91.46% 54.12%;    /* #f5831f */
+    --orange-400: 26.74 97.87% 63.14%;    /* #fd9745 */
+    --orange-alpha-24: 28.04 91.46% 54.12% / 24%;
+    --orange-alpha-16: 28.04 91.46% 54.12% / 16%;
+    --orange-alpha-10: 28.04 91.46% 54.12% / 10%;
+
+    /* Slot deltas vs `:root`. */
+    --bg-white-0: var(--neutral-0);        /* white cards on the cool canvas */
+    --stroke-soft-200: 222.35 16.5% 79.8%; /* #c3c8d4 list hairline; controls take black below */
+    --overlay: 0 0% 0% / 40%;              /* black scrim */
+  }
+
   .phosphor-light {
     /* -------------------------------------------------------------------
      * Phosphor Light ("Light Green") - LIGHT counterpart of Phosphor.
@@ -2132,6 +2199,10 @@ html {
  *   sakura-night - plum-night DARK variant of Sakura (canvas #241820,
  *              accent #e88fb4 soft rose): full dark slot list like
  *              aura/harbor.
+ *   neobrutal - poster-style LIGHT theme (canvas #dfe5f2, main #88aaee):
+ *              same light re-tint recipe as sakura, plus the radius and
+ *              shadow scales (one small corner, hard black offsets) and an
+ *              un-layered stroke block below its overlay.
  * MUST stay un-layered: theme.css's `:root` semantic block is un-layered, and
  * an @layer'd override would lose to it regardless of specificity.
  *
@@ -3724,6 +3795,179 @@ html {
   --color-chart-agents-bar-active: hsl(var(--purple-600));
 }
 
+.neobrutal {
+  /* LIGHT theme: same recipe as `.sakura` above. Black strokes on every
+   * control and card, the main blue as the selected and hover surface, and
+   * the neobrutalism.dev fills (yellow badge, pink error, orange warning).
+   * Slots identical to the light defaults are not repeated. */
+  --color-accent-50:  hsl(var(--blue-50));
+  --color-accent-100: hsl(var(--blue-100));
+  --color-accent-200: hsl(var(--blue-200));
+  --color-accent-300: hsl(var(--blue-300));
+  --color-accent-400: hsl(var(--blue-400));
+  --color-accent-500: hsl(var(--blue-500));
+  --color-accent-600: hsl(var(--blue-600));
+  --color-accent-700: hsl(var(--blue-700));
+  --color-accent-800: hsl(var(--blue-800));
+  --color-accent-900: hsl(var(--blue-900));
+  --color-accent-950: hsl(var(--blue-950));
+
+  /* Foreground */
+  --color-foreground-full:            hsl(var(--neutral-0));
+  --color-foreground-icon-primary:    hsl(var(--neutral-950));
+  --color-foreground-icon-hover:      hsl(var(--neutral-950));
+  --color-foreground-icon-error:      hsl(var(--red-600));
+  --color-foreground-icon-tertiary:   hsl(var(--neutral-500));
+  --color-foreground-icon-quaternary: hsl(var(--neutral-400));
+  --color-foreground-icon-disabled:   hsl(var(--neutral-400));
+  --color-foreground-disabled:        hsl(var(--neutral-400));
+  --color-foreground-disabled-danger: hsl(var(--red-400));
+  --color-input-disabled-foreground:  hsl(var(--neutral-400));
+  --color-icon-button-disabled-foreground: hsl(var(--neutral-400));
+  --color-button-primary-disabled-foreground: hsl(var(--neutral-500));
+
+  /* Text */
+  --color-text-primary:   hsl(var(--neutral-950));
+  --color-text-secondary: hsl(var(--neutral-600));
+  --color-text-tertiary:  hsl(var(--neutral-500));
+  --color-text-disabled:  hsl(var(--neutral-400));
+  --color-text-error-primary: hsl(var(--red-600));
+  --color-input-disabled-text: hsl(var(--neutral-400));
+
+  /* Background: white cards and chrome on the cool canvas; selection and
+   * hover are the main blue block, as on a poster. */
+  --color-background-full:              hsl(var(--neutral-50));
+  --color-background-primary-default:   hsl(var(--neutral-0));
+  --color-background-inner-default:     hsl(var(--neutral-0));
+  --color-background-primary-hover:     hsl(var(--neutral-100));
+  --color-background-primary-active:    hsl(var(--neutral-200));
+  --color-background-primary-disabled:  hsl(var(--neutral-100));
+  --color-input-disabled-background:    hsl(var(--neutral-100));
+  --color-switch-off-chip-start:        hsl(var(--neutral-0));
+  --color-switch-off-chip-end:          hsl(var(--neutral-100));
+  --color-background-secondary-default: hsl(var(--neutral-0));
+  --color-background-secondary-hover:   hsl(var(--blue-300));
+  --color-background-tertiary-default:  hsl(var(--neutral-100));
+  --color-background-tertiary-hover:    hsl(var(--blue-200));
+  --color-background-tertiary-error:    hsl(var(--red-100));
+  --color-background-quaternary-default: hsl(var(--neutral-200));
+  --color-background-quaternary-hover:   hsl(var(--neutral-300));
+  --color-background-recent-hire-role:  hsl(var(--neutral-100));
+  --color-avatar-neutral-background:    hsl(var(--blue-200));
+  --color-file-upload-icon-background:  hsl(var(--neutral-100));
+  --color-file-upload-icon-foreground:  hsl(var(--neutral-500));
+  --color-file-upload-icon-foreground-hover: hsl(var(--neutral-950));
+  --color-stat-card-icon-background:    hsl(var(--neutral-0));
+  --color-segmented-control-background:          hsl(var(--neutral-100));
+  --color-segmented-control-selected-background: hsl(var(--blue-300));
+  --color-theme-toggle-sidebar-background:       hsl(var(--neutral-100));
+  --color-theme-toggle-sidebar-selected-background: hsl(var(--blue-300));
+  --color-ai-chat-composer-add-background:       hsl(var(--neutral-100));
+  --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-200));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-100));
+  --color-composer-panel-add-background:         hsl(var(--neutral-100));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-200));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-950));
+  --color-agent-progress-ring:                   hsl(var(--neutral-950));
+  --color-dropdown-item-hover-background:        hsl(var(--blue-200));
+  --color-kbd-background:                        hsl(var(--neutral-0));
+  --color-kbd-foreground:                        hsl(var(--neutral-950));
+  --color-docs-code-background:                  hsl(var(--neutral-100));
+  --color-docs-install-rail:                     hsl(var(--neutral-950));
+
+  /* Badges: the poster yellow. */
+  --color-badge-neutral-background: hsl(47.43 100% 67.25%); /* #ffdc58 */
+  --color-team-menu-count-background: hsl(var(--neutral-200));
+  --color-team-menu-count-foreground: hsl(var(--neutral-950));
+
+  /* Information disc in the main blue; success and error keep the light
+   * lime and rose pastels. */
+  --color-notification-information-background: hsl(var(--blue-200));
+  --color-notification-information-foreground: hsl(var(--blue-700));
+  --color-notification-center-background:      hsl(var(--neutral-0));
+
+  /* Borders and separators: black on controls and cards, grey between rows. */
+  --color-border-button-default:   hsl(var(--neutral-950));
+  --color-border-button-hover:     hsl(var(--neutral-950));
+  --color-border-button-active:    hsl(var(--neutral-950));
+  --color-border-button-white:     hsl(var(--neutral-0));
+  --color-border-error-default:    hsl(var(--red-600));
+  --color-border-checkbox-default: hsl(var(--neutral-950));
+  --color-border-checkbox-hover:   hsl(var(--neutral-950));
+  --color-border-checkbox-active:  hsl(var(--neutral-950));
+  --color-border-component-detail-container: hsl(var(--neutral-950));
+  --color-border-ai-profile-card:  hsl(var(--neutral-950));
+  --color-border-table:            hsl(var(--neutral-300));
+  --color-border-button-group:     hsl(var(--neutral-950));
+  --color-border-sidebar-profile-hover: hsl(var(--neutral-950));
+  --color-separator-border:        hsl(var(--neutral-300));
+  --color-separator-border-strong: hsl(var(--neutral-950));
+
+  --color-pill-tab-blue-hover-background: hsl(var(--blue-200));
+
+  /* Flat CTA fills: no gradient, the label stays white on the dark blue. */
+  --gradient-button-primary-default:  linear-gradient(180deg, hsl(var(--blue-600)) 0%, hsl(var(--blue-600)) 100%);
+  --gradient-button-primary-hover:    linear-gradient(180deg, hsl(var(--blue-500)) 0%, hsl(var(--blue-500)) 100%);
+  --gradient-button-primary-active:   linear-gradient(180deg, hsl(var(--blue-700)) 0%, hsl(var(--blue-700)) 100%);
+  --gradient-button-primary-disabled: linear-gradient(
+    180deg,
+    hsl(var(--neutral-200)) 0%,
+    hsl(var(--neutral-300)) 100%
+  );
+
+  /* Charts */
+  --color-chart-track:   hsl(var(--neutral-200));
+  --color-chart-cursor:  hsl(var(--neutral-300));
+  --color-chart-neutral: hsl(var(--neutral-300));
+
+  /* Shape: the radius and shadow scales the ramp's utilities read through
+   * var(), so one card radius becomes a 6px corner and every elevation step
+   * becomes a hard black offset. */
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-2lg: 5px;
+  --radius-xl: 5px;
+  --radius-2xl: 6px;
+  --radius-3xl: 6px;
+  --radius-notification-card: 6px;
+  --shadow-2xs: 2px 2px 0 0 hsl(var(--neutral-950));
+  --shadow-xs:  2px 2px 0 0 hsl(var(--neutral-950));
+  --shadow-sm:  3px 3px 0 0 hsl(var(--neutral-950));
+  --shadow-md:  4px 4px 0 0 hsl(var(--neutral-950));
+  --shadow-lg:  6px 6px 0 0 hsl(var(--neutral-950));
+  --shadow-xl:  8px 8px 0 0 hsl(var(--neutral-950));
+  --shadow-card:     3px 3px 0 0 hsl(var(--neutral-950));
+  --shadow-dropdown: 4px 4px 0 0 hsl(var(--neutral-950));
+  --shadow-sidebar:  0 0 0 0 transparent;
+  --shadow-nav-selected: 0 0 0 2px hsl(var(--neutral-950));
+  --shadow-checkbox-selected: inset 0 0 0 2px hsl(var(--neutral-950));
+  --shadow-waitlist: 6px 6px 0 0 hsl(var(--neutral-950));
+}
+
+/* Neobrutal strokes: cards, floating panels and controls carry a real 2px
+ * black stroke instead of the hairline, pill CTAs square off, and headings
+ * and labels gain weight. Kept out of @layer so the utilities lose. */
+.neobrutal :is(.rounded-2xl, .rounded-xl, .rounded-2lg):is(.border, .shadow-card, .shadow-dropdown, .shadow-md, .shadow-lg) {
+  border-width: 2px;
+  border-style: solid;
+  border-color: hsl(var(--neutral-950));
+}
+.neobrutal :is(button, [role="button"], a).rounded-full {
+  border-radius: var(--radius-lg);
+}
+.neobrutal :is(button, [role="button"]):not(:disabled):is(.border, [class*="border-border"], [class*="ring-1"]) {
+  border-width: 2px;
+  border-color: hsl(var(--neutral-950));
+  --tw-ring-color: hsl(var(--neutral-950));
+}
+.neobrutal :is(h1, h2, h3, [class*="text-title"], [class*="text-display"]) {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.neobrutal :is([class*="text-label"], [class*="text-subheading"]) {
+  font-weight: 700;
+}
+
 /* custom scale for Remix Icon */
 .remixicon path {
   transform: scale(0.8996);
@@ -3936,6 +4180,10 @@ html {
 .theme-swatch-sakura-night {
   --swatch-canvas: #241820;
   --swatch-accent: #e88fb4;
+}
+.theme-swatch-neobrutal {
+  --swatch-canvas: #dfe5f2;
+  --swatch-accent: #88aaee;
 }
 
 /* ===========================================================================

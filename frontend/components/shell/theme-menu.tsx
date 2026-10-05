@@ -35,6 +35,7 @@ export const THEME_OPTIONS = [
   { value: 'sakura', label: 'Light Red', swatch: 'theme-swatch-sakura' },
   { value: 'sakura-night', label: 'Dark Red', swatch: 'theme-swatch-sakura-night' },
   { value: 'slate', label: 'Slate', swatch: 'theme-swatch-slate' },
+  { value: 'neobrutal', label: 'Neobrutal', swatch: 'theme-swatch-neobrutal' },
 ] as const;
 
 export type ThemeValue = (typeof THEME_OPTIONS)[number]['value'];

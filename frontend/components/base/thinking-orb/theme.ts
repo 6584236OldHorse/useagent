@@ -26,6 +26,7 @@ function ancestorTheme(el: Element | null): boolean | null {
     if (node.classList.contains('light')) return false;
     if (node.classList.contains('sakura')) return false;
     if (node.classList.contains('phosphor-light')) return false;
+    if (node.classList.contains('neobrutal')) return false;
     node = node.parentElement;
   }
   return null;

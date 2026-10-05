@@ -36,6 +36,7 @@ export function Providers({ children, nonce }: { children: React.ReactNode; nonc
         "sakura",
         "sakura-night",
         "slate",
+        "neobrutal",
       ]}
     >
       <MotionConfig reducedMotion="user">
