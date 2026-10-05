@@ -9,8 +9,10 @@ import {
   isRunLocationShortcut,
   runLocationShortcutHint,
   runnerStatusSettled,
+  submittedRunLocation,
   toggledRunLocation,
 } from "./run-location-menu";
+import { selectRunCreateAttempt } from "@/lib/create-run";
 
 const bridge: UseAgentDesktopBridge = {
   version: "1.0.0",
@@ -44,8 +46,11 @@ describe("run location menu", () => {
       "utf8",
     );
     expect(composer).toContain("useEffect(() => setBridge(desktopBridge()), []);");
-    expect(composer).toContain("<RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} />");
-    expect(composer).toContain("...(runLocation ? { run_location: runLocation } : {}),");
+    expect(composer).toContain("const location = submittedRunLocation(runLocation, bridge !== null);");
+    expect(composer).toContain("if (location !== runLocation) setRunLocation(location);");
+    expect(composer).toContain("...(location ? { run_location: location } : {}),");
+    // Nothing changes the choice while a submission is in flight.
+    expect(composer).toContain("<RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} disabled={submitting} />");
     // Machine logins and the local caption count only for a thread placed on the machine.
     expect(composer).toContain("useEnabledEngineConfig({ machineLogins: onMachine })");
     expect(composer).toContain("const machineRunsWork = useMachineRunsWork() && onMachine;");
@@ -58,6 +63,21 @@ describe("run location menu", () => {
     expect(isRunLocationShortcut({ key: "k", metaKey: true, ctrlKey: false })).toBe(false);
     expect(runLocationShortcutHint("darwin")).toBe("Use ⌘' to switch");
     expect(runLocationShortcutHint("win32")).toBe("Use Ctrl+' to switch");
+  });
+
+  test("a submission pins an unmade choice, so a retry of a lost response keeps its body and key", () => {
+    // Desktop app, runner still starting: the menu shows Cloud and the first
+    // submission carries it; the web app carries nothing.
+    expect(submittedRunLocation(null, true)).toBe("cloud");
+    expect(submittedRunLocation(null, false)).toBeNull();
+    expect(submittedRunLocation("local", true)).toBe("local");
+    // Once pinned, the default that settles later (the runner came online) no
+    // longer applies, so the retried body is identical and the attempt is reused.
+    const pinned = submittedRunLocation(null, true);
+    const first = selectRunCreateAttempt({ prompt: "x", run_location: pinned }, null, () => "key-1");
+    const retry = selectRunCreateAttempt({ prompt: "x", run_location: submittedRunLocation(pinned, true) }, first, () => "key-2");
+    expect(retry).toBe(first);
+    expect(retry.idempotencyKey).toBe("key-1");
   });
 
   test("renders only under the desktop bridge, naming the current location", () => {

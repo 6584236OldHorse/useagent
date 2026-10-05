@@ -2,7 +2,7 @@
 
 import { desktopBridge, type UseAgentDesktopBridge } from "@/components/runners/desktop-bridge";
 import { useMachineRunsWork } from "@/components/runners/local-login-availability";
-import { type RunLocation, RunLocationMenu } from "@/components/runners/run-location-menu";
+import { type RunLocation, RunLocationMenu, submittedRunLocation } from "@/components/runners/run-location-menu";
 import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine, RiRefreshLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import {
@@ -445,6 +445,10 @@ export function NewTaskComposer({
     const mentionResources = mentionsToRunResources(mentions.mentions);
     const mentionedBots = mentionedBotIds(mentions.mentions);
 
+    // Pinned at the first submission: an unmade choice becomes the Cloud the
+    // menu shows, so a retry of a lost response carries the same body and key.
+    const location = submittedRunLocation(runLocation, bridge !== null);
+    if (location !== runLocation) setRunLocation(location);
     const body = {
       // Send a model only for engines with an explicit picker/catalog. Codex
       // uses bare backend-policy ids; OpenCode uses provider-qualified ids.
@@ -452,7 +456,7 @@ export function NewTaskComposer({
       engine,
       memory_scope: "org",
       permission_mode: permissionMode,
-      ...(runLocation ? { run_location: runLocation } : {}),
+      ...(location ? { run_location: location } : {}),
       ...(selectableModels.length > 0 ? { model } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
@@ -612,7 +616,7 @@ export function NewTaskComposer({
                   (Auto, Manual, Plan mode, Bypass all); rides POST /api/runs as permission_mode. */}
               <PermissionModeChip mode={permissionMode} onChange={setChosenMode} engine={engine} />
               {/* Desktop app only: Local (this machine) or Cloud for the new thread; rides POST /api/runs as run_location. */}
-              <RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} />
+              <RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} disabled={submitting} />
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes

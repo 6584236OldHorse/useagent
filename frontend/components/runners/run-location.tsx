@@ -1,7 +1,7 @@
 "use client";
 
 import { RiComputerLine } from "@remixicon/react";
-import type { RunLocation } from "@useagent/agent-client/wire";
+import type { RunLocation as RunLocationChoice } from "@useagent/agent-client/wire";
 import { useEffect, useState } from "react";
 import { fetchRunners } from "./runner-api";
 import { localRunnerId, type Runner, runnerLocationLabel } from "./runner-data";
@@ -10,7 +10,7 @@ export type LocatedRun = {
   readonly sandbox_id: string | null;
   readonly sandbox_provider?: unknown;
   /** Where the thread asked to run; names the place before any sandbox exists. */
-  readonly run_location?: RunLocation | null;
+  readonly run_location?: RunLocationChoice | null;
 };
 
 /** Where a run executes, named: the runner's machine for a local sandbox, the

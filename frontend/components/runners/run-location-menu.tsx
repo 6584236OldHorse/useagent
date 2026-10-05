@@ -40,6 +40,15 @@ export function runnerStatusSettled(status: DesktopRunnerStatus | null): status 
   return status !== null && status.state !== "starting" && status.state !== "pulling";
 }
 
+/** The location a submission carries: the person's choice, else, in the desktop
+ *  app, the Cloud the menu shows before its default has settled. Pinned into
+ *  the composer's state at the first submission, so a retry of a lost response
+ *  builds the same body and reuses its key instead of opening a second thread;
+ *  the web app has no menu and carries nothing. */
+export function submittedRunLocation(choice: RunLocation | null, desktop: boolean): RunLocation | null {
+  return choice ?? (desktop ? "cloud" : null);
+}
+
 export function toggledRunLocation(location: RunLocation): RunLocation {
   return location === "local" ? "cloud" : "local";
 }
