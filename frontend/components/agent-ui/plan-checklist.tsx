@@ -104,23 +104,20 @@ export function PlanChecklist({
     <section
       aria-label={title}
       data-testid={testId}
-      className={cx(
-        // The same density as the trace rows it sits under: a hairline
-        // surface, 12.5px text, compact rows, no card shadow.
-        "overflow-hidden rounded-xl border border-border-button-default bg-background-primary-default",
-        className,
-      )}
+      className={cx("flex w-full flex-col", className)}
     >
+      {/* The same pill as the Thinking header it sits under: content-hugging,
+          rounded, hairline ring, 16px mark, caret at the end. */}
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-background-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+        className="inline-flex w-fit max-w-full cursor-pointer items-center gap-2 rounded-full bg-background-secondary-default px-2.5 py-1 text-left ring-1 ring-inset ring-border-button-default/60 transition-colors duration-100 hover:bg-background-secondary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
       >
         <CompletionMark done={done} total={total} />
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium leading-5 text-text-primary">{title}</span>
+        <span className="shrink-0 text-body-2-medium text-text-secondary">{title}</span>
         <span
-          className="text-[11.5px] font-medium tabular-nums text-lime-600"
+          className="text-body-2-regular tabular-nums text-lime-600"
           aria-label={`${done} of ${total} complete`}
           role="img"
         >
@@ -128,14 +125,14 @@ export function PlanChecklist({
         </span>
         <RiArrowDownSLine
           className={cx(
-            "size-4 shrink-0 text-text-tertiary transition-transform duration-200",
-            open ? "rotate-0" : "-rotate-90",
+            "size-3.5 shrink-0 text-text-tertiary transition-transform duration-300",
+            open && "rotate-180",
           )}
           aria-hidden
         />
       </button>
       {open && (
-        <ol className="border-t border-border-button-default py-0.5 motion-safe:animate-ai-fade-up">
+        <ol className="mt-1.5 ml-[18px] border-l border-border-button-default/60 pl-3 motion-safe:animate-ai-fade-up">
           {entries.map((entry) => {
             const Icon = ITEM_ICON[entry.status];
             const struck = entry.status === "completed" || entry.status === "cancelled";
@@ -144,7 +141,7 @@ export function PlanChecklist({
               <li
                 key={entry.id}
                 className={cx(
-                  "flex items-center gap-2 px-3 py-1 transition-colors duration-300",
+                  "flex items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-300",
                   active && "bg-accent-500/10",
                 )}
               >

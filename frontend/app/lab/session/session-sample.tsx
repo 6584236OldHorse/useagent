@@ -349,9 +349,9 @@ export function SessionSample() {
               owner="plan-checklist via tool-step-row (Agents / subagent activity)"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                In the main conversation a plan folds into a generic work row; the rich
-                collapsible card is the Agents-rail / subagent-activity rendering
-                (ToolStepRow -&gt; PlanChecklist). Both variants shown.
+                A plan is a folded pill in the same grammar as the Thinking header, in the
+                conversation and in the Agents rail alike (ToolStepRow renders the same
+                PlanChecklist). Both entry points shown.
               </p>
               <ToolStepRow step={planTodoStep} state="running" />
               <PlanChecklist title="Implementation plan" entries={planEntries} />
