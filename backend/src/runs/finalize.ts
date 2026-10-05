@@ -54,7 +54,6 @@ import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
 import { COMPACT_STOPPED_WAITING_SUMMARY } from "../engines/runtime-compact-contract";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { drainProviderEvents } from "./provider-events";
-import { createBufferedRunTimer, type RunStageTimer } from "./run-timing";
 import { accrueRunSpend } from "./spend";
 
 /** Providers whose runs project native events and/or `steps` into the canonical lane.
@@ -442,21 +441,12 @@ export async function finalizeRun(
     // durable winner, even though no publication or status write may run again.
     return commitRunFinalization(runId, status, summary, durationMs, options);
   }
-  // Settlement runs after duration_ms froze; its spans explain the gap to settled_at.
-  const timing = run.threadId ? createBufferedRunTimer(runId, run.threadId) : undefined;
-  const timer = timing?.timer;
-  const endOutputs = timer?.begin("settle.outputs");
   const outputs = await completeRunOutputs(run, summary, {
     signal: options.signal, requiresClaim: Boolean(options.claim),
     publicationClaim: options.publicationClaim,
   });
-  endOutputs?.();
   if (outputs.status === "obsolete") return { applied: false };
-  try {
-    return await commitRunFinalization(runId, outputs.status, outputs.summary, durationMs, options, outputs.artifactIds, timer);
-  } finally {
-    timing?.flush();
-  }
+  return commitRunFinalization(runId, outputs.status, outputs.summary, durationMs, options, outputs.artifactIds);
 }
 
 async function commitRunFinalization(
@@ -466,20 +456,13 @@ async function commitRunFinalization(
   durationMs: number,
   options: FinalizeRunOptions,
   deliveryArtifactIds: readonly string[] = [],
-  timer?: RunStageTimer,
 ): Promise<FinalizeRunResult> {
   const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
-  if (executionGraph) {
-    const endSeal = timer?.begin("settle.graph_seal");
-    await prepareExecutionGraphSeal(runId);
-    endSeal?.();
-  }
+  if (executionGraph) await prepareExecutionGraphSeal(runId);
   // Usage frames still in the run's capture chain land before the charge is
   // read, so the settlement prices every model call the turn made.
-  const endDrain = timer?.begin("settle.event_drain");
   await drainProviderEvents(runId);
-  endDrain?.();
   let applied = false;
   let effectiveStatus: "completed" | "failed" = status === "completed" ? "completed" : "failed";
   let effectiveSummary = summary;
@@ -492,7 +475,6 @@ async function commitRunFinalization(
   let settledUserId: string | null = null;
   let settledPrompt: string | null = null;
   let settledInternal = true; // stays true unless a customer run actually finalized
-  const endTransaction = timer?.begin("settle.transaction");
   await db.transaction(async (tx) => {
     await lockFinishedWorkRun(runId, tx);
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).for("update").limit(1);
@@ -680,10 +662,8 @@ async function commitRunFinalization(
     // post-seal top-up if an engine ever streams its usage late.
     await accrueRunSpend(run, tx);
   });
-  endTransaction?.();
 
   if (!applied) return { applied: false };
-  timer?.mark("settle");
 
   if (shadowAudit.value) {
     console.info("[finished-work] shadow completion mismatch", {
