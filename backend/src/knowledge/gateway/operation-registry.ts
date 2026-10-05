@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { decodeArtifact, type ArtifactDescriptor } from "@useagent/agent-client/artifacts";
 import { getArtifactForOrg, toArtifactDescriptor, type ArtifactRecord } from "../../artifacts/repo";
 import { withFinishedWorkMaterializer } from "../../runs/finished-work-materialization-context";
 import { withFinishedWorkSessionLocks } from "../../runs/finished-work-lock";
@@ -12,7 +13,12 @@ import {
   type FinishedWorkReceiptRecord,
 } from "../../runs/finished-work-repo";
 import { finishedWorkRolloutMode } from "../../runs/finished-work-rollout";
-import { providerEventExists, recordProviderEvent } from "../../runs/provider-events";
+import {
+  readStableProviderEvent,
+  type recordProviderEvent,
+  recordProviderEventIfAbsent,
+  type ProviderEventInput,
+} from "../../runs/provider-events";
 import {
   argumentsWithoutApproval,
   consumeGatewayOperationApproval,
@@ -346,6 +352,43 @@ async function currentObligation(
   return obligation;
 }
 
+async function materializedArtifactSnapshot(input: {
+  readonly claims: ToolTokenClaims;
+  readonly artifact: ArtifactRecord;
+  readonly artifactRevision: number;
+  readonly eventId: string;
+  readonly eventType: "artifact.created" | "artifact.revised";
+}): Promise<ArtifactDescriptor | null> {
+  const event = await readStableProviderEvent({
+    id: input.eventId,
+    runId: input.claims.runId,
+    threadId: input.claims.threadId,
+  });
+  if (!event) return null;
+  if (event.provider !== "skynet" || event.eventType !== input.eventType) {
+    throw new Error("materialized artifact history has the wrong provider or event type");
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(event.payload ?? "null");
+  } catch {
+    throw new Error("materialized artifact history payload is malformed");
+  }
+  const descriptor = decodeArtifact(payload);
+  if (!descriptor) throw new Error("materialized artifact history payload is malformed");
+  if (
+    descriptor.id !== input.artifact.id ||
+    descriptor.run_id !== input.artifact.runId ||
+    descriptor.thread_id !== input.artifact.threadId ||
+    descriptor.thread_id !== input.claims.threadId ||
+    (descriptor.workpiece && descriptor.workpiece.source_version !== descriptor.sha256) ||
+    (descriptor.workpiece?.state_revision ?? 0) !== input.artifactRevision
+  ) {
+    throw new Error("materialized artifact history is outside the checkpoint scope");
+  }
+  return descriptor;
+}
+
 async function finishMaterializedOperation(
   claims: ToolTokenClaims,
   effect: ResolvedCompletionEffect,
@@ -362,25 +405,44 @@ async function finishMaterializedOperation(
   if (!artifact || artifact.threadId !== claims.threadId) {
     throw new Error("materialized artifact is outside the gateway run scope");
   }
-  const descriptor = toArtifactDescriptor(artifact);
   const eventType = effect.requirement === "artifact_create"
     ? "artifact.created"
     : "artifact.revised";
   const eventId = effect.requirement === "artifact_create"
     ? `artifact.created:${artifact.id}`
     : `artifact.revised:${artifact.id}:${artifactRevision}`;
-  if (!(await providerEventExists(eventId))) {
-    await (completionEventRecorderOverride ?? recordProviderEvent)(
-      {
-        id: eventId,
-        runId: claims.runId,
-        threadId: claims.threadId,
-        provider: "skynet",
-        eventType,
-        payload: descriptor,
-      },
-      { critical: true, required: true },
-    );
+  let descriptor = await materializedArtifactSnapshot({
+    claims,
+    artifact,
+    artifactRevision,
+    eventId,
+    eventType,
+  });
+  if (!descriptor) {
+    if (artifact.workpieceRevision !== artifactRevision) {
+      throw new Error("materialized artifact history is missing after the artifact advanced");
+    }
+    const eventInput: ProviderEventInput = {
+      id: eventId,
+      runId: claims.runId,
+      threadId: claims.threadId,
+      provider: "skynet",
+      eventType,
+      payload: toArtifactDescriptor(artifact),
+    };
+    if (completionEventRecorderOverride) {
+      await completionEventRecorderOverride(eventInput, { critical: true, required: true });
+    } else {
+      await recordProviderEventIfAbsent(eventInput);
+    }
+    descriptor = await materializedArtifactSnapshot({
+      claims,
+      artifact,
+      artifactRevision,
+      eventId,
+      eventType,
+    });
+    if (!descriptor) throw new Error("materialized artifact history was not durably captured");
   }
   const recorded = await recordFinishedWorkReceipt({
     orgId: claims.orgId,
@@ -392,9 +454,9 @@ async function finishMaterializedOperation(
     artifactId: artifact.id,
     artifactRevision,
     metadata: {
-      byteCount: artifact.sizeBytes,
-      digest: artifact.sha256,
-      mime: artifact.contentType,
+      byteCount: descriptor.size_bytes,
+      digest: descriptor.sha256,
+      mime: descriptor.content_type,
     },
   });
   return originalResult

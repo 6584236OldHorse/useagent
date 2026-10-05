@@ -40,6 +40,7 @@ describe("gateway grants single source of truth", () => {
 
   test("restricted gateway can persist its FinishedWork obligations and receipts", () => {
     expect(GATEWAY_GRANTS).toEqual(expect.arrayContaining([
+      "GRANT SELECT (id, run_id, thread_id, seq, provider, event_type, payload) ON provider_events TO useagent_gateway",
       "GRANT SELECT, INSERT ON finished_work_obligations, finished_work_receipts TO useagent_gateway",
       "GRANT UPDATE (state, materialized_artifact_id, materialized_artifact_revision, failure_code, resolved_at, updated_at) ON finished_work_obligations TO useagent_gateway",
     ]));
