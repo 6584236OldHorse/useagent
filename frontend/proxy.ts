@@ -20,7 +20,7 @@ function routeResponse(request: NextRequest): NextResponse | null {
     canonical.pathname = pathname.replace(/\/+$/, "");
     return NextResponse.redirect(canonical, 308);
   }
-  if (pathname === "/healthz") return NextResponse.next();
+  if (pathname === "/healthz" || pathname === "/icon.svg") return NextResponse.next();
   if (process.env.NODE_ENV !== "production" && process.env.USEAGENT_PREVIEW_OPEN === "1") {
     return NextResponse.next();
   }

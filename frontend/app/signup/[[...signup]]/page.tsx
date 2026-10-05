@@ -10,11 +10,19 @@ export const metadata: Metadata = {
   description: "Create your useAgent workspace account.",
 };
 
-export default function SignupPage() {
+export default async function SignupPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ redirect_url?: string | string[] }>;
+}) {
   if (legacyAuthEnabled) redirect("/login");
+  const { redirect_url } = await searchParams;
   return (
     <AuthScreen>
-      <IdentityForm mode="sign-up" />
+      <IdentityForm
+        mode="sign-up"
+        redirectTo={typeof redirect_url === "string" ? redirect_url : "/"}
+      />
     </AuthScreen>
   );
 }
