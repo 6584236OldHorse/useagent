@@ -48,3 +48,33 @@ export async function settleStoppedTurnUsage(input: {
     return false;
   }
 }
+
+/**
+ * After the turn loop, whatever ended it. A turn the runtime settled needs
+ * nothing more. A dispatched turn it did not settle (Stop; a lost transport; a
+ * turn that produced nothing in time) may still be running and billing, so it
+ * is cancelled and the usage its interruption produced is landed before the
+ * run settles. On Stop a cancel that fails is the caller's failure; after a
+ * lost transport it is logged and the failure that ended the turn stands.
+ */
+export async function landUnsettledTurn(input: {
+  readonly dispatched: boolean;
+  readonly settled: boolean;
+  readonly stopping: boolean;
+  readonly cancel: () => Promise<void>;
+  readonly read: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
+  readonly apply: (snapshot: RuntimeThreadSnapshot, signal: AbortSignal) => Promise<unknown>;
+  readonly deadlineSignal?: AbortSignal;
+}): Promise<"nothing" | "landed" | "lost" | "cancel_failed"> {
+  if (!input.dispatched || input.settled) return "nothing";
+  try {
+    return (await settleStoppedTurnUsage(input)) ? "landed" : "lost";
+  } catch (error) {
+    if (input.stopping) throw error;
+    console.warn(
+      "[runtime] the lost turn could not be cancelled:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return "cancel_failed";
+  }
+}

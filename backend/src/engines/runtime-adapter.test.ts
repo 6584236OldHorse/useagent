@@ -475,7 +475,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
-    expect(source).toContain('"turn aborted",');
+    expect(source).toContain('? "turn aborted" : lostReason');
     expect(source).toContain("providerGatewayWired()");
     expect(source).toContain("prepareSandboxTurn(ctx");
     expect(source).toContain("prepareStableRuntimeProvider(sandbox, ctx, engine)");
@@ -722,7 +722,10 @@ describe("T3 run adapter gate", () => {
     ]);
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     expect(source).toContain("skipQueuedCancel = recovery.stuckStartConfirmed");
-    expect(source).toContain("if (ctx.signal.aborted && !skipQueuedCancel)");
+    // Every unsettled turn is landed by the cleanup, Stop or not, unless the
+    // stuck start was proven and the runtime already restarted.
+    expect(source).toContain("if (!skipQueuedCancel)");
+    expect(source).toContain("stopping: ctx.signal.aborted");
   });
 
   test("does not restart for ordinary waits or when the native turn advanced", async () => {
@@ -860,7 +863,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("watchdog.observeProgress()");
     expect(source).toContain("watchdog.signal,");
     expect(source).toContain("if (watchdog.signal.aborted) throw watchdog.signal.reason;");
-    expect(source).toContain('"provider made no progress",');
+    expect(source).toContain('lostReason = "provider made no progress"');
     // One watchdog owner and no steer replay after the turn may have started.
     expect(source.split("createNoProgressWatchdog(").length - 1).toBe(1);
     expect(source.split("driver.steer(").length - 1).toBe(1);

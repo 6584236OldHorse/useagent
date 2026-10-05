@@ -71,7 +71,7 @@ import { prepareSandboxTurn } from "./sandbox-turn-preparation";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
 import { reloadRetainedOpenCodeSession } from "./runtime-session-stop";
 import { awaitRuntimeOperation } from "./runtime-operation";
-import { settleStoppedTurnUsage } from "./runtime-stop-accounting";
+import { landUnsettledTurn } from "./runtime-stop-accounting";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -632,6 +632,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         let turnRequestedAt = createdAt;
         const endTurn = ctx.timing?.begin("t3.turn_wait");
         let skipQueuedCancel = false;
+        let turnDispatched = false;
+        // Why an unsettled turn is cancelled when the loop leaves it without Stop.
+        let lostReason = "turn lost";
         try {
           for (;;) {
             const createdAt = turnRequestedAt;
@@ -651,6 +654,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             if (steerResult.status !== "ok") {
               throw new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
             }
+            turnDispatched = true;
             // Delivery evidence, separate from session authority: only an accepted
             // steer proves this prompt, and the history it carried, reached the engine.
             await ctx.markPromptDelivered?.();
@@ -684,12 +688,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
                 skipQueuedCancel = recovery.stuckStartConfirmed;
                 throw recovery.error;
               }
+              // A turn that made no progress is not settled: the cleanup below
+              // cancels it with this reason and lands what it billed, and a
+              // cancel failure never masks the no-progress reason.
               if (error instanceof NoProgressError && !ctx.signal.aborted) {
-                // The durable run is failing with the provider's real reason; also
-                // stop the sandbox-side turn so a persistent thread does not keep
-                // retrying against the provider gateway. Best-effort only: a cancel
-                // failure must not mask the no-progress reason.
-                await driver.cancel(session, "provider made no progress", controlMetadata).catch(() => {});
+                lostReason = "provider made no progress";
                 throw error;
               }
               // A turn that may still be running is never steered again; only a
@@ -723,12 +726,18 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           }
         } finally {
           endTurn?.();
-          if (ctx.signal.aborted && !skipQueuedCancel) {
-            // Cancel first, then land the usage the interruption itself produced,
-            // so the settlement charges what actually ran; bounded, never past 5 s.
-            await settleStoppedTurnUsage({
+          // A dispatched turn the runtime never settled may still be running
+          // and billing: after Stop, and after a lost transport or a turn that
+          // produced nothing alike. Cancel first, then land the usage the
+          // interruption itself produced, so the settlement charges what
+          // actually ran; bounded, never past 5 s.
+          if (!skipQueuedCancel) {
+            await landUnsettledTurn({
+              dispatched: turnDispatched,
+              settled: projector.settled,
+              stopping: ctx.signal.aborted,
               cancel: async () => {
-                const cancelResult = await driver.cancel(session, "turn aborted", controlMetadata);
+                const cancelResult = await driver.cancel(session, ctx.signal.aborted ? "turn aborted" : lostReason, controlMetadata);
                 if (cancelResult.status !== "ok") {
                   throw new Error(
                     `the provider runtime ${engine} cancel failed (${cancelResult.status}): ${cancelResult.message ?? "unsupported"}`,

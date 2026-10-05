@@ -33,6 +33,9 @@ export interface TurnProjector {
   steps(): ReadonlyMap<string, string>;
   readonly publishedText: string;
   readonly finalText: string;
+  /** Whether a snapshot applied so far showed the runtime turn settled
+   *  (completed, interrupted or failed): a turn that never did may still be running. */
+  readonly settled: boolean;
 }
 
 /** The revisions a thread already holds before a turn is dispatched. */
@@ -67,9 +70,11 @@ export function createTurnProjector(input: {
   let publishedText = "";
   let finalText = "";
   let sealed = false;
+  let settledSeen = false;
   return {
     get publishedText() { return publishedText; },
     get finalText() { return finalText; },
+    get settled() { return settledSeen; },
     seen: () => revisions,
     steps: () => steps,
     async apply(snapshot, observe, options) {
@@ -110,6 +115,7 @@ export function createTurnProjector(input: {
       }
       const text = redact.text(assistantText(snapshot));
       const settled = runtimeTurnSettled(snapshot);
+      settledSeen ||= settled;
       const projection = projectRuntimeAssistantText({ publishedText, finalText }, text, settled);
       if (projection.delta && !signal?.aborted && !sealed) ctx.publishDelta?.(projection.delta);
       publishedText = projection.publishedText;
