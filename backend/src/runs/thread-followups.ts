@@ -208,6 +208,7 @@ export async function acceptThreadFollowup(input: {
       resolvedResources: intake.resources,
       attachmentIds: [...input.attachmentIds],
       memoryScope: latest.memoryScope,
+      permissionMode: latest.permissionMode,
       skillId: null,
       skillVersion: null,
       skillContentHash: null,

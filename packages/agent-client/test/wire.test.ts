@@ -89,6 +89,12 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiStep(step)).toEqual(step);
   });
 
+  test("keeps a reported permission mode and rejects an unknown one", () => {
+    const guarded = { ...run, permission_mode: "read-only" as const };
+    expect(decodeApiRun(guarded)).toEqual(guarded);
+    expect(decodeApiRun({ ...run, permission_mode: "yolo" })).toBeNull();
+  });
+
   test("decodes the exact durable lifecycle projection", () => {
     const lifecycle = {
       id: "run-1",

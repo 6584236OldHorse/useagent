@@ -650,35 +650,7 @@
       "idx": 92,
       "version": "7",
       "when": 1792800000004,
-      "tag": "0094_run_feedback",
-      "breakpoints": true
-    },
-    {
-      "idx": 93,
-      "version": "7",
-      "when": 1792800000005,
-      "tag": "0095_slack_card_pacing",
-      "breakpoints": true
-    },
-    {
-      "idx": 94,
-      "version": "7",
-      "when": 1792800000006,
-      "tag": "0096_slack_card_applied_revision",
-      "breakpoints": true
-    },
-    {
-      "idx": 97,
-      "version": "7",
-      "when": 1792800000009,
-      "tag": "0099_sandbox_minutes",
-      "breakpoints": true
-    },
-    {
-      "idx": 98,
-      "version": "7",
-      "when": 1792800000012,
-      "tag": "0102_runs_connector",
+      "tag": "0094_runs_permission_mode",
       "breakpoints": true
     }
   ]

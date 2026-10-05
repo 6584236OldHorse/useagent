@@ -45,7 +45,9 @@ import {
   engineLabel,
   modelOptionsForEngine,
   partitionModelOptions,
+  type PermissionMode,
 } from "@/components/chat/types";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
@@ -90,6 +92,8 @@ export function NewTaskComposer({
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repos, setRepos] = useState<RepoItem[]>([]);
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
+  // A new thread starts in Full access unless the person picks a mode before sending.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>("full-access");
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
@@ -438,6 +442,7 @@ export function NewTaskComposer({
       prompt: text,
       engine,
       memory_scope: "org",
+      permission_mode: permissionMode,
       ...(selectableModels.length > 0 ? { model } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
@@ -692,6 +697,14 @@ export function NewTaskComposer({
             value={playbook}
             onChange={setPlaybook}
             triggerClassName="max-w-[16rem] rounded-full text-text-secondary"
+          />
+
+          {/* Permission for the new thread: Read only, Guard (with or without
+              auto-applied edits) or Full access; rides POST /api/runs as permission_mode. */}
+          <PermissionModeChip
+            mode={permissionMode}
+            onChange={setPermissionMode}
+            className="rounded-full px-2 py-1"
           />
 
           {selectedRepoItems.length > 0 ? (

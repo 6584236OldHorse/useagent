@@ -63,6 +63,7 @@ function serializeRunCommandPayload(
     resolvedResources: input.run.resolvedResources ?? [],
     attachmentIds: input.run.attachmentIds ?? [],
     memoryScope: input.run.memoryScope,
+    permissionMode: input.run.permissionMode ?? null,
     skillId: input.run.skillId,
     skillVersion: input.run.skillVersion,
     commandName: input.run.commandName,

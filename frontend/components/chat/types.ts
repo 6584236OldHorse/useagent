@@ -11,13 +11,14 @@ import {
   decodeApiRun,
   type EngineId,
   type MemoryScope,
+  type PermissionMode,
   type RunStatus,
   type RunUpload,
   type StepKind,
 } from "@useagent/agent-client/wire";
 import { providerDisplayName } from "./provider-display";
 
-export type { ApiRun, ApiStep, EngineId, MemoryScope, RunStatus, RunUpload, StepKind };
+export type { ApiRun, ApiStep, EngineId, MemoryScope, PermissionMode, RunStatus, RunUpload, StepKind };
 
 /** `GET /api/runs/:id?thread=1` → the whole conversation, oldest → newest. */
 export interface ThreadResponse {

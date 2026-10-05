@@ -16,6 +16,7 @@ export function runIntentFromAcceptedRun(
     requestedResources: [],
     attachmentIds: run.attachmentIds ?? [],
     memoryScope: run.memoryScope ?? "org",
+    permissionMode: run.permissionMode ?? null,
     skillId: run.skillId ?? null,
     skillVersion: run.skillVersion ?? null,
     commandName: run.commandName ?? null,
@@ -65,6 +66,10 @@ export function runIntentFingerprint(intent: RunCommandIntent): string {
     intent.commandSessionId,
     intent.commandCatalogRevision,
   ];
+  // An explicit permission mode is part of the intent (a read-only turn is not
+  // the same turn as a full-access one). It joins the hash only when the caller
+  // chose one, so the fingerprints of every earlier submission stay unchanged.
+  if (intent.permissionMode) fields.push(intent.permissionMode);
   if (intent.expectedSandbox) {
     fields.push([
       intent.expectedSandbox.version,

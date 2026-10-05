@@ -64,7 +64,7 @@ import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
-  type MemoryScope,
+  type MemoryScope, type PermissionMode,
   normalizeEngine,
   type RunStatus,
   supportsPreSessionModelSelection,
@@ -361,7 +361,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       command?: { name: string; args: string } | null,
       attachmentIds: readonly string[] = [],
       resources: readonly RunResourceSelection[] = [],
-      botMentions: readonly string[] = [],
+      botMentions: readonly string[] = [], permissionMode?: PermissionMode,
     ) => {
       // Native-question replies resume the blocked provider turn instead of enqueueing a run.
       if (activeQuestion && composerCanAnswerQuestion) {
@@ -385,7 +385,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
               }, idempotencyKey)
           : await createRun(replyRunBody({
             text, engine, model: modelSelection ? model : null, parentRunId: newest.id, memoryScope,
-            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision,
+            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision, permissionMode,
           }), idempotencyKey);
         if (!res.ok) throw new Error(await runCreateFailureMessage(res, `backend ${res.status}`));
         // Keep the accepted run visible until SSE/reconcile observes its durable id.

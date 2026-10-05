@@ -193,6 +193,7 @@ export async function acceptProductChildBatch(input: {
         resolvedResources: intake.resources,
         attachmentIds: [],
         memoryScope: parent.memoryScope,
+        permissionMode: parent.permissionMode,
         skillId: null,
         skillVersion: null,
         skillContentHash: null,

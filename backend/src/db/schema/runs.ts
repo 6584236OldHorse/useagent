@@ -4,7 +4,7 @@ import {
   MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
-  type RunConnector,
+  type PermissionMode,
   type RunStatus,
   type StepKind,
 } from "@useagent/agent-client/wire";
@@ -115,6 +115,10 @@ export const runs = pgTable(
     // A reply inherits its parent's scope unless the authenticated user changes
     // it; resolution/validation lives at the run-creation boundary (routes.ts).
     memoryScope: text("memory_scope").$type<MemoryScope>().notNull().default("org"),
+    // The permission policy the run was started with (engines/permission-mode.ts):
+    // what its resident runtime may do without asking. Rows from before the
+    // column ran with the runtime's full-access posture, hence the default.
+    permissionMode: text("permission_mode").$type<PermissionMode>().notNull().default("full-access"),
     // Pinned skill/playbook selection for this run — an immutable REFERENCE to a
     // `skill_revisions` row (skill_id + skill_version) plus its content hash. Set
     // when a skill was selected in the composer/run-now; null otherwise. The
@@ -141,12 +145,6 @@ export const runs = pgTable(
     // unattended product execution without discarding the creator's user id.
     // Public callers can never set this field.
     origin: text("origin"),
-    // The connector a turn arrived through when it was not typed in the product
-    // (Slack today): the sender's display name and avatar as the channel showed
-    // them at ingress plus the message permalink, so the web can render who
-    // spoke and link back. Stamped once after acceptance (the lookup still owed
-    // waits in slack_identity_lookups meanwhile); null for product turns.
-    connector: jsonb("connector").$type<RunConnector>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

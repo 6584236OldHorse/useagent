@@ -1,4 +1,6 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import { resolvePreviewSandbox } from "../runs/preview-proxy";
+import { approvalDecisionAllowed } from "./permission-mode";
 import { resolveExpectedSandbox } from "../sandboxes/binding";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { providerEventExists, recordProviderEvent } from "../runs/provider-events";
@@ -39,7 +41,7 @@ export interface RuntimeApprovalRequest {
 export class RuntimeApprovalError extends Error {
   constructor(
     readonly code: string,
-    readonly status: 400 | 409 | 502 | 503,
+    readonly status: 400 | 403 | 409 | 502 | 503,
     message: string,
   ) {
     super(message);
@@ -124,6 +126,8 @@ export async function replyToRuntimeApproval(input: {
   readonly decision: unknown;
   readonly signal: AbortSignal;
   readonly expectedSandbox?: ExpectedSandboxBinding | null;
+  /** The run's permission policy: a read-only run never lets a command or file change through. */
+  readonly permissionMode: PermissionMode;
 }): Promise<{ alreadyAnswered: boolean }> {
   const respondedEventId = approvalEventId(input.runId, input.requestId, "responded");
   if (await providerEventExists(respondedEventId)) return { alreadyAnswered: true };
@@ -139,7 +143,14 @@ export async function replyToRuntimeApproval(input: {
     },
     signal,
   );
-  assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);
+  const request = assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);
+  if (!approvalDecisionAllowed(input.permissionMode, request, decision)) {
+    throw new RuntimeApprovalError(
+      "approval_refused_read_only",
+      403,
+      "this run is read-only: a request to run a command or change files can only be declined",
+    );
+  }
   await requestRuntimeEnvironment(
     sandbox,
     {

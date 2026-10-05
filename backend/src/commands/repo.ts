@@ -98,6 +98,7 @@ export async function insertCommandWithRun(
         repos: cmd.run.repos,
         resolvedResources: cmd.run.resolvedResources,
         memoryScope: cmd.run.memoryScope,
+        permissionMode: cmd.run.permissionMode,
         skillId: cmd.run.skillId,
         skillVersion: cmd.run.skillVersion,
         skillContentHash: cmd.run.skillContentHash,

@@ -4,8 +4,9 @@ import type {
   ApiRunSummary,
   ApiStep,
   ApiThreadOutlineTurn,
-  RunConnector,
+  PermissionMode,
 } from "@useagent/agent-client/wire";
+import { configuredRuntimeMode } from "../engines/permission-mode";
 import {
   and,
   desc,
@@ -102,11 +103,11 @@ function toRun(
     repo_specs: specs,
     resolved_resources: r.resolvedResources ?? [],
     memory_scope: r.memoryScope,
+    permission_mode: r.permissionMode,
     skill_id: r.skillId,
     skill_version: r.skillVersion,
     skill_content_hash: r.skillContentHash,
     uploads,
-    connector: r.connector ?? null,
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
     steps: stepRows.map(toStep),
@@ -208,6 +209,9 @@ export async function createRun(
     /** Team-memory pool for the run. Resolved server-side at the run-creation
      *  boundary (explicit choice, parent inheritance, or the "org" default). */
     memoryScope: MemoryScope;
+    /** The run's permission policy. Product lanes resolve it (composer choice or
+     *  the parent's); a lane that omits it takes the operator's configured posture. */
+    permissionMode?: PermissionMode;
     skillId?: string | null;
     skillVersion?: number | null;
     skillContentHash?: string | null;
@@ -251,6 +255,7 @@ export async function createRun(
     // Legacy single-value mirror: clean "owner/name" (drop any branch suffix).
     repo: primaryRepo,
     memoryScope: input.memoryScope,
+    permissionMode: input.permissionMode ?? configuredRuntimeMode(),
     skillId: input.skillId ?? null,
     skillVersion: input.skillVersion ?? null,
     skillContentHash: input.skillContentHash ?? null,
@@ -508,7 +513,6 @@ export async function listRunSummaries(
         root.project_id,
         root.repo,
         root.repos,
-        root.connector,
         root.created_at,
         root.updated_at,
         latest.id as latest_run_id,
@@ -544,7 +548,7 @@ export async function listRunSummaries(
     )
     select
       id, prompt, model, engine, status, summary, duration_ms, project_id,
-      repo, repos, connector, created_at, updated_at,
+      repo, repos, created_at, updated_at,
       latest_run_id, latest_status, latest_cancelled, latest_created_at, latest_updated_at
     from selected_rows
     order by ${outputOrder}
@@ -565,7 +569,6 @@ export async function listRunSummaries(
       repo: row.repo ? parseRepoRef(row.repo as string).repo : null,
       repos: specs.map((spec) => spec.repo),
       repo_specs: specs,
-      connector: (row.connector as RunConnector | null) ?? null,
       created_at: new Date(row.created_at as string | Date).toISOString(),
       updated_at: new Date(row.updated_at as string | Date).toISOString(),
       latest_run_id: row.latest_run_id as string,

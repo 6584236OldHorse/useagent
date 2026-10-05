@@ -30,6 +30,7 @@ import {
 } from "@/components/chat/handoff-receipts";
 import { InboundAttachments } from "@/components/chat/inbound-attachments";
 import { NativeApprovalCard } from "@/components/chat/native-approval-card";
+import { PermissionModeTag } from "@/components/pro/permission-mode-chip";
 import type { NativeSnapshot } from "@/components/chat/native-store";
 import { QuestionCard } from "@/components/chat/question-card";
 import {
@@ -51,10 +52,8 @@ import {
   turnNodesFromSteps,
   withTransientLiveReasoning,
 } from "@/components/chat/turn-trace-model";
-import { TurnSender } from "@/components/chat/turn-sender";
 import { TurnWindow } from "@/components/chat/turn-window";
 import { CaptureDegradedNote, FailedNote } from "@/components/chat/turn-notices";
-import { useChildSteps } from "@/components/chat/use-child-steps";
 
 export { AgentAnswer } from "@/components/chat/agent-answer";
 export {
@@ -77,6 +76,7 @@ import { AnsweredAt } from "@/components/session-ui/answered-at";
 import { MessageCopyButton } from "@/components/session-ui/message-copy-button";
 import { MessageScrollerRail } from "@/components/session-ui/message-scroller-rail";
 import { unavailableEngineLabel } from "@/components/session-ui/provider-status-banner";
+import { QueuedMessagePill } from "@/components/session-ui/queued-message-pill";
 import { ScrollToEndPill } from "@/components/session-ui/scroll-to-end-pill";
 import {
   dismissThreadErrorBannerForSession,
@@ -122,17 +122,6 @@ export type Turn = {
    *  replaces the whole Turn, dropping this. */
   pendingOutline?: { readonly stepCount: number; readonly hasSummary: boolean };
 };
-
-/** What autoscroll follows: anything that adds transcript content, including a
- *  queued turn being promoted to running (it mounts as a transcript turn then). */
-export function scrollSignatureOf(turns: readonly Turn[]): string {
-  return turns
-    .map(
-      (t) =>
-        `${t.status}:${t.steps.length}:${t.liveText.length}:${t.liveReasoning.length}:${t.summary ? 1 : 0}`,
-    )
-    .join("|");
-}
 
 export function UserBubble({ children }: { children: string }) {
   return (
@@ -183,6 +172,8 @@ const LiveThinking = memo(function LiveThinking({ text }: { text: string }) {
  * turn bails here instead of re-running buildTimeline per SSE animation frame. */
 const TurnBlock = memo(function TurnBlock({
   turn,
+  queuePosition,
+  onSendNow,
   childSessions,
   productChildren,
   onOpenProductChild,
@@ -193,8 +184,14 @@ const TurnBlock = memo(function TurnBlock({
   windowOwnsRunMarker = false,
   assistantIdentity,
   canonicalTimeline,
+  threadBusy = false,
 }: {
   turn: Turn;
+  /** 1-based place among this thread's queued turns (queued rendering only). */
+  queuePosition?: number;
+  onSendNow?: () => void;
+  /** A turn is running: a queued reply waits on it (otherwise only on admission). */
+  threadBusy?: boolean;
   /** Gateway approvals this run raised: pending is actionable, resolved is its record. */
   approvals?: readonly GatewayApproval[];
   onGatewayApprovalResolved?: () => void;
@@ -218,11 +215,8 @@ const TurnBlock = memo(function TurnBlock({
   canonicalTimeline: boolean;
 }) {
   const { run, steps, status, summary, live, liveText, liveReasoning } = turn;
-  // The steps a subagent ran render under its row in the fold below, never as
-  // the parent's own work: the same attribution the fold reads.
-  const childSteps = useChildSteps(turn);
   // One trace per turn: open while a plain thread's turn works, folded once it settled (and always for a bot).
-  const trace = turnTraceContext(turn, !assistantIdentity && live, childSteps);
+  const trace = turnTraceContext(turn, !assistantIdentity && live);
   // Capture whether this turn was streaming when it first mounted, so its
   // summary typewriters in on arrival but settled history renders instantly.
   const [wasLive] = useState(() => live);
@@ -284,6 +278,32 @@ const TurnBlock = memo(function TurnBlock({
   const timelineOwnsReasoning = timeline?.some((node) => node.kind === "reasoning") ?? false;
   const timelineReply = timeline ? splitTurn(timeline, live).reply : null;
 
+  // STANDARD queued rendering (matches opencode's steering-queue model): a
+  // follow-up sent while the thread is busy queues into the same session, and
+  // the UI shows ONLY the user's message with a queued tag - the assistant
+  // block materializes when processing starts. An empty assistant header for
+  // a queued turn read as broken (user report). "Send now" steering is a
+  // future control on top of the same queue.
+  if (status === "queued" && activity.length === 0 && !summary && !liveText) {
+    return (
+      <div
+        className="space-y-1"
+        data-testid="turn-block"
+        data-run-id={windowOwnsRunMarker ? undefined : run.id}
+      >
+        <UserBubble>{cleanPrompt(run.prompt)}</UserBubble>
+        <InboundAttachments uploads={run.uploads} />
+        <PermissionModeTag mode={run.permission_mode} />
+        <HandoffReceipts receipts={handoffs} />
+        <QueuedMessagePill
+          position={queuePosition ?? 1}
+          waitingOnCurrentRun={threadBusy}
+          onSendNow={onSendNow}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       className="space-y-4"
@@ -291,9 +311,9 @@ const TurnBlock = memo(function TurnBlock({
       data-run-id={windowOwnsRunMarker ? undefined : run.id}
     >
       <div className="space-y-2">
-        <TurnSender connector={run.connector} />
         <UserBubble>{cleanPrompt(run.prompt)}</UserBubble>
         <InboundAttachments uploads={run.uploads} />
+        <PermissionModeTag mode={run.permission_mode} />
         <HandoffReceipts receipts={handoffs} />
       </div>
 
@@ -369,7 +389,8 @@ const TurnBlock = memo(function TurnBlock({
             {failed && !summary && <FailedNote />}
 
             {/* Started but nothing streamed yet: the working state (queued
-                turns never reach here - they wait as rows above the composer). */}
+                turns never reach here - they early-return as a bare user
+                bubble above, per the opencode steering-queue standard). */}
             {!summary && !narrating && !failed && activity.length === 0 && status === "running" && (
               <span className="text-body-2-medium text-text-tertiary">Working…</span>
             )}
@@ -440,7 +461,6 @@ export const Conversation = memo(function Conversation({
   onGatewayApprovalResolved,
   sendNowFor,
   onSendNow,
-  onRemoveQueued,
   running,
   stopping,
   stopError,
@@ -494,13 +514,11 @@ export const Conversation = memo(function Conversation({
   gatewayApprovals?: readonly GatewayApproval[];
   /** Nudges the approvals fetch lane after a card resolves locally. */
   onGatewayApprovalResolved?: () => void;
-  /** Run id of the HEAD queued turn when a turn is running - that queued row gets
+  /** Run id of the HEAD queued turn when a turn is running - that bubble gets
    *  the "Send now" steering affordance (opencode's control on our harness). */
   sendNowFor?: string | null;
   onSendNow?: () => void;
-  /** Cancels a queued run before it starts; the row above the composer offers it. */
-  onRemoveQueued?: (runId: string) => Promise<void> | void;
-  /** A turn is running - the composer queues replies and shows the running footer. */
+  /** A turn is running - the composer send button becomes Stop while empty. */
   running?: boolean;
   stopping?: boolean;
   stopError?: string | null;
@@ -533,7 +551,12 @@ export const Conversation = memo(function Conversation({
   // to read history must never be yanked back down. `stick` flips on scroll.
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  const scrollSignature = scrollSignatureOf(turns);
+  const scrollSignature = turns
+    .map(
+      (t) =>
+        `${t.steps.length}:${t.liveText.length}:${t.liveReasoning.length}:${t.summary ? 1 : 0}`,
+    )
+    .join("|");
   const productChildSignature = productChildren
     .map((child) => `${child.threadId}:${child.status}:${child.latestActivityAt}`)
     .join("|");
@@ -595,9 +618,8 @@ export const Conversation = memo(function Conversation({
       byParent.set(parentId, entry.rows);
     }
     childRowsCacheRef.current = next;
-    // Queued turns wait as rows above the composer, not as transcript bubbles.
     return {
-      renderedTurns: turns.filter((t) => !folded.has(t.run.id) && t.status !== "queued"),
+      renderedTurns: turns.filter((t) => !folded.has(t.run.id)),
       childSessionsByParent: byParent,
     };
   }, [turns]);
@@ -612,6 +634,13 @@ export const Conversation = memo(function Conversation({
   }, [productChildren]);
   const durableHandoffs = useMemo(() => deriveHandoffReceipts(productChildren), [productChildren]);
 
+  // 1-based FIFO position per queued turn: the queued pill states the honest
+  // place in line (position 1 waits only on the running turn). Counted over the
+  // WHOLE serial queue - a queued gateway child ahead of a reply is real wait.
+  const queuedPositions = new Map(
+    turns.filter((t) => t.status === "queued").map((t, i) => [t.run.id, i + 1] as const),
+  );
+  const threadBusy = turns.some((t) => t.status === "running");
   const { byRun: approvalsByRun, orphans: orphanApprovals } = useMemo(
     () =>
       groupApprovalsByRun(
@@ -682,6 +711,8 @@ export const Conversation = memo(function Conversation({
             renderTurn={(turn, index, windowOwnsRunMarker) => (
               <TurnBlock
                 turn={turn}
+                queuePosition={queuedPositions.get(turn.run.id)}
+                onSendNow={turn.run.id === sendNowFor ? onSendNow : undefined}
                 childSessions={childSessionsByParent.get(turn.run.id)}
                 productChildren={productChildrenByParent.get(turn.run.id)}
                 onOpenProductChild={onOpenProductChild}
@@ -692,6 +723,7 @@ export const Conversation = memo(function Conversation({
                 windowOwnsRunMarker={windowOwnsRunMarker}
                 assistantIdentity={assistantIdentity}
                 canonicalTimeline={canonicalTimeline}
+                threadBusy={threadBusy}
               />
             )}
           />
@@ -720,6 +752,7 @@ export const Conversation = memo(function Conversation({
               onResolved={onGatewayApprovalResolved}
             />
           ))}
+          {pendingReply && <UserBubble>{pendingReply}</UserBubble>}
         </div>
         <MessageScrollerRail turns={renderedTurns} scrollRef={scrollRef} />
         <ScrollToEndPill scrollRef={scrollRef} />
@@ -746,10 +779,6 @@ export const Conversation = memo(function Conversation({
         stopError={stopError}
         onStop={onStop}
         runStartedAt={runStartedAt}
-        sendNowFor={sendNowFor}
-        onSendNow={onSendNow}
-        onRemoveQueued={onRemoveQueued}
-        productChildren={productChildren}
         threadError={threadError}
         onDismissThreadError={handleDismissThreadError}
         handoffNotice={handoffNotice}

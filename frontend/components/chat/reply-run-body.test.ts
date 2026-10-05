@@ -16,6 +16,13 @@ describe("replyRunBody", () => {
       commandCatalogRevision: null,
     };
     expect(replyRunBody(base)).toEqual({ prompt: "Do it", engine: "opencode", parent_run_id: "run-1", memory_scope: "org" });
+    expect(replyRunBody({ ...base, permissionMode: "read-only" })).toEqual({
+      prompt: "Do it",
+      engine: "opencode",
+      parent_run_id: "run-1",
+      memory_scope: "org",
+      permission_mode: "read-only",
+    });
 
     expect(
       replyRunBody({
