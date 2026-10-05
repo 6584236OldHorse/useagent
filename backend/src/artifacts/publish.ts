@@ -157,8 +157,8 @@ function assertNoInjectedSecretBytes(bytes: Uint8Array, redactionValues: readonl
 /** Best-effort Office->PDF preview attachment. For an Office binary, convert the
  * just-published file in the sandbox and store the PDF as a linked preview on the
  * SAME artifact; any failure is silent (download-only, as before) with one log
- * line. On a revision (`regenerate`), a fresh preview replaces the old one, and a
- * failed conversion clears the now-stale preview rather than leaving wrong bytes. */
+ * line. A source revision atomically invalidates its prior preview; conversion
+ * attaches only while that source SHA and workpiece revision are still current. */
 async function attachOfficePreview(
   input: {
     readonly orgId: string;
@@ -168,15 +168,9 @@ async function attachOfficePreview(
   },
   opts: { readonly regenerate: boolean },
 ): Promise<ArtifactRecord> {
-  const clearStale = async (): Promise<ArtifactRecord> => {
-    if (!opts.regenerate || !input.record.previewStorageKey) return input.record;
-    return (await updateArtifactPreview({
-      orgId: input.orgId,
-      id: input.record.id,
-      previewStorageKey: null,
-    })) ?? input.record;
-  };
-  if (!isOfficePreviewContentType(input.record.contentType)) return clearStale();
+  const currentRecord = async (): Promise<ArtifactRecord> =>
+    (await getArtifactForOrg(input.orgId, input.record.id)) ?? input.record;
+  if (!isOfficePreviewContentType(input.record.contentType)) return input.record;
   if (!opts.regenerate && input.record.previewStorageKey) return input.record;
 
   const pdf = await convertOfficeToPdf({
@@ -189,7 +183,7 @@ async function attachOfficePreview(
     console.log(
       `[office-preview] no PDF preview for artifact ${input.record.id} (${input.record.name})`,
     );
-    return clearStale();
+    return currentRecord();
   }
   const previewKey = createHash("sha256").update(pdf).digest("hex");
   const attached = await withArtifactStorageKeyLock(previewKey, async (tx) => {
@@ -197,11 +191,13 @@ async function attachOfficePreview(
     return updateArtifactPreview({
       orgId: input.orgId,
       id: input.record.id,
+      expectedSha256: input.record.sha256,
+      expectedWorkpieceRevision: input.record.workpieceRevision,
       previewStorageKey: previewKey,
       exec: tx,
     });
   });
-  return attached ?? input.record;
+  return attached ?? currentRecord();
 }
 
 const IMPORT_IMAGE_EXTENSION: Readonly<Record<string, string>> = {
@@ -455,20 +451,26 @@ export async function publishSandboxArtifact(input: {
       { regenerate: true },
     );
     const descriptor = toArtifactDescriptor(revisedWithPreview);
+    // A stale conversion may return the latest row for the caller, but it must
+    // not publish another operation's revision event under this run's identity.
+    const eventRecord = revisedWithPreview.sha256 === revised.sha256 &&
+        revisedWithPreview.workpieceRevision === revised.workpieceRevision
+      ? revisedWithPreview
+      : revised;
     await recordProviderEventIfAbsent({
-      id: `artifact.revised:${revisedWithPreview.id}:${revisedWithPreview.workpieceRevision}`,
+      id: `artifact.revised:${revised.id}:${revised.workpieceRevision}`,
       runId: run.id,
       threadId: run.threadId,
       provider: "skynet",
       eventType: "artifact.revised",
-      payload: descriptor,
+      payload: toArtifactDescriptor(eventRecord),
     });
     publishOrgChange(input.orgId, {
       type: "artifact",
       action: "updated",
-      artifactId: revisedWithPreview.id,
-      runId: revisedWithPreview.runId,
-      threadId: revisedWithPreview.threadId,
+      artifactId: eventRecord.id,
+      runId: eventRecord.runId,
+      threadId: eventRecord.threadId,
     });
     return { artifact: descriptor, record: revisedWithPreview, created: false };
   }
@@ -518,13 +520,17 @@ export async function publishSandboxArtifact(input: {
     { regenerate: false },
   );
   const descriptor = toArtifactDescriptor(record);
+  const eventRecord = record.sha256 === stored.row.sha256 &&
+      record.workpieceRevision === stored.row.workpieceRevision
+    ? record
+    : stored.row;
   await recordProviderEventIfAbsent({
-    id: `artifact.created:${record.id}`,
+    id: `artifact.created:${stored.row.id}`,
     runId: run.id,
     threadId: run.threadId,
     provider: "skynet",
     eventType: "artifact.created",
-    payload: descriptor,
+    payload: toArtifactDescriptor(eventRecord),
   });
   if (stored.created) {
     publishOrgChange(input.orgId, {
