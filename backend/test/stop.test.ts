@@ -90,17 +90,21 @@ describe("stop reaches delegated threads", () => {
     expect((await record(parent)).status).toBe("queued");
   });
 
-  test("a stopped turn cannot delegate afterwards", async () => {
+  test("a stopped turn cannot delegate afterwards, but a batch it created still replays", async () => {
     const parent = await root();
-    await stopRun({ orgId: ORG, actorId: null, runId: parent });
-    await expect(acceptProductChildBatch({
+    const batch = {
       orgId: ORG,
       actorId: null,
       parentRunId: parent,
       parentThreadId: parent,
-      idempotencyKey: "after-stop",
-      children: [{ title: "late child", prompt: "p", engine: null, model: null }],
-    })).rejects.toThrow("stopped");
+      children: [{ title: "child", prompt: "p", engine: null, model: null }],
+    };
+    const before = await acceptProductChildBatch({ ...batch, idempotencyKey: "before-stop" });
+    expect(before.status).toBe("created");
+
+    expect((await stopRun({ orgId: ORG, actorId: null, runId: parent })).status).toBe("cancelling");
+    await expect(acceptProductChildBatch({ ...batch, idempotencyKey: "after-stop" })).rejects.toThrow("stopped");
+    expect((await acceptProductChildBatch({ ...batch, idempotencyKey: "before-stop" })).status).toBe("replayed");
   });
 
   test("a repeated Stop replays without counting children twice", async () => {

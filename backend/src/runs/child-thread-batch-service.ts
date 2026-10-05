@@ -1,4 +1,3 @@
-import { hasRunCancelIntent } from "../commands/cancel";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { childThreadBatchItems, childThreadBatches, type EngineId } from "../db/schema";
@@ -81,7 +80,6 @@ export async function acceptProductChildBatch(input: {
   }
   const parent = await getRunForOrg(input.orgId, input.parentRunId);
   if (!parent || parent.threadId !== input.parentThreadId) throw new Error("child batch parent unavailable");
-  if (await hasRunCancelIntent(input.orgId, input.parentRunId)) throw new Error("child batch parent was stopped");
   await ensureEligiblePublicRootThreadRelationship({ orgId: input.orgId, threadId: input.parentThreadId });
   const relationship = await getThreadRelationship(input.orgId, input.parentThreadId);
   if (!relationship) throw new Error("child batch parent relationship unavailable");

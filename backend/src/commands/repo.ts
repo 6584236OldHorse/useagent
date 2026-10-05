@@ -1,4 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { DelegationStoppedError, hasRunCancelIntent } from "./cancel";
 import { db, type Executor } from "../db/client";
 import { bots, commands, runs, type CommandState } from "../db/schema";
 import { createRun } from "../runs/repo";
@@ -116,6 +117,13 @@ export async function insertCommandWithRun(
       if (stamped.length === 0) throw new BotHomeThreadTakenError();
     }
     if (cmd.threadRelationship) {
+      if (cmd.threadRelationship.kind === "delegated" && cmd.threadRelationship.parentThreadId) {
+        // Under the parent thread's lock, the same one a Stop takes: a turn
+        // that was stopped cannot delegate afterwards. Explicit continuation
+        // by a person is not delegation and is not refused.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${cmd.orgId}), hashtext(${cmd.threadRelationship.parentThreadId}))`);
+        if (await hasRunCancelIntent(cmd.orgId, cmd.threadRelationship.sourceRunId, tx)) throw new DelegationStoppedError();
+      }
       await insertThreadRelationship({
         orgId: cmd.orgId,
         threadId: cmd.run.threadId,

@@ -9,7 +9,7 @@ import {
 } from "../db/schema";
 import { isMemoryScope } from "../memory/scope";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
-import { isReservedBotHandoffKey } from "../bots/handoff-keys";
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
 import {
   getRun,
@@ -293,7 +293,7 @@ export async function handleRunCreate(
   }
 
   const idempotencyKey = c.req.header("Idempotency-Key")?.trim() || null;
-  if (!options.origin && idempotencyKey && isReservedBotHandoffKey(idempotencyKey)) {
+  if (!options.origin && idempotencyKey && isReservedIdempotencyKey(idempotencyKey)) {
     return c.json({ error: "reserved_idempotency_key" }, 400);
   }
   const intent: RunCommandIntent = {

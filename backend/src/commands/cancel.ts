@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../db/client";
+import { db, type Executor } from "../db/client";
 import { isUniqueViolation } from "../db/pg-errors";
 import { commands, runs, type RunStatus } from "../db/schema";
 import { setAdmissionState } from "../fleet/admission-repo";
@@ -32,7 +32,16 @@ import { RUN_CANCEL, RUN_CREATE } from "./repo";
 export const CANCEL_SUMMARY = "Stopped by user";
 
 /** Synthetic per-run idempotency key so a repeated Stop is a no-op replay. */
-export const cancelKey = (runId: string): string => `cancel:${runId}`;
+export const CANCEL_KEY_PREFIX = "cancel:";
+export const cancelKey = (runId: string): string => `${CANCEL_KEY_PREFIX}${runId}`;
+
+/** Thrown where delegation is recorded when the turn delegating was already stopped. */
+export class DelegationStoppedError extends Error {
+  constructor() {
+    super("the turn that delegated this work was stopped");
+    this.name = "DelegationStoppedError";
+  }
+}
 
 export type CancelOutcome =
   /** Cancel newly recorded. `runStatusWas` tells the caller whether to signal a
@@ -79,6 +88,10 @@ export async function acceptRunCancel(input: {
       if (run.status === "completed" || run.status === "failed") {
         return { status: "terminal" as const, runStatus: run.status };
       }
+      // Delegation from this thread takes the same lock before it records a
+      // child, so a child is either visible to the stop that follows or
+      // refused by the intent this transaction commits.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.orgId}), hashtext(${run.threadId}))`);
 
       // Durable intent record, written already-completed (never stuck).
       await tx.insert(commands).values({
@@ -137,16 +150,21 @@ export async function acceptRunCancel(input: {
 }
 
 /** The thread of an existing run.cancel for this run, or null. */
-async function findCancel(orgId: string, runId: string): Promise<string | null> {
-  const [row] = await db
+async function findCancel(orgId: string, runId: string, exec: Executor = db): Promise<string | null> {
+  const [row] = await exec
     .select({ threadId: commands.threadId })
     .from(commands)
-    .where(and(eq(commands.orgId, orgId), eq(commands.idempotencyKey, cancelKey(runId))))
+    .where(and(
+      eq(commands.orgId, orgId),
+      eq(commands.idempotencyKey, cancelKey(runId)),
+      eq(commands.kind, RUN_CANCEL),
+      eq(commands.runId, runId),
+    ))
     .limit(1);
   return row ? (row.threadId ?? "") : null;
 }
 
 /** Whether the trusted command lane already committed a stop for this run. */
-export async function hasRunCancelIntent(orgId: string, runId: string): Promise<boolean> {
-  return (await findCancel(orgId, runId)) !== null;
+export async function hasRunCancelIntent(orgId: string, runId: string, exec: Executor = db): Promise<boolean> {
+  return (await findCancel(orgId, runId, exec)) !== null;
 }
