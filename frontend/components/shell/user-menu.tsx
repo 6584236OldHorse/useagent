@@ -1,7 +1,14 @@
 "use client";
 
-import { OrganizationSwitcher, useAuth } from "@clerk/nextjs";
-import { RiApps2Line, RiLoginBoxLine, RiLogoutBoxRLine, RiSettings3Line } from "@remixicon/react";
+import { useAuth, useOrganizationList, useUser } from "@clerk/nextjs";
+import {
+  RiApps2Line,
+  RiBuilding4Line,
+  RiCheckLine,
+  RiLoginBoxLine,
+  RiLogoutBoxRLine,
+  RiSettings3Line,
+} from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState } from "react";
 import { Avatar } from "@/components/base/avatar/avatar";
@@ -18,26 +25,73 @@ import { legacyAuthEnabled } from "@/lib/auth-mode";
 
 /**
  * Account affordance in the sidebar clusters: an avatar that opens a BoardUI
- * base dropdown menu - identity header, Settings / Apps, sign-in/out. Identity is
- * the backend-normalized session from lib/auth.ts. Theme switching lives in
- * the shell ThemeMenu, not here.
+ * base dropdown menu - identity header, workspace picker, Settings / Apps,
+ * sign-in/out. Managed identity comes directly from the provider; legacy auth
+ * keeps using the backend-normalized session. Theme switching lives in the
+ * shell ThemeMenu, not here.
  */
+export interface UserMenuProfile {
+  readonly name: string;
+  readonly email: string;
+  readonly image: string | null;
+  readonly loaded: boolean;
+  readonly signedIn: boolean;
+}
+
 interface UserMenuProps {
   /** A custom trigger (the sidebar footer card) instead of the bare avatar. */
-  trigger?: ReactNode;
+  trigger?: ReactNode | ((profile: UserMenuProfile) => ReactNode);
 }
 
 export function UserMenu(props: UserMenuProps = {}) {
-  return legacyAuthEnabled ? <UserMenuView {...props} /> : <ManagedUserMenu {...props} />;
+  return legacyAuthEnabled ? <LegacyUserMenu {...props} /> : <ManagedUserMenu {...props} />;
 }
 
 function ManagedUserMenu({ trigger }: UserMenuProps) {
-  const { isLoaded, signOut: endSession, userId } = useAuth();
+  const { isLoaded: authLoaded, orgId, signOut: endSession } = useAuth();
+  const { isLoaded: userLoaded, isSignedIn, user } = useUser();
+  const { loading: workspaceLoading, session: workspaceSession } = useSession();
+  const organizations = useOrganizationList({ userMemberships: { pageSize: 100 } });
+  const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
+  const profile = managedUserProfile({
+    isLoaded: authLoaded && userLoaded,
+    isSignedIn,
+    user,
+  });
+  const workspaces = (organizations.userMemberships.data ?? [])
+    .map((membership) => ({
+      id: membership.organization.id,
+      name: membership.organization.name,
+      active: membership.organization.id === orgId,
+    }))
+    .sort(
+      (left, right) =>
+        Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
+    );
   return (
     <UserMenuView
       trigger={trigger}
-      providerLoaded={isLoaded}
-      providerUserId={userId}
+      profile={profile}
+      workspaces={profile.signedIn ? workspaces : undefined}
+      workspacesLoaded={organizations.isLoaded}
+      workspaceAccessError={
+        workspaceSwitchError ??
+        (organizations.userMemberships.isError
+          ? "Could not load workspaces"
+          : profile.signedIn && !workspaceLoading && !workspaceSession
+            ? "Workspace access unavailable"
+            : null)
+      }
+      onSelectWorkspace={async (organization) => {
+        if (!organizations.setActive || organization === orgId) return;
+        setWorkspaceSwitchError(null);
+        try {
+          await organizations.setActive({ organization });
+          invalidateSession();
+        } catch {
+          setWorkspaceSwitchError("Could not switch workspace");
+        }
+      }}
       onSignOut={async () => {
         await endSession();
         invalidateSession();
@@ -46,30 +100,81 @@ function ManagedUserMenu({ trigger }: UserMenuProps) {
   );
 }
 
+export function managedUserProfile(input: {
+  readonly isLoaded: boolean;
+  readonly isSignedIn: boolean | undefined;
+  readonly user:
+    | {
+        readonly fullName: string | null;
+        readonly primaryEmailAddress: { readonly emailAddress: string } | null;
+        readonly imageUrl: string;
+      }
+    | null
+    | undefined;
+}): UserMenuProfile {
+  if (!input.isLoaded) {
+    return {
+      name: "Account",
+      email: "Loading account...",
+      image: null,
+      loaded: false,
+      signedIn: false,
+    };
+  }
+  if (!input.isSignedIn || !input.user) {
+    return { name: "Guest", email: "Not signed in", image: null, loaded: true, signedIn: false };
+  }
+  const email = input.user.primaryEmailAddress?.emailAddress ?? "Signed in";
+  return {
+    name: input.user.fullName?.trim() || email,
+    email,
+    image: input.user.imageUrl || null,
+    loaded: true,
+    signedIn: true,
+  };
+}
+
+function LegacyUserMenu(props: UserMenuProps) {
+  const { session } = useSession();
+  const signedIn = session !== null;
+  const email = session?.user.email ?? "Not signed in";
+  return (
+    <UserMenuView
+      {...props}
+      profile={{
+        name: session?.user.name?.trim() || session?.user.email || "Guest",
+        email,
+        image: session?.user.image ?? null,
+        loaded: true,
+        signedIn,
+      }}
+    />
+  );
+}
+
 function UserMenuView({
   trigger,
-  providerLoaded,
-  providerUserId,
+  profile,
+  workspaces,
+  workspacesLoaded = true,
+  workspaceAccessError,
+  onSelectWorkspace,
   onSignOut = signOut,
 }: UserMenuProps & {
-  providerLoaded?: boolean;
-  providerUserId?: string | null;
+  profile: UserMenuProfile;
+  workspaces?: readonly { readonly id: string; readonly name: string; readonly active: boolean }[];
+  workspacesLoaded?: boolean;
+  workspaceAccessError?: string | null;
+  onSelectWorkspace?: (organization: string) => Promise<void>;
   onSignOut?: () => Promise<void>;
 }) {
   const router = useRouter();
-  const { session } = useSession();
   const [open, setOpen] = useState(false);
-  const managed = providerLoaded !== undefined;
-  const signedIn = managed ? providerLoaded && Boolean(providerUserId) : session !== null;
-  const showSignOut = managed ? !providerLoaded || signedIn : signedIn;
-  const signOutDisabled = managed && (!providerLoaded || !signedIn);
-
-  const name =
-    session?.user.name?.trim() || session?.user.email || (showSignOut ? "Account" : "Guest");
-  const email =
-    session?.user.email ?? (showSignOut ? "Workspace session unavailable" : "Not signed in");
-  const image = session?.user.image ?? null;
+  const showSignOut = !profile.loaded || profile.signedIn;
+  const signOutDisabled = !profile.loaded || !profile.signedIn;
+  const { name, email, image } = profile;
   const initial = (name.charAt(0) || "?").toUpperCase();
+  const triggerNode = typeof trigger === "function" ? trigger(profile) : trigger;
 
   async function handleSignOut() {
     if (signOutDisabled) return;
@@ -90,10 +195,10 @@ function UserMenuView({
         aria-label="Open account menu"
         aria-haspopup="menu"
         className={
-          trigger ? "w-full rounded-lg text-left" : "rounded-full focus-visible:ring-offset-2"
+          triggerNode ? "w-full rounded-lg text-left" : "rounded-full focus-visible:ring-offset-2"
         }
       >
-        {trigger ?? (
+        {triggerNode ?? (
           <Avatar size="md" color="pink" src={image ?? undefined} alt={name} initials={initial} />
         )}
       </DropdownTrigger>
@@ -117,22 +222,53 @@ function UserMenuView({
                 <p className="truncate text-caption-1-regular text-text-secondary">{email}</p>
               </div>
             </div>
-            {managed && signedIn ? (
-              <OrganizationSwitcher
-                appearance={{
-                  elements: {
-                    rootBox: "w-full px-2 pb-1.5",
-                    organizationSwitcherTrigger:
-                      "w-full rounded-lg border border-border-button-default bg-background-tertiary-default",
-                  },
-                }}
-                hidePersonal
-              />
+            {workspaces ? (
+              <div className="px-2 pt-1">
+                <p className="text-caption-1-medium text-text-tertiary">Workspace</p>
+                {workspaceAccessError ? (
+                  <p className="text-caption-1-regular text-text-error-primary" role="alert">
+                    {workspaceAccessError}
+                  </p>
+                ) : null}
+              </div>
             ) : null}
             <DropdownDivider />
           </>
         }
       >
+        {workspaces ? (
+          workspacesLoaded && workspaces.length > 0 ? (
+            workspaces.map((workspace) => (
+              <DropdownMenuItem
+                key={workspace.id}
+                id={`workspace-${workspace.id}`}
+                textValue={workspace.name}
+                onAction={() => void onSelectWorkspace?.(workspace.id)}
+              >
+                <RiBuilding4Line
+                  className="size-5 shrink-0 text-foreground-icon-secondary"
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate text-body-2-medium">{workspace.name}</span>
+                {workspace.active ? (
+                  <>
+                    <RiCheckLine
+                      className="size-4 shrink-0 text-foreground-icon-primary"
+                      aria-hidden
+                    />
+                    <span className="sr-only">Selected</span>
+                  </>
+                ) : null}
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem id="workspace-status" textValue="Workspace status" isDisabled>
+              <span className="text-caption-1-regular text-text-tertiary">
+                {workspacesLoaded ? "No workspaces available" : "Loading workspaces..."}
+              </span>
+            </DropdownMenuItem>
+          )
+        ) : null}
         <DropdownMenuItem id="settings" textValue="Settings" onAction={() => go("/settings")}>
           <RiSettings3Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
           <span className="text-body-2-medium">Settings</span>
