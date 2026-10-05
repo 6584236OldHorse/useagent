@@ -13,6 +13,7 @@ import {
   upsertDiscoveredFreeModelCandidates,
 } from "../src/runs/free-model-registry-repo";
 import { insertCommandWithRun } from "../src/commands/repo";
+import { pruneVanishedFreeModels } from "../src/runs/free-model-lane-prune";
 
 const SEED_MODELS = [
   "minimax/minimax-m3:free",
@@ -540,5 +541,57 @@ describe("free model registry repository", () => {
     const after = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
     expect(after?.generation).toBe(before.generation + 1);
     expect(after?.currentModelIds).toEqual(before.currentModelIds);
+  });
+});
+
+describe("free lane prune on the real publish path", () => {
+  const prune = (catalog: string[]) =>
+    pruneVanishedFreeModels({
+      catalogIds: async () => new Set(catalog),
+      loadLane: () => loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb),
+      publish: (input) => publishFreeModelLane(input, testDb),
+      adopt: () => {},
+    });
+
+  test("a model gone from the catalog leaves both lanes and its advert, and the generation bumps", async () => {
+    const before = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
+    const result = await prune(["dots-studio/dots-3-note-preview:free", "nvidia/nemotron-3-super-120b-a12b:free"]);
+    expect(result).toMatchObject({ outcome: "pruned", removed: ["minimax/minimax-m3:free"] });
+    const after = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
+    expect(after?.generation).toBe((before?.generation ?? 0) + 1);
+    expect(after?.currentModelIds).toEqual(["dots-studio/dots-3-note-preview:free", "nvidia/nemotron-3-super-120b-a12b:free"]);
+    expect(after?.lastGoodModelIds).toEqual(after?.currentModelIds);
+    const [gone] = await client.unsafe(`select advertised from free_model_candidates where model_id = 'minimax/minimax-m3:free'`);
+    expect(gone?.advertised).toBe(false);
+  });
+
+  test("a qualifier publish between the read and the write is not overwritten", async () => {
+    const stale = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
+    if (!stale) throw new Error("expected seeded lane");
+    await publishFreeModelLane({ modelIds: [...SEED_MODELS], expectedGeneration: stale.generation }, testDb);
+    await expect(pruneVanishedFreeModels({
+      catalogIds: async () => new Set(["dots-studio/dots-3-note-preview:free"]),
+      loadLane: async () => stale,
+      publish: (input) => publishFreeModelLane(input, testDb),
+      adopt: () => {},
+    })).rejects.toThrow("free_model_publish_generation_conflict");
+    const after = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
+    expect(after?.generation).toBe(stale.generation + 1);
+    expect(after?.currentModelIds).toEqual([...SEED_MODELS]);
+  });
+
+  test("an unusable catalog read leaves the row untouched", async () => {
+    const before = await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb);
+    const result = await pruneVanishedFreeModels({
+      catalogIds: async () => null,
+      loadLane: () => loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb),
+      publish: (input) => publishFreeModelLane(input, testDb),
+      adopt: () => {},
+    });
+    expect(result).toEqual({ outcome: "catalog_unavailable" });
+    expect(await loadCurrentFreeModelLane(FREE_MODEL_LANE, testDb)).toMatchObject({
+      generation: before?.generation,
+      currentModelIds: before?.currentModelIds,
+    });
   });
 });
