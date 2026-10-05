@@ -114,7 +114,9 @@ function DesktopConnection({ bridge }: { readonly bridge: UseAgentDesktopBridge 
       .then((value) => {
         if (!cancelled) setStatus(value);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setError("Could not read runner status. Refresh the page to retry.");
+      });
     return () => {
       cancelled = true;
     };

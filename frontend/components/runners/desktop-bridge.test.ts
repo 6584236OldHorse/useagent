@@ -33,6 +33,10 @@ describe("desktop runner platform", () => {
   });
 
   test("does not reconnect a runner that is starting, pulling, or online", () => {
+    expect(runnerConnectionAction(null, "darwin")).toEqual({
+      active: true,
+      label: "Checking runner",
+    });
     expect(runnerConnectionAction({ state: "starting" }, "darwin").active).toBe(true);
     expect(runnerConnectionAction({ state: "pulling" }, "darwin").active).toBe(true);
     expect(runnerConnectionAction({ state: "online" }, "darwin")).toEqual({

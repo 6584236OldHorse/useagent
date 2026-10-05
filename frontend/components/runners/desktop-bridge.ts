@@ -60,6 +60,7 @@ export function runnerConnectionAction(
   status: DesktopRunnerStatus | null,
   platform: UseAgentDesktopBridge["platform"],
 ): { active: boolean; label: string } {
+  if (!status) return { active: true, label: "Checking runner" };
   return {
     active:
       status?.state === "starting" || status?.state === "pulling" || status?.state === "online",
