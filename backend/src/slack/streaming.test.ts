@@ -13,12 +13,31 @@ import {
   markdownChunksFor,
   openingStreamChunks,
   planUpdateFromStep,
-  runningTaskChunk,
   statusTextForStep,
   stepProgressChunks,
+  taskSourcesField,
   taskUpdateChunk,
+  TERMINAL_CARD_BUDGET,
   terminalTaskChunks,
+  toolTaskChunk,
 } from "./streaming";
+
+/** A durable step row as the bus carries it; code_json is the T3 projection. */
+function step(input: {
+  id?: string;
+  kind?: string;
+  label: string;
+  chip?: string | null;
+  code?: Record<string, unknown> | null;
+}) {
+  return {
+    id: input.id ?? "s1",
+    kind: input.kind ?? "command",
+    label: input.label,
+    chip: input.chip ?? null,
+    code_json: input.code === null ? null : JSON.stringify(input.code ?? {}),
+  };
+}
 
 describe("wire chunk shapes (documented contract)", () => {
   test("task_update is FLAT: id/title/status at the top level, no nesting", () => {
@@ -60,32 +79,115 @@ describe("wire chunk shapes (documented contract)", () => {
   });
 });
 
-describe("stepProgressChunks (start/complete pairing)", () => {
-  test("the first step starts its task only", () => {
-    const { chunks, next } = stepProgressChunks(null, { id: "s1", label: "Cloning repo" });
-    expect(chunks).toEqual([
-      { type: "task_update", id: "step_s1", title: "Cloning repo", status: "in_progress" },
-    ]);
-    expect(next).toEqual({ id: "s1", label: "Cloning repo" });
+describe("toolTaskChunk (one card per tool call, chatter never)", () => {
+  test("runtime chatter and the done marker are not cards", () => {
+    expect(toolTaskChunk(step({ kind: "task", label: "Preparing context and runtime…", chip: "boot", code: { phase: "preparing" } }))).toBeNull();
+    expect(toolTaskChunk(step({ kind: "task", label: "Waiting for provider activity…", chip: "runtime:claude", code: null }))).toBeNull();
+    expect(
+      toolTaskChunk(step({ kind: "task", label: "Context window updated", chip: "thread.context.updated", code: { source: "t3", activityKind: "thread.context.updated" } })),
+    ).toBeNull();
+    expect(toolTaskChunk(step({ kind: "done", label: "Done", code: null }))).toBeNull();
   });
 
-  test("a NEW step completes the previous task and starts its own", () => {
-    const { chunks } = stepProgressChunks({ id: "s1", label: "Cloning repo" }, { id: "s2", label: "Running tests" });
-    expect(chunks).toEqual([
-      { type: "task_update", id: "step_s1", title: "Cloning repo", status: "complete" },
-      { type: "task_update", id: "step_s2", title: "Running tests", status: "in_progress" },
-    ]);
+  test("plan rows travel as plan_update, never as a card", () => {
+    expect(
+      toolTaskChunk(step({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } })),
+    ).toBeNull();
+    expect(toolTaskChunk(step({ kind: "command", label: "todos", chip: "tool", code: { tool: "todowrite", input: { todos: [] } } }))).toBeNull();
   });
 
-  test("an in-place enrichment of the SAME step never completes itself", () => {
-    const { chunks } = stepProgressChunks({ id: "s1", label: "Cloning repo" }, { id: "s1", label: "Cloning repo (done)" });
-    expect(chunks).toEqual([
-      { type: "task_update", id: "step_s1", title: "Cloning repo (done)", status: "in_progress" },
-    ]);
+  test("a web search revises ONE card in place: started, then complete with its sources", () => {
+    const search = (activityKind: string, output?: string) =>
+      step({
+        id: "call_1",
+        label: "Web search started",
+        chip: "search",
+        code: { source: "t3", activityKind, tool: "web_search", input: { query: "bun test timeout" }, ...(output ? { output } : {}), error: false },
+      });
+    expect(toolTaskChunk(search("tool.started"))).toEqual({
+      type: "task_update",
+      id: "step_call_1",
+      title: "Searched the web",
+      status: "in_progress",
+      details: "bun test timeout",
+    });
+    const done = toolTaskChunk(search("tool.completed", "Results:\nhttps://bun.sh/docs/cli/test\nhttps://bun.sh/docs/cli/test (again)\n"));
+    expect(done).toEqual({
+      type: "task_update",
+      id: "step_call_1",
+      title: "Searched the web",
+      status: "complete",
+      details: "bun test timeout",
+      output: "Results:",
+      sources: [{ type: "url", text: "https://bun.sh/docs/cli/test", url: "https://bun.sh/docs/cli/test" }],
+    });
   });
 
-  test("runningTaskChunk namespaces the step id", () => {
-    expect(runningTaskChunk({ id: "abc", label: "Editing" }).id).toBe("step_abc");
+  test("the verb table matches the web UI's tool rows", () => {
+    const t3 = (tool: string, input: Record<string, unknown>, kind = "command") =>
+      toolTaskChunk(step({ kind, label: tool, code: { source: "t3", activityKind: "tool.started", tool, input } }));
+    expect(t3("memory_search", { query: "release notes" })).toMatchObject({ title: "Recalled memory", details: "release notes" });
+    expect(t3("bash", { command: "bun test\n--bail" })).toMatchObject({ title: "Ran a command", details: "bun test" });
+    expect(t3("edit", { file_path: "src/app.ts" }, "file")).toMatchObject({ title: "Edited a file", details: "src/app.ts" });
+    expect(t3("read", { path: "README.md" })).toMatchObject({ title: "Read a file", details: "README.md" });
+    // The gateway bridge names the real tool inside the input.
+    expect(t3("execute", { name: "web_fetch", arguments: { url: "https://x.dev" } })).toMatchObject({ title: "Fetched a page", details: "https://x.dev" });
+    // An uncatalogued tool keeps its own label.
+    expect(t3("mcp.useagent.deploy", { name: "prod" })).toMatchObject({ title: "mcp.useagent.deploy", status: "in_progress" });
+  });
+
+  test("a failed call is an error card; a legacy step completes once it has output", () => {
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: "boom", error: true } }))).toMatchObject({ status: "error" });
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" } } }))).toMatchObject({ status: "in_progress" });
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: '{"stdout":"ok"}' } }))).toMatchObject({ status: "complete" });
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", output: '{"stdout":"ok"}' } }))?.output).toBeUndefined();
+    // The native bridge completes a call by landing its output key, even empty.
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: "", error: false } }))).toMatchObject({ status: "complete" });
+  });
+
+  test("sources keep brackets that belong to the URL, shed the ones that wrapped it, and drop what the URL parser rejects", () => {
+    const output = [
+      "see (https://bun.sh/docs).",
+      "local [http://[::1]:3000/health],",
+      "[https://x.dev/a]",
+      "{https://example.com/a}",
+      "wiki https://w.org/Foo_(bar)",
+      "broken https://%zz",
+      "dup https://bun.sh/docs",
+    ].join(" ");
+    const chunk = toolTaskChunk(step({ label: "web_search", code: { tool: "web_search", input: { query: "q" }, output } }));
+    expect(chunk?.sources?.map((s) => s.url)).toEqual([
+      "https://bun.sh/docs",
+      "http://[::1]:3000/health",
+      "https://x.dev/a",
+      "https://example.com/a",
+      "https://w.org/Foo_(bar)",
+    ]);
+    expect(taskSourcesField([{ type: "url", text: "x", url: "http://[::1" }, { type: "url", text: "ok", url: "https://ok.dev" }])).toEqual({
+      sources: [{ type: "url", text: "ok", url: "https://ok.dev" }],
+    });
+  });
+});
+
+describe("stepProgressChunks (open card pairing)", () => {
+  const running = (id: string): ReturnType<typeof taskUpdateChunk> => taskUpdateChunk({ id, title: "Ran a command", status: "in_progress" });
+
+  test("a new call completes the open card of an engine that never sends completions", () => {
+    const first = stepProgressChunks(null, running("step_a"));
+    expect(first.chunks).toEqual([running("step_a")]);
+    const second = stepProgressChunks(first.open, running("step_b"));
+    expect(second.chunks).toEqual([{ ...running("step_a"), status: "complete" }, running("step_b")]);
+    expect(second.open?.id).toBe("step_b");
+  });
+
+  test("a revision of the open card and a completion of another card leave it open", () => {
+    const open = running("step_b");
+    expect(stepProgressChunks(open, { ...open, output: "line" }).chunks).toEqual([{ ...open, output: "line" }]);
+    const other = { ...running("step_a"), status: "complete" as const };
+    const result = stepProgressChunks(open, other);
+    expect(result.chunks).toEqual([other]);
+    expect(result.open).toBe(open);
+    expect(stepProgressChunks(open, { ...open, status: "complete" }).open).toBeNull();
   });
 });
 
@@ -129,21 +231,59 @@ describe("planUpdateFromStep", () => {
 });
 
 describe("terminalTaskChunks", () => {
-  test("completes the last tool task and the root task", () => {
+  test("closes an open tool card, restates a settled one as is, then the root task", () => {
+    const settled = taskUpdateChunk({ id: "step_s8", title: "Searched the web", status: "complete", sources: ["https://bun.sh"] });
     const chunks = terminalTaskChunks({
       phase: "completed",
       title: "Build the thing",
-      lastStep: { id: "s9", label: "Final checks" },
+      cards: [settled, taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" })],
     });
     expect(chunks).toEqual([
-      { type: "task_update", id: "step_s9", title: "Final checks", status: "complete" },
+      settled,
+      { type: "task_update", id: "step_s9", title: "Ran a command", status: "complete" },
       { type: "task_update", id: "run", title: "Build the thing", status: "complete" },
     ]);
   });
 
-  test("a failed run settles its tasks as error", () => {
-    const chunks = terminalTaskChunks({ phase: "failed", title: "Build", lastStep: null });
-    expect(chunks).toEqual([{ type: "task_update", id: "run", title: "Run failed", status: "error" }]);
+  test("the restatement stays within its budget: newest cards first, every card past it still closes bare", () => {
+    const big = (id: string, status: "in_progress" | "complete" | "error") =>
+      taskUpdateChunk({ id, title: "Searched the web", status, sources: [`https://x.dev/${"a".repeat(400)}`] });
+    const cards = [big("step_1", "in_progress"), big("step_2", "error"), big("step_3", "complete")];
+    // One card is ~950 chars of JSON: the budget fits exactly the newest one.
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards, budget: 1_000 })).toEqual([
+      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
+      { type: "task_update", id: "step_2", title: "Searched the web", status: "error" },
+      big("step_3", "complete"),
+      { type: "task_update", id: "run", title: "T", status: "complete" },
+    ]);
+  });
+
+  test("a card streamed in_progress whose oversized completion was fenced still closes at stop", () => {
+    // Slack saw the card spinning live; the completion append (five long
+    // sources) landed right before finalization and was fenced, so the stop
+    // is the only place left for the card to settle - complete, not dropped.
+    const sources = [1, 2, 3, 4, 5].map((k) => `https://x.dev/${k}/${"a".repeat(3_700)}`);
+    const done = taskUpdateChunk({ id: "step_1", title: "Searched the web", status: "complete", sources });
+    expect(JSON.stringify(done).length).toBeGreaterThan(TERMINAL_CARD_BUDGET);
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [done] })).toEqual([
+      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
+      { type: "task_update", id: "run", title: "T", status: "complete" },
+    ]);
+    const failed = taskUpdateChunk({ id: "step_2", title: "Ran a command", status: "error", sources });
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [failed] })[0]).toEqual(
+      { type: "task_update", id: "step_2", title: "Ran a command", status: "error" },
+    );
+  });
+
+  test("a failed run settles open cards and the root task as error", () => {
+    const open = taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" });
+    expect(terminalTaskChunks({ phase: "failed", title: "Build", cards: [open] })).toEqual([
+      { ...open, status: "error" },
+      { type: "task_update", id: "run", title: "Run failed", status: "error" },
+    ]);
+    expect(terminalTaskChunks({ phase: "failed", title: "Build" })).toEqual([
+      { type: "task_update", id: "run", title: "Run failed", status: "error" },
+    ]);
   });
 });
 

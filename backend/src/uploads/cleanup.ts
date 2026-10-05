@@ -1,5 +1,6 @@
 import { deleteExpiredReadyUploads } from "./repo";
 import { reclaimUnreferencedLocalArtifacts } from "../artifacts/reclaim";
+import { getRunAdmission } from "../commands/admission";
 
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -13,6 +14,8 @@ export async function cleanupExpiredUploadStorage(now: Date = new Date()): Promi
   readonly reclaimedArtifacts: number;
 }> {
   const expiredUploads = await cleanupExpiredUploads(now);
+  const admission = await getRunAdmission();
+  if (!admission.open) return { expiredUploads, reclaimedArtifacts: 0 };
   const reclaimed = await reclaimUnreferencedLocalArtifacts({ now });
   return { expiredUploads, reclaimedArtifacts: reclaimed.removed.length };
 }

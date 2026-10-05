@@ -165,3 +165,59 @@ describe("capability catalog refresh polling", () => {
     expect(timers.pendingCount).toBe(0);
   });
 });
+
+describe("shared capability catalog", () => {
+  test("every consumer on a page reads one request until the ttl passes", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const { load, invalidate } = createCapabilityCatalogLoader(async () => {
+      fetchCount += 1;
+      return capabilityCatalog(false);
+    }, { isShared: () => true });
+    const [a, b] = await Promise.all([load(), load()]);
+    expect(a).toBe(b);
+    await load();
+    expect(fetchCount).toBe(1);
+    invalidate();
+    await load();
+    expect(fetchCount).toBe(2);
+  });
+
+  test("a refresh retry asks for a fresh catalog and a failed load is not kept", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const { load } = createCapabilityCatalogLoader(async () => {
+      fetchCount += 1;
+      return fetchCount === 1 ? null : capabilityCatalog(fetchCount < 3);
+    }, { isShared: () => true });
+    expect(await load()).toBeNull();
+    expect((await load())?.engines[0]?.modelCatalog?.stale).toBe(true);
+    expect((await load())?.engines[0]?.modelCatalog?.stale).toBe(true);
+    expect((await load(true))?.engines[0]?.modelCatalog?.stale).toBe(false);
+    expect(fetchCount).toBe(3);
+  });
+});
+
+describe("shared capability catalog under a detached failure", () => {
+  test("a failure that started before an invalidation cannot erase a newer catalog", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const pending: Array<(catalog: CapabilityCatalog | null) => void> = [];
+    const { load, invalidate } = createCapabilityCatalogLoader(
+      () => new Promise((resolve) => {
+        fetchCount += 1;
+        pending.push(resolve);
+      }),
+      { isShared: () => true },
+    );
+    const stale = load();
+    invalidate();
+    const fresh = load();
+    pending[1]?.(capabilityCatalog(false));
+    expect(await fresh).not.toBeNull();
+    pending[0]?.(null);
+    expect(await stale).toBeNull();
+    expect(await load()).not.toBeNull();
+    expect(fetchCount).toBe(2);
+  });
+});

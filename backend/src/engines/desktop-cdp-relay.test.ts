@@ -18,6 +18,11 @@ describe("authenticated desktop CDP relay", () => {
     expect(source).toContain('["/json/list", "/json/version"]');
     expect(source).toContain("timingSafeEqual");
     expect(source).not.toContain("/json/new");
+    // The relay owns the browser's lifecycle: health without touching it, a start on demand, a loopback door for the sandbox's own tools.
+    expect(source).toContain('path === "/healthz"');
+    expect(source).toContain('spawn("sh", [LAUNCH]');
+    expect(source).toContain('local.listen(LOCAL_PORT, "127.0.0.1")');
+    expect(source).not.toContain("while (true)");
   });
 
   test("stores a private per-sandbox token outside process arguments", async () => {

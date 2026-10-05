@@ -82,10 +82,10 @@ function engineRuntime(
 ): CapabilityCatalogEngine["runtime"] {
   const label = (() => {
     if (engine === "chat") return "direct model · no sandbox";
-    if (engine === "opencode") return "any model · cloud sandbox";
-    if (engine === "claude") return "Anthropic agent · cloud sandbox";
-    if (engine === "codex") return "OpenAI agent · cloud sandbox";
-    return "native Pi harness · cloud sandbox";
+    if (engine === "opencode") return "any model · cloud";
+    if (engine === "claude") return "Anthropic agent · cloud";
+    if (engine === "codex") return "OpenAI agent · cloud";
+    return "native Pi harness · cloud";
   })();
   if (engine === "chat") return { kind: "direct", label };
   if (engine === "codex" || engine === "claude" || engine === "opencode") {

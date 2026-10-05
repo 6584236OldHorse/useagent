@@ -3,15 +3,10 @@ import { createOrgSession, json } from "./helpers";
 
 describe("org scoping", () => {
   test("dev fallback (no session) plants no demo skills at boot", async () => {
-    // Boot no longer seeds template playbooks — the dev fallback org only ever
-    // holds skills a caller explicitly creates, never fabricated demo data. So
-    // the response is a valid list that never contains the old seed playbooks.
-    const { status, body } = await json<{ skills: { name: string }[] }>(
-      "/api/skills",
-    );
+    const { status, body } = await json<{ skills: { name: string }[] }>("/api/skills");
     expect(status).toBe(200);
     expect(Array.isArray(body.skills)).toBe(true);
-    const names = body.skills.map((s) => s.name);
+    const names = body.skills.map((skill) => skill.name);
     for (const demo of [
       "Ship a new page",
       "Fix flaky test",
@@ -26,15 +21,11 @@ describe("org scoping", () => {
   });
 
   test("skills are org-scoped: an org sees only what it creates", async () => {
-    // A brand-new user + org (real session, server-resolved tenancy).
     const { cookies } = await createOrgSession("acme");
-
-    // A fresh org starts empty — nothing is seeded into it.
-    const before = await json<{ skills: any[] }>("/api/skills", { cookies });
+    const before = await json<{ skills: unknown[] }>("/api/skills", { cookies });
     expect(before.status).toBe(200);
-    expect(before.body.skills.length).toBe(0);
+    expect(before.body.skills).toHaveLength(0);
 
-    // Create one skill scoped to this org.
     const created = await json<{ id: string }>("/api/skills", {
       method: "POST",
       cookies,
@@ -46,17 +37,15 @@ describe("org scoping", () => {
       },
     });
     expect(created.status).toBe(201);
+    expect((await json<{ skills: unknown[] }>("/api/skills", { cookies })).body.skills).toHaveLength(
+      1,
+    );
 
-    // This org now sees exactly its own skill…
-    const after = await json<{ skills: any[] }>("/api/skills", { cookies });
-    expect(after.body.skills.length).toBe(1);
-
-    // …and a second, independent org never sees it (tenancy isolation).
     const other = await createOrgSession("globex");
-    const otherSkills = await json<{ skills: any[] }>("/api/skills", {
+    const otherSkills = await json<{ skills: unknown[] }>("/api/skills", {
       cookies: other.cookies,
     });
     expect(otherSkills.status).toBe(200);
-    expect(otherSkills.body.skills.length).toBe(0);
+    expect(otherSkills.body.skills).toHaveLength(0);
   });
 });

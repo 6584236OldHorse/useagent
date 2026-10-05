@@ -129,7 +129,9 @@ export async function ensureNativeRuntimeArtifact(
   signal: AbortSignal,
 ): Promise<void> {
   signal.throwIfAborted();
-  const execute = (command: string, timeout = 15) =>
+  // The probe checksums the whole dependency tree; on a sandbox still busy with a
+  // runtime restart that outlasted 15 s, and the SDK deadline failed the turn.
+  const execute = (command: string, timeout = 60) =>
     sandbox.process.executeCommand(command, undefined, undefined, timeout);
   if ((await execute(buildNativeRuntimeArtifactProbe(layout))).exitCode === 0) return;
   if (!sandbox.fs)

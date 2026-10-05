@@ -107,6 +107,25 @@ function searchable(entry: ExecutableIntegrationAction): string {
   ].join(" ").toLowerCase();
 }
 
+/** Query words that carry no meaning for an action lookup; an agent's query is a sentence, not a keyword list. */
+const STOP_WORDS = new Set(["a", "an", "the", "of", "to", "for", "in", "on", "or", "and", "my", "me", "with", "from", "that", "this", "all", "any", "some", "most", "recent", "latest", "new", "please"]);
+
+/** Actions ranked by how many query words they mention; a word matches by prefix so "emails" finds "email". */
+export function rankActions(actions: readonly ExecutableIntegrationAction[], query: string): ExecutableIntegrationAction[] {
+  const terms = [...new Set(query.toLowerCase().split(/[^a-z0-9_.-]+/u).filter((term) => term.length > 1 && !STOP_WORDS.has(term)))];
+  if (terms.length === 0) return [...actions];
+  return actions
+    .map((action, index) => {
+      const text = searchable(action);
+      const words = text.split(/[^a-z0-9]+/u);
+      const score = terms.filter((term) => text.includes(term) || words.some((word) => word.startsWith(term) || (term.startsWith(word) && word.length > 3))).length;
+      return { action, score, index };
+    })
+    .filter((ranked) => ranked.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((ranked) => ranked.action);
+}
+
 function safeCatalogResult(action: ExecutableIntegrationAction) {
   const entry = action.entry;
   return {
@@ -146,19 +165,28 @@ export async function executeIntegrationTool(
       const query = checkedString(args.query, "query");
       if (query.length > MAX_QUERY_CHARS) throw new Error(`query must be at most ${MAX_QUERY_CHARS} characters`);
       const provider = typeof args.provider === "string" ? args.provider.trim().toLowerCase() : "";
-      const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
       const available = await service().list({ orgId: claims.orgId, userId: claims.userId });
-      const actions = available
-        .filter((action) => !provider || action.entry.provider.toLowerCase() === provider)
-        .filter((action) => terms.every((term) => searchable(action).includes(term)))
-        .slice(0, SEARCH_LIMIT)
-        .map(safeCatalogResult);
-      return textResult(
-        actions.length > 0
+      const scoped = available.filter((action) => !provider || action.entry.provider.toLowerCase() === provider);
+      if (scoped.length === 0) {
+        const connected = [...new Set(available.map((action) => action.entry.provider))].sort();
+        return textResult(
+          provider
+            ? `No ${provider} integration is connected for this user.${connected.length ? ` Connected: ${connected.join(", ")}.` : ""}`
+            : "No integrations are connected for this user.",
+          { actions: [] },
+        );
+      }
+      const ranked = rankActions(scoped, query);
+      // Nothing scored: hand back what the provider offers so the agent can pick, rather than a dead end.
+      const chosen = (ranked.length > 0 ? ranked : provider ? scoped : []).slice(0, SEARCH_LIMIT);
+      const actions = chosen.map(safeCatalogResult);
+      const summary =
+        ranked.length > 0
           ? `Found ${actions.length} connected integration action${actions.length === 1 ? "" : "s"}.`
-          : "No connected integration actions matched that search.",
-        { actions },
-      );
+          : provider
+            ? `No ${provider} action matched those words; listing ${actions.length} available ${provider} action${actions.length === 1 ? "" : "s"} instead.`
+            : "No connected integration actions matched that search. Name the provider to list everything it offers.";
+      return textResult(summary, { actions });
     }
 
     if (name === "integration_action_execute") {

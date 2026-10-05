@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 import { PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from "next/constants";
+import { resolveDistDir as resolveBuildDist } from "./lib/build-dist";
 
 // Turbopack infers the project root as `frontend/`, but our shared libraries are
 // file:-linked from `../packages` (OUTSIDE that inferred root), so Turbopack rejected the
@@ -18,14 +19,14 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
  * caller that wants an explicitly-named isolated dir (e.g. a parallel E2E stack).
  */
 function resolveDistDir(phase: string): string {
-  if (process.env.USEAGENT_BUILD_DIST) return process.env.USEAGENT_BUILD_DIST;
-  if (phase === PHASE_PRODUCTION_BUILD || phase === PHASE_PRODUCTION_SERVER) return ".next-build";
-  return ".next";
+  return resolveBuildDist(phase === PHASE_PRODUCTION_BUILD || phase === PHASE_PRODUCTION_SERVER);
 }
 
 export default function nextConfig(phase: string): NextConfig {
   return {
     output: "standalone",
+    // Source maps only for a bundle audit (USEAGENT_BUILD_SOURCEMAPS=1); never in a release image.
+    productionBrowserSourceMaps: process.env.USEAGENT_BUILD_SOURCEMAPS === "1",
     turbopack: {
       root: repositoryRoot,
       // root fixes symlink-following into ../packages, but shifts the node_modules base
@@ -71,6 +72,11 @@ export default function nextConfig(phase: string): NextConfig {
         {
           source: "/api/:path*",
           destination: `${origin}/api/:path*`,
+        },
+        // The sandbox image registry runners pull through; the backend serves it.
+        {
+          source: "/v2/:path*",
+          destination: `${origin}/v2/:path*`,
         },
       ];
     },

@@ -1,8 +1,9 @@
-'use client';
+"use client";
 
-import { ThemeProvider } from 'next-themes';
+import { ThemeProvider } from "next-themes";
 
-import { SubagentPane } from '@/components/chat/subagent-pane';
+import { SubagentPane } from "@/components/chat/subagent-pane";
+import { DesktopTitlebar } from "@/components/shell/desktop-titlebar";
 
 /**
  * Client-side provider stack. Kept as a leaf so the root layout stays a
@@ -13,25 +14,27 @@ import { SubagentPane } from '@/components/chat/subagent-pane';
  * `SubagentPane` is the single global instance of the subagent viewing pane -
  * a portal-based slide-over any surface can open via `openSubagentPane(runId)`.
  */
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({ children, nonce }: { children: React.ReactNode; nonce?: string }) {
   return (
     <ThemeProvider
-      attribute='class'
-      defaultTheme='dark'
+      nonce={nonce}
+      attribute="class"
+      defaultTheme="dark"
       enableSystem={false}
       themes={[
-        'light',
-        'dark',
-        'dusk',
-        'aura',
-        'harbor',
-        'phosphor',
-        'phosphor-light',
-        'sakura',
-        'sakura-night',
-        'slate',
+        "light",
+        "dark",
+        "dusk",
+        "aura",
+        "harbor",
+        "phosphor",
+        "phosphor-light",
+        "sakura",
+        "sakura-night",
+        "slate",
       ]}
     >
+      <DesktopTitlebar />
       {children}
       <SubagentPane />
     </ThemeProvider>

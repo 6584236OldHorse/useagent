@@ -71,6 +71,7 @@ import {
   type RunStatus,
 } from "@/components/chat/types";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import { AnsweredAt } from "@/components/session-ui/answered-at";
 import { MessageCopyButton } from "@/components/session-ui/message-copy-button";
 import { MessageScrollerRail } from "@/components/session-ui/message-scroller-rail";
 import { unavailableEngineLabel } from "@/components/session-ui/provider-status-banner";
@@ -213,8 +214,8 @@ const TurnBlock = memo(function TurnBlock({
   canonicalTimeline: boolean;
 }) {
   const { run, steps, status, summary, live, liveText, liveReasoning } = turn;
-  // Every thread reads like chat: the work is ONE trace, the reply is the block.
-  const trace = turnTraceContext(turn, !assistantIdentity);
+  // One trace per turn: open while a plain thread's turn works, folded once it settled (and always for a bot).
+  const trace = turnTraceContext(turn, !assistantIdentity && live);
   // Capture whether this turn was streaming when it first mounted, so its
   // summary typewriters in on arrival but settled history renders instantly.
   const [wasLive] = useState(() => live);
@@ -226,23 +227,25 @@ const TurnBlock = memo(function TurnBlock({
     if (liveText.length > 0) setSawNarration(true);
   }, [liveText]);
 
-  // The interleaved timeline (narration bursts ↔ tool rows in true order), built
-  // from the watched run's native ordered frames. Null on turns without native
-  // data (settled history, non-native engines) → the legacy rendering below takes
-  // over. Recomputed only when the native snapshot or liveness changes.
-  const durableTimeline = useMemo(() => {
-    // Canonical cutover (flag-gated): render from the canonical lane ONLY once this run's
-    // canonicalization reached its durable `complete` record (H2). A still-provisional
-    // projection (the outbox is retrying, the snapshot may be partial) never drives the
-    // UI - the legacy native derivation does. The two are proven byte-for-byte equivalent,
-    // so a completed swap never changes what the user sees.
-    const canonical = turn.canonical;
-    if (canonical && shouldUseCanonicalTimeline(canonicalTimeline, turn)) {
-      const stepsById = new Map(turn.steps.map((s) => [s.id, s]));
-      return buildTimelineFromCanonical(canonical, stepsById, live);
-    }
-    return turn.native ? buildTimeline(turn.native, live) : null;
-  }, [turn.native, turn.canonical, turn.canonicalComplete, turn.steps, live, canonicalTimeline]);
+  // The interleaved timeline (narration bursts ↔ tool rows in true order). Null on
+  // turns without native data (settled history, non-native engines) → the legacy
+  // rendering below takes over. Canonical cutover (flag-gated): the canonical lane
+  // drives the UI ONLY once this run's canonicalization reached its durable
+  // `complete` record (H2); a still-provisional projection never does. The two are
+  // proven byte-for-byte equivalent, so a completed swap never changes what the user
+  // sees. The lanes are memoized apart so a batch that only touched the other lane
+  // rebuilds nothing.
+  const useCanonical = Boolean(turn.canonical) && shouldUseCanonicalTimeline(canonicalTimeline, turn);
+  const canonicalDurable = useMemo(() => {
+    if (!useCanonical || !turn.canonical) return null;
+    const stepsById = new Map(turn.steps.map((s) => [s.id, s]));
+    return buildTimelineFromCanonical(turn.canonical, stepsById, live);
+  }, [useCanonical, turn.canonical, turn.steps, live]);
+  const nativeDurable = useMemo(
+    () => (useCanonical || !turn.native ? null : buildTimeline(turn.native, live)),
+    [useCanonical, turn.native, live],
+  );
+  const durableTimeline = useCanonical ? canonicalDurable : nativeDurable;
 
   const timeline = useMemo(
     () => withTransientLiveReasoning(durableTimeline, live, liveReasoning),
@@ -414,12 +417,11 @@ const TurnBlock = memo(function TurnBlock({
           onOpenProductChild={onOpenProductChild}
         />
 
-        {/* Hover copy on the settled answer (T3 grammar). The durable summary IS
-            the answer markdown even when the timeline's final narration burst
-            rendered it, so one affordance covers both render paths. */}
+        {/* Hover copy and answer time on the settled answer; the durable summary IS the answer markdown on both render paths. */}
         {!live && summary && (
-          <div className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover/turn:opacity-100">
+          <div className="flex items-center gap-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/turn:opacity-100">
             <MessageCopyButton text={summary} />
+            <AnsweredAt iso={run.updated_at} />
           </div>
         )}
       </div>
@@ -679,9 +681,9 @@ export const Conversation = memo(function Conversation({
       engineConfig.engines,
       engineConfig.readinessKnown,
       engineConfig.readiness,
-    ) !== null;
+    ) !== null && !engineConfig.localLoginOffered.includes(defaultEngine);
   const engineUnavailableMessage =
-    engineConfig.readiness[defaultEngine]?.ready === false
+    engineUnavailable && engineConfig.readiness[defaultEngine]?.ready === false
       ? engineConfig.readiness[defaultEngine]?.message
       : undefined;
 

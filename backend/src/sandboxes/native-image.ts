@@ -19,6 +19,7 @@ import {
   buildNativeRuntimeInstallCommand,
   NATIVE_RUNTIME_ARTIFACT,
 } from "../engines/native-runtime-artifact";
+import { buildRuntimeEnvironmentBootScript, desktopLaunchPath, runtimeEnvironmentBootPath } from "../engines/runtime-environment-boot";
 import {
   buildPiRuntimeEnsureCommand,
   PI_RUNTIME_LOCK_SHA256,
@@ -34,10 +35,11 @@ import {
   SANDBOX_BUN_VERSION,
 } from "../engines/sandbox-bun";
 import { claudeProviderGatewayEnvironment } from "../provider-gateway/sandbox-config";
-import { DESKTOP_REQUIRED_BINARIES } from "../engines/desktop-workstation";
+import { desktopCdpRelaySource } from "../engines/desktop-cdp-relay";
+import { buildDesktopLaunchScript, DESKTOP_REQUIRED_BINARIES } from "../engines/desktop-workstation";
 
 /** Bump when a step changes in a way the fingerprinted inputs cannot express. */
-const NATIVE_IMAGE_RECIPE_VERSION = 2;
+const NATIVE_IMAGE_RECIPE_VERSION = 3;
 /** Box accepts uploads of a few MB; larger files travel in parts and are joined in the sandbox. */
 const UPLOAD_PART_BYTES = 3 * 1024 * 1024;
 const NATIVE_ENGINES = ["codex", "claude", "opencode"] as const;
@@ -108,24 +110,163 @@ export function desktopToolchainProbeCommand(): string {
   ].join(" && ");
 }
 
+const XORG_VIRTUAL_DISPLAY = `Section "Device"
+    Identifier "Configured Video Device"
+    Driver "dummy"
+    VideoRam 256000
+EndSection
+Section "Monitor"
+    Identifier "Configured Monitor"
+    HorizSync 30.0-90.0
+    VertRefresh 50.0-75.0
+    Modeline "1920x1080_60.00" 173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync
+EndSection
+Section "Screen"
+    Identifier "Default Screen"
+    Monitor "Configured Monitor"
+    Device "Configured Video Device"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080_60.00"
+        Virtual 1920 1080
+    EndSubSection
+EndSection
+`;
+
+const PANEL = "11111111-1111-4111-8111-111111111111";
+const APPLETS: readonly [string, string, "start" | "end", number][] = [
+  ["a1111111-1111-4111-8111-111111111111", "Budgie Menu", "start", 0],
+  ["a2111111-1111-4111-8111-111111111111", "Icon Task List", "start", 1],
+  ["a3111111-1111-4111-8111-111111111111", "System Tray", "end", 0],
+  ["a4111111-1111-4111-8111-111111111111", "Notifications", "end", 1],
+  ["a5111111-1111-4111-8111-111111111111", "Status Indicator", "end", 2],
+  ["a6111111-1111-4111-8111-111111111111", "Clock", "end", 3],
+  ["a7111111-1111-4111-8111-111111111111", "Raven Trigger", "end", 4],
+];
+
+/** System-wide desktop defaults: dark Adwaita, Cantarell, one bottom panel, no lock or idle, desktop launchers. */
+const DESKTOP_DEFAULTS = [
+  "[org/gnome/desktop/interface]",
+  "color-scheme='prefer-dark'",
+  "gtk-theme='Adwaita'",
+  "icon-theme='Adwaita'",
+  "cursor-theme='Adwaita'",
+  "font-name='Cantarell 11'",
+  "document-font-name='Cantarell 11'",
+  "monospace-font-name='Monospace 11'",
+  "[org/gnome/desktop/wm/preferences]",
+  "button-layout='appmenu:minimize,maximize,close'",
+  "titlebar-font='Cantarell Bold 11'",
+  "[org/gnome/desktop/background]",
+  "picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'",
+  "picture-uri-dark='file:///usr/share/backgrounds/gnome/adwaita-d.webp'",
+  "primary-color='#023c88'",
+  "show-desktop-icons=false",
+  "[org/gnome/desktop/screensaver]",
+  "idle-activation-enabled=false",
+  "lock-enabled=false",
+  "[org/gnome/desktop/session]",
+  "idle-delay=uint32 0",
+  "[org/gnome/desktop/lockdown]",
+  "disable-lock-screen=true",
+  "[com/solus-project/budgie-panel]",
+  "dark-theme=true",
+  `panels=['${PANEL}']`,
+  `[com/solus-project/budgie-panel/panels/{${PANEL}}]`,
+  "location='bottom'",
+  "size=36",
+  "spacing=2",
+  "enable-shadow=true",
+  "transparency='none'",
+  `applets=[${APPLETS.map(([id]) => `'${id}'`).join(", ")}]`,
+  ...APPLETS.flatMap(([id, name, alignment, position]) => [
+    `[com/solus-project/budgie-panel/applets/{${id}}]`,
+    `name='${name}'`,
+    `alignment='${alignment}'`,
+    `position=${position}`,
+  ]),
+  "",
+].join("\n");
+
+/** The desktop icons and wallpaper are drawn by pcmanfm (it runs as root, which nemo refuses). */
+const DESKTOP_ITEMS = [
+  "[*]",
+  "wallpaper_mode=crop",
+  "wallpaper_common=1",
+  "wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp",
+  "desktop_bg=#023c88",
+  "desktop_fg=#ffffff",
+  "desktop_shadow=#000000",
+  "desktop_font=Cantarell 11",
+  "show_wm_menu=0",
+  "sort=mtime;ascending;",
+  "show_documents=0",
+  "show_trash=0",
+  "show_mounts=0",
+  "",
+].join("\n");
+
+const DESKTOP_LAUNCHERS: readonly [string, string, string, string][] = [
+  ["files", "Files", "pcmanfm %U", "system-file-manager"],
+  // The same flags the desktop's own browser launch needs: root and a sandbox without user namespaces.
+  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox --disable-dev-shm-usage --disable-gpu"', "web-browser"],
+  ["terminal", "Terminal", "gnome-terminal", "org.gnome.Terminal"],
+];
+
+/** Write `text` to `path` as the layout's privileged writer (heredoc, quoted delimiter). */
+function writeFile(sudo: string, path: string, text: string, mode = "644"): string {
+  return [
+    `${sudo}install -d -m 755 ${q(path.slice(0, path.lastIndexOf("/")))}`,
+    `${sudo}tee ${q(path)} >/dev/null <<'USEAGENT_EOF'`,
+    text.replace(/\n$/, ""),
+    "USEAGENT_EOF",
+    `${sudo}chmod ${mode} ${q(path)}`,
+  ].join("\n");
+}
+
+/** The desktop the sandbox shows: Budgie on a real Xorg dummy display at 1920x1080, dark Adwaita,
+ *  desktop launchers drawn by nemo, x11vnc and noVNC for the stream. */
 export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
   const sudo = layout.runsAsRoot ? "" : "sudo -n ";
   const probe = desktopToolchainProbeCommand();
+  const desktopDir = `${layout.home}/Desktop`;
   return [
+    `chmod 0755 ${q(desktopLaunchPath(layout))}`,
     `if ${probe}; then exit 0; fi`,
     "export DEBIAN_FRONTEND=noninteractive",
     `${sudo}apt-get update -qq`,
-    `${sudo}apt-get install -y -qq --no-install-recommends dbus-x11 novnc procps thunar websockify x11-utils x11vnc xdotool xfce4 xfce4-clipman xfce4-terminal xvfb`,
+    `${sudo}apt-get install -y -qq --no-install-recommends ` +
+      "adwaita-icon-theme budgie-core dbus-x11 dconf-cli fonts-cantarell fonts-noto-mono gnome-backgrounds gnome-settings-daemon " +
+      "gnome-terminal hicolor-icon-theme libglib2.0-bin librsvg2-common novnc pcmanfm procps webp-pixbuf-loader websockify x11-utils x11vnc xclip xdotool " +
+      "xserver-xorg-core xserver-xorg-legacy xserver-xorg-video-dummy",
     `if ! (command -v google-chrome || command -v chromium || command -v chromium-browser) >/dev/null 2>&1; then ${sudo}apt-get install -y -qq --no-install-recommends chromium; fi`,
     `${sudo}rm -rf /var/lib/apt/lists/*`,
+    writeFile(sudo, "/etc/X11/xorg.conf.d/10-virtual-display.conf", XORG_VIRTUAL_DISPLAY),
+    // Xorg may be started by whoever owns the desktop process session, root or not.
+    writeFile(sudo, "/etc/X11/Xwrapper.config", "allowed_users=anybody\nneeds_root_rights=yes\n"),
+    writeFile(sudo, "/etc/dconf/profile/user", "user-db:user\nsystem-db:local\n"),
+    writeFile(sudo, "/etc/dconf/db/local.d/00-useagent-desktop", DESKTOP_DEFAULTS),
+    `${sudo}dconf update`,
+    // Symbolic icons are SVG; the caches make the themes visible to the panel.
+    `${sudo}gtk-update-icon-cache -f -q /usr/share/icons/Adwaita || true`,
+    `${sudo}gtk-update-icon-cache -f -q /usr/share/icons/hicolor || true`,
+    writeFile("", `${layout.home}/.config/pcmanfm/useagent/desktop-items-0.conf`, DESKTOP_ITEMS),
+    ...DESKTOP_LAUNCHERS.map(([file, name, exec, icon]) =>
+      writeFile("", `${desktopDir}/${file}.desktop`, `[Desktop Entry]\nType=Application\nName=${name}\nExec=${exec}\nIcon=${icon}\n`, "755"),
+    ),
     probe,
   ].join("\n");
 }
 
 /** The name every renderer produces for these inputs; stable across providers. */
-export function nativeImageName(inputs: Pick<NativeImageInputs, "claudeEnvironment">): string {
+export function nativeImageName(
+  inputs: Pick<NativeImageInputs, "claudeEnvironment">,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   const fingerprint = sha256(JSON.stringify({
     recipe: NATIVE_IMAGE_RECIPE_VERSION,
+    boot: sha256(buildRuntimeEnvironmentBootScript(env, { home: "/root", workdir: "/root/work", runsAsRoot: true })),
     runtime: NATIVE_RUNTIME_ARTIFACT.sourceCommit,
     runtimeArchive: NATIVE_RUNTIME_ARTIFACT.archiveSha256,
     runtimeDependencyLock: NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256,
@@ -151,7 +292,11 @@ export function isNativeImageName(name: string | null | undefined): boolean {
   return /^useagent-native-[0-9a-f]{7}-[0-9a-f]{10}$/.test(name ?? "");
 }
 
-export function nativeImageSteps(layout: SandboxRuntimeLayout, inputs: NativeImageInputs): NativeImageStep[] {
+export function nativeImageSteps(
+  layout: SandboxRuntimeLayout,
+  inputs: NativeImageInputs,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): NativeImageStep[] {
   const home = layout.home;
   const bunStage = `${home}/.local/share/useagent/bun/.stage-image`;
   const runtimeStage = `${home}/.local/share/useagent/native-runtime/.stage-image`;
@@ -193,6 +338,12 @@ export function nativeImageSteps(layout: SandboxRuntimeLayout, inputs: NativeIma
       }];
     }),
     {
+      name: "boot",
+      files: [{ path: runtimeEnvironmentBootPath(layout), bytes: Buffer.from(buildRuntimeEnvironmentBootScript(env, layout), "utf8") }],
+      command: `chmod 0755 ${q(runtimeEnvironmentBootPath(layout))}`,
+      timeoutSeconds: 30,
+    },
+    {
       name: "pi",
       files: [
         { path: `${piManifest}/package.json`, bytes: inputs.piPackage },
@@ -214,7 +365,10 @@ export function nativeImageSteps(layout: SandboxRuntimeLayout, inputs: NativeIma
     },
     {
       name: "desktop",
-      files: [],
+      files: [
+        { path: desktopLaunchPath(layout), bytes: Buffer.from(buildDesktopLaunchScript(), "utf8") },
+        { path: `${home}/.skynet/cdp-relay.mjs`, bytes: Buffer.from(desktopCdpRelaySource(), "utf8") },
+      ],
       command: desktopToolchainCommand(layout),
       timeoutSeconds: 900,
     },
@@ -274,44 +428,61 @@ export interface NativeImageDockerfile {
   readonly files: readonly { readonly contextPath: string; readonly bytes: Buffer }[];
 }
 
-/** The recipe as a Dockerfile on top of `baseImageArg` (a build ARG the caller supplies). Each step
- *  ships as a script file the Dockerfile copies and runs, so the classic builder (no heredocs) works. */
+/** The recipe as a Dockerfile on top of `baseImageArg` (a build ARG the caller supplies). The boot
+ * script is the entrypoint and the base command is restated as CMD when the caller knows it. One COPY
+ * stages the whole context and each step ships as a script file the Dockerfile runs, so the classic
+ * builder (no heredocs) works and the image adds one layer per step. */
 export function renderNativeImageDockerfile(
   layout: SandboxRuntimeLayout,
   inputs: NativeImageInputs,
   baseImageArg = "USEAGENT_NATIVE_BASE_IMAGE",
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  /** The base image's own command; an ENTRYPOINT would otherwise drop it, and a provider's daemon may live in it. */
+  baseCommand: readonly string[] = [],
 ): NativeImageDockerfile {
   const files: { contextPath: string; bytes: Buffer }[] = [];
   const scripts = "/tmp/useagent-native-image";
+  // Files land in a staging area and the step copies them into place, so the
+  // directories a step later renames were created in its own layer; a COPY'd
+  // directory renamed on overlayfs (classic builder) becomes copy+delete and
+  // pulls the working directory out from under the step's node processes.
+  // The whole context is staged by one COPY: a layer per file and per script
+  // on top of a base that already carries over a hundred layers overran the
+  // runtime's layer depth limit ("failed to register layer: max depth exceeded").
+  // A non-root layout runs its steps as the runtime user, who must own what
+  // COPY staged so the step can read and remove it.
+  const copy = layout.runsAsRoot ? "COPY" : "COPY --chown=1000:1000";
   const lines = [
-    `# ${nativeImageName(inputs)}: generated by backend/src/sandboxes/native-image.ts; do not edit.`,
+    `# ${nativeImageName(inputs, env)}: generated by backend/src/sandboxes/native-image.ts; do not edit.`,
     `ARG ${baseImageArg}`,
     `FROM \${${baseImageArg}}`,
     layout.runsAsRoot ? "USER root" : "",
     `ENV HOME=${layout.home} DEBIAN_FRONTEND=noninteractive`,
     `RUN mkdir -p ${layout.workdir}`,
+    `${copy} context/ ${scripts}/`,
   ];
-  nativeImageSteps(layout, inputs).forEach((step, index) => {
+  nativeImageSteps(layout, inputs, env).forEach((step, index) => {
     const context = `context/${index}-${step.name}`;
     const staged = `${scripts}/${index}-${step.name}`;
-    // Files land in a staging area and the step copies them into place, so the
-    // directories a step later renames were created in its own layer; a COPY'd
-    // directory renamed on overlayfs (classic builder) becomes copy+delete and
-    // pulls the working directory out from under the step's node processes.
     const placements = step.files.map((file) => {
       const name = file.path.slice(file.path.lastIndexOf("/") + 1);
       files.push({ contextPath: `${context}/${name}`, bytes: file.bytes });
-      lines.push(`COPY ${context}/${name} ${staged}/${name}`);
       return `mkdir -p ${q(file.path.slice(0, file.path.lastIndexOf("/")))} && cp ${q(`${staged}/${name}`)} ${q(file.path)}`;
     });
     const script = `${staged}.sh`;
     files.push({
-      contextPath: `${context}/step.sh`,
+      contextPath: `${context}.sh`,
       bytes: Buffer.from(`set -eu\n${placements.join("\n")}${placements.length ? "\n" : ""}${step.command}\n`, "utf8"),
     });
-    lines.push(`COPY ${context}/step.sh ${script}`, `RUN sh ${script} && rm -rf ${script} ${staged}`);
+    lines.push(`RUN sh ${script} && rm -rf ${script} ${staged}`);
   });
-  lines.push(`RUN rm -rf ${scripts}`, `LABEL org.useagent.native-image=${nativeImageName(inputs)}`);
+  lines.push(
+    `RUN rm -rf ${scripts}`,
+    `LABEL org.useagent.native-image=${nativeImageName(inputs, env)}`,
+    // A sandbox comes up with its runtime ready; providers that ignore the image entrypoint still work, the plane repairs.
+    `ENTRYPOINT [${JSON.stringify(runtimeEnvironmentBootPath(layout))}]`,
+    ...(baseCommand.length ? [`CMD ${JSON.stringify(baseCommand)}`] : []),
+  );
   return { dockerfile: `${lines.filter((line) => line !== "").join("\n")}\n`, files };
 }
 

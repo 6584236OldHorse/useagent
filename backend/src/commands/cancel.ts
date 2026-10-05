@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../db/client";
+import { db, type Executor } from "../db/client";
 import { isUniqueViolation } from "../db/pg-errors";
 import { commands, runs, type RunStatus } from "../db/schema";
 import { setAdmissionState } from "../fleet/admission-repo";
@@ -32,7 +32,16 @@ import { RUN_CANCEL, RUN_CREATE } from "./repo";
 export const CANCEL_SUMMARY = "Stopped by user";
 
 /** Synthetic per-run idempotency key so a repeated Stop is a no-op replay. */
-export const cancelKey = (runId: string): string => `cancel:${runId}`;
+export const CANCEL_KEY_PREFIX = "cancel:";
+export const cancelKey = (runId: string): string => `${CANCEL_KEY_PREFIX}${runId}`;
+
+/** Thrown where delegation is recorded when the turn delegating was already stopped. */
+export class DelegationStoppedError extends Error {
+  constructor() {
+    super("the turn that delegated this work was stopped");
+    this.name = "DelegationStoppedError";
+  }
+}
 
 export type CancelOutcome =
   /** Cancel newly recorded. `runStatusWas` tells the caller whether to signal a
@@ -69,21 +78,39 @@ export async function acceptRunCancel(input: {
     // remains the durable status but must not be mistaken for a work failure.
     let cancelledThreadId: string | null = null;
     let cancelledInternal = false;
-    const outcome = await db.transaction(async (tx) => {
+    const record = (idempotencyKey: string) => db.transaction(async (tx) => {
+      const [located] = await tx
+        .select({ threadId: runs.threadId })
+        .from(runs)
+        .where(and(eq(runs.id, input.runId), eq(runs.orgId, input.orgId)))
+        .limit(1);
+      if (!located) return { status: "not_found" as const };
+      // The thread's dispatch lock (the one a claim takes) and its delegation
+      // lock, then the run is read again: a claim that raced this stop has
+      // either committed, so the run reads running and its actor is signalled,
+      // or waits and finds the command settled. Delegation from this thread
+      // takes the second lock before recording a child, so a child is either
+      // visible to the stop that follows or refused by the intent committed here.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${located.threadId}))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.orgId}), hashtext(${located.threadId}))`);
       const [run] = await tx
         .select()
         .from(runs)
         .where(and(eq(runs.id, input.runId), eq(runs.orgId, input.orgId)))
-        .limit(1);
+        .limit(1)
+        .for("update");
       if (!run) return { status: "not_found" as const };
       if (run.status === "completed" || run.status === "failed") {
         return { status: "terminal" as const, runStatus: run.status };
       }
+      // A concurrent Stop may have recorded the intent while this one waited.
+      const priorUnderLock = await findCancel(input.orgId, input.runId, tx);
+      if (priorUnderLock !== null) return { status: "already" as const, threadId: priorUnderLock };
 
       // Durable intent record, written already-completed (never stuck).
       await tx.insert(commands).values({
         id: crypto.randomUUID(),
-        idempotencyKey: cancelKey(input.runId),
+        idempotencyKey,
         orgId: input.orgId,
         actorId: input.actorId,
         kind: RUN_CANCEL,
@@ -113,6 +140,18 @@ export async function acceptRunCancel(input: {
 
       return { status: "accepted" as const, runStatusWas: run.status, threadId: run.threadId };
     });
+    let outcome: CancelOutcome;
+    try {
+      outcome = await record(cancelKey(input.runId));
+    } catch (err) {
+      // A concurrent Stop won the slot: replay. A foreign command on the slot
+      // (a public key shaped like ours, from before the doors refused them)
+      // must not make a run unstoppable: record the intent under a key of its own.
+      if (!isUniqueViolation(err)) throw err;
+      const thread = await findCancel(input.orgId, input.runId);
+      if (thread) return { status: "already", threadId: thread };
+      outcome = await record(`${cancelKey(input.runId)}#${crypto.randomUUID()}`);
+    }
 
     // Post-commit cancellation signal: queued and running stops share one typed
     // moment. Worker teardown may later publish `settled`; consumers use runId
@@ -127,7 +166,7 @@ export async function acceptRunCancel(input: {
     }
     return outcome;
   } catch (err) {
-    // A concurrent Stop won the unique index; the tx rolled back — resolve as replay.
+    // The second attempt lost to a concurrent Stop as well: replay.
     if (isUniqueViolation(err)) {
       const thread = await findCancel(input.orgId, input.runId);
       if (thread) return { status: "already", threadId: thread };
@@ -137,16 +176,16 @@ export async function acceptRunCancel(input: {
 }
 
 /** The thread of an existing run.cancel for this run, or null. */
-async function findCancel(orgId: string, runId: string): Promise<string | null> {
-  const [row] = await db
+async function findCancel(orgId: string, runId: string, exec: Executor = db): Promise<string | null> {
+  const [row] = await exec
     .select({ threadId: commands.threadId })
     .from(commands)
-    .where(and(eq(commands.orgId, orgId), eq(commands.idempotencyKey, cancelKey(runId))))
+    .where(and(eq(commands.orgId, orgId), eq(commands.kind, RUN_CANCEL), eq(commands.runId, runId)))
     .limit(1);
   return row ? (row.threadId ?? "") : null;
 }
 
 /** Whether the trusted command lane already committed a stop for this run. */
-export async function hasRunCancelIntent(orgId: string, runId: string): Promise<boolean> {
-  return (await findCancel(orgId, runId)) !== null;
+export async function hasRunCancelIntent(orgId: string, runId: string, exec: Executor = db): Promise<boolean> {
+  return (await findCancel(orgId, runId, exec)) !== null;
 }

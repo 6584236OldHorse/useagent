@@ -60,8 +60,8 @@ export async function createUserUpload(input: {
   readonly sha256: string;
   readonly storageKey: string;
   readonly expiresAt: Date;
-}): Promise<UserUploadRecord> {
-  const [row] = await db.insert(userUploads).values(input).returning();
+}, exec: Executor = db): Promise<UserUploadRecord> {
+  const [row] = await exec.insert(userUploads).values(input).returning();
   if (!row) throw new Error("upload record was not created");
   return row;
 }

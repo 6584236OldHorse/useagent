@@ -1,10 +1,37 @@
+import { navigateVisibleBrowserPage } from "../../engines/browser-mcp";
+import {
+  addressBarNavigateCommand,
+  buildCubeSequenceCommand,
+  buttonNumber,
+  type ComputerSequenceAction,
+  type Button,
+  type Direction,
+  DEFAULT_DISPLAY,
+  DEFAULT_SCREENSHOT_WIDTH,
+  describeSequenceFailure,
+  sequenceBatches,
+  x11HotkeyCommand,
+  x11KeyCommand,
+  x11KeyName,
+} from "./computer-use-shell";
+export {
+  buildCubeSequenceCommand,
+  coordinatePrefix,
+  type ComputerSequenceAction,
+  describeSequenceFailure,
+  sequenceBatches,
+  x11HotkeyCommand,
+  x11KeyCommand,
+  x11KeyName,
+} from "./computer-use-shell";
+
 import { ensureSandboxDesktopView } from "../../engines/desktop";
 import { getRunForOrg } from "../../runs/repo";
 import { type SandboxHandle, sandboxProviderKind, sandboxRuntimeLayout } from "../../sandboxes/provider";
 import { executeArtifactTool, type ToolResult } from "./artifact-tools";
-import { compressScreenshotForModel } from "./screenshot-compression";
+import { compressScreenshotForModelSized } from "./screenshot-compression";
 import type { ToolTokenClaims } from "./token";
-import { resolveSandboxBindingForThread } from "../../sandboxes/binding";
+import { resolveRunSandbox } from "../../sandboxes/binding";
 
 export type ComputerToolContent =
   | { type: "text"; text: string }
@@ -16,20 +43,8 @@ interface ComputerToolResult {
   isError?: boolean;
 }
 
-type Button = "left" | "middle" | "right";
-type Direction = "up" | "down";
-export type ComputerSequenceAction =
-  | { readonly action: "click"; readonly x: number; readonly y: number; readonly button: Button; readonly double: boolean }
-  | { readonly action: "move"; readonly x: number; readonly y: number }
-  | { readonly action: "drag"; readonly startX: number; readonly startY: number; readonly endX: number; readonly endY: number }
-  | { readonly action: "type"; readonly text: string; readonly delayMs: number }
-  | { readonly action: "key"; readonly key: string; readonly modifiers: readonly string[] }
-  | { readonly action: "hotkey"; readonly keys: string }
-  | { readonly action: "scroll"; readonly x: number; readonly y: number; readonly direction: Direction; readonly amount: number }
-  | { readonly action: "wait"; readonly ms: number };
-
 interface ComputerUseService {
-  screenshot(claims: ToolTokenClaims): Promise<ComputerToolResult>;
+  screenshot(claims: ToolTokenClaims, region?: ScreenshotRegion): Promise<ComputerToolResult>;
   sequence(
     claims: ToolTokenClaims,
     actions: readonly ComputerSequenceAction[],
@@ -44,7 +59,6 @@ interface ComputerUseService {
   scroll(claims: ToolTokenClaims, x: number, y: number, direction: Direction, amount: number): Promise<void>;
 }
 
-const DEFAULT_DISPLAY = ":1";
 const MAX_COORDINATE = 10_000;
 const MAX_TEXT_LENGTH = 20_000;
 const KEY_RE = /^[A-Za-z0-9_+ -]{1,80}$/;
@@ -52,8 +66,22 @@ const BUTTONS = new Set<Button>(["left", "middle", "right"]);
 const MODIFIERS = new Set(["ctrl", "alt", "shift", "cmd"]);
 const MAX_SEQUENCE_ACTIONS = 8;
 const MAX_SEQUENCE_TEXT_LENGTH = 2_000;
-const MAX_SEQUENCE_WAIT_MS = 5_000;
+const MAX_SEQUENCE_WAIT_MS = 30_000;
+const MAX_HOLD_MS = 30_000;
+const screenshotWidths = new Map<string, number>();
+const displaySizes = new Map<string, { readonly width: number; readonly height: number }>();
 const USER_REQUESTED_PROOF_PURPOSE = "user_requested_proof";
+
+/** A zoom region in screenshot pixels: left, top, right, bottom. */
+export type ScreenshotRegion = readonly [number, number, number, number];
+
+function screenshotRegion(value: unknown): ScreenshotRegion | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length !== 4) throw new Error("region must be [left, top, right, bottom] in screenshot pixels");
+  const [left, top, right, bottom] = value.map((part, index) => integer(part, `region[${index}]`, 0, 10_000));
+  if (right! - left! < 8 || bottom! - top! < 8) throw new Error("region must be at least 8 by 8 screenshot pixels");
+  return [left!, top!, right!, bottom!];
+}
 
 function result(text: string, structuredContent?: Record<string, unknown>): ComputerToolResult {
   return {
@@ -158,56 +186,6 @@ function keyName(value: unknown, name = "key"): string {
   return key;
 }
 
-const X11_KEY_ALIASES: Readonly<Record<string, string>> = {
-  arrowdown: "Down",
-  arrowleft: "Left",
-  arrowright: "Right",
-  arrowup: "Up",
-  backspace: "BackSpace",
-  cmd: "Super_L",
-  enter: "Return",
-  esc: "Escape",
-  escape: "Escape",
-  pagedown: "Page_Down",
-  pageup: "Page_Up",
-  return: "Return",
-  space: "space",
-};
-
-export function x11KeyName(key: string): string {
-  return X11_KEY_ALIASES[key.toLowerCase()] ?? key;
-}
-
-export function x11KeyCommand(key: string, modifiers: readonly string[] = []): string {
-  const normalizedKey = x11KeyName(key);
-  if (modifiers.length === 0) {
-    return `xdotool keydown --clearmodifiers ${normalizedKey}; sleep 0.1; xdotool keyup ${normalizedKey}; sleep 0.2`;
-  }
-  return x11ChordCommand(normalizedKey, modifiers.map(x11KeyName));
-}
-
-function x11ChordCommand(key: string, modifiers: readonly string[]): string {
-  const press = [
-    "xdotool keyup ctrl alt shift Super_L",
-    "sleep 0.05",
-    ...modifiers.map((modifier) => `xdotool keydown ${modifier}`),
-    `xdotool key ${key}`,
-  ].join(" && ");
-  const up = [...modifiers].reverse().map((modifier) => `xdotool keyup ${modifier}`).join("; ");
-  return `${press}; status=$?; ${up}; sleep 0.2; test $status -eq 0`;
-}
-
-export function x11HotkeyCommand(keys: string): string {
-  const parts = keys
-    .replaceAll(" ", "")
-    .split("+")
-    .map(x11KeyName);
-  const key = parts.at(-1);
-  if (!key) throw new Error("hotkey must contain a key");
-  return parts.length === 1
-    ? x11KeyCommand(key)
-    : x11ChordCommand(key, parts.slice(0, -1));
-}
 
 function buttonName(value: unknown): Button {
   const button = value ?? "left";
@@ -218,8 +196,10 @@ function buttonName(value: unknown): Button {
 }
 
 function scrollDirection(value: unknown, name: string): Direction {
-  if (value === "up" || value === "down") return value;
-  throw new Error(`${name} must be up or down`);
+  if (value !== "up" && value !== "down" && value !== "left" && value !== "right") {
+    throw new Error(`${name} must be up, down, left, or right`);
+  }
+  return value;
 }
 
 function modifiers(value: unknown): string[] {
@@ -228,6 +208,18 @@ function modifiers(value: unknown): string[] {
     throw new Error("modifiers must contain only ctrl, alt, shift, or cmd");
   }
   return value;
+}
+
+function httpUrl(value: unknown, name: string): string {
+  const text = string(value, name, 2048);
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error(`${name} must be an absolute http or https URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`${name} must be an absolute http or https URL`);
+  return parsed.toString();
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -249,6 +241,8 @@ function parseSequenceAction(value: unknown, index: number): ComputerSequenceAct
         y: integer(action.y, `actions[${index}].y`),
         button: buttonName(action.button),
         double: action.double === true,
+        triple: action.triple === true,
+        modifiers: modifiers(action.modifiers),
       };
     case "move":
       return {
@@ -275,12 +269,21 @@ function parseSequenceAction(value: unknown, index: number): ComputerSequenceAct
         action: "key",
         key: keyName(action.key, `actions[${index}].key`),
         modifiers: modifiers(action.modifiers),
+        repeat: integer(action.repeat ?? 1, `actions[${index}].repeat`, 1, 100),
+      };
+    case "hold_key":
+      return {
+        action: "hold_key",
+        key: keyName(action.key, `actions[${index}].key`),
+        durationMs: integer(action.duration_ms ?? 1000, `actions[${index}].duration_ms`, 1, MAX_HOLD_MS),
       };
     case "hotkey":
       return {
         action: "hotkey",
         keys: keyName(action.keys, `actions[${index}].keys`),
       };
+    case "navigate":
+      return { action: "navigate", url: httpUrl(action.url, `actions[${index}].url`) };
     case "scroll": {
       return {
         action: "scroll",
@@ -296,7 +299,7 @@ function parseSequenceAction(value: unknown, index: number): ComputerSequenceAct
         ms: integer(action.ms ?? 250, `actions[${index}].ms`, 0, MAX_SEQUENCE_WAIT_MS),
       };
     default:
-      throw new Error(`actions[${index}].action must be one of click, move, drag, type, key, hotkey, scroll, wait`);
+      throw new Error(`actions[${index}].action must be one of click, move, drag, type, key, hold_key, hotkey, navigate, scroll, wait`);
   }
 }
 
@@ -328,13 +331,21 @@ async function computerSandbox(claims: ToolTokenClaims): Promise<SandboxHandle> 
   const run = await getRunForOrg(claims.orgId, claims.runId);
   if (!run || run.threadId !== claims.threadId) throw new Error("run is not active in this thread");
   if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
-  return await (await resolveSandboxBindingForThread(claims.orgId, run.threadId)).provider.get(run.sandboxId);
+  return await resolveRunSandbox(run);
 }
+
+/** Desktop readiness per sandbox: a turn's tool calls probe the desktop once, not every call
+ *  (the probe and the relay file check cost seconds each over the provider API). A failed
+ *  command clears the entry so the next call probes again. */
+const desktopReadyUntil = new Map<string, number>();
+const DESKTOP_READY_TTL_MS = 60_000;
 
 async function readySandbox(claims: ToolTokenClaims): Promise<SandboxHandle> {
   const sandbox = await computerSandbox(claims);
+  if ((desktopReadyUntil.get(sandbox.id) ?? 0) > Date.now()) return sandbox;
   const desktop = await ensureSandboxDesktopView(sandbox, AbortSignal.timeout(60_000));
   if (!desktop.available) throw new Error(desktop.reason ?? "desktop failed readiness");
+  desktopReadyUntil.set(sandbox.id, Date.now() + DESKTOP_READY_TTL_MS);
   return sandbox;
 }
 
@@ -347,6 +358,7 @@ async function cubeCommand(sandbox: SandboxHandle, command: string): Promise<str
     60,
   );
   if ((executed.exitCode ?? 1) !== 0) {
+    desktopReadyUntil.delete(sandbox.id);
     throw new Error(
       (executed.result ?? "computer-use command failed; the desktop may still be starting - retry once").trim(),
     );
@@ -354,98 +366,112 @@ async function cubeCommand(sandbox: SandboxHandle, command: string): Promise<str
   return executed.result ?? "";
 }
 
-function cubeSequenceCommand(action: ComputerSequenceAction): string {
-  switch (action.action) {
-    case "click":
-      return `xdotool mousemove ${action.x} ${action.y} click ${
-        action.double ? "--repeat 2 --delay 100 " : ""
-      }${buttonNumber(action.button)}`;
-    case "move":
-      return `xdotool mousemove ${action.x} ${action.y}`;
-    case "drag":
-      return `xdotool mousemove ${action.startX} ${action.startY} mousedown 1 ` +
-        `mousemove --sync ${action.endX} ${action.endY} mouseup 1`;
-    case "type": {
-      const encoded = Buffer.from(action.text, "utf8").toString("base64");
-      return `printf '%s' '${encoded}' | base64 -d | ` +
-        `xdotool type --clearmodifiers --delay ${action.delayMs} --file -`;
-    }
-    case "key":
-      return x11KeyCommand(action.key, action.modifiers);
-    case "hotkey":
-      return x11HotkeyCommand(action.keys);
-    case "scroll":
-      return `xdotool mousemove ${action.x} ${action.y} click --repeat ${action.amount} ` +
-        `--delay 40 ${action.direction === "up" ? 4 : 5}`;
-    case "wait":
-      return `sleep ${(action.ms / 1000).toFixed(3)}`;
-  }
-}
 
-export function buildCubeSequenceCommand(
-  actions: readonly ComputerSequenceAction[],
-): string {
-  return actions.map(cubeSequenceCommand).join(" && ");
-}
-
-function buttonNumber(button: Button): number {
-  switch (button) {
-    case "left":
-      return 1;
-    case "middle":
-      return 2;
-    case "right":
-      return 3;
-  }
-}
-
-export async function captureSandboxScreenshot(sandbox: SandboxHandle): Promise<ComputerToolResult> {
+export async function captureSandboxScreenshot(
+  sandbox: SandboxHandle,
+  region?: ScreenshotRegion,
+): Promise<ComputerToolResult> {
   const workspaceRoot = sandboxRuntimeLayout(sandbox.providerKind ?? sandboxProviderKind()).workdir;
   const path = `${workspaceRoot}/screenshots/screenshot-${Date.now()}.png`;
   const display = sandbox.desktop?.display ?? DEFAULT_DISPLAY;
-  await cubeCommand(
+  const output = await cubeCommand(
     sandbox,
     `mkdir -p "$(dirname '${path}')"; ` +
       `size=$(xdpyinfo -display ${display} | awk '/dimensions:/{print $2; exit}'); ` +
       `ffmpeg -hide_banner -loglevel error -f x11grab -video_size "$size" -i ${display} ` +
-      `-frames:v 1 -y '${path}'`,
+      `-frames:v 1 -y '${path}' && echo "SIZE=$size"`,
   );
+  const size = /SIZE=(\d+)x(\d+)/.exec(output);
+  const displaySize = size
+    ? { width: Number(size[1]), height: Number(size[2]) }
+    : displaySizes.get(sandbox.id) ?? { width: 1920, height: 1080 };
+  displaySizes.set(sandbox.id, displaySize);
   const file = await sandbox.fs.downloadFile(path);
-  const modelScreenshot = await compressScreenshotForModel(file);
+  if (region) {
+    // Zoom: a crop of the full-resolution capture, so small text becomes readable.
+    // Coordinates stay in full-screenshot pixels; the crop does not change the space.
+    const scale = displaySize.width / screenshotWidthFor(sandbox);
+    const crop = {
+      left: Math.max(0, Math.round(region[0] * scale)),
+      top: Math.max(0, Math.round(region[1] * scale)),
+      width: Math.max(1, Math.round((region[2] - region[0]) * scale)),
+      height: Math.max(1, Math.round((region[3] - region[1]) * scale)),
+    };
+    const zoomed = await compressScreenshotForModelSized(file, { crop, allowEnlargement: true });
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Zoomed view of screenshot region [${region.join(", ")}] at ${zoomed.width}x${zoomed.height}. ` +
+            `Coordinates for actions stay in full-screenshot pixels (${screenshotWidthFor(sandbox)} wide). ${screenshotArtifactHandoff(path)}`,
+        },
+        { type: "image", data: zoomed.buffer.toString("base64"), mimeType: "image/jpeg" },
+      ],
+      structuredContent: { path, region: [...region] },
+    };
+  }
+  const shot = await compressScreenshotForModelSized(file);
+  screenshotWidths.set(sandbox.id, shot.width);
   return {
     content: [
-      { type: "image", data: modelScreenshot.toString("base64"), mimeType: "image/jpeg" },
       {
         type: "text",
-        text: screenshotArtifactHandoff(path),
+        text: `Screenshot ${shot.width}x${shot.height} of a ${displaySize.width}x${displaySize.height} display. ` +
+          `Give coordinates in screenshot pixels; they are scaled to the display. ${screenshotArtifactHandoff(path)}`,
       },
+      { type: "image", data: shot.buffer.toString("base64"), mimeType: "image/jpeg" },
     ],
-    structuredContent: { path },
+    structuredContent: { path, screenshot: { width: shot.width, height: shot.height }, display: displaySize },
   };
 }
 
-async function screenshot(claims: ToolTokenClaims): Promise<ComputerToolResult> {
-  return await captureSandboxScreenshot(await readySandbox(claims));
+function screenshotWidthFor(sandbox: SandboxHandle): number {
+  return screenshotWidths.get(sandbox.id) ?? DEFAULT_SCREENSHOT_WIDTH;
+}
+
+async function screenshot(claims: ToolTokenClaims, region?: ScreenshotRegion): Promise<ComputerToolResult> {
+  return await captureSandboxScreenshot(await readySandbox(claims), region);
 }
 
 const productionService: ComputerUseService = {
   screenshot,
   async sequence(claims, actions, captureScreenshot) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, buildCubeSequenceCommand(actions));
+    const options = { display: sandbox.desktop?.display ?? DEFAULT_DISPLAY, screenshotWidth: screenshotWidthFor(sandbox) };
+    let offset = 0;
+    for (const batch of sequenceBatches(actions)) {
+      if ("navigate" in batch) {
+        try {
+          // A provider-native desktop has no browser relay: the URL goes through the address bar.
+          if (sandbox.desktop) await cubeCommand(sandbox, addressBarNavigateCommand(batch.navigate, sandbox.desktop.browserExecutable ?? null));
+          else await navigateVisibleBrowserPage(sandbox, batch.navigate);
+        } catch (error) {
+          desktopReadyUntil.delete(sandbox.id);
+          throw new Error(`Action ${offset + 1} of ${actions.length} (navigate) failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        offset += 1;
+        continue;
+      }
+      try {
+        await cubeCommand(sandbox, buildCubeSequenceCommand(batch.shell, options));
+      } catch (error) {
+        throw new Error(describeSequenceFailure(batch.shell, offset, actions.length, error instanceof Error ? error.message : String(error)));
+      }
+      offset += batch.shell.length;
+    }
     return captureScreenshot ? await captureSandboxScreenshot(sandbox) : null;
   },
   async click(claims, x, y, button, double) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, `xdotool mousemove ${x} ${y} click ${double ? "--repeat 2 --delay 100 " : ""}${buttonNumber(button)}`);
+    await cubeCommand(sandbox, buildCubeSequenceCommand([{ action: "click", x, y, button, double, triple: false, modifiers: [] }], atomicOptions(sandbox)));
   },
   async move(claims, x, y) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, `xdotool mousemove ${x} ${y}`);
+    await cubeCommand(sandbox, buildCubeSequenceCommand([{ action: "move", x, y }], atomicOptions(sandbox)));
   },
   async drag(claims, startX, startY, endX, endY) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, `xdotool mousemove ${startX} ${startY} mousedown 1 mousemove --sync ${endX} ${endY} mouseup 1`);
+    await cubeCommand(sandbox, buildCubeSequenceCommand([{ action: "drag", startX, startY, endX, endY }], atomicOptions(sandbox)));
   },
   async type(claims, text, delayMs) {
     const sandbox = await readySandbox(claims);
@@ -465,9 +491,13 @@ const productionService: ComputerUseService = {
   },
   async scroll(claims, x, y, direction, amount) {
     const sandbox = await readySandbox(claims);
-    await cubeCommand(sandbox, `xdotool mousemove ${x} ${y} click --repeat ${amount} --delay 40 ${direction === "up" ? 4 : 5}`);
+    await cubeCommand(sandbox, buildCubeSequenceCommand([{ action: "scroll", x, y, direction, amount }], atomicOptions(sandbox)));
   },
 };
+
+function atomicOptions(sandbox: SandboxHandle) {
+  return { display: sandbox.desktop?.display ?? DEFAULT_DISPLAY, screenshotWidth: screenshotWidthFor(sandbox) };
+}
 
 let serviceOverride: ComputerUseService | null = null;
 
@@ -479,13 +509,25 @@ export const COMPUTER_USE_TOOLS = [
   {
     name: "computer_screenshot",
     description:
-      "Capture the current full desktop for private model inspection without publishing a user-facing artifact. Use it for the initial state and after an uncertain or failed transition. For predictable follow-up actions, prefer one computer_sequence with screenshot=true instead of alternating screenshots and single actions. Use artifact_publish only when the user requests the file.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      "Capture the desktop for private model inspection. The image is scaled to 1280 pixels wide; give every coordinate in screenshot pixels and they are scaled to the display. Pass region=[left, top, right, bottom] to zoom into an area at full resolution when text is too small to read. Use it for the initial state and after an uncertain or failed transition.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        region: {
+          type: "array",
+          items: { type: "integer", minimum: 0 },
+          minItems: 4,
+          maxItems: 4,
+          description: "Optional zoom: [left, top, right, bottom] in screenshot pixels; returns that area at full resolution for reading small text. Coordinates for actions stay in full-screenshot pixels.",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "computer_sequence",
     description:
-      "Primary desktop action tool. Run 1-8 OS-level actions in one ordered batch and optionally return one private post-sequence screenshot. Batch every predictable action chain, including click+type+submit and focus+hotkey+type+key, instead of issuing atomic calls. Stop the batch at the first point that genuinely needs new visual inspection. Actions support click, move, drag, type, key, hotkey, scroll, and wait.",
+      "Primary desktop action tool. Run 1-8 OS-level actions in one ordered batch; by default the batch ends with one private screenshot. Batch every predictable action chain, including click+type+submit, instead of issuing atomic calls, and stop the batch at the first point that needs new visual inspection. Coordinates are screenshot pixels. Actions: click (button, double, triple, modifiers such as shift for range selection), move, drag, type (long text is pasted, not typed), key (with modifiers and repeat), hold_key, hotkey, navigate, scroll (up, down, left, right), wait (up to 30 s). To open a URL use navigate; never type a URL into the address bar. A failure names the action that failed and what did not run.",
     inputSchema: {
       type: "object",
       properties: {
@@ -498,7 +540,7 @@ export const COMPUTER_USE_TOOLS = [
             properties: {
               action: {
                 type: "string",
-                enum: ["click", "move", "drag", "type", "key", "hotkey", "scroll", "wait"],
+                enum: ["click", "move", "drag", "type", "key", "hold_key", "hotkey", "navigate", "scroll", "wait"],
               },
               x: { type: "integer" },
               y: { type: "integer" },
@@ -506,8 +548,12 @@ export const COMPUTER_USE_TOOLS = [
               start_y: { type: "integer" },
               end_x: { type: "integer" },
               end_y: { type: "integer" },
+              url: { type: "string", description: "navigate only: absolute http or https URL to open in the visible browser page" },
               button: { type: "string", enum: ["left", "middle", "right"] },
               double: { type: "boolean" },
+              triple: { type: "boolean", description: "click only: triple click, selects a line or paragraph" },
+              repeat: { type: "integer", minimum: 1, maximum: 100, description: "key only: press this many times" },
+              duration_ms: { type: "integer", minimum: 1, maximum: MAX_HOLD_MS, description: "hold_key only" },
               text: { type: "string" },
               delay_ms: { type: "integer", minimum: 0, maximum: 1000 },
               key: { type: "string" },
@@ -516,7 +562,7 @@ export const COMPUTER_USE_TOOLS = [
                 type: "array",
                 items: { type: "string", enum: ["ctrl", "alt", "shift", "cmd"] },
               },
-              direction: { type: "string", enum: ["up", "down"] },
+              direction: { type: "string", enum: ["up", "down", "left", "right"] },
               amount: { type: "integer", minimum: 1, maximum: 100 },
               ms: { type: "integer", minimum: 0, maximum: MAX_SEQUENCE_WAIT_MS },
             },
@@ -524,7 +570,7 @@ export const COMPUTER_USE_TOOLS = [
             additionalProperties: false,
           },
         },
-        screenshot: { type: "boolean" },
+        screenshot: { type: "boolean", description: "Default true: end the batch with a private screenshot. Set false only when the next action does not depend on the result." },
         publish_screenshot: {
           type: "boolean",
           description:
@@ -564,11 +610,11 @@ export async function executeComputerUseTool(
 ): Promise<ComputerToolResult> {
   const service = serviceOverride ?? productionService;
   try {
-    if (name === "computer_screenshot") return await service.screenshot(claims);
+    if (name === "computer_screenshot") return await service.screenshot(claims, screenshotRegion(args.region));
     if (name === "computer_sequence") {
       const actions = sequenceActions(args.actions);
       const publishProof = sequenceRequestedProof(args);
-      const captured = await service.sequence(claims, actions, args.screenshot === true);
+      const captured = await service.sequence(claims, actions, args.screenshot !== false);
       if (publishProof) {
         if (!captured) throw new Error("publish_screenshot requires a captured screenshot path");
         const published = await executeArtifactTool(claims, "artifact_publish", {

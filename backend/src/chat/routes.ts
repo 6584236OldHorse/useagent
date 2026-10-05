@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
-import { auth } from "../auth";
+import { resolveSession } from "../auth/session";
 import { orgScope } from "../middleware/org";
 import { isMemoryScope, type MemoryScope } from "../memory/scope";
 import { resolveChatProviderCredential } from "../provider-gateway/credentials";
@@ -47,12 +47,12 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
   return out.some((m) => m.role === "user") ? out : null;
 }
 
-/** The REAL better-auth user for this request (null when anonymous / dev-org
+/** The real authenticated user for this request (null when anonymous / dev-org
  *  fallback), so personal-scope retrieval fails closed - `c.get("userId")` is
  *  filled with the dev user by the org middleware and must not be trusted here. */
 async function authedUserId(headers: Headers): Promise<string | null> {
   try {
-    const session = await auth.api.getSession({ headers });
+    const session = await resolveSession(headers);
     return session?.user.id ?? null;
   } catch {
     return null;

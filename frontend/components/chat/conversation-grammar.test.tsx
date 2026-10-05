@@ -174,7 +174,8 @@ function fanOutEvents(): StoredCanonicalEvent[] {
 }
 
 test("fan-out turn rows always render a visible heading", () => {
-  const html = render([makeTurn("run-fanout", "completed", fanOutEvents())]);
+  // Rows are in the DOM while the turn works; a settled turn folds them behind its header.
+  const html = render([makeTurn("run-fanout", "running", fanOutEvents())]);
   const rows = html.split('data-testid="trace-row"').slice(1);
   expect(rows.length).toBeGreaterThan(0);
   for (const row of rows) {
@@ -346,20 +347,26 @@ test("settled turn renders its work as one trace block", () => {
   const timelineWrapper = html.match(/<div[^>]*data-timeline-source="canonical"[^>]*>/)?.[0] ?? "";
   expect(timelineWrapper).toContain("space-y-3");
   expect(html.match(/data-testid="turn-trace"/g)).toHaveLength(1);
-  // A plain thread opens the trace: the skill receipt and the 3 tools are its
-  // step lines, one short line each, in the Thinking grammar; the pre-tool
-  // prose is a narration line between them, with no verb and no chip.
-  expect(html).toContain('aria-expanded="true"');
-  expect(html.match(/data-testid="trace-row"/g)).toHaveLength(4);
-  expect(html.match(/data-testid="trace-narration"/g)).toHaveLength(1);
+  // A settled plain thread folds the trace behind its header: the counts stay
+  // on the header, the rows wait behind the fold, and the reply is the block.
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).not.toContain('data-testid="trace-row"');
   // The context marker is a receipt, not a tool call. Pre-tool prose is one
   // narration message inside the trace; the durable summary owns the reply.
   expect(html).toContain("3 tool calls, 1 message, 1 failed");
-  expect(html).toContain(">Loaded skill<");
-  expect(html).toContain(">fix-loop<");
-  expect(html).toContain(">Run<");
-  expect(html).toContain(">bun test retry<");
-  expect(html).toContain('aria-label="Completed"');
+  // While the turn works the same events are its open step lines: the skill
+  // receipt and the 3 tools, one short line each, in the Thinking grammar; the
+  // pre-tool prose is a narration line between them, with no verb and no chip.
+  const working = render([makeTurn("run-settled", "running", settledEvents())]);
+  expect(working).toContain('aria-expanded="true"');
+  expect(working.match(/data-testid="trace-row"/g)).toHaveLength(4);
+  expect(working.match(/data-testid="trace-narration"/g)).toHaveLength(1);
+  expect(working).toContain(">Loaded skill<");
+  expect(working).toContain(">fix-loop<");
+  expect(working).toContain(">Run<");
+  expect(working).toContain(">bun test retry<");
+  expect(working).toContain('aria-label="Completed"');
+  expect(working).toContain("Scoping the retry budget now.");
   // The old grammars no longer render tool nodes: no T3 work rows, no overflow
   // fold, no marker rows, no legacy ToolStepRow.
   expect(html).not.toContain('data-session-ui="work-group"');
@@ -368,9 +375,7 @@ test("settled turn renders its work as one trace block", () => {
   expect(html).not.toContain('data-testid="marker-row"');
   expect(html).not.toContain('data-testid="tool-row"');
 
-  // Narration followed by work stays in the trace. The durable summary is the
-  // only terminal answer outside it.
-  expect(html).toContain("Scoping the retry budget now.");
+  // The durable summary is the only terminal answer outside the folded trace.
   expect(html).toContain("Scoped the retry budget per attempt chain.");
 });
 
@@ -440,20 +445,24 @@ test("a run that failed at boot traces its category with the full reason and cop
   const header = html.split('data-testid="thinking-header"')[1]?.split("</button>")[0] ?? "";
   expect(header).toContain(">Engine error<");
   expect(header).toContain(escaped);
-  expect(html.match(/data-testid="trace-row"/g)).toHaveLength(1);
-  expect(html).toContain('data-status="failed"');
+  expect(header).toContain("text-text-error-primary");
+  // Settled, so the terminal row waits behind the fold; the header already says why.
+  expect(html).toContain('aria-expanded="false"');
   // The failure banner shows the whole reason with its own copy affordance.
   expect(html).toContain('data-session-ui="thread-error-banner"');
   expect(html).toContain('aria-label="Copy error"');
   expect(html).not.toContain("line-clamp");
 });
 
-test("settled turn shows the failed step as an x in the open trace", () => {
+test("a settled turn with a failed step folds its trace and keeps the count, not the alarm, on the header", () => {
   const html = render([makeTurn("run-settled", "completed", settledEvents())]);
-  expect(html).toContain('data-status="failed"');
-  expect(html).toContain('aria-label="Failed"');
-  expect(html).toContain(">cat missing.txt<");
-  // Payloads stay behind the row until opened: the error text never renders inline.
+  const header = html.split('data-testid="thinking-header"')[1]?.split("</button>")[0] ?? "";
+  expect(html).toContain('aria-expanded="false"');
+  expect(header).toContain("1 failed");
+  // A turn that finished is not painted as a failure because one step failed along the way.
+  expect(header).not.toContain("text-text-error-primary");
+  // The failed step's x is a row inside the fold (turn-trace tests cover the row grammar);
+  // its error text never renders inline.
   expect(html).not.toContain("No such file or directory");
 });
 

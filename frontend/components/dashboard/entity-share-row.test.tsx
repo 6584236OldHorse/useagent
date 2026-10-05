@@ -3,12 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EntityShareRow } from "./entity-share-row";
 
 describe("EntityShareRow", () => {
-  test("pill width is the value's share of the max", () => {
-    const html = renderToStaticMarkup(<EntityShareRow label="acme/web" value={5} max={10} />);
+  test("bar width is the value's share while the full label stays outside its clipping", () => {
+    const label = "a-very-long-organization/a-very-long-project-name";
+    const html = renderToStaticMarkup(<EntityShareRow label={label} value={5} max={10} />);
     expect(html).toContain("width:50%");
-    expect(html).toContain("acme/web");
-    expect(html).toContain("overflow-hidden");
-    expect(html).not.toContain("min-w-fit");
+    expect(html).toContain(label);
+    expect(html).toContain("overflow-wrap:anywhere");
+    expect(html).not.toContain("truncate");
   });
 
   test("a small non-zero share still floors to a visible bar", () => {

@@ -16,6 +16,7 @@ import { type SandboxHandle } from "../sandboxes/provider";
 import { sessionCapabilities } from "./capabilities";
 import {
   piBridgeManager,
+  piBridgeMatchesExpectedSandbox,
   type PiBridgeManager,
   type PiBridgeSession,
 } from "./pi-rpc-bridge";
@@ -24,7 +25,15 @@ import {
   PI_CODING_AGENT_VERSION,
   type PreparedPiRuntime,
 } from "./pi-runtime-config";
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import {
+  ExpectedSandboxMismatchError,
+  resolveExpectedSandbox,
+  resolveSandboxBindingForSandbox,
+} from "../sandboxes/binding";
+import {
+  parseExpectedSandboxBinding,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
 
 interface PiStartMetadata {
   readonly workdir: string;
@@ -50,8 +59,13 @@ function error(code: string, message: string) {
   return { status: "error" as const, code, message };
 }
 
-async function resolveRuntime(runtime: HarnessRuntime): Promise<SandboxHandle | null> {
+async function resolveRuntime(
+  runtime: HarnessRuntime,
+  expected?: ExpectedSandboxBinding,
+  threadId?: string,
+): Promise<SandboxHandle | null> {
   if (runtime.kind !== "sandbox") return null;
+  if (expected) return await resolveExpectedSandbox(expected, threadId!);
   try {
     return await (await resolveSandboxBindingForSandbox(runtime.id)).provider.get(runtime.id);
   } catch {
@@ -89,6 +103,29 @@ const defaults: PiProviderDriverDependencies = {
   bridges: piBridgeManager,
 };
 
+async function resolveDriverRuntime(
+  dependencies: PiProviderDriverDependencies,
+  runtime: HarnessRuntime,
+  control?: Record<string, unknown>,
+  threadId = typeof control?.threadId === "string" ? control.threadId : undefined,
+): Promise<SandboxHandle | null> {
+  const expected = parseExpectedSandboxBinding(control?.expectedSandbox);
+  if (expected && (
+    runtime.kind !== "sandbox" ||
+    runtime.id !== expected.sandboxId ||
+    !threadId
+  )) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  const sandbox = expected
+    ? await dependencies.resolveRuntime(runtime, expected, threadId)
+    : await dependencies.resolveRuntime(runtime);
+  if (expected && sandbox?.id !== expected.sandboxId) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  return sandbox;
+}
+
 export function makePiProviderDriver(
   dependencies: PiProviderDriverDependencies = defaults,
 ): ProviderDriver {
@@ -117,17 +154,40 @@ export function makePiProviderDriver(
     async start(request: ProviderStartRequest) {
       const start = metadata(request.metadata);
       if (!start) return error("invalid_start_metadata", "Pi start metadata is incomplete");
-      const sandbox = await dependencies.resolveRuntime(request.runtime);
+      let expected: ExpectedSandboxBinding | null = null;
+      let sandbox: SandboxHandle | null;
+      if (request.metadata?.expectedSandbox != null) {
+        try {
+          expected = parseExpectedSandboxBinding(request.metadata.expectedSandbox);
+          sandbox = await resolveDriverRuntime(
+            dependencies,
+            request.runtime,
+            request.metadata,
+            request.threadId,
+          );
+        } catch (cause) {
+          return error(
+            cause instanceof ExpectedSandboxMismatchError ? cause.code : "session_create_failed",
+            cause instanceof Error ? cause.message : "Pi start failed",
+          );
+        }
+      } else {
+        sandbox = await dependencies.resolveRuntime(request.runtime);
+      }
       if (!sandbox) return error("runtime_unreachable", "Pi sandbox is unreachable");
       try {
         const bridge = await dependencies.bridges.ensure({
           sandbox,
           workdir: start.workdir,
           runtime: start.runtime,
+          ...(expected ? { expectedSandbox: expected } : {}),
         });
         return { status: "ok", value: canonicalSession(request.runtime, bridge, start.runtime.knowledgeTools) };
       } catch (cause) {
-        return error("session_create_failed", cause instanceof Error ? cause.message : "Pi start failed");
+        return error(
+          cause instanceof ExpectedSandboxMismatchError ? cause.code : "session_create_failed",
+          cause instanceof Error ? cause.message : "Pi start failed",
+        );
       }
     },
 
@@ -137,7 +197,25 @@ export function makePiProviderDriver(
       }
       const start = metadata(request.metadata);
       if (!start) return error("invalid_start_metadata", "Pi resume metadata is incomplete");
-      const sandbox = await dependencies.resolveRuntime(request.session.runtime);
+      let expected: ExpectedSandboxBinding | null = null;
+      let sandbox: SandboxHandle | null;
+      if (request.metadata?.expectedSandbox != null) {
+        try {
+          expected = parseExpectedSandboxBinding(request.metadata.expectedSandbox);
+          sandbox = await resolveDriverRuntime(
+            dependencies,
+            request.session.runtime,
+            request.metadata,
+          );
+        } catch (cause) {
+          return error(
+            cause instanceof ExpectedSandboxMismatchError ? cause.code : "session_resume_failed",
+            cause instanceof Error ? cause.message : "Pi resume failed",
+          );
+        }
+      } else {
+        sandbox = await dependencies.resolveRuntime(request.session.runtime);
+      }
       if (!sandbox) return error("runtime_unreachable", "Pi sandbox is unreachable");
       try {
         const bridge = await dependencies.bridges.ensure({
@@ -145,13 +223,17 @@ export function makePiProviderDriver(
           workdir: start.workdir,
           runtime: start.runtime,
           resumeSessionFile: request.session.nativeSessionId,
+          ...(expected ? { expectedSandbox: expected } : {}),
         });
         return {
           status: "ok",
           value: canonicalSession(request.session.runtime, bridge, start.runtime.knowledgeTools),
         };
       } catch (cause) {
-        return error("session_resume_failed", cause instanceof Error ? cause.message : "Pi resume failed");
+        return error(
+          cause instanceof ExpectedSandboxMismatchError ? cause.code : "session_resume_failed",
+          cause instanceof Error ? cause.message : "Pi resume failed",
+        );
       }
     },
 
@@ -159,9 +241,22 @@ export function makePiProviderDriver(
       if (!providerSessionMatchesDriver(driver, request.session)) {
         return error("stale_session", "Pi session protocol or generation is stale");
       }
-      const bridge = dependencies.bridges.get(request.session.nativeSessionId);
-      if (!bridge) return error("session_unreachable", "Pi RPC session is not live");
       try {
+        const expected = parseExpectedSandboxBinding(request.metadata?.expectedSandbox);
+        const sandbox = expected
+          ? await resolveDriverRuntime(
+              dependencies,
+              request.session.runtime,
+              request.metadata,
+              request.threadId,
+            )
+          : null;
+        const bridge = dependencies.bridges.get(request.session.nativeSessionId);
+        if (!bridge) return error("session_unreachable", "Pi RPC session is not live");
+        if (sandbox && expected && !piBridgeMatchesExpectedSandbox(bridge, expected)) {
+          const mismatch = new ExpectedSandboxMismatchError();
+          return error(mismatch.code, mismatch.message);
+        }
         if (request.input.kind === "prompt") {
           const delivery = request.metadata?.delivery;
           if (delivery === "steer") {
@@ -186,16 +281,36 @@ export function makePiProviderDriver(
         }
         return { status: "ok" };
       } catch (cause) {
-        return error("steer_failed", cause instanceof Error ? cause.message : "Pi steer failed");
+        return error(
+          cause instanceof ExpectedSandboxMismatchError ? cause.code : "steer_failed",
+          cause instanceof Error ? cause.message : "Pi steer failed",
+        );
       }
     },
 
-    async cancel(session, reason): Promise<HarnessOperationResult> {
+    async cancel(session, reason, control): Promise<HarnessOperationResult> {
       if (!providerSessionMatchesDriver(driver, session)) {
         return error("stale_session", "Pi session protocol or generation is stale");
       }
+      let sandbox: SandboxHandle | null = null;
+      let expected: ExpectedSandboxBinding | null = null;
+      try {
+        expected = parseExpectedSandboxBinding(control?.expectedSandbox);
+        if (expected) {
+          sandbox = await resolveDriverRuntime(dependencies, session.runtime, control);
+        }
+      } catch (cause) {
+        return error(
+          cause instanceof ExpectedSandboxMismatchError ? cause.code : "cancel_failed",
+          cause instanceof Error ? cause.message : "Pi cancel failed",
+        );
+      }
       const bridge = dependencies.bridges.get(session.nativeSessionId);
       if (!bridge) return error("session_unreachable", "Pi RPC session is not live");
+      if (sandbox && expected && !piBridgeMatchesExpectedSandbox(bridge, expected)) {
+        const mismatch = new ExpectedSandboxMismatchError();
+        return error(mismatch.code, mismatch.message);
+      }
       try {
         await bridge.command({ kind: "cancel", reason });
         return { status: "ok" };
@@ -237,8 +352,8 @@ function sessionFromHandle(handle: HarnessSessionHandle): HarnessSession {
 export const piHarness: HarnessAdapter = {
   provider: "pi",
   capabilities: () => providerDriverHarnessCapabilities(piProviderDriver),
-  cancel(handle, reason) {
-    return piProviderDriver.cancel(sessionFromHandle(handle), reason);
+  cancel(handle, reason, metadata) {
+    return piProviderDriver.cancel(sessionFromHandle(handle), reason, metadata);
   },
   reconcile() {
     return Promise.resolve(providerDriverUnsupported(

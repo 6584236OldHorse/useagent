@@ -272,16 +272,34 @@ describe("shared theme tokens", () => {
     expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
   });
 
-  test("selected navigation rows keep a white label readable at BOTH gradient stops", () => {
-    // accent-500 (#2b7fff) at the top stop only reached 3.76:1, so the
-    // selected sidebar and settings-rail rows use accent-600 to accent-700.
-    expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
-    expect(contrast("#ffffff", "#1447e6")).toBeGreaterThanOrEqual(4.5);
-    for (const rel of ["components/shell/sidebar-nav.tsx", "app/settings/settings-rail.tsx"]) {
+  test("navigation rows stay readable without an accent fill", () => {
+    // The selected sidebar and settings-rail rows used an accent gradient with
+    // a white label; since 2026-09-11 they share the hover surface with primary
+    // text, and selection carries weight because that surface is one step from
+    // the rail (neutral-200 on neutral-100 in light, neutral-700 on neutral-800
+    // in dark) and identical to hover.
+    for (const rel of ["components/shell/sidebar-nav.tsx", "app/(workspace)/settings/settings-rail.tsx"]) {
       const source = readSource(rel);
-      expect(source).toContain("from-accent-600 to-accent-700 text-white");
-      expect(source).not.toContain("from-accent-500 to-accent-600");
+      expect(source).toContain("bg-background-secondary-hover font-semibold text-text-primary");
+      expect(source).not.toContain("from-accent-");
+      expect(source).not.toContain("shadow-nav-selected");
     }
+    // Primary text on the selected pill, light (#0a0a0a on #ebebeb) and dark (#fafafa on #2e2e2e).
+    expect(contrast("#0a0a0a", "#ebebeb")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#fafafa", "#2e2e2e")).toBeGreaterThanOrEqual(4.5);
+    // Idle icons use the idle label colour, text-secondary, which clears the 3:1
+    // non-text floor on the rail where the icon-tertiary grey (#a1a1a1) did not.
+    for (const rel of ["components/shell/sidebar-nav.tsx", "components/shell/app-sidebar-frame.tsx"]) {
+      const source = readSource(rel);
+      expect(source).not.toContain("text-foreground-icon-tertiary");
+    }
+    expect(lightSemantic["--color-text-secondary"]).toBe("var(--color-neutral-600)");
+    expect(contrast("#525252", "#f5f5f5")).toBeGreaterThanOrEqual(3);
+    expect(contrast("#a1a1a1", "#f5f5f5")).toBeLessThan(3);
+    // Sakura and Phosphor light re-point text-secondary to their own neutral-500.
+    expect(contrast("#8a6675", "#fbf3f5")).toBeGreaterThanOrEqual(3);
+    expect(contrast("#4e7358", "#f2f8f3")).toBeGreaterThanOrEqual(3);
+    expect(contrast("#d4d4d4", "#262626")).toBeGreaterThanOrEqual(3);
   });
 
   test("every standalone dark overlay defines the same component token set as Dusk", () => {

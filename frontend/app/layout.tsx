@@ -1,8 +1,10 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter, Inter_Tight, JetBrains_Mono } from 'next/font/google';
+import { headers } from 'next/headers';
 
 import { cx } from '@/utils/cx';
 import { Providers } from '@/app/providers';
+import { RoutePrefetch } from '@/components/shell/route-prefetch';
 
 import './globals.css';
 
@@ -40,9 +42,10 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
     <html
       lang='en'
@@ -55,7 +58,8 @@ export default function RootLayout({
       )}
     >
       <body className='bg-background-primary-default text-text-primary'>
-        <Providers>{children}</Providers>
+        <Providers nonce={nonce}>{children}</Providers>
+        <RoutePrefetch />
       </body>
     </html>
   );

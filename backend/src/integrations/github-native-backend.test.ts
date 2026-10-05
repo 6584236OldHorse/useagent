@@ -115,13 +115,23 @@ describe("GitHub native connection backend", () => {
     await expect(instance.completeInstall(901)).rejects.toThrow("installation is suspended");
   });
 
-  test("rejects installations whose permissions exceed the read-only contract", async () => {
+  test("accepts only publication write permissions and preserves their actual scope", async () => {
     const instance = backend(async () =>
-      response(200, installation({ permissions: { contents: "write", metadata: "read" } })),
+      response(200, installation({ permissions: {
+        contents: "write", pull_requests: "write", issues: "read", metadata: "read",
+      } })),
     );
-    await expect(instance.completeInstall(901)).rejects.toThrow(
-      "non-read-only permissions: contents:write",
-    );
+    await expect(instance.completeInstall(901)).resolves.toMatchObject({
+      scopes: ["contents:write", "issues:read", "metadata:read", "pull_requests:write"],
+    });
+    for (const permission of ["administration", "issues", "workflows"]) {
+      const excessive = backend(async () => response(200, installation({
+        permissions: { contents: "write", pull_requests: "write", [permission]: "write" },
+      })));
+      await expect(excessive.completeInstall(901)).rejects.toThrow(
+        `unsupported permissions: ${permission}:write`,
+      );
+    }
   });
 
   test("disconnect is idempotent when GitHub already removed the installation", async () => {

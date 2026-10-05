@@ -73,6 +73,9 @@ export async function runNativeBridgeTurn(
   persistEvent: typeof recordProviderEvent = recordProviderEvent,
 ): Promise<string> {
   const { ctx, driver, session, bridge } = options;
+  const controlMetadata = ctx.expectedSandbox
+    ? { expectedSandbox: ctx.expectedSandbox, threadId: ctx.threadId ?? ctx.runId }
+    : undefined;
   const sequence = new NativeBridgeSequencer(session.nativeSessionId);
   const durableDeltas = new NativeBridgeDeltaAccumulator();
   let summary = "";
@@ -185,7 +188,7 @@ export async function runNativeBridgeTurn(
     unsubscribe();
   };
   const onAbort = () => {
-    void driver.cancel(session, "turn aborted").then(
+    void driver.cancel(session, "turn aborted", controlMetadata).then(
       (result) => {
         if (result.status !== "ok") {
           rejectSettled(new Error(options.redact.text(
@@ -216,6 +219,7 @@ export async function runNativeBridgeTurn(
         threadId: ctx.threadId ?? ctx.runId,
         session,
         input: { kind: "prompt", text: options.prompt, model: ctx.model },
+        metadata: controlMetadata,
         signal: ctx.signal,
       });
       if (result.status !== "ok") {

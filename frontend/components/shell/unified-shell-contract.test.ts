@@ -26,12 +26,18 @@ describe("unified shell contract", () => {
     const { appShell } = shellSources();
 
     expect(appShell).toContain("<SidebarProvider");
-    expect(appShell).toContain("h-dvh overflow-hidden bg-sidebar");
+    expect(appShell).toContain(
+      "h-dvh min-h-0 overflow-hidden bg-sidebar pt-[var(--desktop-titlebar-height,0px)]",
+    );
     expect(appShell).toContain("<SidebarInset");
     expect(appShell).toContain("md:peer-data-[variant=inset]:mt-0");
     expect(appShell).toContain("md:peer-data-[variant=inset]:rounded-t-none");
     expect(appShell).not.toContain("rounded-2xl");
     expect(appShell).not.toContain("shadow-regular");
+  });
+
+  test("mounts native window chrome in the global provider stack", () => {
+    expect(readFromFrontend("app/providers.tsx")).toContain("<DesktopTitlebar />");
   });
 
   test("shares one AppShell thread snapshot across the rail, the panel, and the page", () => {
@@ -99,7 +105,7 @@ describe("unified shell contract", () => {
   });
 
   test("lets Settings use the full application canvas", () => {
-    const settings = readFromFrontend("app/settings/page.tsx");
+    const settings = readFromFrontend("app/(workspace)/settings/page.tsx");
 
     expect(settings).toContain('className="w-full min-w-0 px-6 py-8 lg:px-10"');
     expect(settings).not.toContain("max-w-4xl");
@@ -146,14 +152,14 @@ describe("unified shell contract", () => {
     expect(sessionView).toContain(
       'const hasRuntimeSurfaces = normalizeEngine(newest.engine) !== "chat"',
     );
-    expect(sessionView).toContain("const railOpen = railOverride ?? hasRuntimeSurfaces");
+    expect(sessionView).toContain("const railOpen = railOverride ?? (railDefaultOpen && hasRuntimeSurfaces)");
   });
 
   test("uses authenticated repository data for project shortcuts", () => {
     const projects = read("./sidebar-projects.tsx");
     // The per-project actions menu owns the "start a thread in this repo" route.
     const projectMenu = read("./sidebar-project-menu.tsx");
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
     expect(projects).toContain('backendFetch("/api/repos"');
     expect(projectMenu).toContain("encodeURIComponent(group.fullName");
@@ -194,15 +200,15 @@ describe("unified shell contract", () => {
   });
 
   test("names the optional skill and playbook control when nothing is selected", () => {
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
     expect(composer).toContain('triggerLabel="Playbook or skills"');
     expect(composer).toContain('label: "Playbook or skills"');
   });
 
   test("keeps context actions expandable and the primary action inline", () => {
-    const composer = readFromFrontend("app/agent/new/new-task-composer.tsx");
-    const newThreadPage = readFromFrontend("app/agent/new/page.tsx");
+    const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
+    const newThreadPage = readFromFrontend("app/(workspace)/agent/new/page.tsx");
     // The add-context rows (upload, Create, GitHub) live in a shared module
     // consumed by BOTH the new-thread shelf and the reply composer popover.
     const addMenu = readFromFrontend("components/chat/composer-add-menu.tsx");
@@ -317,7 +323,7 @@ describe("unified shell contract", () => {
 
     expect(composer).toContain("maxHeight={180}");
     expect(composer).toContain(
-      '"grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
+      '"@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
     );
     expect(composer).toContain(
       'hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6"',

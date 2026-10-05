@@ -14,6 +14,8 @@ export function createSlidingInactivityWatchdog(
   let timer: ReturnType<typeof setTimeout>;
   const arm = (): void => {
     clearTimeout(timer);
+    // No window means no watchdog: the run is bounded by its own work, not a clock.
+    if (!Number.isFinite(timeoutMs)) return;
     timer = setTimeout(() => {
       if (disposed) return;
       disposed = true;

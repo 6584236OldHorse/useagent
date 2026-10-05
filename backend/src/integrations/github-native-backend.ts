@@ -138,16 +138,17 @@ function signAppJwt(config: GithubNativeConnectionConfig, nowMs: number): string
 function permissionScopes(permissions: Readonly<Record<string, string>> | undefined): string[] {
   if (!permissions) return [];
   const elevated = Object.entries(permissions)
-    .filter(([, access]) => access !== "read" && access !== "none")
+    .filter(([permission, access]) => access !== "read" && access !== "none" &&
+      !(access === "write" && (permission === "contents" || permission === "pull_requests")))
     .map(([permission, access]) => `${permission}:${access}`);
   if (elevated.length > 0) {
     throw new Error(
-      `GitHub installation has non-read-only permissions: ${elevated.sort().join(", ")}`,
+      `GitHub installation has unsupported permissions: ${elevated.sort().join(", ")}`,
     );
   }
   return Object.entries(permissions)
-    .filter(([, access]) => access === "read")
-    .map(([permission]) => `${permission}:read`)
+    .filter(([, access]) => access !== "none")
+    .map(([permission, access]) => `${permission}:${access}`)
     .sort();
 }
 

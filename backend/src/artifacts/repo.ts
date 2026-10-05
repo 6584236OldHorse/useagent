@@ -9,6 +9,7 @@ import {
   type ArtifactWorkpieceState,
 } from "@useagent/artifact-workspace";
 import { artifacts } from "../db/schema";
+import { stableJson } from "../github/publication-repo-input";
 import { inferWorkpieceKind } from "./workpiece";
 
 export type ArtifactRecord = typeof artifacts.$inferSelect;
@@ -28,7 +29,9 @@ export function toArtifactDescriptor(row: ArtifactRecord): ArtifactDescriptor {
     created_at: row.createdAt.toISOString(),
     preview_url: content,
     download_url: `${content}?download=1`,
-    preview_pdf_url: row.previewStorageKey ? `/api/artifacts/${row.id}/preview` : null,
+    preview_pdf_url: row.previewStorageKey
+      ? `/api/artifacts/${row.id}/preview?v=${row.previewStorageKey}`
+      : null,
     workpiece: row.workpieceKind
       ? {
           kind: row.workpieceKind,
@@ -87,7 +90,12 @@ export async function createArtifactRecord(input: {
         workpieceKind,
         workpieceState: input.workpieceState,
       })
-      .where(and(eq(artifacts.id, existing.id), isNull(artifacts.workpieceState)))
+      .where(and(
+        eq(artifacts.id, existing.id),
+        eq(artifacts.sha256, existing.sha256),
+        eq(artifacts.workpieceRevision, existing.workpieceRevision),
+        isNull(artifacts.workpieceState),
+      ))
       .returning();
     if (seeded) return { row: seeded, created: false };
 
@@ -100,14 +108,20 @@ export async function createArtifactRecord(input: {
       .where(eq(artifacts.id, existing.id))
       .limit(1);
     if (!current) throw new Error("artifact idempotency conflict disappeared");
-    if (JSON.stringify(current.workpieceState) !== JSON.stringify(input.workpieceState)) {
+    if (
+      current.sha256 !== existing.sha256 ||
+      current.workpieceRevision !== existing.workpieceRevision
+    ) {
+      throw new Error("artifact changed while its editable companion was being attached");
+    }
+    if (stableJson(current.workpieceState) !== stableJson(input.workpieceState)) {
       throw new Error("artifact editable companion conflicts with the existing publication");
     }
     return { row: current, created: false };
   }
   if (
     input.workpieceState &&
-    JSON.stringify(existing.workpieceState) !== JSON.stringify(input.workpieceState)
+    stableJson(existing.workpieceState) !== stableJson(input.workpieceState)
   ) {
     throw new Error("artifact editable companion conflicts with the existing publication");
   }
@@ -186,13 +200,15 @@ export async function applyArtifactPdfPageRevision(input: {
   readonly sha256: string;
   readonly storageKey: string;
   readonly sizeBytes: number;
+  readonly exec?: Executor;
 }): Promise<ArtifactRecord | null> {
-  const [updated] = await db
+  const [updated] = await (input.exec ?? db)
     .update(artifacts)
     .set({
       sha256: input.sha256,
       storageKey: input.storageKey,
       sizeBytes: input.sizeBytes,
+      previewStorageKey: null,
       workpieceRevision: sql`${artifacts.workpieceRevision} + 1`,
     })
     .where(
@@ -235,6 +251,7 @@ export async function reviseArtifactPublication(input: {
       sizeBytes: input.sizeBytes,
       workpieceKind: input.workpieceKind,
       workpieceState: input.workpieceState,
+      previewStorageKey: null,
       workpieceRevision: sql`${artifacts.workpieceRevision} + 1`,
     })
     .where(and(eq(artifacts.orgId, input.orgId), eq(artifacts.id, input.id)))
@@ -247,13 +264,20 @@ export async function reviseArtifactPublication(input: {
 export async function updateArtifactPreview(input: {
   readonly orgId: string;
   readonly id: string;
+  readonly expectedSha256: string;
+  readonly expectedWorkpieceRevision: number;
   readonly previewStorageKey: string | null;
   readonly exec?: Executor;
 }): Promise<ArtifactRecord | null> {
   const [updated] = await (input.exec ?? db)
     .update(artifacts)
     .set({ previewStorageKey: input.previewStorageKey })
-    .where(and(eq(artifacts.orgId, input.orgId), eq(artifacts.id, input.id)))
+    .where(and(
+      eq(artifacts.orgId, input.orgId),
+      eq(artifacts.id, input.id),
+      eq(artifacts.sha256, input.expectedSha256),
+      eq(artifacts.workpieceRevision, input.expectedWorkpieceRevision),
+    ))
     .returning();
   return updated ?? null;
 }
@@ -269,8 +293,9 @@ export async function getArtifact(id: string): Promise<ArtifactRecord | null> {
 export async function findArtifactByOrgAndSha256(
   orgId: string,
   sha256: string,
+  exec: Executor = db,
 ): Promise<ArtifactRecord | null> {
-  const [row] = await db
+  const [row] = await exec
     .select()
     .from(artifacts)
     .where(and(eq(artifacts.orgId, orgId), eq(artifacts.sha256, sha256)))

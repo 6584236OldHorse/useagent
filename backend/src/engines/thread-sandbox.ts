@@ -19,7 +19,7 @@ import {
   resolveSandboxResourceTarget,
   sandboxMeetsResourceTarget,
 } from "./daytona-resources";
-import { bindingRecord, resolveSandboxBindingForRun, resolveSandboxBindingForSandbox, resolveSandboxBindingForThread, type SandboxBinding } from "../sandboxes/binding";
+import { assertExpectedSandboxBinding, ExpectedSandboxMismatchError, bindingRecord, resolveSandboxBindingForRun, resolveSandboxBindingForSandbox, resolveSandboxBindingForThread, type SandboxBinding } from "../sandboxes/binding";
 import { provisionSandbox } from "./sandbox-provision";
 import { noteLostWorkspace } from "./workspace-continuity";
 
@@ -66,16 +66,22 @@ export async function reviveRetainedSandbox(
     credentialsCurrent: providerGatewaySandboxIsCurrent,
   },
 ): Promise<{ sandbox: SandboxHandle; binding: SandboxBinding }> {
+  const expected = ctx.expectedSandbox;
+  if (expected && (!ctx.orgId || !ctx.threadId || expected.sandboxId !== sandboxId)) {
+    throw new ExpectedSandboxMismatchError();
+  }
   const cached = ctx.threadId ? getLiveThreadSandbox(ctx.threadId) : null;
   const binding = ctx.threadId && ctx.orgId
-    ? await dependencies.threadBinding(ctx.orgId, ctx.threadId)
+    ? await dependencies.threadBinding(ctx.orgId, ctx.threadId, expected ? { expectedSandbox: expected } : undefined)
     : await dependencies.sandboxBinding(sandboxId);
+  if (expected) assertExpectedSandboxBinding(expected, binding, ctx.orgId!, sandboxId);
   let sandbox: SandboxHandle;
-  if (cached?.id === sandboxId) {
+  if (!expected && cached?.id === sandboxId) {
     sandbox = cached;
   } else {
     sandbox = await binding.provider.get(sandboxId);
   }
+  if (expected && sandbox.id !== expected.sandboxId) throw new ExpectedSandboxMismatchError();
   const state = (sandbox as { state?: string }).state;
   if (state === "stopped" || state === "paused" || state === "archived") {
     await ctx.emit({ kind: "task", label: `Resuming thread sandbox ${sandbox.id.slice(0, 8)}…`, chip: options.chip });
@@ -106,8 +112,10 @@ export async function resolveRetainedSandbox(
     forget: forgetLiveThreadSandbox,
   },
 ): Promise<{ sandbox: SandboxHandle; binding: SandboxBinding } | null> {
+  if (ctx.expectedSandbox && !ctx.threadId) throw new ExpectedSandboxMismatchError();
   if (!ctx.threadId) return null;
   const sandboxId = await dependencies.getSandboxId(ctx.threadId);
+  if (ctx.expectedSandbox && sandboxId !== ctx.expectedSandbox.sandboxId) throw new ExpectedSandboxMismatchError();
   if (!sandboxId) return null;
   try {
     const { sandbox, binding } = await dependencies.revive(ctx, sandboxId, { chip: options.chip });
@@ -121,6 +129,7 @@ export async function resolveRetainedSandbox(
   } catch (error) {
     if (error instanceof RetainedSandboxRuntimeMismatchError) throw error;
     if (error instanceof SandboxNotFoundError) {
+      if (ctx.expectedSandbox) throw new ExpectedSandboxMismatchError();
       dependencies.forget(ctx.threadId, sandboxId);
       return null;
     }
@@ -132,7 +141,9 @@ export async function acquireThreadSandbox(
   ctx: EngineRunContext,
   options: ThreadSandboxOptions,
 ): Promise<ThreadSandboxLease> {
-  const binding = await resolveSandboxBindingForRun(ctx);
+  const binding = ctx.expectedSandbox
+    ? await resolveSandboxBindingForThread(ctx.orgId ?? "", ctx.threadId ?? "", { expectedSandbox: ctx.expectedSandbox })
+    : await resolveSandboxBindingForRun(ctx);
   const resourceTarget = resolveSandboxResourceTarget();
   const endRetained = ctx.timing?.begin(RUN_TIMING_STAGES.sandboxRetained);
   let sandbox: SandboxHandle | null;

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { acceptRunCommand } from "../src/commands";
+import { acceptRunCommand, setRunAdmission } from "../src/commands";
+import { LocalArtifactStorage, setArtifactStorageForTest } from "../src/artifacts/storage";
 import { db } from "../src/db/client";
 import { commands, runs, userUploads } from "../src/db/schema";
 import { getRun } from "../src/runs/repo";
@@ -13,6 +18,7 @@ import {
 } from "../src/uploads/repo";
 import { validateUploadName } from "../src/uploads/routes";
 import { formatInputContext, sandboxInputPath } from "../src/uploads/materialize";
+import { cleanupExpiredUploadStorage } from "../src/uploads/cleanup";
 import "./helpers";
 
 const createdRuns = new Set<string>();
@@ -87,6 +93,49 @@ function command(runId: string, attachmentIds: readonly string[], actorId = "use
 }
 
 describe("user uploads", () => {
+  test("skips orphan reclamation while durable run admission is closed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "useagent-upload-cleanup-admission-"));
+    const storage = new LocalArtifactStorage(root);
+    const bytes = new TextEncoder().encode("old orphan");
+    const storageKey = createHash("sha256").update(bytes).digest("hex");
+    const operationId = `upload-cleanup-${crypto.randomUUID()}`;
+    try {
+      await setRunAdmission({
+        open: false,
+        operationId,
+        actor: "artifact-retention-test",
+        reason: "prove startup cleanup stays closed",
+      });
+      setArtifactStorageForTest(storage);
+      await storage.put(storageKey, bytes);
+      const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+      await utimes(join(root, storageKey.slice(0, 2), storageKey), old, old);
+
+      const closed = await cleanupExpiredUploadStorage(new Date());
+      expect(closed.reclaimedArtifacts).toBe(0);
+      expect(await storage.read(storageKey)).toEqual(bytes);
+
+      await setRunAdmission({
+        open: true,
+        operationId,
+        actor: "artifact-retention-test",
+        reason: "admission guard proof complete",
+      });
+      const opened = await cleanupExpiredUploadStorage(new Date());
+      expect(opened.reclaimedArtifacts).toBe(1);
+      await expect(storage.read(storageKey)).rejects.toThrow("artifact bytes are missing");
+    } finally {
+      await setRunAdmission({
+        open: true,
+        operationId,
+        actor: "artifact-retention-test",
+        reason: "test cleanup",
+      }).catch(() => {});
+      setArtifactStorageForTest(null);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("claims an owned upload in the same transaction as its run", async () => {
     const input = await upload();
     const runId = crypto.randomUUID();

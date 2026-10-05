@@ -42,6 +42,23 @@ function abortReason(signal: AbortSignal): Promise<unknown> {
 }
 
 describe("T3 no-progress watchdog", () => {
+  test("without a window, silence never aborts but consecutive retry warnings still do", async () => {
+    const watchdog = createNoProgressWatchdog(Number.POSITIVE_INFINITY);
+    try {
+      await Bun.sleep(40);
+      watchdog.observeActivity(toolActivity(1));
+      await Bun.sleep(40);
+      expect(watchdog.signal.aborted).toBe(false);
+      expect(() => {
+        for (let index = 0; index < MAX_CONSECUTIVE_RETRY_WARNINGS; index += 1) {
+          watchdog.observeActivity(retryWarning(index, "rate limited", index + 1));
+        }
+      }).toThrow(NoProgressError);
+    } finally {
+      watchdog.dispose();
+    }
+  });
+
   test("surfaces the provider's real reason from a retry warning", () => {
     expect(
       retryWarningReason(retryWarning(1, "Internal Server Error: Internal Server Error", 8)),

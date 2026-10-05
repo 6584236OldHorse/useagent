@@ -104,6 +104,16 @@ describe("importDaytonaSnapshot", () => {
     expect(calls.disposed).toBe(1);
   });
 
+  test("passes a caller's entrypoint through so a snapshot can boot its runtime", async () => {
+    const { client, calls } = fakeClient();
+    await importDaytonaSnapshot(
+      config,
+      { name: "useagent-native", image, entrypoint: ["/root/.local/bin/useagent-sandbox-boot"] },
+      { createClient: () => client },
+    );
+    expect(calls.creates).toEqual([expect.objectContaining({ entrypoint: ["/root/.local/bin/useagent-sandbox-boot"] })]);
+  });
+
   test("does not treat authentication or transient lookup failures as absence", async () => {
     for (const error of [
       new DaytonaAuthenticationError("bad key", 401),

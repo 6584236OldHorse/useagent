@@ -42,6 +42,8 @@ services:
       FRONTEND_ORIGIN: http://localhost:3400
       BETTER_AUTH_URL: http://localhost:3400
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env.compose}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?set SECRETS_ENCRYPTION_KEY in .env.compose}
       USEAGENT_OPERATOR_SECRET: ${USEAGENT_OPERATOR_SECRET:?set USEAGENT_OPERATOR_SECRET in .env.compose}
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:?set a sandbox-reachable HTTPS gateway origin}
@@ -106,6 +108,9 @@ services:
       CUBE_SANDBOX_DOMAIN: ${CUBE_SANDBOX_DOMAIN:-cube.app}
     ports:
       - "127.0.0.1:3202:3202"
+    volumes:
+      # The gateway publishes artifacts into the same store the backend serves.
+      - useagent-artifacts:/app/backend/.artifacts
     restart: unless-stopped
 
   frontend:

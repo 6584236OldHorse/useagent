@@ -1,8 +1,6 @@
 import { RiAddLine } from "@remixicon/react";
 import type { Metadata } from "next";
 import { ButtonLink } from "@/components/base/buttons/button";
-import { AppShell } from "@/components/shell/app-shell";
-import { ThreadSidebar } from "@/components/shell/thread-sidebar";
 
 export const metadata: Metadata = {
   title: "Page not found",
@@ -10,13 +8,14 @@ export const metadata: Metadata = {
 
 /**
  * Root 404: unknown routes and `notFound()` from a page (a missing or foreign
- * thread id) land here inside the normal shell, on the theme tokens, with one
- * way forward.
+ * thread id) land here, on the theme tokens, with one way forward. Like the
+ * root error page it renders no shell: every route ships this file's imports
+ * on first load, public pages included.
  */
 export default function NotFound() {
   return (
-    <AppShell sidebar={<ThreadSidebar />}>
-      <div className="flex h-full items-center justify-center p-6">
+    <main id="main-content" className="flex min-h-dvh items-center justify-center bg-background-full p-6">
+      <div className="flex w-full items-center justify-center">
         <div className="flex max-w-sm flex-col items-center gap-3 text-center">
           <p className="text-mono-label text-text-tertiary">404</p>
           <h1 className="text-display-sm text-text-primary">Page not found</h1>
@@ -34,6 +33,6 @@ export default function NotFound() {
           </ButtonLink>
         </div>
       </div>
-    </AppShell>
+    </main>
   );
 }

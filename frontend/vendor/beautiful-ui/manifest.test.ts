@@ -8,7 +8,10 @@ type ComponentRecord = {
   slug: string;
   intendedFilename: string;
   vendoredPath: string;
-  rscRecordId: string;
+  rscRecordId?: string;
+  sourceUrl?: string;
+  upstreamCommit?: string;
+  registryPath?: string;
   bytes: number;
   sha256: string;
   imports: string[];
@@ -37,11 +40,19 @@ const manifest = JSON.parse(
 const sha256 = (content: Uint8Array) => createHash("sha256").update(content).digest("hex");
 
 describe("Beautiful UI vendor snapshot", () => {
-  test("pins one complete 20-component upstream snapshot", () => {
-    expect(manifest.componentCount).toBe(20);
+  test("pins all 21 component sources with their upstream provenance", () => {
+    expect(manifest.componentCount).toBe(21);
     expect(manifest.components).toHaveLength(manifest.componentCount);
-    expect(new Set(manifest.components.map(({ slug }) => slug)).size).toBe(20);
-    expect(new Set(manifest.components.map(({ rscRecordId }) => rscRecordId)).size).toBe(20);
+    expect(new Set(manifest.components.map(({ slug }) => slug)).size).toBe(21);
+    const rscRecords = manifest.components.filter(({ rscRecordId }) => rscRecordId);
+    expect(rscRecords).toHaveLength(20);
+    expect(new Set(rscRecords.map(({ rscRecordId }) => rscRecordId)).size).toBe(20);
+    const flowchart = manifest.components.find(({ slug }) => slug === "flowchart");
+    expect(flowchart?.upstreamCommit).toBe("ff0f74d62d8be9d89bcb735b3632e31a6ccf88dc");
+    expect(flowchart?.sourceUrl).toBe(
+      `https://github.com/slev12397/beautiful-ui/blob/${flowchart?.upstreamCommit}/public/r/flowchart.json`,
+    );
+    expect(flowchart?.registryPath).toBe("components/primitives/Flowchart.tsx");
 
     expect(manifest.upstream.sourceUrl).toBe("https://www.beautifului.dev/");
     expect(manifest.upstream.licenseUrl).toBe("https://www.beautifului.dev/license");

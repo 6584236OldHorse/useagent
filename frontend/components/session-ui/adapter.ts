@@ -18,6 +18,7 @@
 import type { ChildUsage } from "@/components/chat/child-usage";
 import type { TimelineNode } from "@/components/chat/timeline";
 import { summarizeToolStep } from "@/components/chat/tool-summary";
+import { stepFailed } from "@/components/chat/file-entries";
 import { deriveTrace, parseFileEntries } from "@/components/chat/types";
 import type { ChangedFile } from "./changed-files";
 import type { ContextWindowUsage } from "./context-window-meter";
@@ -149,7 +150,7 @@ export function changedFilesFromTimeline(nodes: readonly TimelineNode[]): Change
       recordChangedFile(byPath, node.file.path, kind, null, null);
       continue;
     }
-    if (node.kind !== "tool") continue;
+    if (node.kind !== "tool" || stepFailed(node.step)) continue;
     const trace = deriveTrace(node.step);
     if (trace.glyph !== "edit" && trace.glyph !== "write") continue;
     const entries = parseFileEntries(node.step);

@@ -45,6 +45,7 @@ import {
   type DeliveredCanonicalEvent,
 } from "./canonical-events";
 import { errorMessage } from "../util/error-message";
+import { keyedSerial } from "../util/keyed-serial";
 
 // The run's provider command catalog is captured durably in the ORDERED provider-events lane
 // and native session advertisements become canonical `commands.updated` events. Retained
@@ -198,26 +199,37 @@ export async function canonicalizeRun(runId: string, threadId: string): Promise<
   return { complete: true, degraded: lostFrames > 0, lostFrames, delivered, watermark: before };
 }
 
+/** Sweeps overlap (the loop is a plain interval), so two runs of one thread could
+ *  finalize concurrently: the transaction that allocated the lower delivery seq can
+ *  commit and publish after the higher one, and a live stream that already advanced
+ *  its cursor drops the lower row for good. Per-thread serialization of finalize +
+ *  publish keeps a thread's delivery order equal to its commit and publish order,
+ *  which is what a resume cursor relies on. */
+const perThread = keyedSerial();
+
 /** Process up to `limit` due canonicalizations. Returns how many completed. */
 export async function runCanonicalizationOutboxOnce(limit = 20): Promise<number> {
   const claimed = await claimDue(limit);
   let done = 0;
   for (const c of claimed) {
     try {
-      const res = await canonicalizeRun(c.runId, c.threadId);
-      if (res.complete) {
+      const res = await perThread(c.threadId, async () => {
+        const result = await canonicalizeRun(c.runId, c.threadId);
+        if (!result.complete) return result;
         // PERSIST-BEFORE-PUBLISH: the rows + completion committed atomically above, so
         // publishing now only ever emits FINALIZED rows (never provisional). A reconnect
         // replays the same committed rows, so live + replay converge; the publish is
         // idempotent (the store keeps the latest revision per eventId).
-        publishDelivered(res.delivered);
+        publishDelivered(result.delivered);
         publishCanonicalizationComplete({
           runId: c.runId, threadId: c.threadId,
-          sourceFrameMax: res.watermark.frameMax, sourceStepCount: res.watermark.stepCount,
-          degraded: res.degraded, lostFrames: res.lostFrames,
+          sourceFrameMax: result.watermark.frameMax, sourceStepCount: result.watermark.stepCount,
+          degraded: result.degraded, lostFrames: result.lostFrames,
         });
-        done++;
-      } else await markRetryOrDead(c, "source watermark moved during translate");
+        return result;
+      });
+      if (res.complete) done++;
+      else await markRetryOrDead(c, "source watermark moved during translate");
     } catch (e) {
       await markRetryOrDead(c, errorMessage(e));
     }

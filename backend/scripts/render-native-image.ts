@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { claudeProviderGatewayEnvironment } from "../src/provider-gateway/sandbox-config";
 import { loadNativeImageInputs, nativeImageName, renderNativeImageDockerfile } from "../src/sandboxes/native-image";
 import { sandboxRuntimeLayout } from "../src/sandboxes/provider";
+import { isSandboxProviderKind } from "../src/sandboxes/plugins";
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -28,8 +29,18 @@ if (process.argv.includes("--check")) {
 }
 const out = argument("out");
 if (!out) throw new Error("--out DIR is required");
+// The layout decides root or non-root paths: cube (root) for the cloud
+// template, local (uid 1000 under /home/user) for the image a runner boots.
+const layout = argument("layout") ?? "cube";
+if (!isSandboxProviderKind(layout)) throw new Error(`--layout must be a sandbox provider kind, not ${layout}`);
 const inputs = await loadNativeImageInputs(claudeEnvironment);
-const rendered = renderNativeImageDockerfile(sandboxRuntimeLayout("cube"), inputs);
+// The base image's command as `docker image inspect` prints it (a JSON array, or null).
+const baseCommandArgument = argument("base-command");
+const baseCommand: unknown = baseCommandArgument ? JSON.parse(baseCommandArgument) : [];
+if (baseCommand !== null && !(Array.isArray(baseCommand) && baseCommand.every((part) => typeof part === "string"))) {
+  throw new Error("--base-command must be a JSON array of strings");
+}
+const rendered = renderNativeImageDockerfile(sandboxRuntimeLayout(layout), inputs, undefined, process.env, baseCommand ?? []);
 await mkdir(out, { recursive: true });
 for (const file of rendered.files) {
   await mkdir(join(out, file.contextPath, ".."), { recursive: true });

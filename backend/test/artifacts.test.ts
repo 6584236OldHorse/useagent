@@ -4,13 +4,13 @@ import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 import * as artifactFormats from "@useagent/artifact-formats";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
-import { eq } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import {
   csvToWorkbook,
   migrateHtmlToDocument,
   migrateSlidesToDeck,
 } from "@useagent/artifact-workspace";
-import { createArtifactRecord, getArtifact, type ArtifactDescriptor } from "../src/artifacts/repo";
+import { createArtifactRecord, getArtifact, reviseArtifactPublication, type ArtifactDescriptor } from "../src/artifacts/repo";
 import {
   publishSandboxArtifact,
   publishTrustedArtifact,
@@ -18,6 +18,7 @@ import {
 } from "../src/artifacts/publish";
 import { readTrustedImageOutput } from "../src/artifacts/trusted-output";
 import { setArtifactStorageForTest } from "../src/artifacts/storage";
+import { lockArtifactStorageKey } from "../src/artifacts/storage-key-lock";
 import { setOfficePreviewConverterForTest } from "../src/artifacts/office-preview";
 import { executeArtifactTool } from "../src/knowledge/gateway/artifact-tools";
 import { createRun, setRunSandbox } from "../src/runs/repo";
@@ -33,9 +34,9 @@ import {
   setSandboxPathResolverForTest,
 } from "../src/slack/sandbox-file";
 import { deleteSecret, upsertSecret } from "../src/secrets/store";
-import { createOrgSession, fetchApi, json, type OrgSession } from "./helpers";
+import { createOrgSession, fetchApi, json, type OrgSession, waitFor } from "./helpers";
 import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
-import { db } from "../src/db/client";
+import { db, type Executor } from "../src/db/client";
 import { artifacts, providerEvents } from "../src/db/schema";
 
 let sandboxBytes = new TextEncoder().encode("sandbox-to-browser\nexact bytes\n");
@@ -117,6 +118,85 @@ afterAll(() => {
 });
 
 describe("durable artifacts", () => {
+  test("serializes the PDF page route's blob publication and reference update", async () => {
+    const runId = await createSandboxRun(owner);
+    const sourceBytes = (await artifactFormats.renderArtifactExport({ pdfText: "page one" }, "pdf")).bytes;
+    const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
+    await storage.put(sourceDigest, sourceBytes);
+    const created = await createArtifactRecord({
+      orgId: owner.orgId,
+      userId: owner.email,
+      runId,
+      threadId: runId,
+      sourcePath: "/root/work/report.pdf",
+      name: "report.pdf",
+      contentType: "application/pdf",
+      sizeBytes: sourceBytes.byteLength,
+      sha256: sourceDigest,
+      storageKey: sourceDigest,
+      workpieceKind: "pdf",
+      workpieceState: null,
+    });
+    const expectedBytes = await artifactFormats.applyPdfPageOperation(sourceBytes, {
+      type: "reorder",
+      order: [0],
+    });
+    await db.update(artifacts).set({ previewStorageKey: sourceDigest })
+      .where(eq(artifacts.id, created.row.id));
+    const expectedDigest = createHash("sha256").update(expectedBytes).digest("hex");
+    let lockHeld!: () => void;
+    const acquired = new Promise<void>((resolve) => { lockHeld = resolve; });
+    let releaseLock!: () => void;
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await lockArtifactStorageKey(tx, expectedDigest);
+      lockHeld();
+      await release;
+    });
+    await acquired;
+    let requestSettled = false;
+    const request = json<{ artifact: ArtifactDescriptor }>(
+      `/api/artifacts/${created.row.id}/workpiece/pdf-pages`,
+      {
+        method: "POST",
+        cookies: owner.cookies,
+        body: { expected_revision: 0, operation: { type: "reorder", order: [0] } },
+      },
+    ).finally(() => { requestSettled = true; });
+    let waitError: unknown;
+    try {
+      await waitFor(async () => {
+        const rows = await db.execute(sql`
+          with target as (
+            select hashtextextended(${`artifact-storage:${expectedDigest}`}, 0) as value
+          )
+          select count(*)::int as count
+          from pg_locks, target
+          where locktype = 'advisory'
+            and database = (select oid from pg_database where datname = current_database())
+            and classid = (((target.value >> 32) & 4294967295)::oid)
+            and objid = ((target.value & 4294967295)::oid)
+            and objsubid = 1
+            and not granted
+        `);
+        return Number(rows[0]?.count) > 0;
+      }, { timeoutMs: 15_000, intervalMs: 10 }); // a loaded runner takes seconds to reach the lock
+      expect(requestSettled).toBe(false);
+    } catch (error) {
+      waitError = error;
+    } finally {
+      releaseLock();
+    }
+    const [response] = await Promise.all([request, holder.then(() => null)]);
+    if (waitError) throw waitError;
+
+    expect(response.status).toBe(200);
+    const updated = await getArtifact(created.row.id);
+    expect(updated?.storageKey).toBe(expectedDigest);
+    expect(updated?.previewStorageKey).toBeNull();
+    expect(await storage.read(expectedDigest)).toEqual(expectedBytes);
+  });
+
   test("publishes trusted provider bytes without persisting a host path", async () => {
     const runId = crypto.randomUUID();
     await createRun({
@@ -1031,6 +1111,95 @@ describe("durable artifacts", () => {
     }
   });
 
+  test("an editable companion cannot seed or return a concurrently replaced source generation", async () => {
+    const runId = await createSandboxRun(owner);
+    const source = {
+      orgId: owner.orgId,
+      userId: owner.email,
+      runId,
+      threadId: runId,
+      sourcePath: "/root/work/seed-race.docx",
+      name: "seed-race.docx",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: SOURCE_BYTES.byteLength,
+      sha256: SHA256,
+      storageKey: SHA256,
+      workpieceKind: "document" as const,
+      workpieceState: null,
+    };
+    const initial = await createArtifactRecord(source);
+    const document = migrateHtmlToDocument("<p>Source A companion</p>");
+    if (!document) throw new Error("invalid source A companion fixture");
+    const companion = { document };
+    let seedStarted!: () => void;
+    const started = new Promise<void>((resolve) => { seedStarted = resolve; });
+    let releaseSeed!: () => void;
+    const released = new Promise<void>((resolve) => { releaseSeed = resolve; });
+    // Execute real repository queries; pause only the seed's final SQL write so
+    // another committed source revision can land after its initial tuple read.
+    const paused = {
+      insert: db.insert.bind(db),
+      select: db.select.bind(db),
+      update: (table: typeof artifacts) => ({
+        set: (values: Partial<typeof artifacts.$inferInsert>) => ({
+          where: (predicate: SQL) => ({
+            returning: async () => {
+              seedStarted();
+              await released;
+              return db.update(table).set(values).where(predicate).returning();
+            },
+          }),
+        }),
+      }),
+    } as unknown as Executor;
+    const seeding = createArtifactRecord({ ...source, workpieceState: companion }, paused);
+    await started;
+    const nextBytes = new TextEncoder().encode("different source B");
+    const nextDigest = createHash("sha256").update(nextBytes).digest("hex");
+    try {
+      await reviseArtifactPublication({
+        ...source,
+        id: initial.row.id,
+        name: "new-generation.docx",
+        sha256: nextDigest,
+        storageKey: nextDigest,
+        sizeBytes: nextBytes.byteLength,
+      });
+    } finally {
+      releaseSeed();
+    }
+    await expect(seeding).rejects.toThrow("artifact changed while its editable companion was being attached");
+    const current = await getArtifact(initial.row.id);
+    expect(current?.sha256).toBe(nextDigest);
+    expect(current?.workpieceRevision).toBe(1);
+    expect(current?.workpieceState).toBeNull();
+    expect(current?.previewStorageKey).toBeNull();
+
+    // Equal companions for the same current generation still converge.
+    const nextDocument = migrateHtmlToDocument("<p>Source B companion</p>");
+    if (!nextDocument) throw new Error("invalid source B companion fixture");
+    const nextCompanion = { document: nextDocument };
+    const nextSource = {
+      ...source,
+      name: "new-generation.docx",
+      sha256: nextDigest,
+      storageKey: nextDigest,
+      sizeBytes: nextBytes.byteLength,
+      workpieceState: nextCompanion,
+    };
+    const peers = await Promise.all([
+      createArtifactRecord(nextSource),
+      createArtifactRecord(nextSource),
+    ]);
+    for (const peer of peers) {
+      expect(peer.created).toBe(false);
+      expect(peer.row.id).toBe(initial.row.id);
+      expect(peer.row.sha256).toBe(nextDigest);
+      expect(peer.row.workpieceRevision).toBe(1);
+      expect(peer.row.workpieceState).toEqual(nextCompanion);
+    }
+  });
+
   test("accepts an editable companion under the Box workspace root", async () => {
     const runId = await createSandboxRun(owner, "box");
     const source = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
@@ -1195,26 +1364,69 @@ describe("durable artifacts", () => {
   test("attaches and serves a rendered PDF preview for a published Office binary", async () => {
     const runId = await createSandboxRun(owner);
     const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]); // %PDF-1.7
+    let convertedSource: { name?: string; bytes?: Uint8Array } = {};
     const previous = sandboxBytes;
     try {
       sandboxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x66, 0x61, 0x6b, 0x65]); // PK.. (office-ish)
 
       // Success: the converter yields a PDF, so the artifact carries a preview URL
       // and the preview route serves those exact bytes as application/pdf.
-      setOfficePreviewConverterForTest(async () => pdf);
+      setOfficePreviewConverterForTest(async (input) => {
+        convertedSource = { name: input.sourceName, bytes: input.sourceBytes };
+        return pdf;
+      });
       const deck = await publish(owner, runId, "/root/work/slides.pptx");
-      expect(deck.artifact.preview_pdf_url).toBe(`/api/artifacts/${deck.artifact.id}/preview`);
-      const preview = await fetchApi(`/api/artifacts/${deck.artifact.id}/preview`, {
+      expect(convertedSource.name).toBe("slides.pptx");
+      expect(convertedSource.bytes).toEqual(sandboxBytes);
+      const previewDigest = createHash("sha256").update(pdf).digest("hex");
+      const previewUrl = `/api/artifacts/${deck.artifact.id}/preview?v=${previewDigest}`;
+      expect(deck.artifact.preview_pdf_url).toBe(previewUrl);
+      const preview = await fetchApi(previewUrl, {
         cookies: owner.cookies,
       });
       expect(preview.status).toBe(200);
       expect(preview.headers.get("content-type")).toBe("application/pdf");
+      expect(preview.headers.get("etag")).toBe(`"sha256-${previewDigest}"`);
       expect(new Uint8Array(await preview.arrayBuffer())).toEqual(pdf);
+      for (const validator of [
+        `"sha256-${previewDigest}"`,
+        `"unrelated", W/"sha256-${previewDigest}"`,
+        "*",
+      ]) {
+        const revalidated = await fetchApi(previewUrl, {
+          cookies: owner.cookies,
+          headers: { "if-none-match": validator },
+        });
+        expect(revalidated.status).toBe(304);
+        expect(await revalidated.text()).toBe("");
+        expect(revalidated.headers.get("etag")).toBe(`"sha256-${previewDigest}"`);
+      }
+      const legacy = await fetchApi(`/api/artifacts/${deck.artifact.id}/preview`, {
+        cookies: owner.cookies,
+      });
+      expect(legacy.status).toBe(200);
+      expect(legacy.headers.get("cache-control")).toBe("private, no-cache");
+      const wrongVersion = await fetchApi(`${previewUrl}0`, {
+        cookies: owner.cookies,
+        headers: { "if-none-match": `"sha256-${previewDigest}"` },
+      });
+      expect(wrongVersion.status).toBe(404);
       // Org-scoped: another org cannot read the preview.
-      const foreign = await fetchApi(`/api/artifacts/${deck.artifact.id}/preview`, {
+      const foreign = await fetchApi(previewUrl, {
         cookies: outsider.cookies,
+        headers: { "if-none-match": `"sha256-${previewDigest}"` },
       });
       expect(foreign.status).toBe(404);
+      const previousAllowDevOrg = process.env.ALLOW_DEV_ORG;
+      process.env.ALLOW_DEV_ORG = "0";
+      try {
+        expect((await fetchApi(previewUrl, {
+          headers: { "if-none-match": `"sha256-${previewDigest}"` },
+        })).status).toBe(401);
+      } finally {
+        if (previousAllowDevOrg === undefined) delete process.env.ALLOW_DEV_ORG;
+        else process.env.ALLOW_DEV_ORG = previousAllowDevOrg;
+      }
 
       // A failed conversion is silent: no preview URL, download-only as before.
       setOfficePreviewConverterForTest(async () => null);
@@ -1234,6 +1446,147 @@ describe("durable artifacts", () => {
       sandboxBytes = previous;
     }
   });
+
+  test("invalidates an Office preview before a republish conversion completes", async () => {
+    const runId = await createSandboxRun(owner);
+    const previous = sandboxBytes;
+    let conversionStarted!: () => void;
+    const started = new Promise<void>((resolve) => { conversionStarted = resolve; });
+    let finishConversion!: (value: Uint8Array | null) => void;
+    const conversion = new Promise<Uint8Array | null>((resolve) => { finishConversion = resolve; });
+    let convertedSource: { name?: string; bytes?: Uint8Array } = {};
+    let pending: ReturnType<typeof publish> | undefined;
+    try {
+      sandboxBytes = new TextEncoder().encode("office source v1");
+      setOfficePreviewConverterForTest(async () => new TextEncoder().encode("%PDF-old"));
+      const first = await publish(owner, runId, "/root/work/preview.docx");
+      const firstPreviewUrl = first.artifact.preview_pdf_url;
+      if (!firstPreviewUrl) throw new Error("initial preview was not attached");
+      sandboxBytes = new TextEncoder().encode("office source v2");
+      setOfficePreviewConverterForTest(async (input) => {
+        convertedSource = { name: input.sourceName, bytes: input.sourceBytes };
+        conversionStarted();
+        return conversion;
+      });
+      pending = publish(owner, runId, "/root/work/preview-v2.docx", {
+        updates_artifact_id: first.artifact.id,
+      });
+      await started;
+      expect(convertedSource.name).toBe("preview-v2.docx");
+      expect(convertedSource.bytes).toEqual(sandboxBytes);
+      const during = await getArtifact(first.artifact.id);
+      expect(during?.workpieceRevision).toBe(1);
+      expect(during?.previewStorageKey).toBeNull();
+      expect((await fetchApi(firstPreviewUrl, { cookies: owner.cookies })).status).toBe(404);
+      finishConversion(null);
+      const revised = await pending;
+      expect(revised.artifact.id).toBe(first.artifact.id);
+      expect(revised.artifact.preview_pdf_url).toBeNull();
+    } finally {
+      finishConversion(null);
+      await pending;
+      setOfficePreviewConverterForTest(async () => null);
+      sandboxBytes = previous;
+    }
+  });
+
+  test("late Office creation keeps its original event snapshot after a newer revision", async () => {
+    const runId = await createSandboxRun(owner);
+    const laterRunId = await createSandboxRun(owner);
+    const previous = sandboxBytes;
+    const oldBytes = new TextEncoder().encode("office created bytes");
+    let conversionStarted!: () => void;
+    const started = new Promise<void>((resolve) => { conversionStarted = resolve; });
+    let finishConversion!: (value: Uint8Array | null) => void;
+    const conversion = new Promise<Uint8Array | null>((resolve) => { finishConversion = resolve; });
+    let pending: ReturnType<typeof publish> | undefined;
+    try {
+      sandboxBytes = oldBytes;
+      setOfficePreviewConverterForTest(async () => { conversionStarted(); return conversion; });
+      pending = publish(owner, runId, "/root/work/created.docx");
+      await started;
+      const [created] = await db.select().from(artifacts).where(eq(artifacts.runId, runId));
+      if (!created) throw new Error("initial artifact was not committed");
+      sandboxBytes = new TextEncoder().encode("office revised bytes");
+      setOfficePreviewConverterForTest(async () => new TextEncoder().encode("%PDF-revised"));
+      const revised = await publish(owner, laterRunId, "/root/work/revised.docx", {
+        updates_artifact_id: created.id,
+      });
+      finishConversion(new TextEncoder().encode("%PDF-created"));
+      const delayed = await pending;
+      expect(delayed.artifact).toEqual(revised.artifact);
+      const [event] = await db.select().from(providerEvents)
+        .where(eq(providerEvents.id, `artifact.created:${created.id}`));
+      expect(event?.runId).toBe(runId);
+      const payload = JSON.parse(event?.payload ?? "null") as ArtifactDescriptor | null;
+      expect(payload?.workpiece?.state_revision).toBe(0);
+      expect(payload?.sha256).toBe(createHash("sha256").update(oldBytes).digest("hex"));
+      expect(payload?.name).toBe("created.docx");
+      expect(payload?.preview_pdf_url).toBeNull();
+    } finally {
+      finishConversion(null);
+      await pending;
+      setOfficePreviewConverterForTest(async () => null);
+      sandboxBytes = previous;
+    }
+  });
+
+  for (const outcome of ["success", "failure"] as const) {
+    test(`late Office conversion ${outcome} cannot change a newer revision`, async () => {
+      const runId = await createSandboxRun(owner);
+      const laterRunId = await createSandboxRun(owner);
+      const previous = sandboxBytes;
+      const oldPdf = new TextEncoder().encode("%PDF-old");
+      const newPdf = new TextEncoder().encode("%PDF-new");
+      let conversionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { conversionStarted = resolve; });
+      let finishConversion!: (value: Uint8Array | null) => void;
+      const conversion = new Promise<Uint8Array | null>((resolve) => { finishConversion = resolve; });
+      let pending: ReturnType<typeof publish> | undefined;
+      try {
+        sandboxBytes = new TextEncoder().encode("office same bytes across revisions");
+        setOfficePreviewConverterForTest(async () => oldPdf);
+        const first = await publish(owner, runId, "/root/work/race.docx");
+        const firstPreviewUrl = first.artifact.preview_pdf_url;
+        if (!firstPreviewUrl) throw new Error("initial preview was not attached");
+        setOfficePreviewConverterForTest(async () => { conversionStarted(); return conversion; });
+        pending = publish(owner, runId, "/root/work/race-delayed.docx", {
+          updates_artifact_id: first.artifact.id,
+        });
+        await started;
+        setOfficePreviewConverterForTest(async () => newPdf);
+        const latest = await publish(owner, laterRunId, "/root/work/race-latest.docx", {
+          updates_artifact_id: first.artifact.id,
+        });
+        const latestPreviewUrl = latest.artifact.preview_pdf_url;
+        if (!latestPreviewUrl) throw new Error("new preview was not attached");
+        expect(latest.artifact.workpiece?.state_revision).toBe(2);
+        finishConversion(outcome === "success" ? oldPdf : null);
+        const delayed = await pending;
+        const current = await getArtifact(first.artifact.id);
+        expect(current?.previewStorageKey).toBe(createHash("sha256").update(newPdf).digest("hex"));
+        expect(delayed.artifact).toEqual(latest.artifact);
+        for (const [revision, publishingRun] of [[1, runId], [2, laterRunId]] as const) {
+          const [event] = await db.select().from(providerEvents)
+            .where(eq(providerEvents.id, `artifact.revised:${first.artifact.id}:${revision}`));
+          expect(event?.runId).toBe(publishingRun);
+          expect(event?.threadId).toBe(publishingRun);
+          const payload = JSON.parse(event?.payload ?? "null") as ArtifactDescriptor | null;
+          expect(payload?.workpiece?.state_revision).toBe(revision);
+          expect(payload?.name).toBe(revision === 1 ? "race-delayed.docx" : "race-latest.docx");
+        }
+        expect(latest.artifact.preview_pdf_url).not.toBe(first.artifact.preview_pdf_url);
+        const response = await fetchApi(latestPreviewUrl, { cookies: owner.cookies });
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(newPdf);
+        expect((await fetchApi(firstPreviewUrl, { cookies: owner.cookies })).status).toBe(404);
+      } finally {
+        finishConversion(null);
+        await pending;
+        setOfficePreviewConverterForTest(async () => null);
+        sandboxBytes = previous;
+      }
+    });
+  }
 
   test("workpiece_create authors a native workpiece and fires the created auto-open signal", async () => {
     const runId = await createSandboxRun(owner);

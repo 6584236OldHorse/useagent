@@ -6,33 +6,30 @@ import type { EngineId } from "@useagent/agent-client/wire";
 
 /** The curated model set (single source of truth for every picker). Bare ids →
  * Anthropic direct; provider/model ids → OpenRouter. */
-export const MODELS: { value: string; label: string; tint: string }[] = [
-  { value: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna · Fast", tint: "text-sky-500" },
+export const MODELS: { value: string; label: string }[] = [
+  { value: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
   {
     value: "moonshotai/kimi-k3",
     label: "Kimi K3",
-    tint: "text-fuchsia-500",
   },
   {
     value: "deepseek/deepseek-v4-flash",
     label: "DeepSeek V4 Flash · Wafer Fast",
-    tint: "text-cyan-500",
   },
   {
     value: "google/gemini-3.7-flash",
     label: "Gemini 3.7 Flash · Fast",
-    tint: "text-blue-500",
   },
-  { value: "claude-opus-5", label: "Opus 5", tint: "text-orange-500" },
-  { value: "claude-sonnet-5", label: "Sonnet 5", tint: "text-blue-500" },
-  { value: "claude-fable-5", label: "Fable 5", tint: "text-purple-500" },
-  { value: "claude-haiku-4-5", label: "Haiku 4.5", tint: "text-green-500" },
-  { value: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", tint: "text-teal-500" },
-  { value: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", tint: "text-amber-500" },
+  { value: "claude-opus-5", label: "Opus 5" },
+  { value: "claude-sonnet-5", label: "Sonnet 5" },
+  { value: "claude-fable-5", label: "Fable 5" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5" },
+  { value: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol" },
+  { value: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra" },
 ];
 
 export const CEREBRAS_MODELS: ModelOption[] = [
-  { value: "cerebras/qwen-3.8-27b", label: "Qwen 3.8 27B · Cerebras", tint: "text-amber-500" },
+  { value: "cerebras/qwen-3.8-27b", label: "Qwen 3.8 27B · Cerebras" },
 ];
 
 /** The Free lane SEED: curated labels for the backend's fallback lane and the
@@ -43,13 +40,12 @@ export const CEREBRAS_MODELS: ModelOption[] = [
  * doubles as the label until it earns a curated entry). OpenCode only (backend
  * policy); free turns run on a user's own connected OpenRouter key when one is
  * connected. */
-export const FREE_MODELS: { value: string; label: string; tint: string }[] = [
-  { value: "minimax/minimax-m3:free", label: "MiniMax M3", tint: "text-emerald-500" },
-  { value: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super", tint: "text-rose-500" },
+export const FREE_MODELS: { value: string; label: string }[] = [
+  { value: "minimax/minimax-m3:free", label: "MiniMax M3" },
+  { value: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super" },
   {
     value: "dots-studio/dots-3-note-preview:free",
     label: "Dots 3 Note",
-    tint: "text-indigo-500",
   },
 ];
 
@@ -72,11 +68,11 @@ export function partitionModelOptions(options: ModelOption[]): {
 }
 
 /** Codex model ids are the backend-policy ids accepted by the Codex runner. */
-export const CODEX_MODELS: { value: string; label: string; tint: string }[] = [
-  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast", tint: "text-sky-500" },
-  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", tint: "text-amber-500" },
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", tint: "text-teal-500" },
-  { value: "gpt-6-astra", label: "GPT-6 Astra", tint: "text-violet-500" },
+export const CODEX_MODELS: { value: string; label: string }[] = [
+  { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
+  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+  { value: "gpt-6-astra", label: "GPT-6 Astra" },
 ];
 
 /** Claude Code accepts the backend's exact Anthropic model policy ids. */
@@ -84,29 +80,25 @@ export const CLAUDE_MODELS: ModelOption[] = MODELS.filter((model) =>
   model.value.startsWith("claude-")
 );
 
-export const CHAT_MODELS: { value: string; label: string; tint: string }[] = [
+export const CHAT_MODELS: { value: string; label: string }[] = [
   {
     value: "anthropic/claude-sonnet-5",
     label: "Claude Sonnet 5",
-    tint: "text-blue-500",
   },
   {
     value: "anthropic/claude-opus-4.8",
     label: "Claude Opus 4.8",
-    tint: "text-orange-500",
   },
   {
     value: "anthropic/claude-haiku-4.5",
     label: "Claude Haiku 4.5",
-    tint: "text-green-500",
   },
-  { value: "z-ai/glm-5.2", label: "GLM 5.2", tint: "text-purple-500" },
+  { value: "z-ai/glm-5.2", label: "GLM 5.2" },
 ];
 
 export type ModelOption = {
   value: string;
   label: string;
-  tint: string;
   disabled?: boolean;
   description?: string;
 };
@@ -151,7 +143,6 @@ export function modelOptionsForEngine(
       known.find((model) => model.value === value) ?? {
         value,
         label: details.find((model) => model.id === value)?.displayName ?? value,
-        tint: "text-text-secondary",
       },
   );
 }

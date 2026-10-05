@@ -26,21 +26,13 @@ import {
 } from "react";
 
 import { cx } from "@/utils/cx";
+import { getFaviconUrl } from "@/lib/favicon";
 
 // -- motion tokens ---------------------------------------------------------
 const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 const SPRING_PRESS = { type: "spring", stiffness: 500, damping: 30, mass: 0.6 } as const;
 const SPRING_SWAP = { type: "spring", stiffness: 460, damping: 30, mass: 0.55 } as const;
 const SPRING_LAYOUT = { type: "spring", stiffness: 360, damping: 32, mass: 0.6 } as const;
-
-/** Resolve a website URL to its conventional root favicon location. */
-function getFaviconUrl(value: string) {
-  try {
-    return new URL("/favicon.ico", value).toString();
-  } catch {
-    return null;
-  }
-}
 
 // -- collapsible disclosure ------------------------------------------------
 interface AgentDisclosureProps extends Omit<HTMLMotionProps<"div">, "animate" | "initial"> {

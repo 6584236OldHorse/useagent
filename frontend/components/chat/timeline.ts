@@ -40,6 +40,8 @@ export type TimelineMarker =
       readonly source: string; // "memory" | "knowledge" | …
       readonly itemCount: number;
       readonly query: string | null;
+      /** The store was unreachable (an outage frame), not merely empty. */
+      readonly degraded: boolean;
     }
   | {
       /** Boot recovery parked this run for adaptive re-probing (provider useAgent,
@@ -299,6 +301,7 @@ export function parseMarker(eventType: string, payload: unknown): TimelineMarker
             : "memory",
       itemCount: typeof p.itemCount === "number" ? p.itemCount : 0,
       query: typeof p.query === "string" ? p.query : null,
+      degraded: p.degraded === true,
     };
   }
   // Gateway approval lane (approval-requests.ts emitApprovalEvent): the request

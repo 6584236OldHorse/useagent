@@ -40,7 +40,7 @@ const RAW_MCP_RESULT = JSON.stringify({
 const RECALL: TimelineNode = {
   kind: "marker",
   key: "m1",
-  marker: { kind: "context", source: "memory", itemCount: 4, query: null },
+  marker: { kind: "context", source: "memory", itemCount: 4, query: null, degraded: false },
 };
 const PLAYBOOK: TimelineNode = {
   kind: "marker",
@@ -358,7 +358,7 @@ describe("traceHeader", () => {
     expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
       label: "Thought for 3m 12s, 1 failed",
       detail: "2 tool calls, 1 message",
-      failed: true,
+      failed: false,
     });
   });
 
@@ -368,7 +368,7 @@ describe("traceHeader", () => {
     expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
       label: "2 tool calls, 1 failed",
       detail: "3m 12s",
-      failed: true,
+      failed: false,
     });
     const single = traceRowsFromWork([GIT_LOG], false);
     expect(traceHeader({ live: false, rows: single, work: [GIT_LOG], durationMs: 1_000 })).toEqual({
@@ -391,6 +391,26 @@ describe("traceHeader", () => {
       label: "Context",
       detail: null,
       failed: false,
+    });
+  });
+
+  test("a degraded recall renders as a failed Memory unavailable row, never a 0-hit", () => {
+    const rows = traceRowsFromWork(
+      [
+        {
+          kind: "marker",
+          key: "m-out",
+          marker: { kind: "context", source: "memory", itemCount: 0, query: "digest", degraded: true },
+        },
+      ],
+      false,
+    );
+    expect(rows[0]).toMatchObject({
+      family: "memory",
+      label: "Memory unavailable",
+      chip: { text: "digest", mono: false },
+      detail: "service unavailable",
+      status: "failed",
     });
   });
 

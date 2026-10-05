@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import sharp from "sharp";
 import type { ArtifactDescriptor } from "../../artifacts/repo";
+import { type ComputerSequenceAction, describeSequenceFailure, sequenceBatches } from "./computer-use-tools";
+import { addressBarNavigateCommand } from "./computer-use-shell";
 import type { SandboxHandle } from "../../sandboxes/provider";
 import { setSandboxArtifactPublisherForTest } from "./artifact-tools";
 import {
@@ -32,12 +34,66 @@ test("builds fail-fast Cube action batches", () => {
   expect(buildCubeSequenceCommand([
     { action: "hotkey", keys: "ctrl+l" },
     { action: "type", text: "https://example.com", delayMs: 0 },
-    { action: "key", key: "Enter", modifiers: [] },
+    { action: "key", key: "Enter", modifiers: [], repeat: 1 },
   ])).toContain(" && ");
-  expect(buildCubeSequenceCommand([
+  // After the coordinate prefix, the chain is fail-fast with a marker after every action.
+  const chain = buildCubeSequenceCommand([
     { action: "wait", ms: 0 },
     { action: "wait", ms: 0 },
-  ])).not.toContain("; ");
+  ]).split("dw=$sw; ")[1]!;
+  expect(chain).not.toContain("; ");
+  expect(chain).toBe("sleep 0.000 && printf '%s\\n' USEAGENT_STEP_OK_1 && sleep 0.000 && printf '%s\\n' USEAGENT_STEP_OK_2");
+});
+
+describe("coordinates, richer actions and failures", () => {
+  test("coordinates are screenshot pixels scaled to the display at run time", () => {
+    const command = buildCubeSequenceCommand(
+      [{ action: "click", x: 640, y: 360, button: "left", double: false, triple: false, modifiers: [] }],
+      { display: ":1", screenshotWidth: 1280 },
+    );
+    expect(command).toContain("sw=1280; dw=$(xdpyinfo -display :1");
+    expect(command).toContain("xdotool mousemove $((640*dw/sw)) $((360*dw/sw)) click 1");
+    expect(Bun.spawnSync(["bash", "-c", `sw=1280; dw=1920; echo $((640*dw/sw)) $((360*dw/sw))`]).stdout.toString().trim()).toBe("960 540");
+  });
+
+  test("triple click, modifier click, key repeat, hold and horizontal scroll", () => {
+    const command = buildCubeSequenceCommand([
+      { action: "click", x: 1, y: 2, button: "left", double: false, triple: true, modifiers: ["shift"] },
+      { action: "key", key: "Down", modifiers: [], repeat: 3 },
+      { action: "hold_key", key: "space", durationMs: 1500 },
+      { action: "scroll", x: 5, y: 6, direction: "right", amount: 2 },
+    ]);
+    expect(command).toContain("xdotool keydown shift && xdotool mousemove $((1*dw/sw)) $((2*dw/sw)) click --repeat 3 --delay 80 1; status=$?; xdotool keyup shift; test $status -eq 0");
+    expect(command).toContain("for _i in $(seq 1 3); do {");
+    expect(command).toContain("xdotool keydown --clearmodifiers space && sleep 1.500; xdotool keyup space");
+    expect(command).toContain("click --repeat 2 --delay 40 7");
+    expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
+  });
+
+  test("long text is pasted through the clipboard with a keystroke fallback", () => {
+    const short = buildCubeSequenceCommand([{ action: "type", text: "hello", delayMs: 10 }]);
+    expect(short).not.toContain("xclip");
+    const long = buildCubeSequenceCommand([{ action: "type", text: "x".repeat(400), delayMs: 10 }]);
+    expect(long).toContain("xclip -selection clipboard -in >/dev/null 2>&1 && xdotool key --clearmodifiers ctrl+v");
+    expect(long).toContain("else printf");
+  });
+
+  test("a failed batch names the action that failed and what did not run", () => {
+    const batch: ComputerSequenceAction[] = [
+      { action: "click", x: 1, y: 1, button: "left", double: false, triple: false, modifiers: [] },
+      { action: "type", text: "a", delayMs: 0 },
+      { action: "key", key: "Enter", modifiers: [], repeat: 1 },
+    ];
+    const message = describeSequenceFailure(batch, 1, 5, "USEAGENT_STEP_OK_1\nxdotool: command failed\n");
+    expect(message).toBe("Action 3 of 5 (type) failed: xdotool: command failed. 2 actions before it ran; 2 after it did not. Take a screenshot before continuing.");
+  });
+
+  test("a screenshot region must be four bounds in screenshot pixels", async () => {
+    setComputerUseServiceForTest(testService([]));
+    const bad = await executeComputerUseTool(claims, "computer_screenshot", { region: [1, 2, 3] });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("region must be") });
+  });
 });
 
 function testService(calls: string[]) {
@@ -198,7 +254,11 @@ describe("computer-use gateway tools", () => {
     expect(downloaded).toMatch(
       /^\/home\/user\/work\/screenshots\/screenshot-\d+\.png$/,
     );
-    const image = response.content[0];
+    // Instructions before the image, and the size the model sees stated with the display size.
+    const note = response.content[0];
+    expect(note?.type).toBe("text");
+    if (note?.type === "text") expect(note.text).toMatch(/^Screenshot \d+x\d+ of a \d+x\d+ display\. Give coordinates in screenshot pixels/);
+    const image = response.content[1];
     expect(image?.type).toBe("image");
     if (image?.type !== "image") throw new Error("expected a model screenshot");
     const modelBytes = Buffer.from(image.data, "base64");
@@ -434,5 +494,35 @@ describe("computer-use gateway tools", () => {
       text: "modifiers must contain only ctrl, alt, shift, or cmd",
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("navigate without a browser relay", () => {
+  test("a provider-native desktop opens the URL through the address bar or a fresh browser", () => {
+    const command = addressBarNavigateCommand("https://x.com/a'b?q=1", "/usr/bin/google-chrome");
+    expect(command).toContain("xdotool search --onlyvisible --class chrom");
+    expect(command).toContain("xdotool key --clearmodifiers ctrl+l");
+    expect(command).toContain("xdotool type --clearmodifiers");
+    expect(command).toContain("xdotool key --clearmodifiers Delete Return");
+    expect(command).toContain("browser='/usr/bin/google-chrome'; [ -n \"$browser\" ] || { echo 'no browser is installed on this desktop' >&2; exit 1; }");
+    expect(command).toContain("(setsid \"$browser\" 'https://x.com/a%27b?q=1' >/dev/null 2>&1 &)");
+    expect(command).not.toContain("a'b");
+    expect(addressBarNavigateCommand("https://x.com/", null)).toContain("command -v google-chrome");
+  });
+});
+
+describe("computer_sequence navigate", () => {
+  test("a URL is opened over the browser control transport, never typed", () => {
+    const batches = sequenceBatches([
+      { action: "click", x: 10, y: 10, button: "left", double: false, triple: false, modifiers: [] },
+      { action: "navigate", url: "https://x.com/bhowconda" },
+      { action: "wait", ms: 250 },
+      { action: "key", key: "Return", modifiers: [], repeat: 1 },
+    ]);
+    expect(batches).toEqual([
+      { shell: [{ action: "click", x: 10, y: 10, button: "left", double: false, triple: false, modifiers: [] }] },
+      { navigate: "https://x.com/bhowconda" },
+      { shell: [{ action: "wait", ms: 250 }, { action: "key", key: "Return", modifiers: [], repeat: 1 }] },
+    ]);
   });
 });

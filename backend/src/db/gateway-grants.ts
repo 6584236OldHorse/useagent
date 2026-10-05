@@ -24,8 +24,22 @@ const LEGACY_GATEWAY_DATABASE_ROLE = "skynet_gateway";
 export const GATEWAY_GRANTS: readonly string[] = [
   "GRANT SELECT ON runs, skills, skill_revisions, secrets, artifacts, provider_gateway_audit, slack_threads, thread_relationships TO useagent_gateway",
   "GRANT UPDATE (skill_id, skill_version, skill_content_hash, updated_at) ON runs TO useagent_gateway",
+  // Every UPDATE on runs fires trg_validate_batched_child_run_update (migration
+  // 0077), whose function runs as the invoking role and reads
+  // child_thread_batch_items (org_id, child_run_id) to refuse a thread change on
+  // a batched child. The executor checks that read on the range-table entry that
+  // survives in the generic plan, before the AND short-circuits, so without this
+  // grant the gateway's skill activation (the runs UPDATE above) fails with 42501
+  // and the tool returns HTTP 500. Exactly the two columns the EXISTS reads; the
+  // gateway never writes batches.
+  "GRANT SELECT (org_id, child_run_id) ON child_thread_batch_items TO useagent_gateway",
+  // A developer's machine as a sandbox: the gateway resolves a run's local sandbox to its
+  // machine (id, owner, enrolment, the token hash behind the binding fingerprint) and the
+  // organisation's local-execution policy; it never holds a link or a token.
+  "GRANT SELECT (id, org_id, user_id, name, platform, status, logins, enrolled_at, token_hash) ON runners TO useagent_gateway",
+  "GRANT SELECT ON runner_policies TO useagent_gateway",
   "GRANT UPDATE (usage_count, last_run_at, updated_at) ON skills TO useagent_gateway",
-  "GRANT SELECT (id, run_id, seq, event_type, payload) ON provider_events TO useagent_gateway",
+  "GRANT SELECT (id, run_id, thread_id, seq, provider, event_type, payload) ON provider_events TO useagent_gateway",
   "GRANT INSERT (id, run_id, thread_id, seq, provider, event_type, native_session_id, native_parent_session_id, native_message_id, native_part_id, native_call_id, payload, created_at) ON provider_events TO useagent_gateway",
   "GRANT UPDATE (seq, event_type, payload, created_at) ON provider_events TO useagent_gateway",
   "GRANT SELECT, INSERT ON artifacts TO useagent_gateway",

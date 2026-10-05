@@ -1,6 +1,7 @@
 import type { EngineId, MemoryScope } from "../db/schema";
 import type { ExplicitRunResource, RunResource } from "../resources/types";
 import type { ThreadRelationshipKind } from "../db/schema";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
 // Boundary types for durable command acceptance (north star "Durable
@@ -35,6 +36,8 @@ export interface RunCommandIntent {
   readonly commandProvider: string | null;
   readonly commandSessionId: string | null;
   readonly commandCatalogRevision: number | null;
+  /** Trusted operator-only execution fence. Public request bodies cannot set it. */
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
 }
 
 /** The product intent behind a `run.create` command — exactly the fields that
@@ -49,6 +52,8 @@ export interface RunCommandInput {
    * policy that was validated when they were stored. Interactive/new input must
    * leave this unset and pass the current live catalog. */
   readonly acceptedModelPolicy?: "current" | "persisted";
+  /** Trusted operator-only execution fence persisted separately from audit data. */
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
   /** Supplied by product ingresses so a keyed retry can be classified before
    * external resource resolution. Legacy/internal callers may omit it and use
    * the accepted run fields as their intent. */

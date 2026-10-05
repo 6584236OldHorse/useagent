@@ -17,6 +17,9 @@ FROM ${NODE_IMAGE} AS build
 ARG RELEASE_COMMIT
 RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 ENV NEXT_PUBLIC_USEAGENT_RELEASE_COMMIT=${RELEASE_COMMIT}
+# Client execution-graph kill switch, a build-time input: on unless a build passes off.
+ARG NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=read
+ENV NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=${NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT}
 
 WORKDIR /app
 COPY --from=dependencies /app/frontend/node_modules ./frontend/node_modules
@@ -38,7 +41,8 @@ RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 
 LABEL org.opencontainers.image.source="https://github.com/useagenthq/useagent" \
       org.opencontainers.image.revision="${RELEASE_COMMIT}" \
-      org.opencontainers.image.title="useAgent frontend"
+      org.opencontainers.image.title="useAgent frontend" \
+      io.useagent.auth="better-auth"
 
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \

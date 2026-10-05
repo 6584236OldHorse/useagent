@@ -154,8 +154,9 @@ Rules for the four sibling page agents:
 
 ## Brand + motion utilities (`app/globals.css`)
 
-- `text-mono-label` — uppercase tracked monospace micro-label (section labels,
-  rail captions, technical annotations). Uses `--font-mono`.
+- `text-mono-label` — quiet sentence-case micro-label in the sans (section
+  labels, rail captions, technical annotations). The name is historical; it is
+  no longer uppercase or monospace.
 - `bg-halftone` — faint halftone dot field, masked to fade downward; for brand
   headers/heroes.
 - `.animate-ai-fade-up` — soft rise-in on mount (panels, approval cards).

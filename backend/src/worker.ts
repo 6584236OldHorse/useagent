@@ -1,16 +1,11 @@
+import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
-import {
-  buildThreadPreamble,
-  getRun,
-  getThreadProviderSessionState,
-  insertStep,
-  setRunStatus,
-  updateStepCode,
-} from "./runs/repo";
+import { buildThreadPreamble, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
+import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
 import { resolveProviderRegistration, runProviderTurn } from "./engines";
-import { persistedEngineModelReadyForDispatch } from "./runs/engine-readiness";
+import { dispatchReadyForUser } from "./engines/sandbox-login";
 import type { EmitStep, EngineRunContext, RunInputFile } from "./engines/types";
 import { classifyTurnFailure } from "./engines/turn-failure-classification";
 import { recallScopedMemory } from "./memory/team-memory";
@@ -74,10 +69,6 @@ async function emitFinalizedEnd(runId: string, finalized: FinalizeRunResult): Pr
 
 // ---------------------------------------------------------------------------
 // Actor-lite registry: one logical worker per run id.
-//
-// This is a STUB. The scripted trace below stands in for the real Claude Agent
-// SDK loop (migration step 2). It exists to prove the durable event log + SSE
-// streaming path end-to-end — now writing into Postgres via Drizzle.
 // ---------------------------------------------------------------------------
 
 const registry = new Map<string, Promise<void>>();
@@ -145,8 +136,7 @@ export function spawnWorker(runId: string): void {
 export const pumpThread = (threadId: string): Promise<string | null> =>
   pumpThreadWithGate(threadId, spawnWorker);
 
-/** Settle the run's command, release its capacity lease (so the reconciler can
- *  admit queued work), and pump the thread's next turn. Every terminal path. */
+/** Settle the run's command, release its capacity lease, and pump the thread's next turn. Every terminal path. */
 async function onRunSettled(runId: string, threadId: string): Promise<void> {
   await settleCommandForRun(runId).catch((err) =>
     console.error(`[worker] settle command for run ${runId} failed:`, err),
@@ -157,17 +147,14 @@ async function onRunSettled(runId: string, threadId: string): Promise<void> {
   );
 }
 
-/** Start a real engine turn at the trusted worker boundary, before any optional
- * context or runtime preparation can add seconds of silent UI time. The row is
- * durable (so reload/reconnect sees the same state) and also published live.
- * Returns the next step index for the engine adapter. */
+/** Start a real engine turn at the trusted worker boundary, before context or runtime preparation adds silent time: a durable, live-published row. Returns the engine adapter's next step index. */
 export async function beginEngineRun(
   runId: string,
   threadId: string,
   orgId: string | null,
   origin: string | null = null,
 ): Promise<number> {
-  await setRunStatus(runId, "running");
+  if (!(await markRunStarted(runId))) throw new RunStoppedBeforeStartError();
   if (!isInternalRunOrigin(origin)) {
     publishRunLifecycleChange({ orgId, threadId, runId, kind: "running" });
   }
@@ -187,10 +174,8 @@ async function runWorker(runId: string): Promise<void> {
   const run = await getRun(runId);
   if (!run) return; // deleted before the actor started
 
-  // Cancellation plumbing (durable cancel): ONE AbortController per actor,
-  // registered so an out-of-band `run.cancel` can abort THIS live turn. The
-  // engine timeout aborts the same signal; `cancelReason` (set only on a user
-  // cancel) is how the finalize path tells the two apart.
+  // Durable cancel: one AbortController per actor, registered so an out-of-band
+  // `run.cancel` aborts this turn; `cancelReason` tells a user cancel from the timeout.
   const ac = new AbortController();
   let cancelReason: string | null = null;
   const requestCancel = (reason: string): void => {
@@ -204,6 +189,7 @@ async function runWorker(runId: string): Promise<void> {
   // scripted fixture). Fire-and-forget diagnostics - never on the critical path.
   const stageLedger: RunStageTimer | null =
     run.engine === "mock" ? null : createRunTimer(runId, run.threadId);
+  let stoppedBeforeStart = false;
 
   try {
     // Match mature agent UIs: expose a truthful, durable lifecycle row
@@ -273,18 +259,14 @@ async function runWorker(runId: string): Promise<void> {
     }
 
     // Split the run's context (north star "Fix the Current Context Bug First"):
-    //  - turnContext: fresh TEAM MEMORY (config-gated; "" when MEMORY_API_URL is
-    //    unset), already reference-framed. Injected on EVERY turn (fresh AND
-    //    resumed) so a continuing conversation still sees newly recalled memory.
-    //  - bootstrapContext: the reconstructed prior thread, injected ONLY into a
-    //    FRESH native session (a resumed session already holds it natively).
-    // Fetched in PARALLEL — independent context work must not serialize startup.
-    // Prompts are stored clean; the composed prefix is the engine's only view.
-    //
-    // The scope PLAN maps the run's persisted identity + memoryScope to the pools
-    // it reads (org → org pool; personal → personal + org) and the single pool it
-    // captures into; null when memory is disabled. Identity is ALWAYS from the run
-    // row — never the sandbox/prompt.
+    // turnContext is fresh team memory (config-gated, "" when MEMORY_API_URL is
+    // unset), reference-framed and injected on EVERY turn; bootstrapContext is
+    // the reconstructed prior thread, injected ONLY into a FRESH native session.
+    // Fetched in PARALLEL. Prompts are stored clean; the composed prefix is the
+    // engine's only view. The scope PLAN maps the run's persisted identity and
+    // memoryScope to the pools it reads (org: org pool; personal: personal + org)
+    // and the pool it captures into; null when memory is disabled. Identity is
+    // ALWAYS from the run row, never the sandbox or prompt.
     const plan = resolveScopedMemory(run);
     // Start the native-session lookup alongside every other independent context
     // source. The result both controls fresh-only catalog prefill and is reused
@@ -403,7 +385,7 @@ async function runWorker(runId: string): Promise<void> {
       ADAPTER_TIMEOUT_MS,
       () => ac.abort(),
     );
-    const ceiling = setTimeout(() => ac.abort(), ADAPTER_MAX_MS);
+    const ceiling = Number.isFinite(ADAPTER_MAX_MS) ? setTimeout(() => ac.abort(), ADAPTER_MAX_MS) : undefined;
     const onBusEvent = (event: BusEvent): void => {
       if (event.type === "step") activity.touch();
     };
@@ -416,6 +398,7 @@ async function runWorker(runId: string): Promise<void> {
         run.prompt,
         bootstrapContext,
         turnContext,
+        plan !== null,
         resourceContext,
         skillContext,
         skillCatalogContext,
@@ -423,6 +406,7 @@ async function runWorker(runId: string): Promise<void> {
         run.threadId,
         engineSessionId,
         providerSession,
+        run.expectedSandbox ?? null,
         run.model,
         run.repos,
         run.resolvedResources,
@@ -444,6 +428,10 @@ async function runWorker(runId: string): Promise<void> {
       clearTimeout(ceiling);
     }
   } catch (err) {
+    if (err instanceof RunStoppedBeforeStartError) {
+      stoppedBeforeStart = true; // the Stop that settled the run owns its command, lease and pump
+      return;
+    }
     console.error(`[worker] run ${runId} failed before engine completion:`, err);
     const reason =
       err instanceof Error && err.message
@@ -455,9 +443,9 @@ async function runWorker(runId: string): Promise<void> {
     });
     await emitFinalizedEnd(runId, finalized);
   } finally {
-    // Free the thread and dispatch its next turn — whatever the outcome.
+    // Free the thread and dispatch its next turn, unless a Stop settled the run first and owns that pump.
     cancellers.delete(runId);
-    await onRunSettled(runId, run.threadId);
+    if (!stoppedBeforeStart) await onRunSettled(runId, run.threadId);
   }
 }
 
@@ -476,7 +464,7 @@ async function runChat(
     return;
   }
 
-  await setRunStatus(run.id, "running");
+  if (!(await markRunStarted(run.id))) throw new RunStoppedBeforeStartError();
   if (!isInternalRunOrigin(run.origin)) {
     publishRunLifecycleChange({
       orgId: run.orgId,
@@ -600,18 +588,17 @@ async function runChat(
 export const RUNS_ROOT =
   process.env.RUNS_ROOT?.trim() || join(import.meta.dir, "..", ".runs");
 
-// INACTIVITY window on a single engine run: the abort fires only after this
-// much SILENCE on the run's event channel (every step/delta/native frame
-// resets it). Overridable (test/ops) like the mock's WORKER_STEP_DELAY_MS knob.
-const ADAPTER_TIMEOUT_MS = process.env.ENGINE_TIMEOUT_MS
-  ? Number(process.env.ENGINE_TIMEOUT_MS)
-  : 600_000; // 10min of silence = hung; long busy turns keep resetting this
-
-// Absolute ceiling regardless of activity — runaway protection only (an agent
-// looping forever WITH output would otherwise never time out).
-const ADAPTER_MAX_MS = process.env.ENGINE_MAX_MS
-  ? Number(process.env.ENGINE_MAX_MS)
-  : 4 * 60 * 60_000; // 4h
+// A turn runs until it finishes or someone stops it: no silence window and no
+// ceiling by default. An operator who wants either sets ENGINE_TIMEOUT_MS (the
+// abort fires after that much SILENCE on the run's event channel; every
+// step/delta/native frame resets it) or ENGINE_MAX_MS (absolute, regardless of
+// activity). Unset, empty or non-positive means off.
+function operatorWindowMs(raw: string | undefined): number {
+  const parsed = Number(raw?.trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.POSITIVE_INFINITY;
+}
+const ADAPTER_TIMEOUT_MS = operatorWindowMs(process.env.ENGINE_TIMEOUT_MS);
+const ADAPTER_MAX_MS = operatorWindowMs(process.env.ENGINE_MAX_MS);
 
 async function runEngine(
   runId: string,
@@ -619,6 +606,7 @@ async function runEngine(
   prompt: string,
   bootstrapContext: string,
   turnContext: string,
+  memoryEnabled: boolean,
   resourceContext: string,
   skillContext: string,
   skillCatalogContext: string,
@@ -626,6 +614,7 @@ async function runEngine(
   threadId: string,
   engineSessionId: string | undefined,
   providerSession: ProviderSessionBinding | undefined,
+  expectedSandbox: ExpectedSandboxBinding | null,
   model: string,
   repos: string[],
   resolvedResources: EngineRunContext["resolvedResources"],
@@ -657,7 +646,7 @@ async function runEngine(
   // DB write), refuse to spawn its adapter unless the engine is explicitly enabled
   // (ENABLED_ENGINES). Fail the run closed rather than activating it.
   const engine = engineId as EngineId;
-  if (!persistedEngineModelReadyForDispatch(engine, model)) {
+  if (!(await dispatchReadyForUser({ orgId, userId }, engine, model, "persisted"))) {
     const finalized = await finalizeRun(runId, "failed", `engine/model not ready: ${engineId}/${model}`, 0);
     await emitFinalizedEnd(runId, finalized);
     return;
@@ -716,6 +705,7 @@ async function runEngine(
     prompt,
     bootstrapContext,
     turnContext,
+    memoryEnabled,
     resourceContext,
     skillContext,
     skillCatalogContext,
@@ -731,6 +721,7 @@ async function runEngine(
     resolvedResources,
     engineSessionId,
     providerSession,
+    expectedSandbox,
     commandName,
     commandSessionId,
     commandProvider,

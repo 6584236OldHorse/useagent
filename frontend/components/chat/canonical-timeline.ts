@@ -202,7 +202,7 @@ function toTimelineMarker(e: CanonicalEventLike): TimelineMarker {
   if (t === "memory") {
     return { kind: "memory", op: "remember", scope: "org", failed: false, reconciled: false };
   }
-  return { kind: "context", source: t ?? "context", itemCount: 0, query: null };
+  return { kind: "context", source: t ?? "context", itemCount: 0, query: null, degraded: false };
 }
 
 type Ranked = { node: TimelineNode; k0: number; k1: number; k2: number };
@@ -245,6 +245,9 @@ export function collectToolLifecycles(
   events: readonly CanonicalEventLike[],
 ): ReadonlyMap<string, ToolLifecycle> {
   const mutable = new Map<string, ToolLifecycle>();
+  // One id list per call, appended in place: a tool with many progress events
+  // must not copy its whole history on every event.
+  const nativeIds = new Map<string, string[]>();
   for (const event of events) {
     if (
       (event.kind !== "tool.started" &&
@@ -256,13 +259,17 @@ export function collectToolLifecycles(
     }
     const previous = mutable.get(event.toolCallId);
     const nativeEventId = event.identity?.nativeEventId;
+    let nativeEventIds = nativeIds.get(event.toolCallId);
+    if (!nativeEventIds) {
+      nativeEventIds = [];
+      nativeIds.set(event.toolCallId, nativeEventIds);
+    }
+    if (nativeEventId) nativeEventIds.push(nativeEventId);
     mutable.set(event.toolCallId, {
       toolCallId: event.toolCallId,
       firstSeq: previous?.firstSeq ?? event.seq,
       lastSeq: event.seq,
-      nativeEventIds: nativeEventId
-        ? [...(previous?.nativeEventIds ?? []), nativeEventId]
-        : (previous?.nativeEventIds ?? []),
+      nativeEventIds,
       name: event.name ?? previous?.name ?? "tool",
       title: event.title ?? previous?.title ?? event.name ?? "Tool",
       input: event.input ?? previous?.input,
@@ -306,6 +313,13 @@ export function buildTimelineFromCanonical(
 ): TimelineNode[] {
   const ordered = events.toSorted((a, b) => a.seq - b.seq);
   const toolLifecycles = collectToolLifecycles(ordered);
+  // Durable sidecar steps keyed by the provider call id they carry, for the
+  // runtime engines whose lifecycle events do not name the step's event ids.
+  const stepsByCallId = new Map<string, ApiStep>();
+  for (const step of stepsById.values()) {
+    const callId = nativeOfStep(step).callID;
+    if (callId && !stepsByCallId.has(callId)) stepsByCallId.set(callId, step);
+  }
   const latestPlanSeq = ordered.reduce(
     (latest, event) => (event.kind === "plan.updated" ? Math.max(latest, event.seq) : latest),
     -1,
@@ -540,6 +554,7 @@ export function buildTimelineFromCanonical(
           .toReversed()
           .map((id) => stepsById.get(id))
           .find((candidate): candidate is ApiStep => candidate !== undefined) ??
+        stepsByCallId.get(lifecycle.toolCallId) ??
         projectToolLifecycle(lifecycle, e);
       if (step.kind === "done") continue;
       if (!isRenderableTimelineStep(step)) continue;
@@ -591,13 +606,23 @@ export {
 } from "./canonical-session";
 
 /** Parse a step's native ids from code_json (mirrors native-ids.nativeOf). */
-function nativeOfStep(step: ApiStep): { partID: string | null; messageID: string | null } {
+function nativeOfStep(step: ApiStep): {
+  partID: string | null;
+  messageID: string | null;
+  callID: string | null;
+} {
   const cj = (step as { code_json?: string | null }).code_json;
-  if (!cj) return { partID: null, messageID: null };
+  if (!cj) return { partID: null, messageID: null, callID: null };
   try {
-    const n = (JSON.parse(cj) as { native?: { partID?: string; messageID?: string } }).native;
-    return { partID: n?.partID ?? null, messageID: n?.messageID ?? null };
+    const n = (JSON.parse(cj) as {
+      native?: { partID?: string; messageID?: string; callID?: string };
+    }).native;
+    return {
+      partID: n?.partID ?? null,
+      messageID: n?.messageID ?? null,
+      callID: n?.callID ?? null,
+    };
   } catch {
-    return { partID: null, messageID: null };
+    return { partID: null, messageID: null, callID: null };
   }
 }

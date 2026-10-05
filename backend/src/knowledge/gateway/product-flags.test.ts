@@ -92,11 +92,4 @@ describe("gateway product flags", () => {
     expect(await productFlagsForToolList("org-a", { env: BRIDGE, fetchImpl })).toEqual({ childThreads: false, bots: false });
     expect(warnings).toHaveBeenCalledTimes(1);
   });
-
-  test("a canary org keeps its child threads even when the primary's global flag is off", async () => {
-    const { fetchImpl } = primaryAnswering({ childThreads: false, bots: false });
-    const env = { ...BRIDGE, PRODUCT_CHILD_CANARY_ORG_IDS: "org-canary" };
-    expect(await productFlagsForToolList("org-canary", { env, fetchImpl })).toEqual({ childThreads: true, bots: false });
-    expect(await productFlagsForToolList("org-other", { env, fetchImpl })).toEqual({ childThreads: false, bots: false });
-  });
 });

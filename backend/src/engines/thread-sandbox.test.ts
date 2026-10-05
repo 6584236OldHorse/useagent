@@ -14,10 +14,77 @@ import type { EngineRunContext } from "./types";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
   PersonalSandboxConnectionUnavailableError,
+  sandboxBindingExpectation,
   type SandboxBinding,
 } from "../sandboxes/binding";
+import { forgetLiveThreadSandbox, rememberLiveThreadSandbox } from "./sandbox-runtime";
 
 describe("shared thread sandbox lease", () => {
+  test("constrained revival verifies owner and connection before lookup and bypasses ID-only cache", async () => {
+    let lookedUp = 0;
+    const fresh = { id: "pinned", state: "started" } as SandboxHandle;
+    const provider = {
+      connectionFingerprint: "1".repeat(64),
+      get: async () => { lookedUp++; return fresh; },
+    } as unknown as SandboxBinding["provider"];
+    const original: SandboxBinding = {
+      kind: "cube", provider, snapshot: null, credential: "env", userId: null, logins: [],
+    };
+    const expected = sandboxBindingExpectation(original, "org", fresh.id);
+    for (const changed of [
+      { binding: { ...original, kind: "daytona" as const }, expected },
+      { binding: { ...original, credential: "user" as const, userId: "owner", connectionUpdatedAt: "2026-09-07T00:00:00Z" }, expected },
+      { binding: original, expected: { ...expected, ownerOrgId: "another-org" } },
+      { binding: { ...original, provider: { ...provider, connectionFingerprint: "2".repeat(64) } }, expected },
+    ]) {
+      await expect(reviveRetainedSandbox(
+        { threadId: "pinned-thread", orgId: "org", expectedSandbox: changed.expected } as EngineRunContext,
+        fresh.id, { chip: "runtime:codex" },
+        { threadBinding: async () => changed.binding, sandboxBinding: async () => changed.binding, credentialsCurrent: async () => true },
+      )).rejects.toThrow("accepted sandbox binding");
+    }
+    expect(lookedUp).toBe(0);
+    rememberLiveThreadSandbox("pinned-thread", { ...fresh } as SandboxHandle);
+    try {
+      const result = await reviveRetainedSandbox(
+        { threadId: "pinned-thread", orgId: "org", expectedSandbox: expected } as EngineRunContext,
+        fresh.id, { chip: "runtime:codex" },
+        { threadBinding: async () => original, sandboxBinding: async () => original, credentialsCurrent: async () => true },
+      );
+      expect(result.sandbox).toBe(fresh);
+      expect(lookedUp).toBe(1);
+    } finally {
+      forgetLiveThreadSandbox("pinned-thread", fresh.id);
+    }
+    const personal = { ...original, credential: "user" as const, userId: "owner", connectionUpdatedAt: "2026-09-07T00:00:00Z" };
+    expect(sandboxBindingExpectation(personal, "org", fresh.id).credentialGeneration)
+      .not.toBe(sandboxBindingExpectation({ ...personal, connectionUpdatedAt: "2026-09-07T01:00:00Z" }, "org", fresh.id).credentialGeneration);
+  });
+
+  test("a constrained run rejects missing, replaced, or deleted retained sandboxes without fallback", async () => {
+    for (const mapped of [null, "replacement", "expected"]) {
+      let revivals = 0;
+      let forgotten = 0;
+      await expect(resolveRetainedSandbox(
+        {
+          threadId: "expected-thread", orgId: "org",
+          expectedSandbox: {
+            version: 1, sandboxId: "expected", provider: "cube", credential: "env",
+            ownerOrgId: "org", ownerUserId: null, credentialGeneration: "a".repeat(64),
+          },
+        } as EngineRunContext,
+        { snapshot: "native", chip: "runtime:codex" },
+        {
+          getSandboxId: async () => mapped,
+          revive: async () => { revivals++; throw new SandboxNotFoundError(); },
+          forget: () => { forgotten++; },
+        },
+      )).rejects.toThrow("accepted sandbox binding");
+      expect(revivals).toBe(mapped === "expected" ? 1 : 0);
+      expect(forgotten).toBe(0);
+    }
+  });
+
   test("persists the run mapping before returning a sandbox to an engine", () => {
     const source = readFileSync(new URL("./thread-sandbox.ts", import.meta.url), "utf8");
     const persist = source.indexOf("await persistSandboxBeforeExecution({");

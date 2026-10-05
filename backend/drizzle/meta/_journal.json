@@ -603,6 +603,41 @@
       "when": 1792600000000,
       "tag": "0087_run_capture_loss",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1792700000000,
+      "tag": "0088_expected_sandbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1792700000001,
+      "tag": "0089_control_plane_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1792800000000,
+      "tag": "0090_runners",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1792800000001,
+      "tag": "0091_slack_card_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1792800000002,
+      "tag": "0092_slack_access_requests",
+      "breakpoints": true
     }
   ]
 }

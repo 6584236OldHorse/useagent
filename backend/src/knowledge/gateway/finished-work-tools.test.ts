@@ -10,6 +10,7 @@ import {
 import { listFinishedWorkForRun } from "../../runs/finished-work-repo";
 import { resetFinishedWorkSessionLockClientForTest } from "../../runs/finished-work-lock";
 import { finalizeRun } from "../../runs/finalize";
+import { recordProviderEventIfAbsent } from "../../runs/provider-events";
 import { createRun } from "../../runs/repo";
 import { db } from "../../db/client";
 import { providerEvents } from "../../db/schema";
@@ -29,7 +30,7 @@ const previousRollout = process.env.FINISHED_WORK_ROLLOUT;
 const previousEnforceEngines = process.env.FINISHED_WORK_ENFORCE_ENGINES;
 const previousEnforceRuns = process.env.FINISHED_WORK_ENFORCE_RUN_IDS;
 
-async function actor(): Promise<{ claims: ToolTokenClaims; runId: string }> {
+async function actor(threadId?: string): Promise<{ claims: ToolTokenClaims; runId: string }> {
   const runId = crypto.randomUUID();
   await createRun({
     id: runId,
@@ -38,8 +39,8 @@ async function actor(): Promise<{ claims: ToolTokenClaims; runId: string }> {
     engine: "mock",
     orgId: ORG,
     userId: null,
-    parentRunId: null,
-    threadId: runId,
+    parentRunId: threadId ?? null,
+    threadId: threadId ?? runId,
     repos: [],
     memoryScope: "org",
   });
@@ -48,7 +49,7 @@ async function actor(): Promise<{ claims: ToolTokenClaims; runId: string }> {
     claims: {
       orgId: ORG,
       userId: "",
-      threadId: runId,
+      threadId: threadId ?? runId,
       runId,
       scope: "run",
       exp: Date.now() + 60_000,
@@ -66,6 +67,45 @@ function resultRecord(value: unknown): {
 
 function sha(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function useFixtureArtifactPublisher(): void {
+  setSandboxArtifactPublisherForTest(async (input) => {
+    const name = input.path.split("/").at(-1) || "fixture.pdf";
+    const digest = sha(input.path);
+    const workpieceKind = name.endsWith(".bin") ? null : "pdf";
+    const contentType = workpieceKind ? "application/pdf" : "application/octet-stream";
+    if (input.updatesArtifactId) {
+      const revised = await reviseArtifactPublication({
+        orgId: input.orgId,
+        id: input.updatesArtifactId,
+        name,
+        contentType,
+        sha256: digest,
+        storageKey: `test/${input.runId}/${digest}`,
+        sizeBytes: input.path.length,
+        workpieceKind,
+        workpieceState: null,
+      });
+      if (!revised) throw new Error("fixture revision failed");
+      return { artifact: toArtifactDescriptor(revised), created: false };
+    }
+    const created = await createArtifactRecord({
+      orgId: input.orgId,
+      userId: input.userId,
+      runId: input.runId,
+      threadId: input.threadId ?? input.runId,
+      sourcePath: input.path,
+      name,
+      contentType,
+      sizeBytes: input.path.length,
+      sha256: digest,
+      storageKey: `test/${input.runId}/${digest}`,
+      workpieceKind,
+      workpieceState: null,
+    });
+    return { artifact: toArtifactDescriptor(created.row), created: created.created };
+  });
 }
 
 beforeEach(() => {
@@ -398,9 +438,10 @@ describe("gateway FinishedWork producers", () => {
     };
 
     let eventAttempts = 0;
-    setGatewayCompletionEventRecorderForTest(async () => {
+    setGatewayCompletionEventRecorderForTest(async (input) => {
       eventAttempts += 1;
       if (eventAttempts === 1) throw new Error("transient event failure");
+      await recordProviderEventIfAbsent(input);
     });
     const args = { artifact_id: artifact.id, state: { text: "after" } };
     const first = await executeRegisteredGatewayTool(
@@ -439,6 +480,291 @@ describe("gateway FinishedWork producers", () => {
     expect(state.obligations.find((item) => item.id === updateObligation?.id)?.state).toBe("satisfied");
     expect((await getArtifactForOrg(ORG, artifact.id))?.workpieceRevision).toBe(1);
     expect(eventAttempts).toBe(2);
+  });
+
+  test("binds create and update receipt metadata to their persisted materialized revisions", async () => {
+    const { claims, runId } = await actor();
+    useFixtureArtifactPublisher();
+    const createArgs = { path: "/root/work/Snapshot-A.pdf" };
+    setGatewayCompletionEventRecorderForTest(async (input) => {
+      await recordProviderEventIfAbsent(input);
+      throw new Error("stop after immutable create event");
+    });
+    const firstCreate = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      createArgs,
+      undefined,
+      { requestId: "snapshot-create" },
+    );
+    if (!firstCreate.matched) throw new Error("artifact_publish missing");
+    expect(resultRecord(firstCreate.result).isError).toBe(true);
+    let state = await listFinishedWorkForRun(ORG, runId);
+    const createObligation = state.obligations.find((item) => item.requirement === "artifact_create");
+    const artifactId = createObligation?.materializedArtifactId;
+    if (!artifactId) throw new Error("created artifact was not checkpointed");
+    const createdA = await getArtifactForOrg(ORG, artifactId);
+    if (!createdA) throw new Error("created artifact disappeared");
+    const advancedB = await reviseArtifactPublication({
+      orgId: ORG,
+      id: artifactId,
+      name: "Snapshot-B.docx",
+      contentType: createdA.contentType,
+      sha256: sha("created-B"),
+      storageKey: `test/${runId}/created-b`,
+      sizeBytes: 9,
+      workpieceKind: createdA.workpieceKind,
+      workpieceState: { text: "created B" },
+    });
+    if (!advancedB) throw new Error("create fixture did not advance");
+    setGatewayCompletionEventRecorderForTest(null);
+    const replayedCreate = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      createArgs,
+      undefined,
+      { requestId: "snapshot-create" },
+    );
+    if (!replayedCreate.matched) throw new Error("artifact_publish missing");
+    const replayedCreateResult = resultRecord(replayedCreate.result);
+    const replayedCreateArtifact = replayedCreateResult.structuredContent?.artifact as
+      | { workpiece?: { state_revision?: number } }
+      | undefined;
+    expect(replayedCreateArtifact?.workpiece?.state_revision).toBe(1);
+    state = await listFinishedWorkForRun(ORG, runId);
+    const createReceipt = state.receipts.find((item) => item.kind === "artifact_created");
+    expect(createReceipt?.artifactRevision).toBe(0);
+    expect(createReceipt?.metadata).toMatchObject({
+      byteCount: createdA.sizeBytes,
+      digest: createdA.sha256,
+      mime: createdA.contentType,
+    });
+
+    const updateArgs = {
+      path: "/root/work/Snapshot-update-A.pdf",
+      updates_artifact_id: artifactId,
+    };
+    const updater = await actor(claims.threadId);
+    setGatewayCompletionEventRecorderForTest(async (input) => {
+      await recordProviderEventIfAbsent(input);
+      throw new Error("stop after immutable update event");
+    });
+    const firstUpdate = await executeRegisteredGatewayTool(
+      updater.claims,
+      "artifact_publish",
+      updateArgs,
+      undefined,
+      { requestId: "snapshot-update" },
+    );
+    if (!firstUpdate.matched) throw new Error("artifact_publish missing");
+    expect(resultRecord(firstUpdate.result).isError).toBe(true);
+    const updatedA = await getArtifactForOrg(ORG, artifactId);
+    if (!updatedA) throw new Error("updated artifact disappeared");
+    expect(updatedA.workpieceRevision).toBe(2);
+    const advancedUpdateB = await reviseArtifactPublication({
+      orgId: ORG,
+      id: artifactId,
+      name: "Snapshot-update-B.docx",
+      contentType: updatedA.contentType,
+      sha256: sha("updated-B"),
+      storageKey: `test/${runId}/updated-b`,
+      sizeBytes: 11,
+      workpieceKind: updatedA.workpieceKind,
+      workpieceState: { text: "updated B" },
+    });
+    if (!advancedUpdateB) throw new Error("update fixture did not advance");
+    setGatewayCompletionEventRecorderForTest(null);
+    const replayedUpdate = await executeRegisteredGatewayTool(
+      updater.claims,
+      "artifact_publish",
+      updateArgs,
+      undefined,
+      { requestId: "snapshot-update" },
+    );
+    if (!replayedUpdate.matched) throw new Error("artifact_publish missing");
+    const replayedUpdateResult = resultRecord(replayedUpdate.result);
+    const replayedUpdateArtifact = replayedUpdateResult.structuredContent?.artifact as
+      | { workpiece?: { state_revision?: number } }
+      | undefined;
+    expect(replayedUpdateArtifact?.workpiece?.state_revision).toBe(3);
+    state = await listFinishedWorkForRun(ORG, updater.runId);
+    const updateReceipt = state.receipts.find((item) => item.kind === "artifact_updated");
+    expect(updateReceipt?.artifactRevision).toBe(2);
+    expect(updateReceipt?.metadata).toMatchObject({
+      byteCount: updatedA.sizeBytes,
+      digest: updatedA.sha256,
+      mime: updatedA.contentType,
+    });
+  });
+
+  test("keeps an advanced materialization open when its historical event is absent", async () => {
+    const { claims, runId } = await actor();
+    useFixtureArtifactPublisher();
+    setGatewayCompletionEventRecorderForTest(async () => {
+      throw new Error("event unavailable");
+    });
+    const args = { path: "/root/work/Missing.pdf" };
+    const first = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      args,
+      undefined,
+      { requestId: "missing-history" },
+    );
+    if (!first.matched) throw new Error("artifact_publish missing");
+    const before = await listFinishedWorkForRun(ORG, runId);
+    const obligation = before.obligations[0];
+    const artifactId = obligation?.materializedArtifactId;
+    if (!artifactId) throw new Error("artifact was not checkpointed");
+    const artifact = await getArtifactForOrg(ORG, artifactId);
+    if (!artifact) throw new Error("artifact disappeared");
+    await reviseArtifactPublication({
+      orgId: ORG,
+      id: artifactId,
+      name: artifact.name,
+      contentType: artifact.contentType,
+      sha256: sha("missing-history-B"),
+      storageKey: `test/${runId}/missing-b`,
+      sizeBytes: 12,
+      workpieceKind: artifact.workpieceKind,
+      workpieceState: { text: "B" },
+    });
+    setGatewayCompletionEventRecorderForTest(null);
+
+    const retried = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      args,
+      undefined,
+      { requestId: "missing-history" },
+    );
+    if (!retried.matched) throw new Error("artifact_publish missing");
+    expect(resultRecord(retried.result)).toMatchObject({ isError: true });
+    const after = await listFinishedWorkForRun(ORG, runId);
+    expect(after.obligations.find((item) => item.id === obligation?.id)?.state).toBe("open");
+    expect(after.receipts).toHaveLength(0);
+    expect(await db.select().from(providerEvents).where(eq(providerEvents.id, `artifact.created:${artifactId}`)))
+      .toHaveLength(0);
+  });
+
+  test("does not treat a resolved no-op event writer as durable capture", async () => {
+    const { claims, runId } = await actor();
+    useFixtureArtifactPublisher();
+    const args = { path: "/root/work/Noop.bin" };
+    setGatewayCompletionEventRecorderForTest(async () => {});
+    const first = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      args,
+      undefined,
+      { requestId: "noop-history" },
+    );
+    if (!first.matched) throw new Error("artifact_publish missing");
+    expect(resultRecord(first.result)).toMatchObject({ isError: true });
+    let state = await listFinishedWorkForRun(ORG, runId);
+    expect(state.receipts).toHaveLength(0);
+    expect(state.obligations[0]?.state).toBe("open");
+
+    setGatewayCompletionEventRecorderForTest(async (input) => {
+      await recordProviderEventIfAbsent(input);
+    });
+    const retried = await executeRegisteredGatewayTool(
+      claims,
+      "artifact_publish",
+      args,
+      undefined,
+      { requestId: "noop-history" },
+    );
+    if (!retried.matched) throw new Error("artifact_publish missing");
+    expect(resultRecord(retried.result).structuredContent?.finished_work_receipt).toMatchObject({
+      kind: "artifact_created",
+      artifact_revision: 0,
+    });
+    state = await listFinishedWorkForRun(ORG, runId);
+    expect(state.receipts).toHaveLength(1);
+    expect(await db.select().from(providerEvents).where(eq(
+      providerEvents.id,
+      `artifact.created:${state.receipts[0]?.artifactId}`,
+    ))).toHaveLength(1);
+  });
+
+  test("rejects malformed and foreign-scope historical events without rewriting them", async () => {
+    for (const kind of ["malformed", "source-version", "foreign"] as const) {
+      const { claims, runId } = await actor();
+      useFixtureArtifactPublisher();
+      setGatewayCompletionEventRecorderForTest(async () => {
+        throw new Error("leave event missing");
+      });
+      const args = { path: `/root/work/${kind}.pdf` };
+      const first = await executeRegisteredGatewayTool(
+        claims,
+        "artifact_publish",
+        args,
+        undefined,
+        { requestId: `${kind}-history` },
+      );
+      if (!first.matched) throw new Error("artifact_publish missing");
+      const state = await listFinishedWorkForRun(ORG, runId);
+      const artifactId = state.obligations[0]?.materializedArtifactId;
+      if (!artifactId) throw new Error("artifact was not checkpointed");
+      const eventId = `artifact.created:${artifactId}`;
+      if (kind === "malformed") {
+        await recordProviderEventIfAbsent({
+          id: eventId,
+          runId,
+          threadId: runId,
+          provider: "skynet",
+          eventType: "artifact.created",
+          payload: { id: artifactId },
+        });
+      } else if (kind === "source-version") {
+        const artifact = await getArtifactForOrg(ORG, artifactId);
+        if (!artifact) throw new Error("artifact disappeared");
+        const descriptor = toArtifactDescriptor(artifact);
+        if (!descriptor.workpiece) throw new Error("workpiece fixture is missing");
+        await recordProviderEventIfAbsent({
+          id: eventId,
+          runId,
+          threadId: runId,
+          provider: "skynet",
+          eventType: "artifact.created",
+          payload: {
+            ...descriptor,
+            workpiece: { ...descriptor.workpiece, source_version: "f".repeat(64) },
+          },
+        });
+      } else {
+        const foreign = await actor();
+        const artifact = await getArtifactForOrg(ORG, artifactId);
+        if (!artifact) throw new Error("artifact disappeared");
+        await recordProviderEventIfAbsent({
+          id: eventId,
+          runId: foreign.runId,
+          threadId: foreign.runId,
+          provider: "skynet",
+          eventType: "artifact.created",
+          payload: toArtifactDescriptor(artifact),
+        });
+      }
+      const [persisted] = await db.select().from(providerEvents).where(eq(providerEvents.id, eventId));
+      if (!persisted) throw new Error("historical event fixture was not persisted");
+      setGatewayCompletionEventRecorderForTest(null);
+
+      const retried = await executeRegisteredGatewayTool(
+        claims,
+        "artifact_publish",
+        args,
+        undefined,
+        { requestId: `${kind}-history` },
+      );
+      if (!retried.matched) throw new Error("artifact_publish missing");
+      expect(resultRecord(retried.result)).toMatchObject({ isError: true });
+      const after = await listFinishedWorkForRun(ORG, runId);
+      expect(after.receipts).toHaveLength(0);
+      expect(after.obligations[0]?.state).toBe("open");
+      const [unchanged] = await db.select().from(providerEvents).where(eq(providerEvents.id, eventId));
+      expect(unchanged).toEqual(persisted);
+    }
   });
 
   test("resolves artifact_publish create vs update from updates_artifact_id", async () => {

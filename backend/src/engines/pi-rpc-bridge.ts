@@ -10,6 +10,8 @@ import {
   RpcFrameDecoder,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
 import type { SandboxHandle } from "../sandboxes/provider";
+import { ExpectedSandboxMismatchError } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { PI_CODING_AGENT_VERSION, type PreparedPiRuntime } from "./pi-runtime-config";
 import {
   cleanupOwnedPiTransports,
@@ -71,6 +73,8 @@ export interface PiBridgeSession {
   readonly sessionFile: string;
   readonly sandboxId: string;
   readonly fingerprint: string;
+  /** Binding authority captured when a constrained run created/resumed this bridge. */
+  readonly expectedSandbox?: ExpectedSandboxBinding;
   subscribe(listener: PiRpcFrameListener): () => void;
   command(command: NativeBridgeCommand): Promise<void>;
   readSubagentMessages?(selector: {
@@ -143,6 +147,7 @@ class LivePiBridgeSession implements PiBridgeSession {
     readonly fingerprint: string,
     readonly sessionId: string,
     readonly sessionFile: string,
+    readonly expectedSandbox?: ExpectedSandboxBinding,
   ) {
     void this.#ready.catch(() => {});
     void this.#failure.catch(() => {});
@@ -157,6 +162,7 @@ class LivePiBridgeSession implements PiBridgeSession {
     readonly workdir: string;
     readonly runtime: PreparedPiRuntime;
     readonly resumeSessionFile?: string;
+    readonly expectedSandbox?: ExpectedSandboxBinding;
     readonly readinessTimeoutMs?: number;
     readonly onCreated: (session: LivePiBridgeSession) => void;
     readonly onDisposed: (session: LivePiBridgeSession) => void;
@@ -188,6 +194,7 @@ class LivePiBridgeSession implements PiBridgeSession {
       input.runtime.fingerprint,
       "pending",
       input.resumeSessionFile ?? "pending",
+      input.expectedSandbox,
     );
     input.onCreated(instance);
     instance.observeTermination();
@@ -511,16 +518,20 @@ class LivePiBridgeSession implements PiBridgeSession {
 }
 
 export interface PiBridgeManager {
-  prepare?(sandbox: SandboxHandle): Promise<void>;
+  prepare?(
+    sandbox: SandboxHandle,
+    expectedSandbox?: ExpectedSandboxBinding,
+  ): Promise<void>;
   ensure(input: {
     readonly sandbox: SandboxHandle;
     readonly workdir: string;
     readonly runtime: PreparedPiRuntime;
     readonly resumeSessionFile?: string;
+    readonly expectedSandbox?: ExpectedSandboxBinding;
   }): Promise<PiBridgeSession>;
   get(sessionFile: string): PiBridgeSession | undefined;
   awaitTeardown(sessionFile: string): Promise<void>;
-  remove(sessionFile: string): Promise<void>;
+  remove(sessionFile: string, expectedSandbox?: ExpectedSandboxBinding): Promise<void>;
 }
 
 export class DefaultPiBridgeManager implements PiBridgeManager {
@@ -531,9 +542,18 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
     private readonly teardownTimeoutMs = RPC_TEARDOWN_TIMEOUT_MS,
   ) {}
 
-  async prepare(sandbox: SandboxHandle): Promise<void> {
+  async prepare(
+    sandbox: SandboxHandle,
+    expectedSandbox?: ExpectedSandboxBinding,
+  ): Promise<void> {
     const local = [...this.#sessions.values()]
       .filter((session) => session.sandboxId === sandbox.id);
+    if (
+      expectedSandbox &&
+      local.some((session) => !piBridgeMatchesExpectedSandbox(session, expectedSandbox))
+    ) {
+      throw new ExpectedSandboxMismatchError();
+    }
     for (const session of local.filter((session) => session.disposed)) {
       await this.teardown(session);
     }
@@ -546,10 +566,18 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
     readonly workdir: string;
     readonly runtime: PreparedPiRuntime;
     readonly resumeSessionFile?: string;
+    readonly expectedSandbox?: ExpectedSandboxBinding;
   }): Promise<PiBridgeSession> {
     let existing = input.resumeSessionFile
       ? this.#sessions.get(input.resumeSessionFile)
       : undefined;
+    if (
+      existing &&
+      input.expectedSandbox &&
+      !piBridgeMatchesExpectedSandbox(existing, input.expectedSandbox)
+    ) {
+      throw new ExpectedSandboxMismatchError();
+    }
     if (existing?.disposed) {
       await this.awaitTeardown(existing.sessionFile);
       existing = undefined;
@@ -562,7 +590,7 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
       return existing;
     }
     if (existing) await this.remove(existing.sessionFile);
-    await this.prepare(input.sandbox);
+    await this.prepare(input.sandbox, input.expectedSandbox);
     if ([...this.#sessions.values()].some(
       (session) => session.sandboxId === input.sandbox.id && !session.disposed,
     )) {
@@ -594,9 +622,15 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
     await this.teardown(session);
   }
 
-  async remove(sessionFile: string): Promise<void> {
+  async remove(
+    sessionFile: string,
+    expectedSandbox?: ExpectedSandboxBinding,
+  ): Promise<void> {
     const session = this.#sessions.get(sessionFile);
     if (!session) return;
+    if (expectedSandbox && !piBridgeMatchesExpectedSandbox(session, expectedSandbox)) {
+      throw new ExpectedSandboxMismatchError();
+    }
     await this.teardown(session);
   }
 
@@ -605,6 +639,7 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
     readonly workdir: string;
     readonly runtime: PreparedPiRuntime;
     readonly resumeSessionFile?: string;
+    readonly expectedSandbox?: ExpectedSandboxBinding;
   }): Promise<LivePiBridgeSession> {
     let created: LivePiBridgeSession | undefined;
     try {
@@ -656,6 +691,30 @@ export class DefaultPiBridgeManager implements PiBridgeManager {
       this.#sessions.delete(session.sessionFile);
     }
   }
+}
+
+function sameExpectedSandbox(
+  left: ExpectedSandboxBinding | undefined,
+  right: ExpectedSandboxBinding,
+): boolean {
+  return Boolean(
+    left &&
+    left.version === right.version &&
+    left.sandboxId === right.sandboxId &&
+    left.provider === right.provider &&
+    left.credential === right.credential &&
+    left.ownerOrgId === right.ownerOrgId &&
+    left.ownerUserId === right.ownerUserId &&
+    left.credentialGeneration === right.credentialGeneration,
+  );
+}
+
+export function piBridgeMatchesExpectedSandbox(
+  session: PiBridgeSession,
+  expected: ExpectedSandboxBinding,
+): boolean {
+  return session.sandboxId === expected.sandboxId &&
+    sameExpectedSandbox(session.expectedSandbox, expected);
 }
 
 export const piBridgeManager = new DefaultPiBridgeManager();

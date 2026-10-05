@@ -24,7 +24,7 @@ import {
   getThreadRelationshipView,
   listDirectThreadChildren,
 } from "./thread-relationship-repo";
-import { productChildThreadsEnabled } from "./thread-relationship-rollout";
+import { productChildThreadsEnabled } from "./thread-relationship-switch";
 import { boundedChildTitle } from "./child-session-policy";
 import { pumpProductChildThread } from "./child-session-pump";
 import type { ProductThreadStatus } from "./thread-status";
@@ -141,7 +141,7 @@ export async function createChildSession(input: {
   readonly origin?: UnattendedRunOrigin;
 }): Promise<{ readonly status: "created" | "replayed"; readonly child: ChildSessionSummary } | { readonly status: "conflict" }> {
   const runId = crypto.randomUUID();
-  const productChild = productChildThreadsEnabled(input.orgId);
+  const productChild = productChildThreadsEnabled();
   const idempotencyKey = productChild
     ? productChildCommandKey(input.threadId, input.parentRunId, input.idempotencyKey)
     : childKey(
@@ -295,7 +295,7 @@ export async function listChildSessions(input: {
 }): Promise<readonly ChildSessionSummary[]> {
   const limit = childSessionLimit(input.limit);
   const legacy = await listLegacyChildSessions(input.orgId, input.threadId, limit);
-  if (productChildThreadsEnabled(input.orgId)) {
+  if (productChildThreadsEnabled()) {
     const parent = await getThreadRelationship(input.orgId, input.threadId);
     if (!parent) return legacy;
     const children = (await listDirectThreadChildren({
@@ -361,7 +361,7 @@ export async function getChildSession(
   threadId: string,
   childRunId: string,
 ): Promise<ChildSessionSummary | null> {
-  if (productChildThreadsEnabled(orgId)) {
+  if (productChildThreadsEnabled()) {
     const parent = await getThreadRelationship(orgId, threadId);
     const child = await getThreadRelationship(orgId, childRunId);
     if (parent && child && child.parentThreadId === parent.threadId && child.kind !== "root") {
@@ -413,7 +413,7 @@ export async function listChildSessionEvents(input: {
   const child = await getChildSession(input.orgId, input.threadId, input.childRunId);
   if (!child) return null;
   const limit = childSessionEventLimit(input.limit);
-  const productChild = productChildThreadsEnabled(input.orgId) && child.kind === "product_thread";
+  const productChild = productChildThreadsEnabled() && child.kind === "product_thread";
   const resolvedRunId = productChild
     ? (await getThreadRelationshipView(input.orgId, child.threadId))?.latestRunId ?? input.childRunId
     : input.childRunId;
@@ -451,7 +451,7 @@ export async function gatherChildSessions(input: {
 }>> {
   const children = await listChildSessions(input);
   if (children.length === 0) return [];
-  if (productChildThreadsEnabled(input.orgId)) {
+  if (productChildThreadsEnabled()) {
     const productChildren = children.filter((child) => child.kind === "product_thread");
     const legacyChildren = children.filter((child) => child.kind === "legacy_child_run");
     const childThreadIds = productChildren.map((child) => child.threadId);

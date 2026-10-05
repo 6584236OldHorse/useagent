@@ -36,6 +36,7 @@ import {
   type ArtifactRecord,
 } from "./repo";
 import { artifactStorage, type ArtifactByteRange } from "./storage";
+import { withArtifactStorageKeyLock } from "./storage-key-lock";
 import { materializePptxImages } from "./publish";
 import { parseWorkpieceState } from "./workpiece";
 import {
@@ -324,6 +325,24 @@ artifactRoutes.get("/:id/workpiece", async (c) => {
 artifactRoutes.get("/:id/preview", async (c) => {
   const artifact = await getArtifactForOrg(c.get("orgId"), c.req.param("id"));
   if (!artifact?.previewStorageKey) return c.json({ error: "not found" }, 404);
+  const requestedVersion = c.req.query("v");
+  if (requestedVersion !== undefined && requestedVersion !== artifact.previewStorageKey) {
+    return c.json({ error: "not found" }, 404);
+  }
+  const etag = `"sha256-${artifact.previewStorageKey}"`;
+  const cacheControl = requestedVersion === undefined
+    ? "private, no-cache"
+    : "private, max-age=300";
+  const ifNoneMatch = c.req.header("if-none-match");
+  if (ifNoneMatch?.split(",").some((value) => {
+    const candidate = value.trim();
+    return candidate === "*" || candidate === etag || candidate === `W/${etag}`;
+  })) {
+    return new Response(null, {
+      status: 304,
+      headers: { "cache-control": cacheControl, etag },
+    });
+  }
   let bytes: Uint8Array;
   try {
     bytes = await artifactStorage().read(artifact.previewStorageKey);
@@ -333,11 +352,12 @@ artifactRoutes.get("/:id/preview", async (c) => {
   const previewName = `${artifact.name.replace(/\.[^.]+$/, "") || "artifact"}.pdf`;
   return new Response(bytes, {
     headers: {
-      "cache-control": "private, max-age=300",
+      "cache-control": cacheControl,
       "content-disposition": disposition(previewName, true),
       "content-length": String(bytes.byteLength),
       "content-type": PDF_CONTENT_TYPE,
       "cross-origin-resource-policy": "same-origin",
+      etag,
       "x-content-type-options": "nosniff",
     },
   });
@@ -577,14 +597,17 @@ artifactRoutes.post("/:id/workpiece/pdf-pages", async (c) => {
   }
 
   const digest = createHash("sha256").update(outputBytes).digest("hex");
-  await artifactStorage().put(digest, outputBytes);
-  const updated = await applyArtifactPdfPageRevision({
-    orgId: c.get("orgId"),
-    id: artifact.id,
-    expectedRevision: Number(expectedRevision),
-    sha256: digest,
-    storageKey: digest,
-    sizeBytes: outputBytes.byteLength,
+  const updated = await withArtifactStorageKeyLock(digest, async (tx) => {
+    await artifactStorage().put(digest, outputBytes);
+    return applyArtifactPdfPageRevision({
+      orgId: c.get("orgId"),
+      id: artifact.id,
+      expectedRevision: Number(expectedRevision),
+      sha256: digest,
+      storageKey: digest,
+      sizeBytes: outputBytes.byteLength,
+      exec: tx,
+    });
   });
   if (!updated) {
     const current = await getArtifactForOrg(c.get("orgId"), artifact.id);

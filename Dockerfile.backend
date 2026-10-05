@@ -37,6 +37,8 @@ COPY packages/sandbox-contract/package.json ./packages/sandbox-contract/
 COPY packages/sandbox-daytona/package.json ./packages/sandbox-daytona/
 COPY packages/sandbox-cube/package.json ./packages/sandbox-cube/
 COPY packages/sandbox-box/package.json ./packages/sandbox-box/
+COPY packages/runner-protocol/package.json ./packages/runner-protocol/
+COPY packages/sandbox-local/package.json ./packages/sandbox-local/
 
 WORKDIR /app/backend
 RUN bun install --frozen-lockfile --production
@@ -75,6 +77,8 @@ COPY packages/sandbox-contract ./packages/sandbox-contract
 COPY packages/sandbox-daytona ./packages/sandbox-daytona
 COPY packages/sandbox-cube ./packages/sandbox-cube
 COPY packages/sandbox-box ./packages/sandbox-box
+COPY packages/runner-protocol ./packages/runner-protocol
+COPY packages/sandbox-local ./packages/sandbox-local
 
 RUN set -eux; \
     asset_dir=/app/backend/runtime-assets; \
@@ -100,7 +104,7 @@ RUN set -eux; \
 
 RUN ln -s backend/node_modules /app/node_modules \
     && ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
-    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box; do \
+    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box runner-protocol sandbox-local; do \
       rm -rf "/app/backend/node_modules/@useagent/${package}"; \
       ln -s "../../../packages/${package}" "/app/backend/node_modules/@useagent/${package}"; \
     done \
@@ -129,7 +133,8 @@ RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 
 LABEL org.opencontainers.image.source="https://github.com/useagenthq/useagent" \
       org.opencontainers.image.revision="${RELEASE_COMMIT}" \
-      org.opencontainers.image.title="useAgent backend"
+      org.opencontainers.image.title="useAgent backend" \
+      io.useagent.auth.default="better-auth"
 
 ENV NODE_ENV=production \
     PORT=3201 \

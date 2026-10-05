@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyNativeImage,
   desktopToolchainCommand,
@@ -53,13 +56,44 @@ describe("native image name", () => {
 });
 
 describe("native image steps", () => {
+  test("the desktop step's configuration survives the shell round trip", async () => {
+    const root = await mkdtemp(join(tmpdir(), "useagent-desktop-"));
+    const home = join(root, "home");
+    const command = desktopToolchainCommand({ home, workdir: `${home}/work`, runsAsRoot: true });
+    // Only the writes run: package installs and the probe are stubbed, /etc is redirected under the temp root.
+    const child = Bun.spawn(["bash", "-c", `
+command() { return 1; }
+test() { return 1; }
+apt-get() { :; }
+rm() { :; }
+dconf() { :; }
+gtk-update-icon-cache() { :; }
+install() { shift; shift; shift; mkdir -p "${root}$1"; }
+tee() { cat > "${root}$1"; }
+chmod() { :; }
+set -u
+${command.replace(/\nif .*; then exit 0; fi\n/, "\n").split("\n").filter((line) => !line.startsWith("command -v")).join("\n")}
+`], { stdout: "pipe", stderr: "pipe" });
+    await child.exited;
+    expect(await Bun.file(join(root, "etc/X11/xorg.conf.d/10-virtual-display.conf")).text()).toContain('Modeline "1920x1080_60.00"');
+    const defaults = await Bun.file(join(root, "etc/dconf/db/local.d/00-useagent-desktop")).text();
+    expect(defaults).toContain("[com/solus-project/budgie-panel]");
+    expect(defaults).toContain("name='Raven Trigger'");
+    expect(defaults).toContain("picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'");
+    expect(await Bun.file(join(root, `${home}/.config/pcmanfm/useagent/desktop-items-0.conf`)).text()).toContain("wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp");
+    const browser = await Bun.file(join(root, `${home}/Desktop/browser.desktop`)).text();
+    expect(browser).toContain("$(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox");
+    expect(await Bun.file(join(root, `${home}/Desktop/files.desktop`)).text()).toContain("Exec=pcmanfm %U");
+    await rm(root, { recursive: true, force: true });
+  });
+
   test("repairs missing desktop tools and refuses an incomplete installation", async () => {
     for (const repaired of [true, false]) {
       const child = Bun.spawn(["bash", "-c", `
 installed=0
 command() {
   case "$2" in
-    xdotool|xfce4-clipman) [ "$installed" = 1 ] ;;
+    xdotool|pcmanfm) [ "$installed" = 1 ] ;;
     *) return 0 ;;
   esac
 }
@@ -68,13 +102,19 @@ apt-get() {
   case " $* " in
     *" install "*)
       case " $* " in *" xdotool "*) ;; *) return 1 ;; esac
-      case " $* " in *" xfce4-clipman "*) ;; *) return 1 ;; esac
+      case " $* " in *" budgie-core "*) ;; *) return 1 ;; esac
+      case " $* " in *" xserver-xorg-video-dummy "*) ;; *) return 1 ;; esac
       echo installed-desktop-tools
       installed=${repaired ? 1 : 0}
       ;;
   esac
 }
 rm() { :; }
+install() { :; }
+tee() { cat >/dev/null; }
+chmod() { :; }
+dconf() { :; }
+gtk-update-icon-cache() { :; }
 set -eu
 ${desktopToolchainCommand(CUBE_LAYOUT)}
 `], { stdout: "pipe", stderr: "pipe" });
@@ -90,7 +130,7 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
   test("cover bun, the runtime, every driver, Pi, documents and desktop in order", () => {
     const steps = nativeImageSteps(BOX_LAYOUT, inputs());
     expect(steps.map((step) => step.name)).toEqual([
-      "bun", "native-runtime", "codex", "claude", "opencode", "pi", "documents", "desktop",
+      "bun", "native-runtime", "codex", "claude", "opencode", "boot", "pi", "documents", "desktop",
     ]);
     for (const step of steps) {
       expect(step.command.startsWith("set -eu\nexport HOME='/home/user'\n")).toBe(true);
@@ -119,6 +159,14 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
       "/home/user/.useagent/pi-runtime/manifest/package-lock.json",
     ]);
     expect(pi.command).toContain("/usr/local/bin/bun");
+    const desktop = steps.find((step) => step.name === "desktop")!;
+    expect(desktop.files.map((file) => file.path)).toEqual([
+      "/home/user/.local/bin/useagent-desktop-launch",
+      "/home/user/.skynet/cdp-relay.mjs",
+    ]);
+    expect(desktop.files[0]!.bytes.toString("utf8")).toContain("#!/bin/sh\n");
+    expect(desktop.files[0]!.bytes.toString("utf8")).toContain("Xorg :1 -noreset -nolisten tcp -ac");
+    expect(desktop.command).toContain("chmod 0755 '/home/user/.local/bin/useagent-desktop-launch'");
   });
 
   test("use sudo for the document toolchain only when the sandbox runs unprivileged", () => {
@@ -133,39 +181,62 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
 });
 
 describe("native image Dockerfile", () => {
-  test("copies every context file and runs every step from the base image argument", () => {
+  test("stages the context with one COPY and runs every step from the base image argument", () => {
     const rendered = renderNativeImageDockerfile(CUBE_LAYOUT, inputs());
     expect(rendered.dockerfile.startsWith(`# ${nativeImageName(inputs())}`)).toBe(true);
     expect(rendered.dockerfile).toContain("ARG USEAGENT_NATIVE_BASE_IMAGE\nFROM ${USEAGENT_NATIVE_BASE_IMAGE}\nUSER root\n");
-    expect(rendered.dockerfile).toContain("RUN mkdir -p /root/work");
+    expect(rendered.dockerfile).toContain("RUN mkdir -p /root/work\nCOPY context/ /tmp/useagent-native-image/\n");
     expect(rendered.files.map((file) => file.contextPath)).toEqual([
       "context/0-bun/bun",
-      "context/0-bun/step.sh",
+      "context/0-bun.sh",
       "context/1-native-runtime/bun.lock",
       "context/1-native-runtime/package.json",
       "context/1-native-runtime/runtime.part-0",
-      "context/1-native-runtime/step.sh",
-      "context/2-codex/step.sh",
-      "context/3-claude/step.sh",
-      "context/4-opencode/step.sh",
-      "context/5-pi/package.json",
-      "context/5-pi/package-lock.json",
-      "context/5-pi/step.sh",
-      "context/6-documents/step.sh",
-      "context/7-desktop/step.sh",
+      "context/1-native-runtime.sh",
+      "context/2-codex.sh",
+      "context/3-claude.sh",
+      "context/4-opencode.sh",
+      "context/5-boot/useagent-sandbox-boot",
+      "context/5-boot.sh",
+      "context/6-pi/package.json",
+      "context/6-pi/package-lock.json",
+      "context/6-pi.sh",
+      "context/7-documents.sh",
+      "context/8-desktop/useagent-desktop-launch",
+      "context/8-desktop/cdp-relay.mjs",
+      "context/8-desktop.sh",
     ]);
-    expect(rendered.dockerfile).toContain("COPY context/0-bun/bun /tmp/useagent-native-image/0-bun/bun\n");
-    expect(rendered.dockerfile).toContain(
-      "COPY context/6-documents/step.sh /tmp/useagent-native-image/6-documents.sh\nRUN sh /tmp/useagent-native-image/6-documents.sh && rm -rf /tmp/useagent-native-image/6-documents.sh /tmp/useagent-native-image/6-documents\n",
-    );
+    // Every layer on top of the base: the workdir, the staged context, one RUN per step, the cleanup.
+    // The base image already carries over a hundred layers; the runtime rejects images past its depth limit.
+    const steps = nativeImageSteps(CUBE_LAYOUT, inputs());
+    const layers = rendered.dockerfile.split("\n").filter((line) => /^(COPY|RUN)\b/.test(line));
+    expect(layers.filter((line) => line.startsWith("COPY"))).toEqual(["COPY context/ /tmp/useagent-native-image/"]);
+    expect(layers.filter((line) => line.startsWith("RUN sh "))).toEqual(steps.map((step, index) =>
+      `RUN sh /tmp/useagent-native-image/${index}-${step.name}.sh && rm -rf /tmp/useagent-native-image/${index}-${step.name}.sh /tmp/useagent-native-image/${index}-${step.name}`,
+    ));
+    expect(layers).toHaveLength(steps.length + 3);
+    expect(layers.at(-1)).toBe("RUN rm -rf /tmp/useagent-native-image");
     expect(rendered.dockerfile).not.toContain("<<");
-    const bun = rendered.files.find((file) => file.contextPath === "context/0-bun/step.sh")!;
+    // The image boots its runtime: the entrypoint is the installed boot script.
+    expect(rendered.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]')).toBe(true);
+    // The base image's command survives the entrypoint when the bake knows it; a provider daemon may live there.
+    const withCommand = renderNativeImageDockerfile(CUBE_LAYOUT, inputs(), undefined, process.env, ["/usr/local/bin/start-sandbox.sh"]);
+    expect(withCommand.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]\nCMD ["/usr/local/bin/start-sandbox.sh"]')).toBe(true);
+    const boot = rendered.files.find((file) => file.contextPath === "context/5-boot/useagent-sandbox-boot")!;
+    expect(boot.bytes.toString("utf8").startsWith("#!/bin/sh\n")).toBe(true);
+    const bun = rendered.files.find((file) => file.contextPath === "context/0-bun.sh")!;
     expect(bun.bytes.toString("utf8").startsWith(
       "set -eu\nmkdir -p '/root/.local/share/useagent/bun/.stage-image' && cp '/tmp/useagent-native-image/0-bun/bun' '/root/.local/share/useagent/bun/.stage-image/bun'\nset -eu\nexport HOME='/root'\n",
     )).toBe(true);
-    const documents = rendered.files.find((file) => file.contextPath === "context/6-documents/step.sh")!;
+    const documents = rendered.files.find((file) => file.contextPath === "context/7-documents.sh")!;
     expect(documents.bytes.toString("utf8").startsWith("set -eu\nset -eu\nexport HOME='/root'\n")).toBe(true);
-    expect(rendered.dockerfile.trim().endsWith(`LABEL org.useagent.native-image=${nativeImageName(inputs())}`)).toBe(true);
+    expect(rendered.dockerfile).toContain(`LABEL org.useagent.native-image=${nativeImageName(inputs())}\n`);
+  });
+
+  test("hands the staged context to the runtime user when the sandbox runs unprivileged", () => {
+    const rendered = renderNativeImageDockerfile(BOX_LAYOUT, inputs());
+    expect(rendered.dockerfile).toContain("\nCOPY --chown=1000:1000 context/ /tmp/useagent-native-image/\n");
+    expect(rendered.dockerfile).not.toContain("USER root");
   });
 });
 
@@ -204,8 +275,8 @@ describe("applying the native image to a live sandbox", () => {
     expect(bunUploads.map((upload) => upload.bytes)).toEqual([3 * 1024 * 1024, 5]);
     expect(fake.commands.some((command) => command.includes("cat ") && command.includes("bun.part-0") && command.includes("bun.part-1"))).toBe(true);
     const stepCommands = fake.commands.filter((command) => command.startsWith("set -eu\nexport HOME="));
-    expect(stepCommands).toHaveLength(8);
-    expect(fake.uploads.at(-1)!.path).toBe("/home/user/.useagent/pi-runtime/manifest/package-lock.json");
+    expect(stepCommands).toHaveLength(9);
+    expect(fake.uploads.at(-1)!.path).toBe("/home/user/.skynet/cdp-relay.mjs");
   });
 
   test("names the failing step", async () => {

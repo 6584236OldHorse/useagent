@@ -31,7 +31,6 @@ import {
 import { type AssistantIdentity, Conversation } from "@/components/chat/conversation";
 import { DesktopPane } from "@/components/chat/desktop-pane";
 import { DiffPane } from "@/components/chat/diff-pane";
-import { EditorPane } from "@/components/chat/editor-pane";
 import { decodeRunAccepted, type HandoffReceipt, handoffNotice } from "@/components/chat/handoff-receipts";
 import { useGatewayApprovals } from "@/components/chat/use-gateway-approvals";
 import { OrbBootIndicator } from "@/components/chat/orb-boot-indicator";
@@ -44,12 +43,13 @@ import {
 } from "@/components/chat/rail-resizer";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
+  RAIL_ICON_BUTTON,
+  RAIL_TAB_LABEL_COLLAPSE,
   railTabLabelFor,
   type SurfaceChoice,
   SurfaceChooser,
 } from "@/components/chat/surface-chooser";
 import { useAgentsRailDeepLink } from "@/components/chat/use-agents-rail-deep-link";
-import { TerminalPane } from "@/components/chat/terminal-pane";
 import { terminalRunIdForThread } from "@/components/chat/terminal-run-state";
 import type { TimelineArtifact } from "@/components/chat/timeline";
 import { ComposerPrefillProvider } from "@/components/chat/composer-prefill-context";
@@ -59,15 +59,14 @@ import { useWorkpieceAutoOpen } from "@/components/chat/use-workpiece-auto-open"
 import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/chat/workpiece-auto-open";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
-
-import { WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { filesFromSteps } from "@/components/chat/file-entries";
 import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
   type MemoryScope,
   normalizeEngine,
-  parseFileEntries,
   type RunStatus,
   supportsPreSessionModelSelection,
 } from "@/components/chat/types";
@@ -79,19 +78,13 @@ import { runGitRefs, GitChips } from "@/components/session-ui/git-chip";
 import { Button } from "@/components/base/buttons/button";
 import { CloseButton } from "@/components/base/buttons/close-button";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
+import { RunLocation } from "@/components/runners/run-location";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { threadSubmissionLane, useThreadFamily } from "@/hooks/use-thread-family";
 import type { InitialThreadRelationshipHint } from "@/lib/thread-relationship-hint";
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun, createThreadMessage, runCreateFailureMessage } from "@/lib/create-run";
 import { cx } from "@/utils/cx";
-
-// The rail is a resizable sub-viewport panel (viewport breakpoints can't
-// describe it), so a container query on the switcher header collapses each
-// surface pill to icon-only (label -> sr-only keeps the accessible name) once
-// the strip is too narrow for up to 7 labels; scroll is the final fallback.
-const RAIL_TAB_LABEL_COLLAPSE = "@max-[40rem]:sr-only";
-
 /**
  * The coding-session surface: a threaded conversation column beside a vertical
  * editor|terminal split. The whole thread renders as one conversation, driven by
@@ -103,7 +96,7 @@ const RAIL_TAB_LABEL_COLLAPSE = "@max-[40rem]:sr-only";
  * A reply starts a child run in the same thread and arrives on the open stream -
  * never navigating away, never reconnecting.
  */
-export function SessionView({ initialThread, initialOutline = null, initialRelationshipHint = "legacy_or_off", assistantIdentity, readOnlyMessage, onNewestTurnChange }: {
+export function SessionView({ initialThread, initialOutline = null, initialRelationshipHint = "legacy_or_off", assistantIdentity, readOnlyMessage, onNewestTurnChange, railDefaultOpen = true }: {
   initialThread: ApiRun[];
   /** Windowed initial loading (long threads): the WHOLE thread's per-turn
    *  skeleton, while `initialThread` carries only the root + the fully-loaded
@@ -116,6 +109,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   /** The thread's newest run as the live stream sees it, for a header that
    *  renders outside this view (a bot header's per-turn model label). */
   onNewestTurnChange?: (run: ApiRun) => void;
+  /** Whether the runtime rail starts open on md+; a bot thread starts on its conversation. */
+  railDefaultOpen?: boolean;
 }) {
   const root = initialThread[0];
   if (!root) throw new Error("SessionView requires a non-empty thread");
@@ -494,7 +489,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   // Right rail: one tabbed panel, not stacked panes. Desktop and terminal are
   // useful before the first tool call, so the rail starts open on every real
   // session. The user can still collapse/reopen it explicitly.
-  const hasFiles = allSteps.some((s) => s.kind === "file" && parseFileEntries(s).length > 0);
+  const hasFiles = filesFromSteps(allSteps).length > 0;
   const hasCommands = allSteps.some((s) => s.kind === "command");
   const hasSubagents =
     productChildren.length > 0 ||
@@ -504,19 +499,17 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   const hasRuntimeSurfaces = normalizeEngine(newest.engine) !== "chat";
   const [railOverride, setRailOverride] = useState<boolean | null>(null);
   const [railExpanded, setRailExpanded] = useState(false);
-  const railOpen = railOverride ?? hasRuntimeSurfaces;
-  // Below md the SAME rail renders as a bottom slide-over sheet and starts
-  // CLOSED (chat full-bleed): an explicit open - the thread bar's opener or a
-  // workpiece auto-open, both of which set railOverride - slides it up.
+  const railOpen = railOverride ?? (railDefaultOpen && hasRuntimeSurfaces);
+  // Below md the SAME rail renders as a bottom slide-over sheet and starts CLOSED (chat
+  // full-bleed): an explicit open (thread bar opener, workpiece auto-open) sets railOverride.
   const isMobile = useIsMobile();
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLElement>(null);
-  // The sheet's md+ trigger is INSUFFICIENT WIDTH, not a second breakpoint:
-  // when the split container cannot hold the conversation floor plus the rail
-  // minimum side by side (SPLIT_MIN, e.g. the sidebar re-expanded on a
-  // tablet-width window), the same slide-over takes over. Below md the
-  // max-md:* classes own first paint; the measurement only extends the
-  // trigger upward.
+  // The sheet's md+ trigger is INSUFFICIENT WIDTH, not a second breakpoint: when the
+  // split container cannot hold the conversation floor plus the rail minimum side by
+  // side (SPLIT_MIN, e.g. the sidebar re-expanded on a tablet-width window), the same
+  // slide-over takes over. Below md the max-md:* classes own first paint; the
+  // measurement only extends the trigger upward.
   const splitTooNarrow = useSplitTooNarrow(bodyRef);
   const surfacesSheet = isMobile || splitTooNarrow;
   const sheetSurfacesOpen = railOverride ?? false;
@@ -685,6 +678,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                   ROOT run's durable wire row - repos are inherited across a thread,
                   so the SSR-provided root is authoritative for the page lifetime. */}
               <GitChips refs={runGitRefs(root)} />
+              <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
               {/* Status pill + New session removed (user 2026-08-23): run state
@@ -701,7 +695,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                   onClick={openSurfacesSheet}
                   title="Open surfaces panel"
                   aria-label="Open surfaces panel"
-                  className={splitTooNarrow ? undefined : "md:hidden"}
+                  className={cx(RAIL_ICON_BUTTON, !splitTooNarrow && "md:hidden")}
                 />
               )}
             </div>
@@ -959,7 +953,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 }
                 aria-pressed={railExpanded}
                 aria-keyshortcuts={railExpanded ? "Escape" : undefined}
-                className={cx("hidden shrink-0", !splitTooNarrow && "md:flex")}
+                className={cx(RAIL_ICON_BUTTON, "hidden shrink-0", !splitTooNarrow && "md:flex")}
               />
               <Button
                 variant="ghost"
@@ -972,14 +966,14 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 }}
                 title="Collapse panel"
                 aria-label="Collapse side panel"
-                className={cx("hidden shrink-0", !splitTooNarrow && "md:flex")}
+                className={cx(RAIL_ICON_BUTTON, "hidden shrink-0", !splitTooNarrow && "md:flex")}
               />
               {/* On the sheet a single Close X replaces Expand/Collapse. */}
               <CloseButton
                 size="md"
                 aria-label="Close surfaces panel"
                 onClick={() => setRailOverride(false)}
-                className={splitTooNarrow ? undefined : "md:hidden"}
+                className={cx(RAIL_ICON_BUTTON, !splitTooNarrow && "md:hidden")}
               />
             </div>
             <div className="relative min-h-0 flex-1">
@@ -1033,7 +1027,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     )
                   ) : railTab === "agents" ? (
                     <AgentsRail
-                      rootRunId={rootId}
+                      rootRunId={rootId} engine={newest.engine}
                       parentThreadId={root.thread_id}
                       steps={allSteps}
                       live={live}

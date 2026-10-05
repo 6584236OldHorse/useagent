@@ -10,6 +10,7 @@ import { AvatarMark, StateBadge } from "@/components/bots/avatar-mark";
 import { loadBots } from "@/components/bots/load";
 import { NewBotDialog } from "@/components/bots/new-bot-dialog";
 import { orderRoster, outcomeLine } from "@/components/bots/roster-model";
+import { RosterResizer, useRosterWidth } from "@/components/bots/roster-resizer";
 import { type ApiBot, engineLabel } from "@/components/bots/types";
 import { useNow } from "@/components/bots/use-now";
 import {
@@ -45,6 +46,8 @@ export function BotsPanel({
   );
   const [error, setError] = useState(initialError);
   const [creating, setCreating] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const roster = useRosterWidth({ panelRef });
   const now = useNow();
 
   const refresh = useCallback(async () => {
@@ -82,106 +85,118 @@ export function BotsPanel({
   const attention = bots?.filter((bot) => bot.state === "attention").length ?? 0;
 
   return (
-    <Sidebar
-      className="hidden w-80 border-r border-border-button-white md:flex"
-      collapsible="none"
-      side="left"
-      variant="sidebar"
-    >
-      <SidebarHeader className="flex flex-row items-center justify-between border-b border-border-button-white px-4 py-3">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-body-2-medium text-text-primary">Bots</h3>
-          <span className="text-caption-1-regular text-text-tertiary">
-            {bots?.length ?? 0}
-            {attention > 0 ? ` · ${attention} need you` : ""}
-          </span>
-        </div>
-        <Button
-          aria-label="New bot"
-          iconOnly
-          leadingIcon={RiAddLine}
-          onClick={() => setCreating(true)}
-          size="small"
-          variant="ghost"
-        />
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {error && (
-                <li className="flex flex-col items-start gap-2 px-3 py-3" role="alert">
-                  <span className="text-caption-1-regular text-text-tertiary">
-                    {bots ? "Couldn't refresh bots." : "Couldn't load bots."}
-                  </span>
-                  <Button
-                    className="rounded-full"
-                    onClick={() => void refresh()}
-                    size="xs"
-                    variant="secondary"
-                  >
-                    Try again
-                  </Button>
-                </li>
-              )}
-              {bots?.map((bot) => {
-                const href = `/bots/${bot.id}`;
-                const selected = pathname === href;
-                return (
-                  <SidebarMenuItem key={bot.id}>
-                    <SidebarMenuButton
-                      className={cn(
-                        "h-auto w-full justify-start gap-3 rounded-2lg px-2.5 py-2",
-                        selected
-                          ? "bg-background-secondary-default text-text-primary"
-                          : "text-text-secondary hover:bg-background-primary-hover hover:text-text-primary",
-                      )}
-                      isActive={selected}
-                      render={<Link href={href} />}
+    <>
+      <Sidebar
+        ref={panelRef}
+        className="hidden w-[var(--roster-w,20rem)] border-e border-border-button-white md:flex"
+        collapsible="none"
+        side="left"
+        style={{ "--roster-w": `${roster.width}px` } as React.CSSProperties}
+        variant="sidebar"
+      >
+        <SidebarHeader className="flex flex-row items-center justify-between border-b border-border-button-white px-4 py-3">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-body-2-medium text-text-primary">Bots</h3>
+            <span className="text-caption-1-regular text-text-tertiary">
+              {bots?.length ?? 0}
+              {attention > 0 ? ` · ${attention} need you` : ""}
+            </span>
+          </div>
+          <Button
+            aria-label="New bot"
+            iconOnly
+            leadingIcon={RiAddLine}
+            onClick={() => setCreating(true)}
+            size="small"
+            variant="ghost"
+          />
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {error && (
+                  <li className="flex flex-col items-start gap-2 px-3 py-3" role="alert">
+                    <span className="text-caption-1-regular text-text-tertiary">
+                      {bots ? "Couldn't refresh bots." : "Couldn't load bots."}
+                    </span>
+                    <Button
+                      className="rounded-full"
+                      onClick={() => void refresh()}
+                      size="xs"
+                      variant="secondary"
                     >
-                      <AvatarMark
-                        tone={bot.avatarTone}
-                        icon={bot.avatarIcon}
-                        state={bot.state}
-                        size="size-9"
-                        className="mt-0.5 shrink-0 self-start"
-                      />
-                      <div className="min-w-0 flex-1 text-left">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-body-2-medium text-text-primary">
-                            {bot.name}
-                          </span>
-                          <StateBadge state={bot.state} />
+                      Try again
+                    </Button>
+                  </li>
+                )}
+                {bots?.map((bot) => {
+                  const href = `/bots/${bot.id}`;
+                  const selected = pathname === href;
+                  return (
+                    <SidebarMenuItem key={bot.id}>
+                      <SidebarMenuButton
+                        className={cn(
+                          "h-auto w-full justify-start gap-3 rounded-2lg px-2.5 py-2",
+                          selected
+                            ? "bg-background-secondary-default text-text-primary"
+                            : "text-text-secondary hover:bg-background-primary-hover hover:text-text-primary",
+                        )}
+                        isActive={selected}
+                        render={<Link href={href} />}
+                      >
+                        <AvatarMark
+                          tone={bot.avatarTone}
+                          icon={bot.avatarIcon}
+                          state={bot.state}
+                          size="size-9"
+                          className="mt-0.5 shrink-0 self-start"
+                        />
+                        <div className="min-w-0 flex-1 text-left">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-body-2-medium text-text-primary">
+                              {bot.name}
+                            </span>
+                            <StateBadge state={bot.state} />
+                          </div>
+                          <div className="mt-0.5 truncate text-caption-1-regular text-text-secondary">
+                            {outcomeLine(bot, now)}
+                          </div>
+                          <div className="mt-0.5 truncate text-caption-1-regular text-text-tertiary">
+                            {engineLabel(bot.engine)}
+                            {bot.routines > 0
+                              ? ` · ${bot.routines} routine${bot.routines === 1 ? "" : "s"}`
+                              : ""}
+                          </div>
                         </div>
-                        <div className="mt-0.5 truncate text-caption-1-regular text-text-secondary">
-                          {outcomeLine(bot, now)}
-                        </div>
-                        <div className="mt-0.5 truncate text-caption-1-regular text-text-tertiary">
-                          {engineLabel(bot.engine)}
-                          {bot.routines > 0
-                            ? ` · ${bot.routines} routine${bot.routines === 1 ? "" : "s"}`
-                            : ""}
-                        </div>
-                      </div>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-              {bots === null && !error && (
-                <li className="px-3 py-6 text-center text-body-2-regular text-text-tertiary">
-                  Loading bots
-                </li>
-              )}
-              {bots?.length === 0 && !error && (
-                <li className="px-3 py-6 text-center text-body-2-regular text-text-tertiary">
-                  No bots yet
-                </li>
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <NewBotDialog open={creating} onOpenChange={setCreating} />
-    </Sidebar>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+                {bots === null && !error && (
+                  <li className="px-3 py-6 text-center text-body-2-regular text-text-tertiary">
+                    Loading bots
+                  </li>
+                )}
+                {bots?.length === 0 && !error && (
+                  <li className="px-3 py-6 text-center text-body-2-regular text-text-tertiary">
+                    No bots yet
+                  </li>
+                )}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+        <NewBotDialog open={creating} onOpenChange={setCreating} />
+      </Sidebar>
+      <RosterResizer
+        value={roster.width}
+        maximum={roster.maximum}
+        onMove={roster.resizeFromPointer}
+        onCommit={roster.commit}
+        onKeyDown={roster.resizeWithKeyboard}
+        onReset={roster.reset}
+      />
+    </>
   );
 }

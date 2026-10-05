@@ -124,6 +124,10 @@ describe("capture-outbox delivery composes verified-outcome evidence (item 5)", 
         headers: { "content-type": "application/json" },
       });
     }) as unknown as typeof fetch;
+    // Rows other suites left due would be delivered here too; drain them first
+    // so the count below is this test's own two rows.
+    await deliverDueCaptures();
+    bodies.length = 0;
 
     const withEvidence = uid("cap-ev");
     await enqueueCapture(

@@ -18,6 +18,8 @@ import {
 } from "../provider-connections/service";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 import type { EngineRunContext } from "./types";
+import type { SandboxBinding } from "../sandboxes/binding";
+import { type ModelCredentialSource, claudeLoginEnvironment, installSandboxLogin, sandboxLogin } from "./sandbox-login";
 import {
   RUNTIME_ENVIRONMENT_HOME,
   RUNTIME_ENVIRONMENT_WORKDIR,
@@ -186,7 +188,8 @@ export function claudeProviderReadiness(
   return {
     instanceId: "claudeAgent",
     driver: "claudeAgent",
-    displayName: `UseAgent Claude gateway ${fingerprint}`,
+    // A login run's wrapper names no gateway; its instance says so, so the two never pass for each other.
+    displayName: anthropicBaseUrl ? `UseAgent Claude gateway ${fingerprint}` : `UseAgent Claude login ${fingerprint}`,
   };
 }
 
@@ -203,10 +206,12 @@ export function buildRuntimeProviderBootstrapCommand(
   engine: RuntimeEngineId,
   claudeEnvironment: Readonly<Record<string, string>> = {},
   layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
+  credential: ModelCredentialSource = "plane",
 ): string {
-  const anthropicBaseUrl = claudeEnvironment.ANTHROPIC_BASE_URL;
+  const anthropicBaseUrl = credential === "plane" ? claudeEnvironment.ANTHROPIC_BASE_URL : undefined;
   const claudeConfigDir = claudeEnvironment.CLAUDE_CONFIG_DIR;
-  if (engine === "claude" && (!anthropicBaseUrl || !claudeConfigDir)) {
+  // On the plane's credential the wrapper must name the gateway; on a login from the user's machine it must not.
+  if (engine === "claude" && ((credential === "plane" && !anthropicBaseUrl) || !claudeConfigDir)) {
     throw new Error("the provider runtime Claude provider gateway configuration is incomplete");
   }
   if (anthropicBaseUrl) assertSafeUrl(anthropicBaseUrl);
@@ -324,8 +329,8 @@ export function buildRuntimeProviderBootstrapCommand(
     ].join("\n");
   }
 
-  const readiness = claudeProviderReadiness(claudeEnvironment);
-  const safeAnthropicBaseUrl = anthropicBaseUrl!;
+  const readiness = claudeProviderReadiness(credential === "plane" ? claudeEnvironment : { CLAUDE_CONFIG_DIR: claudeConfigDir! });
+  const safeAnthropicBaseUrl = anthropicBaseUrl;
   const safeClaudeConfigDir = claudeConfigDir!;
 
   const attachmentsDir = `${layout.home}/.skynet/t3/userdata/attachments`;
@@ -368,19 +373,19 @@ export function buildRuntimeProviderBootstrapCommand(
     `CLAUDE_UID=${CLAUDE_RUNTIME_UID}`,
     `CLAUDE_GID=${CLAUDE_RUNTIME_GID}`,
     `CLAUDE_HOME=${JSON.stringify(CLAUDE_RUNTIME_HOME)}`,
-    `ANTHROPIC_BASE_URL=${JSON.stringify(safeAnthropicBaseUrl)}`,
+    ...(safeAnthropicBaseUrl ? [`ANTHROPIC_BASE_URL=${JSON.stringify(safeAnthropicBaseUrl)}`] : []),
     `CLAUDE_CONFIG_DIR=${JSON.stringify(safeClaudeConfigDir)}`,
     'command -v setpriv >/dev/null',
     'test "$(id -u user)" = "$CLAUDE_UID"',
     'export HOME="$CLAUDE_HOME" USER=user LOGNAME=user',
-    "export ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR",
+    safeAnthropicBaseUrl ? "export ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR" : "export CLAUDE_CONFIG_DIR",
     `exec setpriv --reuid="$CLAUDE_UID" --regid="$CLAUDE_GID" --clear-groups --no-new-privs -- ${JSON.stringify(nativeBinary)} "$@" --settings ${JSON.stringify(CLAUDE_SETTINGS_FILE)} --mcp-config ${JSON.stringify(CLAUDE_MCP_CONFIG_FILE)}`,
     "",
   ].join("\n") : [
     "#!/bin/sh",
     "set -eu",
     `export HOME=${JSON.stringify(layout.home)} USER=user LOGNAME=user`,
-    `export ANTHROPIC_BASE_URL=${JSON.stringify(safeAnthropicBaseUrl)}`,
+    ...(safeAnthropicBaseUrl ? [`export ANTHROPIC_BASE_URL=${JSON.stringify(safeAnthropicBaseUrl)}`] : []),
     `export CLAUDE_CONFIG_DIR=${JSON.stringify(safeClaudeConfigDir)}`,
     `exec ${JSON.stringify(nativeBinary)} "$@" --settings ${JSON.stringify(CLAUDE_SETTINGS_FILE)} --mcp-config ${JSON.stringify(CLAUDE_MCP_CONFIG_FILE)}`,
     "",
@@ -581,11 +586,13 @@ async function ensureSelectedRuntimeProviderBootstrap(
   claudeEnvironment: Readonly<Record<string, string>>,
   layout: SandboxRuntimeLayout,
   signal: AbortSignal,
+  credential: ModelCredentialSource = "plane",
 ): Promise<void> {
   const command = buildRuntimeProviderBootstrapCommand(
     engine,
     claudeEnvironment,
     layout,
+    credential,
   );
   await ensureRuntimeProviderBootstrap(sandbox, engine, command, layout, signal);
 }
@@ -662,8 +669,19 @@ export async function prepareRuntimeProviderBridge(
   engine: RuntimeEngineId,
   workdir: string,
   stableProviderPrepared = false,
+  binding?: Pick<SandboxBinding, "kind" | "logins">,
 ): Promise<RuntimeProviderBridgeLease> {
   const layout = runtimeBridgeLayout(sandbox);
+  // A sandbox on the user's own machine may carry the engine's login; then the
+  // login path owns the whole preparation and nothing below runs.
+  const login = binding ? await sandboxLogin(sandbox, binding, engine) : null;
+  if (login) {
+    const loginEnvironment = login.engine === "claude" ? claudeLoginEnvironment() : {};
+    await ensureSelectedRuntimeProviderBootstrap(sandbox, login.engine, loginEnvironment, layout, AbortSignal.timeout(180_000), "sandbox-login");
+    await installSandboxLogin(sandbox, ctx, login, layout);
+    if (login.engine === "claude") await prepareClaudeRuntimeAccess(sandbox, workdir);
+    return { ...NOOP_PROVIDER_BRIDGE_LEASE, readiness: login.engine === "claude" ? claudeProviderReadiness(loginEnvironment) : null };
+  }
   const claudeEnvironment = engine === "claude" ? providerGatewayEnv(ctx, "claude") : {};
   if (!stableProviderPrepared) {
     await prepareStableRuntimeProvider(sandbox, ctx, engine);

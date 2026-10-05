@@ -10,6 +10,7 @@ export const INTERNAL_RUN_ORIGINS = [
   "internal:eval",
   "internal:canary",
   "internal:hosted-release-canary",
+  "internal:hosted-infra-soak",
   "internal:e2e",
   MODEL_QUALIFICATION_RUN_ORIGIN,
 ] as const;
@@ -36,6 +37,13 @@ export function assertInternalRunOrigin(origin: string): asserts origin is Inter
   if (!isInternalRunOrigin(origin)) {
     throw new Error(`untrusted internal run origin: ${origin}`);
   }
+}
+
+/** A constrained follow-up inherits only an exact server-owned parent origin. */
+export function expectedSandboxRunOrigin(
+  parentOrigin: string | null,
+): InternalRunOrigin | null {
+  return isInternalRunOrigin(parentOrigin) ? parentOrigin : null;
 }
 
 export function isUnattendedRunOrigin(origin: string | null): origin is UnattendedRunOrigin {

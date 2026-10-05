@@ -9,10 +9,11 @@ import { BROWSER_CDP_ENDPOINT, ensureResidentBrowserMcp, PLAYWRIGHT_MCP_VERSION 
 import {
   buildDesktopLaunchCommand,
   buildDesktopReadinessCommand,
+  DESKTOP_BOOT_MARKER_NAME,
   DESKTOP_PORT,
   DESKTOP_REQUIRED_BINARIES,
   rfbProbeCommand,
-  xfceSessionProbeCommand,
+  desktopSessionProbeCommand,
 } from "./desktop-workstation";
 import {
   desktopCdpRelayProbeCommand,
@@ -40,6 +41,15 @@ export interface SandboxDesktop {
   readonly workdir: string;
   readonly browserExecutable: string | null;
   readonly reason?: string;
+}
+
+async function waitForDesktop(sandbox: SandboxHandle, signal: AbortSignal, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline && !signal.aborted) {
+    if (await localDesktopHealthy(sandbox)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
 }
 
 async function localDesktopHealthy(sandbox: SandboxHandle): Promise<boolean> {
@@ -106,9 +116,10 @@ async function provisionSandboxDesktopView(
         `rfb=0; ${rfbProbeCommand()} && rfb=1; ` +
         `cdp=0; curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && cdp=1; ` +
         `cdp_relay=0; ${desktopCdpRelayProbeCommand()} && ${providerCdpRelayProbeCommand()} && cdp_relay=1; ` +
-        `xfce=0; ${xfceSessionProbeCommand()} && xfce=1; ` +
+        `session=0; ${desktopSessionProbeCommand()} && session=1; ` +
+        `boot=0; pid=$(cat "$HOME/.skynet/desktop.pid" 2>/dev/null); [ -e "$HOME/.skynet/${DESKTOP_BOOT_MARKER_NAME}" ] && { [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null; } && boot=1; ` +
         'mcp=0; [ -x "$HOME/.local/bin/playwright-mcp" ] && mcp=1; ' +
-        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nXFCE=%s\\nMCP=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$xfce" "$mcp"',
+        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nSESSION=%s\\nMCP=%s\\nDESKTOP_BOOT=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$session" "$mcp" "$boot"',
       undefined,
       undefined,
       20,
@@ -122,9 +133,8 @@ async function provisionSandboxDesktopView(
     const healthy =
       /^VNC=1$/m.test(output) &&
       /^RFB=1$/m.test(output) &&
-      /^CDP=1$/m.test(output) &&
       /^CDP_RELAY=1$/m.test(output) &&
-      /^XFCE=1$/m.test(output);
+      /^SESSION=1$/m.test(output);
     const browserTools = /^MCP=1$/m.test(output);
     if ((probe.exitCode ?? 1) !== 0 || missing) {
       return finish(RUN_TIMING_OUTCOMES.unavailable, {
@@ -147,8 +157,11 @@ async function provisionSandboxDesktopView(
       });
     }
 
-    const requiredRepair = !healthy;
-    if (!healthy) {
+    let available = healthy;
+    // The image is still bringing its desktop up: wait for it instead of starting a second one.
+    if (!available && /^DESKTOP_BOOT=1$/m.test(output)) available = await waitForDesktop(sandbox, signal, 60_000);
+    const requiredRepair = !available;
+    if (!available) {
       // The resident MCP may still hold a CDP connection to the browser we are
       // about to replace. Stop it first so the next engine turn receives one
       // clean MCP generation attached to the new Chrome process.
@@ -166,15 +179,7 @@ async function provisionSandboxDesktopView(
       );
     }
 
-    let available = healthy;
-    if (!available) {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline && !signal.aborted) {
-        available = await localDesktopHealthy(sandbox);
-        if (available) break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-    }
+    if (!available) available = await waitForDesktop(sandbox, signal, 30_000);
     available = !signal.aborted && available;
     if (!available) {
       return finish(signal.aborted ? RUN_TIMING_OUTCOMES.aborted : RUN_TIMING_OUTCOMES.unavailable, {
@@ -185,7 +190,7 @@ async function provisionSandboxDesktopView(
         browserExecutable,
         reason: signal.aborted
           ? "run aborted while starting desktop"
-          : "noVNC, RFB, XFCE, or browser CDP failed readiness",
+          : "noVNC, RFB, the desktop session, or the browser relay failed readiness",
       });
     }
 

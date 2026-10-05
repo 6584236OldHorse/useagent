@@ -1,6 +1,6 @@
 import { createMiddleware } from "hono/factory";
 import { and, eq } from "drizzle-orm";
-import { auth } from "../auth";
+import { resolveSession, type IdentitySession } from "../auth/session";
 import { db } from "../db/client";
 import { member } from "../db/schema";
 import { allowDevOrg } from "../env";
@@ -58,6 +58,9 @@ const PUBLIC_API_PREFIXES = [
   // Operator dispatch bridge: dedicated-secret authenticated, verifies Bun's
   // socket peer is loopback, and rejects proxy-origin headers.
   "/api/internal/operator/",
+  // A runner's link authenticates with the runner token it was enrolled with
+  // (runners/link.ts); the socket is refused before any frame otherwise.
+  "/api/internal/runners/",
 ];
 
 /** True when `path` authenticates itself (or is public) and must NOT be forced
@@ -94,12 +97,11 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
   // stay in place as defense-in-depth without paying twice.
   if (c.get("orgId")) return next();
 
-  let session: Awaited<ReturnType<typeof auth.api.getSession>> = null;
+  let session: IdentitySession | null = null;
   try {
-    session = await auth.api.getSession({ headers: c.req.raw.headers });
+    session = await resolveSession(c.req.raw.headers);
   } catch {
-    // Treat an unresolvable/invalid session as anonymous (handled below).
-    session = null;
+    return c.json({ error: "identity_unavailable" }, 503);
   }
 
   if (session) {

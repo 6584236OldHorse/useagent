@@ -30,7 +30,14 @@
 import type { RunStatus } from "@useagent/agent-client/wire";
 import Link from "next/link";
 import { memo } from "react";
-import { Loader } from "@/components/agent-ui/agent-loader";
+import dynamic from "next/dynamic";
+
+/** The motion library behind the spinner is not on the shell's first load;
+ *  it arrives the first time a thread is running (a still dot until then). */
+const Loader = dynamic(() => import("@/components/agent-ui/agent-loader").then((m) => m.Loader), {
+  ssr: false,
+  loading: () => <span aria-hidden className="inline-block size-4 shrink-0 rounded-full border-2 border-lime-500/40 border-t-lime-500" />,
+});
 import { runTitle } from "@/components/chat/types";
 import { GitChips, runGitRefs } from "@/components/session-ui/git-chip";
 import { type DotTone, StatusDot } from "@/components/shared/status-dot";

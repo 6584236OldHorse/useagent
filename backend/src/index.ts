@@ -3,7 +3,7 @@ import { websocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { ARTIFACT_FIDELITY } from "@useagent/artifact-workspace";
-import { auth } from "./auth";
+import { handleAuthRequest } from "./auth/routes";
 import { artifactRoutes } from "./artifacts/routes";
 import { internalArtifactChangeRoutes } from "./artifacts/internal-change-routes";
 import { startEmailConnector } from "./connectors/email";
@@ -14,7 +14,6 @@ import {
   connectorEmailConfig,
   env,
   githubConfigured,
-  googleAuthEnabled,
   memoryConfig,
   slackConfig,
 } from "./env";
@@ -41,12 +40,24 @@ import {
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
 import { terminalRoutes } from "./runs/terminal";
+import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
+import { runnerBridgeRoutes } from "./runners/bridge";
+import { runnerRoutes } from "./runners/routes";
+import { teamRoutes } from "./team/routes";
+import { runnerConfigBlock } from "./runners/policy";
+import { runnerRegistry } from "./runners/registry";
 import { schedulesRoutes } from "./schedules/routes";
 import { startScheduler } from "./schedules/scheduler";
 import { startCaptureDelivery } from "./memory/capture-outbox";
 import { resetStuckLearning, startLearningOutbox } from "./learning/learning-outbox";
 import { sandboxProvider, sandboxProviderApiKey, sandboxProviderKind } from "./sandboxes/provider";
 import { userComputersEnabled } from "./sandboxes/binding";
+
+/** Where the managed sandboxes run, for the settings page; only the E2B-protocol plugin has a configurable host. */
+function managedSandboxHost(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  if (sandboxProviderKind(env) !== "cube") return null;
+  return env.CUBE_SANDBOX_DOMAIN?.trim().toLowerCase() || null;
+}
 import { botsEnabled } from "./bots/rollout";
 import {
   resetStuckCanonicalization,
@@ -127,18 +138,18 @@ import { approveApprovalRequestAsRunOwner } from "./knowledge/gateway/approval-r
 import { currentReleaseFingerprint, isClientReleaseCompatible } from "./release";
 import { dashboardRoutes } from "./dashboard/routes";
 import { fleetBatchRoutes } from "./fleet/batch-routes";
-import { assertCanonicalExecutionTranscriptIndexForBoot } from "./db/online-indexes/canonical-execution-transcript";
+import { ensureCanonicalExecutionTranscriptIndexForBoot } from "./db/online-indexes/canonical-execution-transcript";
 import { capabilityCatalogRoutes } from "./capabilities/routes";
 import { threadRelationshipRoutes } from "./runs/thread-relationship-routes";
 import { configureProductChildPump } from "./runs/child-session-pump";
-import { assertThreadRelationshipRolloutConfig, productChildThreadsEnabled, threadRelationshipWriteMode } from "./runs/thread-relationship-rollout";
+import { assertThreadRelationshipConfig, productChildThreadsEnabled, threadRelationshipsEnabled } from "./runs/thread-relationship-switch";
 import { repairEligiblePublicRootThreadRelationships } from "./runs/thread-relationship-repo";
 import { artifactStorageHealth, assertArtifactStorageWritable } from "./artifacts/storage";
 
 // Acquire the per-database singleton before ANY shared-state mutation. In strict
 // production mode an unavailable/contended lock fails boot closed, so a duplicate
 // process cannot migrate or recover another backend's database first.
-assertThreadRelationshipRolloutConfig();
+assertThreadRelationshipConfig();
 const singleBackendHeld = await enforceSingleBackend();
 // Artifact bytes must be writable before any run can publish; a missing mount
 // fails boot here rather than surfacing as EROFS inside a run.
@@ -162,14 +173,14 @@ if (singleBackendHeld) {
 // migrator is idempotent — already-applied migrations are skipped. Path is
 // resolved from this module so cwd doesn't matter.
 await migrate(db, { migrationsFolder: `${import.meta.dir}/../drizzle` });
-if (threadRelationshipWriteMode() !== "off") {
+if (threadRelationshipsEnabled()) {
   await repairEligiblePublicRootThreadRelationships();
 }
 
 // READ serves child transcripts from the canonical execution identity lookup.
 // The large online index is managed separately from transactional migrations;
 // fail boot closed in READ rather than silently serving an unindexed scan.
-await assertCanonicalExecutionTranscriptIndexForBoot();
+await ensureCanonicalExecutionTranscriptIndexForBoot();
 
 // Default OFF. When explicitly enabled, hydrate the synchronous model-policy
 // cache from the last atomically published DB generation before serving config.
@@ -197,6 +208,12 @@ await seedDev();
 // non-terminal admissions BEFORE recovery re-pumps threads — so a re-dispatched
 // run mints a fresh lease and the queue never double-counts a dead reservation.
 const fleetBoot = await reconcileFleetOnBoot();
+// Enrolled machines are known from boot (offline until they say hello) so a
+// recorded local sandbox resolves to its runner; the sweeper retires links
+// whose heartbeats stopped.
+const knownRunners = await runnerRegistry.load();
+if (knownRunners > 0) console.log(`[boot] ${knownRunners} enrolled runner${knownRunners === 1 ? "" : "s"} known`);
+runnerRegistry.startSweeper();
 if (
   fleetBoot.releasedLeases > 0 ||
   fleetBoot.resetAdmissions > 0 ||
@@ -311,6 +328,15 @@ app.route("/api/internal/gateway-approval/consume", internalGatewayApprovalRoute
 app.route("/api/internal/gateway-approval-requests", internalApprovalRequestRoutes);
 app.route("/api/internal/github-operations", internalGithubRoutes);
 app.route("/api/internal/codex-relay", codexSubscriptionRelayRoutes);
+// A developer's machine as a sandbox provider: the runner's outbound link
+// (runner-token authenticated, see runners/link.ts) and the org-scoped
+// enrolment, listing and policy routes.
+app.route("/api/internal/runners", runnerLinkRoutes);
+app.route("/api/internal/runners", runnerBridgeRoutes);
+app.route("/api/runners", runnerRoutes);
+app.route("/api/team", teamRoutes);
+// The sandbox image, served to runners under the standard registry API.
+app.route("/", runnerRegistryProxyRoutes);
 app.route("/api/threads", threadRelationshipRoutes);
 // Loopback-only operator dispatch bridge (see runs/operator-routes.ts): lets
 // the release-lane parity canary run turns IN THIS PROCESS so the codex relay
@@ -324,8 +350,8 @@ app.route(
     pump: pumpThread,
     cancel: signalCancel,
     approveGatewayRequest: approveApprovalRequestAsRunOwner,
-    admitReleaseParity: (c, body) =>
-      handleRunCreate(c, { body, origin: "internal:eval" }),
+    admitReleaseParity: (c, body, expectedSandbox) =>
+      handleRunCreate(c, { body, origin: "internal:eval", expectedSandbox }),
   }),
 );
 
@@ -349,7 +375,7 @@ app.get("/api/config", (c) => {
   const models = engineModelsForReadyEngines();
   const configuredModels = engineModelsForConfiguredEngines();
   return c.json({
-    auth: { google: googleAuthEnabled(), emailPassword: true },
+    auth: "better-auth",
     allowDevOrg: allowDevOrg(),
     release: currentReleaseFingerprint(),
     engines,
@@ -357,7 +383,10 @@ app.get("/api/config", (c) => {
     engineReadiness,
     models,
     configuredModels,
-    sandbox: { provider: sandboxProviderKind(), userComputers: userComputersEnabled() },
+    // The host the managed sandboxes live on (the E2B-protocol plugin serves several).
+    sandbox: { provider: sandboxProviderKind(), host: managedSandboxHost(), userComputers: userComputersEnabled() },
+    // What a runner must speak and boot to lend this deployment a machine.
+    runner: runnerConfigBlock(),
     // Per model provider: served from this deployment's own key (a name, never a value).
     providers: deploymentProvidedProviders(),
     // The product tool families a gateway process advertises follow this
@@ -416,8 +445,8 @@ app.post("/api/config/models/refresh", async (c) => {
   });
 });
 
-// better-auth: email/password + organization plugin, mounted at /api/auth/*.
-app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+// Better Auth owns login, sessions, and organization membership.
+app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a
 // model completion directly (OpenRouter), augmented with read-only retrieval

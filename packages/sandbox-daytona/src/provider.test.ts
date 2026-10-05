@@ -279,6 +279,20 @@ describe("Daytona sandbox metadata lookup", () => {
 });
 
 describe("Daytona sandbox provider", () => {
+  test("connection identity pins endpoint, target, and key", () => {
+    const identity = daytonaSandboxProvider(config, fakeClient([])).connectionFingerprint;
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(daytonaSandboxProvider({ ...config }, fakeClient([])).connectionFingerprint).toBe(identity);
+    expect(daytonaSandboxProvider({ ...config, target: "" }, fakeClient([])).connectionFingerprint).toBeUndefined();
+    for (const changed of [
+      { apiUrl: "https://other-daytona.example.test/api" },
+      { target: "another-target" },
+      { apiKey: "another-key" },
+    ]) {
+      expect(daytonaSandboxProvider({ ...config, ...changed }, fakeClient([])).connectionFingerprint).not.toBe(identity);
+    }
+  });
+
   sandboxProviderConformance("Daytona", () => {
     const created = fakeSandbox();
     const existing = fakeSandbox({ id: "daytona-existing", state: "stopped" });

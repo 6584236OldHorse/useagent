@@ -1,4 +1,4 @@
-import { db } from "./db/client";
+import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
 
 /**
@@ -16,30 +16,32 @@ export async function createPersonalOrgForUser(user: {
   id: string;
   name?: string | null;
   email: string;
-}): Promise<void> {
+}, exec: Executor = db): Promise<string | null> {
   const now = new Date();
   const label = (user.name?.trim() || user.email.split("@")[0] || "workspace").trim();
 
   try {
     const orgId = `org_${crypto.randomUUID()}`;
-    await db.insert(organization).values({
+    await exec.insert(organization).values({
       id: orgId,
       name: `${label}'s workspace`,
       slug: `${slugify(label)}-${crypto.randomUUID().slice(0, 8)}`,
       createdAt: now,
     });
-    await db.insert(member).values({
+    await exec.insert(member).values({
       id: `member_${crypto.randomUUID()}`,
       organizationId: orgId,
       userId: user.id,
       role: "owner",
       createdAt: now,
     });
+    return orgId;
   } catch (err) {
     console.error(
       `[auth] failed to create personal org for user ${user.id}:`,
       err instanceof Error ? err.message : err,
     );
+    return null;
   }
 }
 

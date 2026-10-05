@@ -19,9 +19,21 @@ afterAll(() => {
 describe("Pi adapter", () => {
   test("wires bridge cleanup into the pre-resource sandbox fence", async () => {
     const calls: string[] = [];
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: "retained",
+      provider: "box" as const,
+      credential: "env" as const,
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "a".repeat(64),
+    };
     const adapter = makePiAdapter({
       bridges: {
-        prepare: async (sandbox) => { calls.push(`fence:${sandbox.id}`); },
+        prepare: async (sandbox, expected) => {
+          expect(expected).toEqual(expectedSandbox);
+          calls.push(`fence:${sandbox.id}`);
+        },
         ensure: async () => { throw new Error("not reached"); },
         get: () => undefined,
         awaitTeardown: async () => {},
@@ -39,35 +51,35 @@ describe("Pi adapter", () => {
 
     await expect(adapter.run({
       emit: async () => undefined,
+      expectedSandbox,
       signal: new AbortController().signal,
     } as never)).rejects.toThrow("stop after fence");
     expect(calls).toEqual(["prepare:start", "fence:retained", "resources:would-start"]);
   });
 
-  test("fences pending native teardown before sandbox preparation", async () => {
+  test("does not touch pending native teardown before sandbox preparation", async () => {
     const calls: string[] = [];
     const adapter = makePiAdapter({
       bridges: {
         ensure: async () => { throw new Error("not reached"); },
         get: () => undefined,
-        awaitTeardown: async (sessionFile) => {
-          calls.push(`teardown:${sessionFile}`);
-          throw new Error("remote teardown is still pending");
-        },
+        awaitTeardown: async () => { calls.push("teardown"); },
         remove: async () => {},
       },
       prepareTurn: (async () => {
         calls.push("prepare");
-        throw new Error("preparation must not start");
+        throw new Error("stop at sandbox fence");
       }) as never,
     });
 
     await expect(adapter.run({
+      emit: async () => undefined,
       providerSession: {
         provider: "pi",
         nativeSessionId: "/sessions/pi.jsonl",
       },
-    } as never)).rejects.toThrow("remote teardown is still pending");
-    expect(calls).toEqual(["teardown:/sessions/pi.jsonl"]);
+      signal: new AbortController().signal,
+    } as never)).rejects.toThrow("stop at sandbox fence");
+    expect(calls).toEqual(["prepare"]);
   });
 });

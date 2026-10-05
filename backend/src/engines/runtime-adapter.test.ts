@@ -460,12 +460,15 @@ describe("T3 run adapter gate", () => {
     expect(reloadSource).not.toContain("driver.cancel");
     expect(reloadSource).not.toContain("/config");
     expect(reloadSource).not.toContain("global/dispose");
-    expect(source).toContain("metadata: { runtimeMode, createdAt }");
-    expect(source).toContain("activityStep(activity, runtimeThreadId(ctx))");
-    expect(source).toContain("ctx.publishDelta?.(delta)");
+    expect(source).toContain("? { runtimeMode, createdAt, ...controlMetadata }");
+    // Native activity projection lives with the turn projector the adapter drives.
+    const projectorSource = readFileSync(new URL("./turn-projector.ts", import.meta.url), "utf8");
+    expect(projectorSource).toContain("activityStep(activity, threadId, engine)");
+    expect(projectorSource).toContain("ctx.publishDelta?.(projection.delta)");
+    expect(source).toContain("projector.apply(snapshot, (activity) => watchdog.observeActivity(activity))");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
-    expect(source).toContain("await driver.cancel(session, \"turn aborted\")");
+    expect(source).toContain('"turn aborted",');
     expect(source).toContain("providerGatewayWired()");
     expect(source).toContain("prepareSandboxTurn(ctx");
     expect(source).toContain("prepareStableRuntimeProvider(sandbox, ctx, engine)");
@@ -587,6 +590,91 @@ describe("T3 run adapter gate", () => {
       "invalidate-access",
     ]);
     expect(nativeHistory).toEqual(["message-1", "message-2"]);
+  });
+
+  test("re-resolves the expected sandbox before stuck-start recovery touches the runtime", async () => {
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: "sandbox-owned",
+      provider: "cube" as const,
+      credential: "env" as const,
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "e".repeat(64),
+    };
+    const resolved = { id: "sandbox-owned", resolved: true } as unknown as SandboxHandle;
+    const touched: unknown[] = [];
+    const error = new RuntimeFirstActivityTimeoutError(45_000);
+    await expect(recoverStuckCodexSubscriptionStart({
+      error,
+      ctx: {
+        runId: "run-2",
+        threadId: "thread-1",
+        expectedSandbox,
+        signal: new AbortController().signal,
+      },
+      sandbox: { id: "sandbox-owned" } as SandboxHandle,
+      lease: { authPath: "subscription", close: async () => {} },
+      priorTurnId: null,
+      dependencies: {
+        resolveExpectedSandbox: async (expected, threadId) => {
+          expect(expected).toEqual(expectedSandbox);
+          expect(threadId).toBe("thread-1");
+          return resolved;
+        },
+        requestEnvironment: async <T>(
+          sandbox: SandboxHandle,
+          request: RuntimeEnvironmentRequest,
+        ) => {
+          touched.push(sandbox);
+          return (request.path === "/api/orchestration/shell"
+            ? { projects: [], threads: [{ id: "skynet-thread-thread-1" }] }
+            : reloadSnapshot("starting", null, "skynet-thread-thread-1")) as T;
+        },
+        restart: async (sandbox) => { touched.push(sandbox); return {} as never; },
+        invalidateAccess: (sandbox) => { touched.push(sandbox); },
+        cleanupSignal: () => new AbortController().signal,
+        warn: () => { throw new Error("unexpected recovery warning"); },
+      },
+    })).resolves.toEqual({ error, stuckStartConfirmed: true });
+    expect(touched).toEqual([resolved, resolved, resolved, resolved]);
+  });
+
+  test("rejects a stuck-start runtime id mismatch before strict lookup or remote access", async () => {
+    let lookups = 0;
+    let remoteOperations = 0;
+    const error = new RuntimeFirstActivityTimeoutError(45_000);
+    const result = await recoverStuckCodexSubscriptionStart({
+      error,
+      ctx: {
+        runId: "run-2",
+        threadId: "thread-1",
+        expectedSandbox: {
+          version: 1,
+          sandboxId: "expected",
+          provider: "cube",
+          credential: "env",
+          ownerOrgId: "org-1",
+          ownerUserId: null,
+          credentialGeneration: "f".repeat(64),
+        },
+        signal: new AbortController().signal,
+      },
+      sandbox: { id: "other" } as SandboxHandle,
+      lease: { authPath: "subscription", close: async () => {} },
+      priorTurnId: null,
+      dependencies: {
+        resolveExpectedSandbox: async () => { lookups += 1; return {} as never; },
+        requestEnvironment: async () => { remoteOperations += 1; return {} as never; },
+        restart: async () => { remoteOperations += 1; return {} as never; },
+        invalidateAccess: () => { remoteOperations += 1; },
+        cleanupSignal: () => new AbortController().signal,
+        warn: () => {},
+      },
+    });
+    expect(result).toEqual({ error, stuckStartConfirmed: false });
+    expect(lookups).toBe(0);
+    expect(remoteOperations).toBe(0);
   });
 
   test("recovers a proven stuck startup on early user abort without queueing cancel", async () => {
@@ -765,7 +853,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("watchdog.observeProgress()");
     expect(source).toContain("watchdog.signal,");
     expect(source).toContain("if (watchdog.signal.aborted) throw watchdog.signal.reason;");
-    expect(source).toContain('await driver.cancel(session, "provider made no progress")');
+    expect(source).toContain('"provider made no progress",');
     // One watchdog owner and no steer replay after the turn may have started.
     expect(source.split("createNoProgressWatchdog(").length - 1).toBe(1);
     expect(source.split("driver.steer(").length - 1).toBe(1);

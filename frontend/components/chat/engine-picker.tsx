@@ -1,7 +1,8 @@
 "use client";
 
-import { RiArrowDownSLine, RiCheckLine, RiCpuLine, RiRefreshLine } from "@remixicon/react";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { RiArrowDownSLine, RiCheckLine, RiRefreshLine } from "@remixicon/react";
+import { vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   ENGINES,
   type EngineId,
@@ -12,7 +13,7 @@ import {
   partitionModelOptions,
   selectableModelsForEngine,
 } from "@/components/chat/types";
-import { useCapabilityCatalog } from "@/hooks/use-capability-catalog";
+import { invalidateCapabilityCatalog, useCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import {
   type CapabilityCatalog,
   type CapabilityCatalogModel,
@@ -20,6 +21,7 @@ import {
   type CapabilityModelCatalogStatus,
   parseCapabilityCatalog,
 } from "@/lib/capability-catalog";
+import { useLocalLoginOffers } from "@/components/runners/local-login-availability";
 import { cx as cn } from "@/utils/cx";
 
 export type EngineModelCatalog = Partial<Record<EngineId, readonly string[]>>;
@@ -34,6 +36,15 @@ export interface EngineReadinessStatus {
 }
 export type EngineReadinessCatalog = Partial<Record<EngineId, EngineReadinessStatus>>;
 
+interface EngineCatalogConfig {
+  engines: EngineId[];
+  models: EngineModelCatalog;
+  readiness: EngineReadinessCatalog;
+  runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  modelDetails: EngineModelDetails;
+  modelCatalogStatuses: EngineModelCatalogStatuses;
+}
+
 export function unavailableModelOptions(
   engine: EngineId,
   details: readonly CapabilityCatalogModel[],
@@ -43,7 +54,6 @@ export function unavailableModelOptions(
     .map((entry) => ({
       value: entry.id,
       label: entry.displayName ?? modelLabel(entry.id, engine),
-      tint: "text-text-tertiary",
       disabled: true,
       description: entry.degradationReason === "model_not_allowed"
         ? "Discovered for this account; blocked by deployment policy"
@@ -78,10 +88,10 @@ export function modelCatalogNotice(
 }
 
 const ENGINE_RUNTIME_CAPTIONS: Partial<Record<EngineId, string>> = {
-  opencode: "any model · cloud sandbox",
-  claude: "Anthropic agent · cloud sandbox",
-  codex: "OpenAI agent · cloud sandbox",
-  pi: "native Pi harness · cloud sandbox",
+  opencode: "any model · cloud",
+  claude: "Anthropic agent · cloud",
+  codex: "OpenAI agent · cloud",
+  pi: "native Pi harness · cloud",
   chat: "Chat only: answers from context, no computer or tools",
 };
 
@@ -98,19 +108,19 @@ export function engineRuntimeCaption(
   engine: EngineId,
   runtime: CapabilityEngineRuntime | undefined,
   readiness: EngineReadinessStatus | undefined,
+  localLoginOffered = false,
+  machineRunsWork = false,
 ): string {
-  const label = runtime ? ENGINE_RUNTIME_CAPTIONS[engine] ?? "Runtime unavailable" : "Runtime unavailable";
+  const caption = runtime ? ENGINE_RUNTIME_CAPTIONS[engine] ?? "Runtime unavailable" : "Runtime unavailable";
+  // The user's own machine takes new threads when it is online; the caption says so.
+  const label = runtime && machineRunsWork ? caption.replace(/ · cloud$/, " · local") : caption;
+  if (localLoginOffered) {
+    return `${ENGINES.find((candidate) => candidate.id === engine)?.label ?? "Engine"} · machine login available`;
+  }
   return `${label}${readiness?.ready === false ? " · needs attention" : ""}`;
 }
 
-export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): {
-  engines: EngineId[];
-  models: EngineModelCatalog;
-  readiness: EngineReadinessCatalog;
-  runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
-  modelDetails: EngineModelDetails;
-  modelCatalogStatuses: EngineModelCatalogStatuses;
-} {
+export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): EngineCatalogConfig {
   const configured = catalog.engines.filter((engine) => engine.configured);
   return {
     engines: configured.map((engine) => engine.id),
@@ -146,6 +156,29 @@ export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): {
     ),
     runtimes: Object.fromEntries(configured.map((engine) => [engine.id, engine.runtime])),
   };
+}
+
+export function applyLocalLoginOffers<T extends EngineCatalogConfig>(
+  config: T,
+  offers: readonly EngineId[],
+): T & { localLoginOffered: EngineId[] } {
+  const localLoginOffered = offers.filter(
+    (engine) =>
+      config.engines.includes(engine) && config.readiness[engine]?.reason === "provider_unhealthy",
+  );
+  const modelDetails = { ...config.modelDetails };
+  const models = { ...config.models };
+  for (const engine of localLoginOffered) {
+    modelDetails[engine] = (modelDetails[engine] ?? []).map((model) => {
+      if (!model.policyAllowed) return model;
+      return { ...model, dispatchable: true };
+    });
+    models[engine] = (modelDetails[engine] ?? [])
+      .filter((model) => model.dispatchable)
+      .sort((left, right) => Number(right.default) - Number(left.default))
+      .map((model) => model.id);
+  }
+  return { ...config, localLoginOffered, modelDetails, models };
 }
 
 export function resolveEnabledEngine(
@@ -249,6 +282,7 @@ export function useEnabledEngineConfig(): {
   modelCatalogStatuses: EngineModelCatalogStatuses;
   readiness: EngineReadinessCatalog;
   runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  localLoginOffered: EngineId[];
   /** True once GET /api/capabilities resolved (or failed): before that the engines
    * list is the conservative fallback and must not demote a richer default. */
   loaded: boolean;
@@ -259,13 +293,8 @@ export function useEnabledEngineConfig(): {
   refreshModels: (preserveModel?: string, engine?: EngineId) => Promise<void>;
 } {
   const capabilityState = useCapabilityCatalog();
-  const [config, setConfig] = useState<{
-    engines: EngineId[];
-    models: EngineModelCatalog;
-    modelDetails: EngineModelDetails;
-    modelCatalogStatuses: EngineModelCatalogStatuses;
-    readiness: EngineReadinessCatalog;
-    runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  const localLoginOffers = useLocalLoginOffers();
+  const [config, setConfig] = useState<EngineCatalogConfig & {
     loaded: boolean;
     readinessKnown: boolean;
   }>(fallbackEnabledEngineConfig);
@@ -287,6 +316,7 @@ export function useEnabledEngineConfig(): {
       refreshFree: engine === undefined || normalizeEngine(engine) === "opencode",
     });
     if (!refreshed || Object.keys(refreshed.models).length === 0) return;
+    invalidateCapabilityCatalog();
     setConfig((c) => ({
       ...c,
       models: mergeEngineModelCatalog(c.models, refreshed.models, preserveModel),
@@ -294,7 +324,11 @@ export function useEnabledEngineConfig(): {
       modelCatalogStatuses: refreshed.modelCatalogStatuses,
     }));
   }, []);
-  return { ...config, refreshModels };
+  const offeredConfig = useMemo(
+    () => applyLocalLoginOffers(config, localLoginOffers),
+    [config, localLoginOffers],
+  );
+  return { ...offeredConfig, refreshModels };
 }
 
 /** Configured user-facing engines from GET /api/capabilities. Dispatch readiness is
@@ -304,10 +338,15 @@ export function useEnabledEngines(): EngineId[] {
   return useEnabledEngineConfig().engines;
 }
 
+function RowMark({ option }: { option: string }) {
+  const Mark = vendorMarkForModel(option);
+  return <Mark className="text-foreground-icon-secondary size-4 shrink-0" aria-hidden />;
+}
+
 /**
- * The `✳ <engine> ⌄` model picker from the HeyRico hero — an orange asterisk +
- * the current engine label + a dropdown of the sandbox engines. This is the
- * engine selector integrated "next to the model" per spec.
+ * The `<mark> <model> ⌄` model picker: the selected model's vendor mark, its
+ * label, and a dropdown of the models this engine accepts, each row led by
+ * its own vendor mark.
  */
 export function ModelPicker({
   engine,
@@ -370,6 +409,7 @@ export function ModelPicker({
     }
   };
 
+  const SelectedMark = vendorMarkForModel(model);
   return (
     <div className={cn("relative", className)}>
       <button
@@ -381,12 +421,10 @@ export function ModelPicker({
         title={`Model: ${selectedLabel}`}
         className="text-text-primary hover:bg-background-primary-hover flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-body-2-medium transition-colors"
       >
-        {/* Engine chip glyph — the AsteriskMark is useAgent's brand, not an
-            engine's; match the composer's neutral cpu icon instead. Below sm the
-            label folds into the accessible name so the reply placeholder keeps
-            one line at phone width. */}
-        <RiCpuLine className="text-text-secondary size-4" aria-hidden />
-        <span className="max-sm:sr-only">{selectedLabel}</span>
+        {/* The selected model's vendor mark. Below sm the label folds into the
+            accessible name so the reply placeholder keeps one line at phone width. */}
+        <SelectedMark className="text-text-secondary size-4" aria-hidden />
+        <span className="max-w-[11rem] truncate whitespace-nowrap max-sm:sr-only">{selectedLabel}</span>
         <RiArrowDownSLine className="text-text-tertiary size-4 max-sm:hidden" aria-hidden />
       </button>
 
@@ -448,8 +486,9 @@ export function ModelPicker({
                       >
                         <RiCheckLine className="size-4" aria-hidden />
                       </span>
+                      <RowMark option={e.value} />
                       <span className="min-w-0 flex-1">
-                        <span className="text-body-2-medium text-text-primary block">
+                        <span className="text-body-2-regular text-text-primary block">
                           {e.label}
                         </span>
                         {e.description ? (

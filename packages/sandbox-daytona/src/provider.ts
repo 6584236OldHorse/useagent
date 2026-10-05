@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Daytona, DaytonaNotFoundError } from "@daytona/sdk";
 import type {
   SandboxComputerUse,
@@ -454,7 +455,11 @@ export class DaytonaProvider implements SandboxProvider {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
 
-  constructor(private readonly client: DaytonaClientPort, options: DaytonaProviderOptions = {}) {
+  constructor(
+    private readonly client: DaytonaClientPort,
+    options: DaytonaProviderOptions = {},
+    readonly connectionFingerprint?: string,
+  ) {
     this.activationTimeoutMs = options.activationTimeoutMs ?? DEFAULT_ACTIVATION_TIMEOUT_MS;
     this.activationPollMs = options.activationPollMs ?? DEFAULT_ACTIVATION_POLL_MS;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -541,5 +546,12 @@ export function daytonaSandboxProvider(
   client: DaytonaClientPort = daytonaClient(config),
   options: DaytonaProviderOptions = {},
 ): SandboxProvider {
-  return new DaytonaProvider(client, options);
+  // An incomplete config lets the SDK consult ambient credentials/namespace;
+  // ordinary clients may do that, but cannot attest a constrained run.
+  const connectionFingerprint = config.apiUrl && config.target && config.apiKey
+    ? createHash("sha256").update(JSON.stringify([
+        "daytona", config.apiUrl, config.target, config.apiKey,
+      ])).digest("hex")
+    : undefined;
+  return new DaytonaProvider(client, options, connectionFingerprint);
 }

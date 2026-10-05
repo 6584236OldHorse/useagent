@@ -9,7 +9,7 @@ import {
 } from "../db/schema";
 import { isMemoryScope } from "../memory/scope";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
-import { isReservedBotHandoffKey } from "../bots/handoff-keys";
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
 import {
   getRun,
@@ -31,10 +31,10 @@ import { FleetQueueLimitError } from "../fleet/intake";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
+  ExpectedSandboxMismatchError,
   preflightInternalRunCommandReplay,
 } from "../commands/service";
-import type { InternalRunOrigin } from "./origin";
-import { acceptRunCancel, CANCEL_SUMMARY } from "../commands/cancel";
+import { expectedSandboxRunOrigin, type InternalRunOrigin } from "./origin";
 import { resolveSkillSelection } from "../skills/repo";
 import { buildNativeCommandPrompt, validateCommandIntent, type CommandIntent } from "./command-intent";
 import { readSessionCommandCatalog } from "./command-catalog";
@@ -48,15 +48,12 @@ import {
   RunIntakeError,
   type RunResource,
 } from "../resources/run-intake";
-import { bus, channel, pumpThread, signalCancel, type BusEvent } from "../worker";
+import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
-import { settleZombieCancel } from "./zombie-cancel";
-import {
-  getNativeFramesSince,
-  subscribeNative,
-  type NativeFrame,
-} from "./native-events";
+import { stopRun } from "./stop";
+import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
+import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -74,10 +71,10 @@ import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
   modelProviderReadyForEngine,
-  resolveAcceptedEngine,
   USER_FACING_ENGINES,
 } from "./engine-readiness";
-import { releaseRunSandbox } from "./sandbox-release";
+import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
+import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
 import { registerRunReadRoutes } from "./read-routes.js";
@@ -95,6 +92,7 @@ export async function handleRunCreate(
   options: {
     readonly body?: RunCreateBody;
     readonly origin?: InternalRunOrigin;
+    readonly expectedSandbox?: RunCommandIntent["expectedSandbox"]; // Trusted operator only, never the public body.
     /** The bot whose home thread this root run opens (stamped with the run, see
      *  RunCommandInput.botHome); a lost race answers 409 with no run created. */
     readonly botHome?: { readonly botId: string };
@@ -154,6 +152,7 @@ export async function handleRunCreate(
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
   let parentEngine: EngineId | null = null;
+  let parentOrigin: string | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
   // reply resumes the thread's live session). A native-command intent's client-supplied session
   // id is validated against THIS, never trusted on its own.
@@ -176,6 +175,7 @@ export async function handleRunCreate(
     parentScope = parent.memoryScope;
     parentModel = parent.model;
     parentEngine = parent.engine;
+    parentOrigin = parent.origin;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
       parent.engineSessionId ?? null;
   }
@@ -293,7 +293,7 @@ export async function handleRunCreate(
   }
 
   const idempotencyKey = c.req.header("Idempotency-Key")?.trim() || null;
-  if (!options.origin && idempotencyKey && isReservedBotHandoffKey(idempotencyKey)) {
+  if (!options.origin && idempotencyKey && isReservedIdempotencyKey(idempotencyKey)) {
     return c.json({ error: "reserved_idempotency_key" }, 400);
   }
   const intent: RunCommandIntent = {
@@ -311,15 +311,20 @@ export async function handleRunCreate(
     commandProvider: requestedCommand?.provider ?? null,
     commandSessionId: requestedCommand?.sessionId ?? null,
     commandCatalogRevision: requestedCommand?.catalogRevision ?? null,
+    expectedSandbox: options.expectedSandbox ?? null,
   };
   let replay;
   try {
-    replay = options.origin
+    const replayOrigin = options.expectedSandbox
+      ? expectedSandboxRunOrigin(parentOrigin)
+      : options.origin;
+    if (options.expectedSandbox && !replayOrigin) throw new ExpectedSandboxMismatchError();
+    replay = replayOrigin
       ? await preflightInternalRunCommandReplay({
           orgId: c.get("orgId"),
           idempotencyKey,
           intent,
-          origin: options.origin,
+          origin: replayOrigin,
         })
       : await preflightRunCommandReplay({
           orgId: c.get("orgId"),
@@ -330,6 +335,7 @@ export async function handleRunCreate(
     if (error instanceof RunAdmissionClosedError) {
       return c.json({ error: error.code, retryable: true }, 503);
     }
+    if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     throw error;
   }
   if (replay?.status === "replayed") {
@@ -340,12 +346,11 @@ export async function handleRunCreate(
   if (replay?.status === "conflict") {
     return c.json({ error: "idempotency_key_reused", reason: replay.reason }, 409);
   }
-
   // Mutable authorization/readiness checks apply only to first acceptance.
   if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
     return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
   }
-  const resolvedEngine = resolveAcceptedEngine(parentEngine ?? requestedEngine);
+  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId") }, parentEngine ?? requestedEngine);
   if (!resolvedEngine.ok) {
     return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   }
@@ -358,7 +363,7 @@ export async function handleRunCreate(
   if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
-  if (!modelProviderReadyForEngine(engine, model)) {
+  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
 
@@ -434,6 +439,7 @@ export async function handleRunCreate(
       orgId: c.get("orgId"),
       actorId: c.get("userId"),
       intent,
+      expectedSandbox: options.expectedSandbox ?? null,
       run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
@@ -450,6 +456,7 @@ export async function handleRunCreate(
       return c.json({ error: "upload_unavailable" }, 409);
     }
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
+    if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
       return c.json(
         { error: error.code, reason: "Another message opened this bot's thread first. Send yours again into that thread." },
@@ -494,61 +501,25 @@ runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
 // POST /:id/cancel — durable user Stop. Records a `run.cancel` command
 // (idempotent), fails a not-yet-started (queued) run atomically, signals a live
-// actor to abort, and pumps the thread so the QUEUED lane continues. Org-scoped
-// (a cross-org/missing id is a 404). A run that already settled is a no-op.
+// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
+// runs still working in threads this one delegated to. Org-scoped (a
+// cross-org/missing id is a 404). A run that already settled is a no-op.
 runsRoutes.post("/:id/cancel", async (c) => {
-  const orgId = c.get("orgId");
   const id = c.req.param("id");
-  const outcome = await acceptRunCancel({ orgId, actorId: c.get("userId"), runId: id });
+  const outcome = await stopRun({ orgId: c.get("orgId"), actorId: c.get("userId"), runId: id });
   switch (outcome.status) {
     case "not_found":
       return c.json({ error: "run not found" }, 404);
-    case "terminal":
+    case "settled":
       return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
-    case "already":
-      // Idempotent replay — best-effort re-signal a still-live actor, then pump.
-      signalCancel(id, CANCEL_SUMMARY);
-      await pumpThread(outcome.threadId);
-      return c.json({ id, status: "cancelling" }, 200);
-    case "accepted":
-      // A RUNNING actor is aborted in-process (its teardown finalizes the run
-      // "Stopped by user" and pumps); a QUEUED run was already failed in-tx.
-      // Pump either way so the next queued turn dispatches. Do NOT pretend a live
-      // process was signalled when it was not: a run the DB marks running but with no
-      // live canceller (e.g. after a crash) has its cancel recorded durably above and
-      // reconciled by recovery - surface the gap instead of hiding it.
-      if (outcome.runStatusWas === "running") {
-        const signalled = signalCancel(id, CANCEL_SUMMARY);
-        if (!signalled) {
-          // No local actor means a crash zombie; settle and pump now rather than
-          // waiting for recovery. finalizeRun remains idempotent against a race.
-          const durableStatus = await settleZombieCancel(id);
-          if (durableStatus) {
-            await pumpThread(outcome.threadId);
-            return c.json({ id, status: durableStatus, note: "already settled" }, 200);
-          }
-        }
-      }
-      await pumpThread(outcome.threadId);
-      return c.json({ id, status: "cancelling" }, 202);
+    case "cancelling":
+      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
     default:
       return assertNever(outcome);
   }
 });
 
-// Explicit eval/test cleanup. Product threads remain warm by default; callers
-// release only when they no longer need resume state. Org scope + active-run
-// checks prevent cross-tenant deletion or tearing down a live turn.
-runsRoutes.delete("/:id/sandbox", async (c) => {
-  const result = await releaseRunSandbox(c.get("orgId"), c.req.param("id"));
-  if (!result.ok) {
-    if (result.reason === "not_found") return c.json({ error: "run not found" }, 404);
-    if (result.reason === "thread_active") return c.json({ error: "thread is active" }, 409);
-    return c.json({ error: "sandbox release failed" }, 502);
-  }
-  return c.json(result);
-});
-
+registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);
 registerExecutionGraphRoutes(runsRoutes);
@@ -775,6 +746,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
+  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;
@@ -974,19 +946,22 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
       };
 
       void (async () => {
-        // 1. Load the authoritative thread (oldest→newest), attaching every run's
-        //    live sources FIRST so frames produced during replay queue up.
+        // 1. Load the authoritative thread (oldest→newest), attaching every run's live
+        //    sources FIRST so frames produced during replay queue up.
         const thread = await getThreadForRun(orgId, rootRunId);
         if (closed) return;
         if (!thread) return cleanup(); // resolved above; defensive
         for (const run of thread) attachRun(run.id);
 
-        // 2. Emit the authoritative snapshot (runs carry their durable steps) BEFORE
-        //    draining queued live frames, then seed step dedupe from it.
+        // 2. Say whether the browser's canonical resume cursor is honoured (a refused one
+        //    replays from zero, and the browser drops what it retained), then the snapshot.
+        const resume = await resolveResumeCursor(threadId, requested);
+        canonicalCursor = resume.canonicalAfter;
+        sendFrame("resume", resumeFramePayload(threadId, resume));
         sendFrame("snapshot", { threadId, runs: thread });
         for (const run of thread) seedStepDedupe(run.id, run.steps);
 
-        // 3. Replay each run's durable native frames (deduped by eventId+seq).
+        // 3. Replay every native frame (deduped by eventId+seq); the gateway also writes them.
         for (const run of thread) {
           for (const frame of await getNativeFramesSince(run.id, -1)) {
             if (closed) return;
@@ -994,17 +969,16 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
           }
         }
 
-        // 3b. Replay the thread's durable canonical events (deduped by deliverySeq).
-        //     Thread-scoped + ordered; a reconnect resumes from canonicalCursor.
-        for (const event of await loadCanonicalThread(threadId, 0)) {
+        // 3b. Read which runs are canonicalization-COMPLETE (H2) BEFORE the rows, so a run
+        //     finalized between the reads announces completion via the live loop after its
+        //     rows; replay the rows above the cursor (deduped by deliverySeq), then the
+        //     completions: React trusts a run's canonical lane ONLY after its completion.
+        const completes = await completeCanonicalRuns(threadId);
+        for (const event of await loadCanonicalThread(threadId, resume.canonicalAfter)) {
           if (closed) return;
           sendCanonical(event);
         }
-
-        // 3c. Replay which runs are canonicalization-COMPLETE (H2). React trusts the
-        //     canonical lane for a run ONLY after this, so a reload converges on the
-        //     same gate as a live client - never on the presence of provisional rows.
-        for (const complete of await completeCanonicalRuns(threadId)) {
+        for (const complete of completes) {
           if (closed) return;
           sendCanonicalComplete({ ...complete, threadId });
         }

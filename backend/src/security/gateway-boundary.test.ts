@@ -21,6 +21,14 @@ describe("gateway trust-boundary configuration", () => {
     expect(
       validateGatewayPublicUrl("http://127.0.0.1:3202", { USEAGENT_DEV_MODE: "true" }),
     ).toBe("http://127.0.0.1:3202");
+    expect(
+      validateGatewayPublicUrl("http://host.docker.internal:3202", { USEAGENT_DEV_MODE: "true" }),
+    ).toBe("http://host.docker.internal:3202");
+    expect(validateGatewayPublicUrl("http://192.168.64.1:3202", { USEAGENT_DEV_MODE: "true" })).toBe("http://192.168.64.1:3202");
+    for (const url of ["http://host.docker.internal:3202", "http://192.168.64.1:3202", "http://10.0.0.5:3202"]) {
+      expect(() => validateGatewayPublicUrl(url, { USEAGENT_DEV_MODE: "false" })).toThrow("requires HTTPS");
+    }
+    expect(() => validateGatewayPublicUrl("http://8.8.8.8:3202", { USEAGENT_DEV_MODE: "true" })).toThrow("requires HTTPS");
     expect(() =>
       validateGatewayPublicUrl("http://gateway.example.test", { USEAGENT_DEV_MODE: "true" }),
     ).toThrow("requires HTTPS");

@@ -116,13 +116,10 @@ afterEach(() => {
 });
 
 describe("execution graph terminal seal", () => {
-  test("OFF skips the drain and leaves graph rows untouched", async () => {
+  test("switched off, finalization never touches the graph; enabled, the seal drains first", async () => {
     let drained = 0;
-    await prepareExecutionGraphSeal("run-off", "off", async () => { drained += 1; });
-    expect(drained).toBe(0);
-    await prepareExecutionGraphSeal("run-shadow", "shadow", async () => { drained += 1; });
-    await prepareExecutionGraphSeal("run-read", "read", async () => { drained += 1; });
-    expect(drained).toBe(2);
+    await prepareExecutionGraphSeal("run-read", async () => { drained += 1; });
+    expect(drained).toBe(1);
 
     const runId = await freshRun();
     const { root } = await graphFixture(runId);
@@ -442,37 +439,24 @@ describe("execution graph terminal seal", () => {
     });
   });
 
-  test("SHADOW rolls back its savepoint but commits parent; READ rolls back parent", async () => {
-    const shadowRun = await freshRun();
-    const shadowPrompt = (await getRun(shadowRun))!.prompt;
-    const warnings: string[] = [];
-    await db.transaction(async (tx) => {
-      expect(await completeRun(shadowRun, "completed", "shadow-parent", 1, tx)).toBe(true);
-      await sealExecutionGraphAfterFinalizeTx(
-        { orgId: ORG, runId: shadowRun, status: "completed", mode: "shadow" },
-        tx,
-        {
-          reconcile: async (_input, savepoint) => {
-            await savepoint.update(runs).set({ prompt: "shadow-leak" }).where(eq(runs.id, shadowRun));
-            throw new Error("shadow boom");
-          },
-          warn: (_message, context) => warnings.push(context.error),
-        },
-      );
-    });
-    expect(await getRun(shadowRun)).toMatchObject({
-      status: "completed",
-      summary: "shadow-parent",
-      prompt: shadowPrompt,
-    });
-    expect(warnings).toEqual(["shadow boom"]);
+  test("an audit reconstruction failure fails the seal closed instead of being swallowed", async () => {
+    const runId = await freshRun();
+    await t3Event({ runId, seq: 1, id: `${runId}:root`, eventType: "session.started", nativeSessionId: "root" });
+    await prepareExecutionGraphSeal(runId, async () => {}); // reconstructs the root execution
+    // The stored execution's identity drifts from what the provider events say; the audit
+    // must surface the conflict through the strict core, never through the fail-open writer.
+    await db.update(agentExecutions).set({ provider: "opencode" }).where(eq(agentExecutions.runId, runId));
+    await expect(prepareExecutionGraphSeal(runId, async () => {}))
+      .rejects.toThrow("execution_source_key_identity_conflict");
+  });
 
+  test("a seal failure rolls the finalization back", async () => {
     const readRun = await freshRun();
     const readPrompt = (await getRun(readRun))!.prompt;
     await expect(db.transaction(async (tx) => {
       expect(await completeRun(readRun, "completed", "read-parent", 1, tx)).toBe(true);
       await sealExecutionGraphAfterFinalizeTx(
-        { orgId: ORG, runId: readRun, status: "completed", mode: "read" },
+        { orgId: ORG, runId: readRun, status: "completed" },
         tx,
         {
           reconcile: async (_input, outer) => {
@@ -485,7 +469,7 @@ describe("execution graph terminal seal", () => {
     expect(await getRun(readRun)).toMatchObject({ status: "queued", summary: null, prompt: readPrompt });
   });
 
-  test("READ fails closed on unresolved late ancestry while SHADOW commits the parent", async () => {
+  test("unresolved late ancestry fails the finalization closed", async () => {
     const seedUnresolved = async () => {
       const runId = await freshRun();
       await t3Event({
@@ -521,16 +505,6 @@ describe("execution graph terminal seal", () => {
       .rejects.toThrow("execution_graph_pending_unresolved");
     expect(await getRun(readRun)).toMatchObject({ status: "queued", summary: null });
 
-    const shadowRun = await seedUnresolved();
-    process.env.EXECUTION_GRAPH_ROLLOUT = "shadow";
-    await finalizeRun(shadowRun, "completed", "parent survives", 1);
-    expect(await getRun(shadowRun)).toMatchObject({ status: "completed", summary: "parent survives" });
-    expect(await getExecutionGraphForRun(ORG, shadowRun)).toMatchObject({
-      executions: [expect.objectContaining({ mode: "root", status: "running" })],
-    });
-    expect(await db.select().from(executionGraphPendingObservations).where(
-      eq(executionGraphPendingObservations.runId, shadowRun),
-    )).toEqual([expect.objectContaining({ resolvedAt: null })]);
   });
 
   test("READ seal reconstructs missing pointers and exact nested graph from provider truth", async () => {
@@ -612,7 +586,7 @@ describe("execution graph terminal seal", () => {
         payload: { taskId: "child", parentAgentId: "root", agentKind: "agent", agentPath: "/root/a" },
       },
     });
-    await prepareExecutionGraphSeal(runId, "shadow", async () => {});
+    await prepareExecutionGraphSeal(runId, async () => {});
     const before = await getExecutionGraphForRun(ORG, runId);
     expect(before?.executions.find((row) => row.nativeSessionId === "child")?.nativeParentSessionId)
       .toBe("root");
@@ -630,7 +604,7 @@ describe("execution graph terminal seal", () => {
         },
       }),
     }).where(eq(providerEvents.id, childEventId));
-    await expect(prepareExecutionGraphSeal(runId, "read", async () => {}))
+    await expect(prepareExecutionGraphSeal(runId, async () => {}))
       .rejects.toThrow("execution_graph_structural_revision_mismatch");
 
     const [pointer] = await db.select().from(executionGraphPendingObservations).where(

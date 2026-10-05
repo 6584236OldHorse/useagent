@@ -199,7 +199,7 @@ export function resolveHarness(provider: string): HarnessAdapter | undefined {
         ? providerDriverHarnessCapabilities(driver)
         : legacyHarness.capabilities(handle);
     },
-    cancel(handle, reason) {
+    cancel(handle, reason, metadata) {
       const driver = controlDriver(handle);
       if (!driver) {
         return Promise.resolve(providerDriverUnsupported(
@@ -208,7 +208,7 @@ export function resolveHarness(provider: string): HarnessAdapter | undefined {
           "provider session protocol or generation is stale",
         ));
       }
-      return driver.cancel(controlSession(driver, handle), reason);
+      return driver.cancel(controlSession(driver, handle), reason, metadata);
     },
     reconcile(handle, checkpoint) {
       const driver = controlDriver(handle);
@@ -220,7 +220,11 @@ export function resolveHarness(provider: string): HarnessAdapter | undefined {
         ));
       }
       return driver.reconcile
-        ? driver.reconcile({ session: controlSession(driver, handle), checkpoint })
+        ? driver.reconcile({
+            session: controlSession(driver, handle),
+            checkpoint,
+            metadata: checkpoint?.metadata,
+          })
         : legacyHarness
           ? legacyHarness.reconcile(handle, checkpoint)
           : Promise.resolve(providerDriverUnsupported(

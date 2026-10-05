@@ -3,6 +3,7 @@
 import { ChatComposer } from "@/components/ai/chat-composer";
 import { CodeBlock } from "@/components/ai/code-block";
 import { FineTuneCard } from "@/components/ai/fine-tune-card";
+import { Flowchart } from "@/components/ai/flowchart";
 import { SearchList } from "@/components/ai/search-list";
 import { SelectionActions } from "@/components/ai/selection-actions";
 import { SidebarNav } from "@/components/ai/sidebar-nav";
@@ -25,11 +26,12 @@ function Demo({
 }) {
   return (
     <section
+      id={component}
       data-beautiful-ui-component={component}
       className={
         wide
           ? "flex flex-col gap-7 border-t border-border-button-default py-14"
-          : "flex flex-col gap-6 border-t border-border-button-default py-8"
+          : "flex flex-col gap-4 border-t border-border-button-default py-8"
       }
     >
       {title ? (
@@ -75,6 +77,15 @@ export function BeautifulUiExtras() {
         <SearchList />
       </Demo>
 
+      <Demo
+        component="flowchart"
+        title="Flowchart"
+        index={16}
+        description="Workflow trigger and condition steps on a dotted canvas."
+      >
+        <Flowchart />
+      </Demo>
+
       <Demo component="code-block">
         <CodeBlock
           filename="recommend-flavors.ts"
@@ -94,7 +105,7 @@ export function BeautifulUiExtras() {
       <Demo
         component="selection-actions"
         title="Selection Actions"
-        index={19}
+        index={20}
         description="Highlight a passage and hand it to the agent to rewrite."
         wide
       >
@@ -104,7 +115,7 @@ export function BeautifulUiExtras() {
       <Demo
         component="agent-screen"
         title="Agent Screen"
-        index={20}
+        index={21}
         description="Watch an agent's screen: open, take control."
       >
         <AgentScreenShowcase />

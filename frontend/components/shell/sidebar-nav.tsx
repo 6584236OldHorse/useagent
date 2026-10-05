@@ -85,13 +85,15 @@ export function SidebarSectionToggle({
 
 export type NavIconTone = "blue" | "purple" | "green" | "orange" | "primary";
 
-/** A brand tint for a nav icon - a touch of color in an otherwise mono rail. */
+/** Nav icons share the idle label colour (text-secondary clears 3:1 on the rail
+ *  in every theme, unlike the icon-tertiary grey). The tones stay as routing
+ *  metadata only, so a future accent can return without touching every route. */
 export const NAV_ICON_TONE: Record<NavIconTone, string> = {
-  blue: "text-blue-500",
-  purple: "text-purple-500",
-  green: "text-green-600",
-  orange: "text-orange-500",
-  primary: "text-accent-500",
+  blue: "text-text-secondary",
+  purple: "text-text-secondary",
+  green: "text-text-secondary",
+  orange: "text-text-secondary",
+  primary: "text-text-secondary",
 };
 
 export interface SidebarNavItemProps {
@@ -104,6 +106,8 @@ export interface SidebarNavItemProps {
   leading?: ReactNode;
   label: string;
   active?: boolean;
+  /** Pass false to keep a link out of viewport prefetch (see Route.prefetch). */
+  prefetch?: boolean;
   /** Trailing node, e.g. a "New" chip. */
   trailing?: ReactNode;
 }
@@ -116,15 +120,17 @@ export function SidebarNavItem({
   label,
   active = false,
   trailing,
+  prefetch,
 }: SidebarNavItemProps) {
   return (
     <Link
       href={href}
+      prefetch={prefetch}
       aria-current={active ? "page" : undefined}
       className={cx(
         "flex items-center gap-2 rounded-2lg px-2.5 py-1.5 text-body-2-medium transition-colors",
         active
-          ? "bg-linear-to-b from-accent-600 to-accent-700 text-white shadow-nav-selected"
+          ? "bg-background-secondary-hover font-semibold text-text-primary"
           : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
       )}
     >
@@ -135,10 +141,10 @@ export function SidebarNavItem({
               className={cx(
                 "size-3.5 shrink-0",
                 active
-                  ? "text-white"
+                  ? "text-text-primary"
                   : tone
                     ? NAV_ICON_TONE[tone]
-                    : "text-foreground-icon-tertiary",
+                    : "text-text-secondary",
               )}
               aria-hidden
             />

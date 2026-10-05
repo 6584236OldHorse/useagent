@@ -433,6 +433,26 @@ describe("T3 provider bridge", () => {
     expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
   });
 
+  test("a login run's Claude wrapper names no gateway, and the plane's wrapper is unchanged", () => {
+    const layout = { home: "/home/user", workdir: "/home/user/work", runsAsRoot: false, bunExecutable: "/usr/local/bin/bun" };
+    const wrapperOf = (command: string) => Buffer.from([...command.matchAll(/printf %s '([^']+)' \| base64 -d/g)][0]![1]!, "base64").toString("utf8");
+    const plane = wrapperOf(buildRuntimeProviderBootstrapCommand("claude", claudeEnvironment, layout));
+    expect(plane).toContain("export ANTHROPIC_BASE_URL=");
+    expect(plane).toBe(wrapperOf(buildRuntimeProviderBootstrapCommand("claude", claudeEnvironment, layout, "plane")));
+    const login = wrapperOf(buildRuntimeProviderBootstrapCommand("claude", { CLAUDE_CONFIG_DIR: "/tmp/skynet-claude-config" }, layout, "sandbox-login"));
+    expect(login).not.toContain("ANTHROPIC_BASE_URL");
+    expect(login).toContain('export CLAUDE_CONFIG_DIR="/tmp/skynet-claude-config"');
+    expect(login).toContain('exec "/home/user/.local/bin/claude" "$@"');
+    const rootLogin = wrapperOf(buildRuntimeProviderBootstrapCommand("claude", { CLAUDE_CONFIG_DIR: "/tmp/skynet-claude-config" }, undefined, "sandbox-login"));
+    expect(rootLogin).not.toContain("ANTHROPIC_BASE_URL");
+    expect(rootLogin).toContain("export CLAUDE_CONFIG_DIR");
+    // The plane's credential still needs the gateway address; the login still needs the managed config dir.
+    expect(() => buildRuntimeProviderBootstrapCommand("claude", { CLAUDE_CONFIG_DIR: "/tmp/skynet-claude-config" }, layout, "plane")).toThrow("incomplete");
+    expect(() => buildRuntimeProviderBootstrapCommand("claude", {}, layout, "sandbox-login")).toThrow("incomplete");
+    expect(claudeProviderReadiness({ CLAUDE_CONFIG_DIR: "/tmp/skynet-claude-config" }).displayName).toMatch(/^UseAgent Claude login /);
+    expect(claudeProviderReadiness(claudeEnvironment).displayName).toMatch(/^UseAgent Claude gateway /);
+  });
+
   test("rejects non-HTTP provider endpoints", () => {
     expect(() =>
       buildRuntimeProviderBootstrapCommand("claude", {

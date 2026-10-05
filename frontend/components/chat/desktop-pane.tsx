@@ -151,7 +151,7 @@ function restoreOuterFocus(previous: HTMLElement | null, frame: HTMLIFrameElemen
 
 /**
  * The "Desktop" tab: a live view of the conversation's sandbox GUI (multi-repo),
- * via noVNC. The sandbox runtime keeps Xvfb + XFCE + x11vnc + noVNC alive on
+ * via noVNC. The sandbox runtime keeps Xorg + Budgie + x11vnc + noVNC alive on
  * :6080; we iframe noVNC's own `vnc.html` served THROUGH the same-origin
  * `/api/desktop-proxy/<threadId>` bridge (backend injects the provider preview
  * token on both the static app and the RFB WebSocket — see backend

@@ -20,7 +20,7 @@
 		reverse_proxy {{BACKEND_UPSTREAM}}
 	}
 
-	@api path /api/*
+	@api path /api/* /v2/*
 	handle @api {
 		# useagent-release: backend
 		reverse_proxy {{BACKEND_UPSTREAM}}

@@ -13,6 +13,7 @@ import { AppShell } from "./app-shell";
 import { AppSidebarFrame, NavRoutes } from "./app-sidebar-frame";
 import { SidebarThreadsProvider } from "./sidebar-threads-provider";
 import { ThreadSidebar } from "./thread-sidebar";
+import { sessionUserProfile } from "./user-menu";
 
 const router = {
   push() {},
@@ -23,19 +24,21 @@ const router = {
   prefetch() {},
 } as unknown as AppRouterInstance;
 
-function renderCollapsed(node: ReactNode): string {
+function renderSidebar(node: ReactNode, defaultOpen = false): string {
   return renderToStaticMarkup(
     <AppRouterContext.Provider value={router}>
       <PathnameContext.Provider value="/artifacts">
         <TooltipProvider>
           <SidebarThreadsProvider>
-            <SidebarProvider defaultOpen={false}>{node}</SidebarProvider>
+            <SidebarProvider defaultOpen={defaultOpen}>{node}</SidebarProvider>
           </SidebarThreadsProvider>
         </TooltipProvider>
       </PathnameContext.Provider>
     </AppRouterContext.Provider>,
   );
 }
+
+const renderCollapsed = (node: ReactNode) => renderSidebar(node);
 
 describe("collapsed application sidebar", () => {
   test("keeps real search mounted and grouped routes labelled and navigable", () => {
@@ -67,5 +70,33 @@ describe("collapsed application sidebar", () => {
     expect(html.match(/<main(?:\s|>)/g)).toHaveLength(1);
     expect(html).toContain('<div data-slot="sidebar-inset"');
     expect(html).toContain('<main id="main-content"');
+  });
+
+  test("uses the backend session identity for the menu and footer", () => {
+    expect(
+      sessionUserProfile(
+        {
+          user: {
+            id: "user-1",
+            name: "Abhishek Agarwal",
+            email: "abhishek@example.com",
+            image: "https://img.example/avatar.png",
+          },
+          session: { activeOrganizationId: "org-1" },
+        },
+        false,
+      ),
+    ).toEqual({
+      name: "Abhishek Agarwal",
+      email: "abhishek@example.com",
+      image: "https://img.example/avatar.png",
+      loaded: true,
+      signedIn: true,
+    });
+
+    const loadingHtml = renderSidebar(<AppSidebarFrame>Navigation</AppSidebarFrame>, true);
+    expect(loadingHtml).toContain("Account");
+    expect(loadingHtml).toContain("Loading account...");
+    expect(loadingHtml).not.toContain("Guest");
   });
 });

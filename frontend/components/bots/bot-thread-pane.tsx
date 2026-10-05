@@ -11,6 +11,17 @@ import type { ApiBot } from "./types";
 
 const BOT_REFRESH_MS = 15_000;
 
+/** The identity of a turn as far as the header cares: a new key means the
+ *  bot's projection may have moved and is fetched again. */
+export function turnRefreshKey(run: Pick<ApiRun, "id" | "status" | "updated_at">): string {
+  return `${run.id}:${run.status}:${run.updated_at}`;
+}
+
+function newestTurnKey(thread: ThreadView): string {
+  const newest = thread.thread.at(-1);
+  return newest ? turnRefreshKey(newest) : "";
+}
+
 /** Fetch the backend's whole-bot projection. Never derive header state from
  *  only the home thread: delegated work and approvals contribute too. */
 export async function fetchLiveBot(
@@ -33,7 +44,7 @@ export function BotThreadPane({ bot, thread }: { bot: ApiBot; thread: ThreadView
   const [liveBot, setLiveBot] = useState(bot);
   const [threadModel, setThreadModel] = useState<string | null>(thread.thread.at(-1)?.model ?? null);
   const refreshVersion = useRef(0);
-  const newestKey = useRef("");
+  const newestKey = useRef(newestTurnKey(thread));
   const refreshBot = useCallback(async () => {
     const version = ++refreshVersion.current;
     const next = await fetchLiveBot(bot.id).catch(() => null);
@@ -41,18 +52,22 @@ export function BotThreadPane({ bot, thread }: { bot: ApiBot; thread: ThreadView
   }, [bot.id]);
   const onNewestTurnChange = useCallback((run: ApiRun) => {
     setThreadModel(run.model);
-    const key = `${run.id}:${run.status}:${run.updated_at}`;
+    const key = turnRefreshKey(run);
     if (newestKey.current === key) return;
     newestKey.current = key;
     void refreshBot();
   }, [refreshBot]);
 
+  // The header starts from the server's projection and fetches the bot once
+  // on mount (the page read the bot before its thread, so a run queued between
+  // those reads is only visible here); the stream's first newest-turn report
+  // matches the thread's tail, so it does not fetch again.
   useEffect(() => {
     setLiveBot(bot);
-    newestKey.current = "";
+    newestKey.current = newestTurnKey(thread);
     refreshVersion.current += 1;
     void refreshBot();
-  }, [bot, refreshBot]);
+  }, [bot, thread, refreshBot]);
 
   useEffect(() => {
     const timer = window.setInterval(() => void refreshBot(), BOT_REFRESH_MS);
@@ -72,6 +87,8 @@ export function BotThreadPane({ bot, thread }: { bot: ApiBot; thread: ThreadView
         assistantIdentity={botAssistantIdentity(liveBot)}
         readOnlyMessage={botReadOnlyMessage(liveBot) ?? undefined}
         onNewestTurnChange={onNewestTurnChange}
+        // A bot thread is read on its conversation; the rail opens on demand.
+        railDefaultOpen={false}
       />
     </>
   );

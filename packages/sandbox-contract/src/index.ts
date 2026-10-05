@@ -11,7 +11,7 @@
 // Keep this file a pure leaf with zero imports or external runtime dependencies, so any
 // runtime can depend on the contract without pulling server code.
 
-export type SandboxProviderKind = "daytona" | "cube" | "box";
+export type SandboxProviderKind = "daytona" | "cube" | "box" | "local";
 
 /** A provider's top-level metadata lookup proved that the sandbox itself is absent. */
 export class SandboxNotFoundError extends Error {
@@ -177,6 +177,10 @@ export interface SandboxHandle {
   start(): Promise<void>;
   delete(): Promise<void>;
   getPreviewLink(port: number): Promise<SandboxPreviewLink>;
+  /** Push the provider's own lifetime clock out again, for a provider whose
+   * sandboxes stop at an absolute deadline; a turn that runs for days calls it
+   * on a timer. Absent when the provider counts inactivity instead. */
+  keepAlive?(): Promise<void>;
 }
 
 export interface SandboxCreateOptions {
@@ -233,6 +237,10 @@ export interface SandboxTemplateStatus {
 }
 
 export interface SandboxProvider {
+  /** Backend-only SHA-256 of the captured transport namespace and credential.
+   * Missing means the provider cannot attest an execution binding. Never sent
+   * to a sandbox or used as a credential. */
+  readonly connectionFingerprint?: string;
   create(options?: SandboxCreateOptions): Promise<SandboxHandle>;
   get(sandboxId: string): Promise<SandboxHandle>;
   list(): AsyncIterable<SandboxHandle>;
@@ -299,9 +307,55 @@ export function memorySandboxLabelStore(): SandboxLabelStore {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Links the control plane terminates itself. A provider reached through such a
+// link (a per-machine runner's outbound connection) calls it instead of a
+// vendor API. The shapes stay neutral: calls with a method and params, byte
+// streams into a sandbox, and a loopback address that reaches a sandbox port.
+// ---------------------------------------------------------------------------
+
+export interface SandboxLinkStream {
+  readonly id: number;
+  readonly readable: ReadableStream<Uint8Array>;
+  write(bytes: Uint8Array): Promise<void>;
+  end(): void;
+  reset(reason: string): void;
+  readonly done: Promise<void>;
+}
+
+export interface SandboxLink {
+  readonly id: string;
+  /** Owner of the machine behind the link; every sandbox on it runs for this user. */
+  readonly userId: string | null;
+  readonly orgId: string | null;
+  /** Stable per enrolment; part of the credential generation recorded on runs. */
+  readonly fingerprint: string;
+  /** When the link was established; the plane's view of "connected since". */
+  readonly enrolledAt: string;
+  readonly online: boolean;
+  /** The image name the machine was told to pull, with its digest; a sandbox is
+   *  created under the same name, which may differ from the deployment's own
+   *  when the plane serves the image. Absent for a link that reported none. */
+  readonly image?: { readonly ref: string; readonly digest: string };
+  /** One call over the link; `timeoutMs` bounds the wait for its answer. */
+  call(method: string, params: unknown, options?: { readonly timeoutMs?: number }): Promise<unknown>;
+  openStream(target: unknown): Promise<SandboxLinkStream>;
+  /** A loopback address on the control plane that reaches `port` inside `sandboxId`. */
+  forward(sandboxId: string, port: number): Promise<{ readonly host: string; readonly port: number }>;
+  /** Drop the forwarders for a sandbox that is gone. */
+  release(sandboxId: string): Promise<void>;
+}
+
+export interface SandboxLinkDirectory {
+  get(id: string): SandboxLink | null;
+  list(): readonly SandboxLink[];
+}
+
 /** What the control plane hands a plugin when it builds a provider. */
 export interface SandboxProviderPorts {
   readonly labels?: SandboxLabelStore;
+  /** Links the plane terminates, for providers reached through one of them. */
+  readonly links?: SandboxLinkDirectory;
   readonly fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
   readonly sleep?: (ms: number) => Promise<void>;
   /** Shell probe that exits 0 once the runtime identity and workspace are ready; providers that verify readiness run it. */

@@ -53,6 +53,9 @@ const ABSOLUTE_DIR_RE = /^\/(?:[A-Za-z0-9._-]+\/?)+$/;
 function resolveSecretFileDir(): string {
   const configured = process.env.SECRETS_FILE_DIR?.trim();
   const candidate = (configured || DEFAULT_SECRET_FILE_DIR).replace(/\/+$/, "");
+  if (candidate.split("/").some((component) => component === "." || component === "..")) {
+    throw new Error("SECRETS_FILE_DIR must not contain . or .. path components");
+  }
   if (!HOME_RELATIVE_DIR_RE.test(candidate) && !ABSOLUTE_DIR_RE.test(candidate)) {
     throw new Error(
       "SECRETS_FILE_DIR must be an absolute path or a safe $HOME-relative path",
@@ -69,29 +72,31 @@ export const SECRET_DOTENV_PATH = `${SECRET_FILE_DIR}/skynet-env.sh`;
 
 const DOTENV_BASENAME_RE = /^\.env(?:\..+)?$/;
 
-/** Artifact publication must never expose the injected-secret directory or a
- * dotenv file, even when the agent addresses the home directory explicitly. */
+/** Protect canonical and legacy secrets even when an operator overrides the
+ * active directory; migration must not make either namespace publishable. */
 export function isProtectedInjectedSecretPath(value: string): boolean {
   const normalized = posix.normalize(value.replaceAll("\\", "/"));
   const basename = normalized.split("/").at(-1) ?? "";
   if (DOTENV_BASENAME_RE.test(basename)) return true;
 
-  const secretDir = SECRET_FILE_DIR.replaceAll("\\", "/");
-  if (secretDir.startsWith("$HOME/")) {
-    const suffix = secretDir.slice("$HOME".length);
-    const escapedSuffix = suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const expandedHomePath = new RegExp(
-      `^/(?:root|home/[^/]+)${escapedSuffix}(?:/|$)`,
-    );
-    return (
-      normalized === secretDir ||
-      normalized.startsWith(`${secretDir}/`) ||
-      normalized === `~${suffix}` ||
-      normalized.startsWith(`~${suffix}/`) ||
-      expandedHomePath.test(normalized)
-    );
-  }
-  return normalized === secretDir || normalized.startsWith(`${secretDir}/`);
+  return ["$HOME/.useagent/secrets", DEFAULT_SECRET_FILE_DIR, SECRET_FILE_DIR].some((directory) => {
+    const secretDir = directory.replaceAll("\\", "/");
+    if (secretDir.startsWith("$HOME/")) {
+      const suffix = secretDir.slice("$HOME".length);
+      const escapedSuffix = suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const expandedHomePath = new RegExp(
+        `^/(?:root|home/[^/]+)${escapedSuffix}(?:/|$)`,
+      );
+      return (
+        normalized === secretDir ||
+        normalized.startsWith(`${secretDir}/`) ||
+        normalized === `~${suffix}` ||
+        normalized.startsWith(`~${suffix}/`) ||
+        expandedHomePath.test(normalized)
+      );
+    }
+    return normalized === secretDir || normalized.startsWith(`${secretDir}/`);
+  });
 }
 
 /** Compatibility-only secrets.injected payload - the injected NAMES and their

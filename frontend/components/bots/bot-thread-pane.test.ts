@@ -33,3 +33,13 @@ describe("live bot header state", () => {
     ).toBeNull();
   });
 });
+
+describe("turn refresh key", () => {
+  test("changes only when the newest turn's identity, status or update time changes", async () => {
+    const { turnRefreshKey } = await import("./bot-thread-pane");
+    const run = { id: "run-1", status: "running", updated_at: "2026-09-07T00:00:00Z" } as const;
+    expect(turnRefreshKey(run)).toBe(turnRefreshKey({ ...run }));
+    expect(turnRefreshKey({ ...run, status: "completed" })).not.toBe(turnRefreshKey(run));
+    expect(turnRefreshKey({ ...run, updated_at: "2026-09-07T00:00:01Z" })).not.toBe(turnRefreshKey(run));
+  });
+});

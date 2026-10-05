@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { RiCheckLine, RiFileCopyLine } from "@remixicon/react";
-import { codeToHtml } from "shiki";
 import { cx } from "@/utils/cx";
+
+/** How long a block must stop changing before it is highlighted. */
+const HIGHLIGHT_SETTLE_MS = 200;
 
 /**
  * Code surface, beautiful-ui `CodeBlock` chrome mapped to our tokens: a card
  * with a header bar (mono filename + language label + Copy) over a
- * line-numbered, syntax-highlighted body whose lines fade up in a stagger.
+ * line-numbered, syntax-highlighted body.
  *
  * The visual is beautiful-ui; the highlighting underneath is the vendored shiki
  * dual-theme (github-light / github-dark-default) so tokens stay legible on the
@@ -94,36 +96,32 @@ export function CodeBlock({
   const [html, setHtml] = useState<string | null>(null);
   const trimmed = useMemo(() => code.replace(/\n$/, ""), [code]);
 
+  // Highlight only once the code has settled: while a block is still growing
+  // (streaming, or edits arriving faster than the settle window) the plain mono
+  // fallback stays up, and the highlighter, loaded on first use, runs once at
+  // the end instead of once per token.
   useEffect(() => {
-    if (!trimmed) {
-      setHtml(null);
-      return;
-    }
+    setHtml(null);
+    if (!trimmed || streaming) return;
     let cancelled = false;
-    (async () => {
+    const timer = window.setTimeout(async () => {
       try {
+        const { codeToHtml } = await import("shiki");
         const out = await codeToHtml(trimmed, {
           lang: language,
           themes: { light: "github-light", dark: "github-dark-default", dusk: "tokyo-night" },
           defaultColor: "light",
-          transformers: [
-            {
-              line(node, line) {
-                node.properties.class = `${node.properties.class ?? ""} ai-code-line`.trim();
-                node.properties.style = `animation-delay:${(line - 1) * 90}ms`;
-              },
-            },
-          ],
         });
         if (!cancelled) setHtml(out);
       } catch {
         if (!cancelled) setHtml(null);
       }
-    })();
+    }, HIGHLIGHT_SETTLE_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [trimmed, language]);
+  }, [trimmed, language, streaming]);
 
   return (
     <div
@@ -157,7 +155,7 @@ export function CodeBlock({
             <pre className="[font-family:var(--font-mono)]">
               <code>
                 {trimmed.split("\n").map((ln, i) => (
-                  <span key={i} className="ai-code-line line">
+                  <span key={i} className="line">
                     {ln || " "}
                     {"\n"}
                   </span>

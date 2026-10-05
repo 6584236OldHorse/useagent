@@ -5,38 +5,64 @@ const SESSION_COOKIES = [
   "better-auth.session_token",
 ] as const;
 
-/**
- * Route anonymous browser traffic to the real application login. Cookie
- * presence is only a navigation hint; every backend API still validates the
- * Better Auth session and fails closed independently.
- */
-export function proxy(request: NextRequest): NextResponse {
-  // next.config sets skipTrailingSlashRedirect so the port bridge under /api
-  // keeps its trailing slash; pages keep Next's canonical no-slash form here.
+function routeResponse(request: NextRequest): NextResponse | null {
   const { pathname } = request.nextUrl;
   if (pathname.length > 1 && pathname.endsWith("/")) {
     const canonical = new URL(request.url);
     canonical.pathname = pathname.replace(/\/+$/, "");
     return NextResponse.redirect(canonical, 308);
   }
-  if (pathname === "/healthz") return NextResponse.next();
+  if (pathname === "/healthz" || pathname === "/icon.svg") return NextResponse.next();
+  return null;
+}
 
-  // Local preview escape hatch (used by `bun run local`): skip the login redirect
-  // so the app renders against a remote API for UI work. HARD-GATED to development
-  // - NODE_ENV is 'production' in every real build, so this can never open auth in
-  // production even if the flag leaks into an env. Backend APIs still validate the
-  // Better Auth session independently and fail closed.
-  if (process.env.NODE_ENV !== "production" && process.env.USEAGENT_PREVIEW_OPEN === "1") {
-    return NextResponse.next();
-  }
+function isPublicPage(pathname: string): boolean {
+  return (
+    pathname === "/desktop-auth" ||
+    pathname === "/download" ||
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/signup" ||
+    pathname.startsWith("/signup/")
+  );
+}
+
+export function proxy(request: NextRequest): NextResponse {
+  const response = routeResponse(request);
+  if (response) return response;
   const hasSession = SESSION_COOKIES.some((name) => request.cookies.has(name));
-  if (hasSession) return NextResponse.next();
+  const preview = process.env.NODE_ENV !== "production" && process.env.USEAGENT_PREVIEW_OPEN === "1";
+  if (!preview && !hasSession && !isPublicPage(request.nextUrl.pathname)) {
+    // An invitation link must survive the sign-in it triggers.
+    if (request.nextUrl.pathname.startsWith("/accept-invitation/")) {
+      const login = new URL("/login", request.url);
+      login.searchParams.set("redirect_url", request.nextUrl.pathname);
+      return NextResponse.redirect(login);
+    }
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
 
-  return NextResponse.redirect(new URL("/login", request.url));
+  const headers = new Headers(request.headers);
+  headers.delete("x-nonce");
+  headers.delete("content-security-policy");
+  // These are data/chunk fetches, not new documents. Keep router prefetch and
+  // RSC caching intact, but never bypass the authentication checks above.
+  if (headers.get("rsc") === "1" || headers.get("next-router-prefetch") === "1" || headers.get("purpose") === "prefetch") {
+    return NextResponse.next({ request: { headers } });
+  }
+  const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+  const development = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
+  const policy = `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'${development}; script-src-attr 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
+  headers.set("x-nonce", nonce);
+  headers.set("content-security-policy", policy);
+  const page = NextResponse.next({ request: { headers } });
+  page.headers.set("content-security-policy", policy);
+  page.headers.set("cache-control", "private, no-store");
+  return page;
 }
 
 export const config = {
   matcher: [
-    "/((?!api|healthz|login|signup|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
+    "/((?!api|v2|healthz|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
   ],
 };

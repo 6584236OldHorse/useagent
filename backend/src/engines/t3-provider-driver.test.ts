@@ -37,7 +37,119 @@ function driverRejectingResume(error: Error) {
   });
 }
 
+const expectedSandbox = {
+  version: 1 as const,
+  sandboxId: "cube-t3-resume",
+  provider: "cube" as const,
+  credential: "env" as const,
+  ownerOrgId: "org-1",
+  ownerUserId: null,
+  credentialGeneration: "b".repeat(64),
+};
+
 describe("T3 provider drivers", () => {
+  test("re-resolves the accepted sandbox before every native lifecycle operation", async () => {
+    const resolutions: unknown[][] = [];
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async (...args) => {
+        resolutions.push(args);
+        return { id: "cube-t3-resume" } as SandboxHandle;
+      },
+      requestEnvironment: async <T>(
+        _sandbox: SandboxHandle,
+        request: RuntimeEnvironmentRequest,
+      ) => {
+        if (request.path === "/api/orchestration/shell") {
+          return {
+            projects: [{ id: "skynet-project-thread-1" }],
+            threads: [{ id: "skynet-thread-thread-1" }],
+          } as T;
+        }
+        if (request.method === "GET") {
+          return {
+            snapshotSequence: 1,
+            thread: {
+              id: "skynet-thread-thread-1",
+              latestTurn: null,
+              messages: [],
+              activities: [],
+              session: { status: "ready", lastError: null },
+            },
+          } as T;
+        }
+        return {} as T;
+      },
+    });
+    const control = { expectedSandbox, threadId: "thread-1" };
+    const current = sessionFor(driver);
+
+    await driver.start({
+      runId: "run-1",
+      threadId: "thread-1",
+      runtime: current.runtime,
+      metadata: {
+        workspaceRoot: "/root/work",
+        runtimeMode: "full-access",
+        createdAt: "2026-09-07T00:00:00.000Z",
+        ...control,
+      },
+    });
+    await driver.resume({ session: current, metadata: control });
+    await driver.steer({
+      runId: "run-1",
+      threadId: "thread-1",
+      session: current,
+      input: { kind: "prompt", text: "continue" },
+      metadata: control,
+    });
+    await driver.reconcile?.({
+      session: current,
+      metadata: control,
+      checkpoint: {
+        metadata: control,
+        eventContext: {
+          runId: "run-1",
+          threadId: "thread-1",
+          redact: createSecretRedactor([]),
+        },
+      },
+    });
+    await driver.cancel(current, "stop", control);
+
+    expect(resolutions).toHaveLength(5);
+    for (const [runtime, expected, threadId] of resolutions) {
+      expect(runtime).toEqual(current.runtime);
+      expect(expected).toEqual(expectedSandbox);
+      expect(threadId).toBe("thread-1");
+    }
+  });
+
+  test("rejects a runtime id mismatch before sandbox resolution", async () => {
+    let resolutions = 0;
+    const driver = makeT3ProviderDriver("codex", {
+      resolveRuntime: async () => {
+        resolutions += 1;
+        return null;
+      },
+      requestEnvironment: async () => { throw new Error("must not execute"); },
+    });
+    await expect(driver.steer({
+      runId: "run-1",
+      threadId: "thread-1",
+      session: {
+        ...sessionFor(driver),
+        runtime: { kind: "sandbox", id: "other-sandbox" },
+      },
+      input: { kind: "prompt", text: "must not dispatch" },
+      metadata: { expectedSandbox, threadId: "thread-1" },
+    })).resolves.toMatchObject({
+      status: "error",
+      code: "expected_sandbox_mismatch",
+      message: "The accepted sandbox binding is no longer available; no replacement was created.",
+    });
+    expect(resolutions).toBe(0);
+  });
+
   test("registers one valid native lifecycle driver per T3 engine", () => {
     for (const provider of ["codex", "claude", "opencode"] as const) {
       const driver = t3ProviderDrivers[provider];
@@ -298,6 +410,40 @@ describe("T3 provider drivers", () => {
       threadId: "skynet-thread-thread-1",
       turnId: "turn-1",
     });
+  });
+
+  test("a continuation with no turn id on its message is matched by its request time", async () => {
+    const thread = (latestTurn: { turnId: string; requestedAt: string }, continuationStarted: boolean): RuntimeThreadSnapshot => ({
+      snapshotSequence: 3,
+      thread: {
+        id: "skynet-thread-thread-1",
+        latestTurn: { ...latestTurn, state: "completed", assistantMessageId: continuationStarted ? "assistant-b" : null },
+        messages: [
+          { id: "skynet-message-run-2", role: "user", text: "Original", turnId: null, streaming: false, createdAt: "2026-09-05T00:01:00.000Z" },
+          { id: "skynet-message-run-2-continue-2", role: "user", text: "Continue", turnId: null, streaming: false, createdAt: "2026-09-05T00:02:00.000Z" },
+          ...(continuationStarted
+            ? [{ id: "assistant-b", role: "assistant" as const, text: "The answer", turnId: "turn-b", streaming: false }]
+            : []),
+        ],
+        activities: [],
+        session: { status: "ready", lastError: null },
+      },
+    });
+    const request = (snapshot: RuntimeThreadSnapshot) => {
+      const driver = makeT3ProviderDriver("codex", {
+        resolveRuntime: async () => ({ id: "cube-t3-resume" }) as SandboxHandle,
+        requestEnvironment: async <T>() => snapshot as T,
+      });
+      return driver.reconcile!({
+        session: sessionFor(driver),
+        checkpoint: { sinceMs: 10, eventContext: { runId: "run-2", threadId: "thread-1", redact: createSecretRedactor([]) } },
+      });
+    };
+    // The original turn ended; the accepted continuation has not started: pending, not the original's empty answer.
+    expect((await request(thread({ turnId: "turn-a", requestedAt: "2026-09-05T00:01:00.000Z" }, false))).status).toBe("no_change");
+    // The continuation's turn completed: the run is done with its answer.
+    const done = await request(thread({ turnId: "turn-b", requestedAt: "2026-09-05T00:02:00.000Z" }, true));
+    expect(done.status).toBe("completed");
   });
 
   test("reconciles only the latest turn through the live activity mapper", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CookieJar, fetchApi, json, uid } from "./helpers";
+import { CookieJar, createOrgSession, fetchApi, json, uid } from "./helpers";
 
 const SESSION_COOKIE = "better-auth.session_token";
 
@@ -40,5 +40,34 @@ describe("auth", () => {
       body: { email, password: "not-the-password" },
     });
     expect(bad.status).toBe(401);
+  });
+
+  test("only the signed-in matching user can accept an organization invitation", async () => {
+    const owner = await createOrgSession("invite-owner");
+    const inviteeEmail = `${uid("invitee")}@example.com`;
+    const invited = await json<{ id: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: owner.cookies,
+      body: { email: inviteeEmail, role: "member", organizationId: owner.orgId },
+    });
+    expect(invited.status).toBe(200);
+
+    const accept = (cookies?: string) =>
+      fetchApi("/api/auth/organization/accept-invitation", {
+        method: "POST",
+        cookies,
+        body: { invitationId: invited.body.id },
+      });
+    expect((await accept()).status).toBe(401);
+    expect((await accept(owner.cookies)).status).toBe(403);
+
+    const invitee = new CookieJar();
+    const signup = await fetchApi("/api/auth/sign-up/email", {
+      method: "POST",
+      body: { name: "Invited User", email: inviteeEmail, password: "password-1234" },
+    });
+    expect(signup.status).toBe(200);
+    invitee.absorb(signup);
+    expect((await accept(invitee.header())).status).toBe(200);
   });
 });

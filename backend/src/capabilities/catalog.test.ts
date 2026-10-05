@@ -58,12 +58,12 @@ describe("capability catalog", () => {
     expect(opencode?.models.find((model) => model.default)?.id).toBe(opencode?.defaultModel);
     expect(opencode?.runtime).toEqual({
       kind: "t3",
-      label: "any model · cloud sandbox",
+      label: "any model · cloud",
     });
     expect(codex?.runtime.kind).toBe("t3");
     expect(catalog.engines.find((engine) => engine.id === "claude")?.runtime).toEqual({
       kind: "t3",
-      label: "Anthropic agent · cloud sandbox",
+      label: "Anthropic agent · cloud",
     });
     expect(catalog.engines.find((engine) => engine.id === "pi")?.runtime.kind).toBe("native");
     expect(catalog.engines.find((engine) => engine.id === "chat")?.runtime.kind).toBe("direct");

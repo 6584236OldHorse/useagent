@@ -191,19 +191,19 @@ describe("engine model catalog", () => {
 
   test("backend-configured catalogs filter and preserve exact submitted ids", () => {
     expect(modelOptionsForEngine("codex", ["gpt-5.6-luna", "gpt-5.4"])).toEqual([
-      { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast", tint: "text-sky-500" },
-      { value: "gpt-5.4", label: "gpt-5.4", tint: "text-text-secondary" },
+      { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
+      { value: "gpt-5.4", label: "gpt-5.4" },
     ]);
     expect(modelOptionsForEngine("opencode", ["openai/gpt-5.6-sol"])[0]?.value).toBe(
       "openai/gpt-5.6-sol",
     );
     expect(modelOptionsForEngine("claude", ["claude-opus-5"])).toEqual([
-      { value: "claude-opus-5", label: "Opus 5", tint: "text-orange-500" },
+      { value: "claude-opus-5", label: "Opus 5" },
     ]);
     expect(modelOptionsForEngine("codex", ["gpt-future"], [
       { id: "gpt-future", displayName: "Future Model" },
     ])).toEqual([
-      { value: "gpt-future", label: "Future Model", tint: "text-text-secondary" },
+      { value: "gpt-future", label: "Future Model" },
     ]);
   });
 
@@ -222,7 +222,7 @@ describe("engine model catalog", () => {
             { id: "openai/gpt-5.6-luna", default: false, dispatchable: true, policyAllowed: true },
             { id: "new/dynamic:free", default: true, dispatchable: true, policyAllowed: true },
           ],
-          runtime: { kind: "t3", label: "T3 orchestration · cloud sandbox" },
+          runtime: { kind: "t3", label: "T3 orchestration · cloud" },
         },
       ],
       tools: { gatewayConfigured: false, declared: [] },
@@ -237,7 +237,6 @@ describe("engine model catalog", () => {
       {
         value: "openai/gpt-5.6-sol",
         label: "GPT-5.6 Sol",
-        tint: "text-text-tertiary",
         disabled: true,
         description: "Currently unavailable",
       },
@@ -245,30 +244,30 @@ describe("engine model catalog", () => {
     expect(config.readiness.opencode).toEqual({ ready: true, reason: "enabled" });
     expect(config.runtimes.opencode).toEqual({
       kind: "t3",
-      label: "T3 orchestration · cloud sandbox",
+      label: "T3 orchestration · cloud",
     });
     expect(engineRuntimeCaption("opencode", config.runtimes.opencode, config.readiness.opencode)).toBe(
-      "any model · cloud sandbox",
+      "any model · cloud",
     );
     expect(
       engineRuntimeCaption(
         "claude",
-        { kind: "acp_compat", label: "Claude Code ACP compatibility · cloud sandbox" },
+        { kind: "acp_compat", label: "Claude Code ACP compatibility · cloud" },
         { ready: false, reason: "not_proven" },
       ),
-    ).toBe("Anthropic agent · cloud sandbox · needs attention");
+    ).toBe("Anthropic agent · cloud · needs attention");
   });
 
   test("primary engine captions never expose transport implementation names", () => {
     expect(engineRuntimeCaption(
       "codex",
-      { kind: "acp_compat", label: "Codex ACP compatibility · cloud sandbox" },
+      { kind: "acp_compat", label: "Codex ACP compatibility · cloud" },
       { ready: true, reason: "enabled" },
-    )).toBe("OpenAI agent · cloud sandbox");
+    )).toBe("OpenAI agent · cloud");
     expect(engineRuntimeCaption(
       "claude",
-      { kind: "t3", label: "T3 orchestration · cloud sandbox" },
+      { kind: "t3", label: "T3 orchestration · cloud" },
       { ready: true, reason: "enabled" },
-    )).toBe("Anthropic agent · cloud sandbox");
+    )).toBe("Anthropic agent · cloud");
   });
 });

@@ -6,6 +6,10 @@ import {
   parseProviderSessionBinding,
   type ProviderSessionBinding,
 } from "@useagent/agent-harness/canonical";
+import {
+  parseExpectedSandboxBinding,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
 // Durable per-session command lane (north star "Durable Runtime", single-replica
@@ -37,6 +41,7 @@ export interface ActiveCommand {
   readonly state: "queued" | "dispatched";
   readonly runId: string;
   readonly threadId: string;
+  readonly runThreadId: string;
   readonly runStatus: RunStatus;
   readonly engine: EngineId;
   readonly orgId: string | null;
@@ -44,6 +49,7 @@ export interface ActiveCommand {
   readonly engineSessionId: string | null;
   readonly providerSession: ProviderSessionBinding | null;
   readonly sandboxId: string | null;
+  readonly expectedSandbox: ExpectedSandboxBinding | null;
   /** A durable user stop committed before the actor/recovery path settled. */
   readonly cancelRequested: boolean;
 }
@@ -128,8 +134,9 @@ export async function requeueClaimedCommand(runId: string): Promise<void> {
 export async function listActiveCommands(): Promise<ActiveCommand[]> {
   const rows = await db.execute(sql`
     select c.id as command_id, c.state, c.run_id, c.thread_id,
+           r.thread_id as run_thread_id,
            r.status as run_status, r.engine, r.org_id, r.user_id,
-           r.engine_session_id, r.provider_session, r.sandbox_id,
+           r.engine_session_id, r.provider_session, r.sandbox_id, r.expected_sandbox,
            exists (
              select 1 from commands cancel_cmd
              where cancel_cmd.run_id = r.id and cancel_cmd.kind = ${RUN_CANCEL}
@@ -142,6 +149,7 @@ export async function listActiveCommands(): Promise<ActiveCommand[]> {
     state: r.state as "queued" | "dispatched",
     runId: r.run_id as string,
     threadId: r.thread_id as string,
+    runThreadId: r.run_thread_id as string,
     runStatus: r.run_status as RunStatus,
     engine: r.engine as EngineId,
     orgId: (r.org_id as string | null) ?? null,
@@ -149,6 +157,7 @@ export async function listActiveCommands(): Promise<ActiveCommand[]> {
     engineSessionId: (r.engine_session_id as string | null) ?? null,
     providerSession: parseProviderSessionBinding(r.provider_session),
     sandboxId: (r.sandbox_id as string | null) ?? null,
+    expectedSandbox: parseExpectedSandboxBinding(r.expected_sandbox),
     cancelRequested: r.cancel_requested === true,
   }));
 }

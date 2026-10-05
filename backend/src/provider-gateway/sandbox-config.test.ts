@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxHandle } from "../sandboxes/provider";
@@ -82,6 +82,36 @@ function recordingSandbox(): {
   return { sandbox, files };
 }
 
+function localShellSandbox(root: string): SandboxHandle {
+  return {
+    process: {
+      executeCommand: async (command: string) => {
+        const result = Bun.spawnSync(["/bin/sh", "-c", command.replaceAll("$HOME", root)], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return {
+          exitCode: result.exitCode,
+          result: result.stdout.toString(),
+          stderr: result.stderr.toString(),
+        };
+      },
+    },
+  } as unknown as SandboxHandle;
+}
+
+function privateWriterContext(runId: string): EngineRunContext {
+  const context = ctx();
+  context.runId = runId;
+  context.threadId = undefined;
+  context.model = "gpt-5.6-sol";
+  return context;
+}
+
+function mode(value: number): number {
+  return value & 0o777;
+}
+
 function expectLifetime(
   exp: number,
   mintedBetween: readonly [number, number],
@@ -92,6 +122,254 @@ function expectLifetime(
 }
 
 describe("sandbox provider gateway config", () => {
+  test("migrates and refreshes private files without disturbing app state", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.TOOL_GATEWAY_SECRET = "tool-test-0123456789abcdef0123456789abcdef";
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-private-writer-"));
+    const sandbox = localShellSandbox(root);
+    const canonicalDir = join(root, ".useagent");
+    const legacyDir = join(root, ".skynet");
+    const canonicalToken = join(canonicalDir, "provider-openai.token");
+    const legacyToken = join(legacyDir, "provider-openai.token");
+    const canonicalMarker = join(canonicalDir, "provider-gateway-generation");
+    const legacyMarker = join(legacyDir, "provider-gateway-generation");
+    try {
+      await mkdir(legacyDir, { mode: 0o711 });
+      await writeFile(legacyToken, "legacy-token");
+      await writeFile(legacyMarker, SANDBOX_GENERATION);
+      expect(Bun.spawnSync(["/bin/sh", "-c", `cat '${legacyToken}'`]).stdout.toString())
+        .toBe("legacy-token");
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-first"), "codex");
+
+      expect(mode((await stat(canonicalDir)).mode)).toBe(0o700);
+      expect(mode((await stat(legacyDir)).mode)).toBe(0o711);
+      expect((await lstat(canonicalToken)).isFile()).toBe(true);
+      expect((await lstat(canonicalToken)).isSymbolicLink()).toBe(false);
+      expect(mode((await stat(canonicalToken)).mode)).toBe(0o600);
+      expect(mode((await stat(canonicalMarker)).mode)).toBe(0o600);
+      expect(await readlink(legacyToken)).toBe("../.useagent/provider-openai.token");
+      expect(await readlink(legacyMarker)).toBe("../.useagent/provider-gateway-generation");
+      expect(await readFile(canonicalMarker, "utf8")).toBe(SANDBOX_GENERATION);
+      expect(Bun.spawnSync(["/bin/sh", "-c", `cat '${legacyToken}'`]).stdout.toString())
+        .toBe(await readFile(canonicalToken, "utf8"));
+
+      await chmod(canonicalDir, 0o751);
+      await chmod(legacyDir, 0o711);
+      const canonicalOwner = await stat(canonicalDir);
+      const legacyOwner = await stat(legacyDir);
+      await writeFile(join(canonicalDir, "pi-state"), "pi-unchanged");
+      await writeFile(join(legacyDir, "broker-state"), "broker-unchanged");
+      await writeFile(join(root, "output-sentinel"), "output-unchanged");
+      const rollback = Bun.spawnSync([
+        "/bin/sh",
+        "-c",
+        `printf %s rollback-refresh > '${legacyToken}' && chmod 600 '${legacyToken}'`,
+      ]);
+      expect(rollback.exitCode).toBe(0);
+      expect(await readFile(canonicalToken, "utf8")).toBe("rollback-refresh");
+
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-second"), "codex");
+
+      expect(await readFile(canonicalToken, "utf8")).not.toBe("rollback-refresh");
+      expect(Bun.spawnSync(["/bin/sh", "-c", `cat '${legacyToken}'`]).stdout.toString())
+        .toBe(await readFile(canonicalToken, "utf8"));
+      expect(mode((await stat(canonicalDir)).mode)).toBe(0o751);
+      expect(mode((await stat(legacyDir)).mode)).toBe(0o711);
+      expect((await stat(canonicalDir)).uid).toBe(canonicalOwner.uid);
+      expect((await stat(canonicalDir)).gid).toBe(canonicalOwner.gid);
+      expect((await stat(legacyDir)).uid).toBe(legacyOwner.uid);
+      expect((await stat(legacyDir)).gid).toBe(legacyOwner.gid);
+      expect(await readFile(join(canonicalDir, "pi-state"), "utf8")).toBe("pi-unchanged");
+      expect(await readFile(join(legacyDir, "broker-state"), "utf8")).toBe("broker-unchanged");
+      expect(await readFile(join(root, "output-sentinel"), "utf8")).toBe("output-unchanged");
+      expect(await readFile(canonicalMarker, "utf8")).toBe(SANDBOX_GENERATION);
+      expect((await readdir(canonicalDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      expect((await readdir(legacyDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+
+      const freshRoot = await mkdtemp(join(root, "fresh-parents-"));
+      await prepareProviderGatewaySandbox(
+        localShellSandbox(freshRoot),
+        privateWriterContext("writer-fresh-parents"),
+        "codex",
+      );
+      expect(mode((await stat(join(freshRoot, ".useagent"))).mode)).toBe(0o700);
+      expect(mode((await stat(join(freshRoot, ".skynet"))).mode)).toBe(0o700);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("replaces leaf symlinks without following them and rejects directories", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.TOOL_GATEWAY_SECRET = "tool-test-0123456789abcdef0123456789abcdef";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-private-leaves-"));
+    const canonicalDir = join(root, ".useagent");
+    const legacyDir = join(root, ".skynet");
+    const canonicalToken = join(canonicalDir, "provider-openai.token");
+    const legacyToken = join(legacyDir, "provider-openai.token");
+    const canonicalVictim = join(root, "canonical-victim");
+    const legacyVictim = join(root, "legacy-victim");
+    const sandbox = localShellSandbox(root);
+    try {
+      await mkdir(canonicalDir);
+      await mkdir(legacyDir);
+      await writeFile(canonicalVictim, "canonical-unchanged");
+      await writeFile(legacyVictim, "legacy-unchanged");
+      await symlink(canonicalVictim, canonicalToken);
+      await symlink(legacyVictim, legacyToken);
+
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-symlinks"), "codex");
+      expect(await readFile(canonicalVictim, "utf8")).toBe("canonical-unchanged");
+      expect(await readFile(legacyVictim, "utf8")).toBe("legacy-unchanged");
+      expect((await lstat(canonicalToken)).isSymbolicLink()).toBe(false);
+      expect(await readlink(legacyToken)).toBe("../.useagent/provider-openai.token");
+
+      await rm(canonicalToken);
+      await mkdir(canonicalToken);
+      await expect(prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-canonical-dir"), "codex"))
+        .rejects.toThrow("failed to configure provider gateway");
+      await rm(canonicalToken, { recursive: true });
+      await writeFile(canonicalToken, "repairable");
+      await rm(legacyToken);
+      await mkdir(legacyToken);
+      await expect(prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-legacy-dir"), "codex"))
+        .rejects.toThrow("failed to configure provider gateway");
+      await rm(legacyToken, { recursive: true });
+      await writeFile(legacyToken, "independent-legacy-copy");
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-two-copies"), "codex");
+      expect(await readFile(canonicalToken, "utf8")).not.toBe("repairable");
+      expect(await readlink(legacyToken)).toBe("../.useagent/provider-openai.token");
+      expect(Bun.spawnSync(["/bin/sh", "-c", `cat '${legacyToken}'`]).stdout.toString())
+        .toBe(await readFile(canonicalToken, "utf8"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects parent aliases and safely repairs a partial namespace", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.TOOL_GATEWAY_SECRET = "tool-test-0123456789abcdef0123456789abcdef";
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-private-repair-"));
+    const sandbox = localShellSandbox(root);
+    const canonicalDir = join(root, ".useagent");
+    const legacyDir = join(root, ".skynet");
+    const canonicalToken = join(canonicalDir, "provider-openai.token");
+    const legacyToken = join(legacyDir, "provider-openai.token");
+    const canonicalMarker = join(canonicalDir, "provider-gateway-generation");
+    const codexConfig = join(root, ".codex", "config.toml");
+    try {
+      await mkdir(canonicalDir);
+      await mkdir(legacyDir);
+      await writeFile(canonicalToken, "partial-token");
+      await symlink("../.useagent/provider-openai.token", legacyToken);
+      await mkdir(join(root, ".codex"));
+      await mkdir(codexConfig);
+
+      await expect(prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-partial"), "codex"))
+        .rejects.toThrow("failed to configure provider gateway");
+      expect(await readFile(canonicalToken, "utf8")).not.toBe("partial-token");
+      expect(await lstat(canonicalMarker).then(() => true).catch(() => false)).toBe(false);
+      expect((await readdir(canonicalDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      expect((await readdir(legacyDir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      await rm(codexConfig, { recursive: true });
+      await prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-repair"), "codex");
+      expect(await readFile(canonicalMarker, "utf8")).toBe(SANDBOX_GENERATION);
+      await rm(canonicalMarker);
+      await mkdir(canonicalMarker);
+      await expect(prepareProviderGatewaySandbox(sandbox, privateWriterContext("writer-marker-dir"), "codex"))
+        .rejects.toThrow("failed to configure provider gateway");
+
+      for (const parent of [canonicalDir, legacyDir]) {
+        const aliasRoot = await mkdtemp(join(root, "parent-alias-"));
+        const victim = join(aliasRoot, "victim");
+        await mkdir(victim);
+        await writeFile(join(victim, "sentinel"), "unchanged");
+        await symlink(victim, join(aliasRoot, parent === canonicalDir ? ".useagent" : ".skynet"));
+        await expect(prepareProviderGatewaySandbox(
+          localShellSandbox(aliasRoot),
+          privateWriterContext(`writer-parent-${parent}`),
+          "codex",
+        )).rejects.toThrow("failed to configure provider gateway");
+        expect(await readFile(join(victim, "sentinel"), "utf8")).toBe("unchanged");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("private provider readers prefer present canonical files and fail closed", async () => {
+    process.env.GATEWAY_PUBLIC_URL = "https://gateway.example.test";
+    process.env.PROVIDER_GATEWAY_SECRET = "provider-test-0123456789abcdef0123456789abcdef";
+    process.env.SANDBOX_SECRET_MODE = "gateway_only";
+    const root = await mkdtemp(join(tmpdir(), "useagent-provider-private-reader-"));
+    try {
+      const legacyDir = join(root, ".skynet");
+      const canonicalDir = join(root, ".useagent");
+      await mkdir(legacyDir);
+      await mkdir(canonicalDir);
+      const legacyToken = join(legacyDir, "provider-openai.token");
+      const canonicalToken = join(canonicalDir, "provider-openai.token");
+      await writeFile(legacyToken, "legacy-token");
+      const config = codexProviderConfigToml("gpt-5.6-sol");
+      const encodedCommand = config?.match(/^args = \["-c", (.+)\]$/m)?.[1];
+      if (!encodedCommand) throw new Error("missing Codex auth command");
+      const authCommand = (JSON.parse(encodedCommand) as string).replaceAll("$HOME", root);
+      const run = () => Bun.spawnSync(["sh", "-c", authCommand], { stdout: "pipe", stderr: "pipe" });
+      expect(run().stdout.toString()).toBe("legacy-token");
+      await writeFile(canonicalToken, "canonical-token");
+      expect(run().stdout.toString()).toBe("canonical-token");
+      await chmod(canonicalToken, 0o000);
+      if (process.getuid?.() !== 0) {
+        const unreadable = run();
+        expect(unreadable.exitCode).not.toBe(0);
+        expect(unreadable.stdout.toString()).toBe("");
+      }
+      await chmod(canonicalToken, 0o600);
+      await writeFile(canonicalToken, "");
+      const empty = run();
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stdout.toString()).toBe("");
+      await rm(canonicalToken, { recursive: true });
+      await mkdir(canonicalToken);
+      const directory = run();
+      expect(directory.exitCode).not.toBe(0);
+      expect(directory.stdout.toString()).toBe("");
+      await rm(canonicalToken, { recursive: true });
+      await symlink(join(canonicalDir, "missing-token"), canonicalToken);
+      const dangling = run();
+      expect(dangling.exitCode).not.toBe(0);
+      expect(dangling.stdout.toString()).toBe("");
+
+      const canonicalMarker = join(canonicalDir, "provider-gateway-generation");
+      const legacyMarker = join(legacyDir, "provider-gateway-generation");
+      await rm(canonicalToken);
+      await writeFile(legacyMarker, SANDBOX_GENERATION);
+      const sandbox = {
+        labels: { [CANONICAL_SANDBOX_GENERATION_LABEL]: SANDBOX_GENERATION },
+        process: {
+          executeCommand: async (command: string) => {
+            const result = Bun.spawnSync(["sh", "-c", command.replaceAll("$HOME", root)]);
+            return { exitCode: result.exitCode };
+          },
+        },
+      } as unknown as SandboxHandle;
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(true);
+      await writeFile(canonicalMarker, SANDBOX_GENERATION);
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(true);
+      await writeFile(canonicalMarker, "");
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(false);
+      await writeFile(canonicalMarker, "invalid-generation");
+      expect(await providerGatewaySandboxIsCurrent(sandbox)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("reads legacy and canonical label aliases only when they agree", () => {
     expect(readCompatibleSandboxLabel({}, "useagent-key", "skynet-key")).toEqual({
       value: null,

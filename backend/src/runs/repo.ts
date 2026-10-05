@@ -29,7 +29,7 @@ import {
   type StepKind,
 } from "../db/schema";
 import { sidebarNativeChildren } from "./native-children-projection";
-import { executionGraphReadEnabled } from "./execution-graph-rollout";
+import { executionGraphEnabled } from "./execution-graph-switch";
 import { parseRepoRef } from "../github/repo-ref";
 import type { RunResource } from "../resources/types";
 import { ensureProject } from "../projects/repo";
@@ -50,13 +50,7 @@ export {
 // truth; packages never import apps). Re-exported so the many backend modules that
 // read them from `../runs/repo` keep one import path; the serializers below
 // `satisfies` them, so any field or optionality drift is a compile error here.
-export type {
-  ApiRun,
-  ApiRunLifecycle,
-  ApiRunSummary,
-  ApiStep,
-  ApiThreadOutlineTurn,
-} from "@useagent/agent-client/wire";
+export type { ApiRun, ApiRunLifecycle, ApiRunSummary, ApiStep, ApiThreadOutlineTurn };
 
 // ---------------------------------------------------------------------------
 // API serialization — preserve the exact snake_case shapes the frontend reads
@@ -224,6 +218,7 @@ export async function createRun(
     commandProvider?: string | null;
     commandSessionId?: string | null;
     commandCatalogRevision?: number | null;
+    expectedSandbox?: RunRecord["expectedSandbox"];
     /** Internal-run marker (src/runs/origin.ts); null for a real product run. */
     origin?: string | null;
   },
@@ -264,6 +259,7 @@ export async function createRun(
     commandProvider: input.commandProvider ?? null,
     commandSessionId: input.commandSessionId ?? null,
     commandCatalogRevision: input.commandCatalogRevision ?? null,
+    expectedSandbox: input.expectedSandbox ?? null,
     origin: input.origin ?? null,
   });
 }
@@ -583,7 +579,7 @@ export async function listRunSummaries(
   if (
     opts.all ||
     !opts.includeNativeChildren ||
-    !executionGraphReadEnabled() ||
+    !executionGraphEnabled() ||
     summaries.length === 0
   ) return summaries;
   const childrenByThread = await sidebarNativeChildren(

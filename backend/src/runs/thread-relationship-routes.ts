@@ -8,7 +8,7 @@ import {
   type ThreadRelationshipView,
 } from "./thread-relationship-repo";
 import { acceptThreadFollowup } from "./thread-followups";
-import { productChildThreadsEnabled, threadRelationshipReadEnabled } from "./thread-relationship-rollout";
+import { productChildThreadsEnabled, threadRelationshipsEnabled } from "./thread-relationship-switch";
 import { pumpThread } from "../worker";
 import { runQueueView } from "../fleet/view";
 import { RunPromptTooLargeError } from "../commands/prompt-policy";
@@ -18,7 +18,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/client";
 import { agentExecutions, finishedWorkReceipts, runs } from "../db/schema";
 import { createChildSession } from "./child-sessions";
-import { isReservedBotHandoffKey } from "../bots/handoff-keys";
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import {
   CHILD_CONTEXT_MAX_BYTES,
   CHILD_CONTEXT_MAX_CHARS,
@@ -92,7 +92,7 @@ function limit(raw: string | undefined, fallback: number, max: number): number |
 }
 
 routes.get("/relationships", async (c) => {
-  if (!threadRelationshipReadEnabled(c.get("orgId"))) return c.json({ error: "not_found" }, 404);
+  if (!threadRelationshipsEnabled()) return c.json({ error: "not_found" }, 404);
   const pageLimit = limit(c.req.query("limit"), 100, 200);
   const after = parseCursor(c.get("orgId"), c.req.query("cursor"));
   if (pageLimit === null || after === "invalid") return c.json({ error: "invalid_pagination" }, 400);
@@ -105,13 +105,13 @@ routes.get("/relationships", async (c) => {
 });
 
 routes.get("/:threadId/relationship", async (c) => {
-  if (!threadRelationshipReadEnabled(c.get("orgId"))) return c.json({ error: "not_found" }, 404);
+  if (!threadRelationshipsEnabled()) return c.json({ error: "not_found" }, 404);
   const relationship = await getPublicThreadRelationshipView(c.get("orgId"), c.req.param("threadId"));
   return relationship ? c.json({ relationship: wire(relationship) }) : c.json({ error: "not_found" }, 404);
 });
 
 routes.get("/:familyThreadId/children", async (c) => {
-  if (!threadRelationshipReadEnabled(c.get("orgId"))) return c.json({ error: "not_found" }, 404);
+  if (!threadRelationshipsEnabled()) return c.json({ error: "not_found" }, 404);
   const family = await getPublicThreadRelationshipView(c.get("orgId"), c.req.param("familyThreadId"));
   if (!family || family.familyThreadId !== family.threadId) return c.json({ error: "not_found" }, 404);
   const pageLimit = limit(c.req.query("limit"), 100, 100);
@@ -131,7 +131,7 @@ routes.get("/:familyThreadId/children", async (c) => {
 });
 
 routes.post("/:parentThreadId/continue-native-child", async (c) => {
-  if (!productChildThreadsEnabled(c.get("orgId"))) return c.json({ error: "not_found" }, 404);
+  if (!productChildThreadsEnabled()) return c.json({ error: "not_found" }, 404);
   const raw = await c.req.text();
   if (Buffer.byteLength(raw, "utf8") > 128 * 1024) return c.json({ error: "request_too_large" }, 413);
   let body: unknown;
@@ -147,6 +147,7 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(executionId) ||
     !title || title.length > 160 || !idempotencyKey || idempotencyKey.length > 240
   ) return c.json({ error: "invalid_body" }, 400);
+  if (isReservedIdempotencyKey(idempotencyKey)) return c.json({ error: "reserved_idempotency_key" }, 400);
   const [source] = await db.select({ execution: agentExecutions, run: runs }).from(agentExecutions)
     .innerJoin(runs, eq(runs.id, agentExecutions.runId))
     .where(and(
@@ -249,10 +250,10 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
 });
 
 routes.post("/:threadId/messages", async (c) => {
-  if (!productChildThreadsEnabled(c.get("orgId"))) return c.json({ error: "not_found" }, 404);
+  if (!productChildThreadsEnabled()) return c.json({ error: "not_found" }, 404);
   const idempotencyKey = c.req.header("idempotency-key")?.trim();
   if (!idempotencyKey || idempotencyKey.length > 240) return c.json({ error: "invalid_idempotency_key" }, 400);
-  if (isReservedBotHandoffKey(idempotencyKey)) return c.json({ error: "reserved_idempotency_key" }, 400);
+  if (isReservedIdempotencyKey(idempotencyKey)) return c.json({ error: "reserved_idempotency_key" }, 400);
   const raw = await c.req.text();
   if (Buffer.byteLength(raw, "utf8") > 128 * 1024) return c.json({ error: "request_too_large" }, 413);
   let body: unknown;

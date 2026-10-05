@@ -73,7 +73,7 @@ Requires an **isolated stack** (never touch shared dev servers):
 # backend on :3513 against the real `useAgent` DB, memory disabled to avoid
 # polluting shared team memory (ALLOW_DEV_ORG=1 so the anonymous sweep lands in
 # the dev org; the sandbox-free scenarios 9 and 12 to 17 need nothing else):
-cd backend && PORT=3513 MEMORY_API_URL="" ALLOW_DEV_ORG=1 FRONTEND_ORIGIN="http://localhost:3200" bun src/index.ts
+cd backend && PORT=3513 MEMORY_API_URL="" ALLOW_DEV_ORG=1 FRONTEND_ORIGIN="http://localhost:3413" bun src/index.ts
 
 # frontend on :3413 proxying /api to :3513. USEAGENT_PREVIEW_OPEN=1 keeps the
 # anonymous sweep off the /login redirect. A second `next dev` from a tree that

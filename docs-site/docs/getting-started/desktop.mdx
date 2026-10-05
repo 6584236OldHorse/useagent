@@ -1,0 +1,98 @@
+---
+title: Desktop app
+description: Private v0.0.5 macOS preview for connecting a Mac, sharing qualified local CLI logins, and choosing a self-hosted control plane.
+sidebar:
+  order: 3
+---
+
+The useAgent desktop app pairs a small macOS shell with a local runner. Work
+executes in Linux containers on your Mac while the thread record and product
+services stay on the useAgent control plane.
+
+:::warning
+Desktop version `v0.0.5` is a private, access-required preview. No download,
+signed build, notarized build, or production desktop release is currently
+published.
+:::
+
+## Access
+
+Approved users can check the private
+[`useagenthq/useagent-pro` GitHub Releases page](https://github.com/useagenthq/useagent-pro/releases/latest).
+Repository access is required. Until a desktop asset is published, use the web
+app and treat the flow below as intended preview behavior, not certified
+installation instructions.
+
+## Sign in and connect this Mac
+
+The intended sign-in flow uses Better Auth with Google in your system browser
+and returns to the app through a one-use PKCE handoff. Self-service signup is
+closed, so an existing account is required. Invitations only add existing
+accounts to teams. The handoff does not put API keys, personal access tokens, or
+raw OAuth tokens in the redirect URL. This browser-first flow has not completed
+release certification.
+
+<Steps>
+  <Step title="Sign in through the browser">
+    Complete useAgent Google sign-in in your system browser, then return to the
+    desktop app through the one-use handoff.
+  </Step>
+  <Step title="Connect this Mac">
+    Select **Connect this Mac**. The plane enrols the runner. The app protects
+    the credential with macOS Keychain-backed encryption and stores only
+    ciphertext in its local `userData/runner-token` file before starting the
+    sidecar.
+  </Step>
+  <Step title="Wait for the runner">
+    Keep the app open while the runner checks its container backend and pulls
+    the required image. Start local work only after the app reports the runner
+    as online.
+  </Step>
+</Steps>
+
+The runner makes one outbound connection to the plane. The plane does not open
+an inbound connection or publish container ports on your Mac.
+
+## Use local Codex and Claude logins
+
+The `v0.0.5` product target is Codex and Claude using subscriptions you already
+own. Once those paths are qualified, sign in with the supported local CLIs
+first. The current frozen bridge does not expose in-app login-sharing controls;
+qualified sharing is configured through the runner CLI, not a toggle in the
+app. useAgent does not ask you to paste those credentials into the app.
+
+The runner command contract also reserves optional login sharing for OpenCode,
+but local execution still requires qualification for each exact engine,
+credential mode, and container backend. OpenCode and Pi are not advertised here
+as subscription-backed desktop support.
+
+## What stays on the plane
+
+The desktop app is a runner and a window, not another useAgent deployment. The
+following remain on useagent.org or on your self-hosted control plane:
+
+- the database and durable thread record
+- memory, skills, automations, and bots
+- connected-service secrets and the tool gateway
+- organization policy, runner enrolment, and revocation
+
+Only isolated thread execution and the local CLI logins you explicitly share
+move through the local runner path.
+
+## Connect to a self-hosted plane
+
+Quit useAgent first, then start a new app process with the plane URL:
+
+```bash
+open --env USEAGENT_PLANE_URL=https://agents.example.com /Applications/useAgent.app
+```
+
+The environment applies only to a new launch. The same desktop client and local
+runner core connect to that URL. Self-hosting does not require a fork of the
+desktop app, and it does not add a local database or backend to the Mac.
+
+:::note
+Your plane must support the desktop release and runner protocol before the app
+can connect. Treat that compatibility as unverified until the exact plane,
+desktop build, runner, engine, and container backend pass the release checks.
+:::

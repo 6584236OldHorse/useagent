@@ -21,6 +21,7 @@ import {
 import { db } from "../db/client";
 import { sql } from "drizzle-orm";
 import { artifactStorage } from "./storage";
+import { lockArtifactStorageKey, withArtifactStorageKeyLock } from "./storage-key-lock";
 import { getRunForOrg } from "../runs/repo";
 import { publishOrgChange } from "../runs/org-signals";
 import {
@@ -123,12 +124,13 @@ function checkedSourcePath(value: string, workspaceRoot: string): string {
 }
 
 async function resolvePublishablePath(
-  sandboxId: string,
+  run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>,
   value: string,
   workspaceRoot: string,
 ): Promise<string> {
   const requested = checkedSourcePath(value, workspaceRoot);
-  const resolved = await resolveSandboxFilePath(sandboxId, requested);
+  if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
+  const resolved = await resolveSandboxFilePath(run.sandboxId, requested, run);
   if (
     resolved !== requested ||
     (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}/`))
@@ -156,31 +158,28 @@ function assertNoInjectedSecretBytes(bytes: Uint8Array, redactionValues: readonl
 /** Best-effort Office->PDF preview attachment. For an Office binary, convert the
  * just-published file in the sandbox and store the PDF as a linked preview on the
  * SAME artifact; any failure is silent (download-only, as before) with one log
- * line. On a revision (`regenerate`), a fresh preview replaces the old one, and a
- * failed conversion clears the now-stale preview rather than leaving wrong bytes. */
+ * line. A source revision atomically invalidates its prior preview; conversion
+ * attaches only while that source SHA and workpiece revision are still current. */
 async function attachOfficePreview(
   input: {
     readonly orgId: string;
     readonly record: ArtifactRecord;
     readonly sandboxId: string;
-    readonly sourcePath: string;
+    readonly run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>;
+    readonly sourceBytes: Uint8Array;
   },
   opts: { readonly regenerate: boolean },
 ): Promise<ArtifactRecord> {
-  const clearStale = async (): Promise<ArtifactRecord> => {
-    if (!opts.regenerate || !input.record.previewStorageKey) return input.record;
-    return (await updateArtifactPreview({
-      orgId: input.orgId,
-      id: input.record.id,
-      previewStorageKey: null,
-    })) ?? input.record;
-  };
-  if (!isOfficePreviewContentType(input.record.contentType)) return clearStale();
+  const currentRecord = async (): Promise<ArtifactRecord> =>
+    (await getArtifactForOrg(input.orgId, input.record.id)) ?? input.record;
+  if (!isOfficePreviewContentType(input.record.contentType)) return input.record;
   if (!opts.regenerate && input.record.previewStorageKey) return input.record;
 
   const pdf = await convertOfficeToPdf({
     sandboxId: input.sandboxId,
-    sourcePath: input.sourcePath,
+    run: input.run,
+    sourceName: input.record.name,
+    sourceBytes: input.sourceBytes,
     timeoutSeconds: OFFICE_PREVIEW_TIMEOUT_SECONDS,
     maxBytes: OFFICE_PREVIEW_MAX_BYTES,
   });
@@ -188,15 +187,21 @@ async function attachOfficePreview(
     console.log(
       `[office-preview] no PDF preview for artifact ${input.record.id} (${input.record.name})`,
     );
-    return clearStale();
+    return currentRecord();
   }
   const previewKey = createHash("sha256").update(pdf).digest("hex");
-  await artifactStorage().put(previewKey, pdf);
-  return (await updateArtifactPreview({
-    orgId: input.orgId,
-    id: input.record.id,
-    previewStorageKey: previewKey,
-  })) ?? input.record;
+  const attached = await withArtifactStorageKeyLock(previewKey, async (tx) => {
+    await artifactStorage().put(previewKey, pdf);
+    return updateArtifactPreview({
+      orgId: input.orgId,
+      id: input.record.id,
+      expectedSha256: input.record.sha256,
+      expectedWorkpieceRevision: input.record.workpieceRevision,
+      previewStorageKey: previewKey,
+      exec: tx,
+    });
+  });
+  return attached ?? currentRecord();
 }
 
 const IMPORT_IMAGE_EXTENSION: Readonly<Record<string, string>> = {
@@ -222,25 +227,27 @@ async function storeImportedImage(
   },
 ): Promise<string> {
   const digest = createHash("sha256").update(image.bytes).digest("hex");
-  const existing = await findArtifactByOrgAndSha256(ctx.orgId, digest);
-  if (existing) return `/api/artifacts/${existing.id}/content`;
-  const extension = IMPORT_IMAGE_EXTENSION[image.contentType] ?? "img";
-  const created = await createArtifactRecord({
-    orgId: ctx.orgId,
-    userId: ctx.userId,
-    runId: ctx.run.id,
-    threadId: ctx.run.threadId,
-    sourcePath: `${ctx.sourcePath}::media/${ctx.index + 1}`,
-    name: `${ctx.deckStem}-image-${ctx.index + 1}.${extension}`,
-    contentType: image.contentType,
-    sizeBytes: image.bytes.byteLength,
-    sha256: digest,
-    storageKey: digest,
-    workpieceKind: null,
-    workpieceState: null,
+  return withArtifactStorageKeyLock(digest, async (tx) => {
+    const existing = await findArtifactByOrgAndSha256(ctx.orgId, digest, tx);
+    if (existing) return `/api/artifacts/${existing.id}/content`;
+    const extension = IMPORT_IMAGE_EXTENSION[image.contentType] ?? "img";
+    const created = await createArtifactRecord({
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      runId: ctx.run.id,
+      threadId: ctx.run.threadId,
+      sourcePath: `${ctx.sourcePath}::media/${ctx.index + 1}`,
+      name: `${ctx.deckStem}-image-${ctx.index + 1}.${extension}`,
+      contentType: image.contentType,
+      sizeBytes: image.bytes.byteLength,
+      sha256: digest,
+      storageKey: digest,
+      workpieceKind: null,
+      workpieceState: null,
+    }, tx);
+    await artifactStorage().put(digest, image.bytes);
+    return `/api/artifacts/${created.row.id}/content`;
   });
-  await artifactStorage().put(digest, image.bytes);
-  return `/api/artifacts/${created.row.id}/content`;
 }
 
 /** Store each picture a PPTX import lifted out of its slides as a linked, content-
@@ -322,9 +329,9 @@ export async function publishSandboxArtifact(input: {
     sandboxId: run.sandboxId,
     sandboxProvider: run.sandboxProvider,
   });
-  const sourcePath = await resolvePublishablePath(run.sandboxId, input.path, workspaceRoot);
+  const sourcePath = await resolvePublishablePath(run, input.path, workspaceRoot);
   const editablePath = input.editablePath
-    ? await resolvePublishablePath(run.sandboxId, input.editablePath, workspaceRoot)
+    ? await resolvePublishablePath(run, input.editablePath, workspaceRoot)
     : null;
   if (
     (requiresScreenshotProofPurpose(sourcePath)
@@ -337,7 +344,7 @@ export async function publishSandboxArtifact(input: {
   }
 
   const redactionValues = await loadInjectedSecretRedactionValues(input.orgId);
-  const file = await downloadSandboxFile(run.sandboxId, sourcePath, MAX_ARTIFACT_BYTES);
+  const file = await downloadSandboxFile(run.sandboxId, sourcePath, MAX_ARTIFACT_BYTES, run);
   assertNoInjectedSecretBytes(file.bytes, redactionValues);
   const digest = createHash("sha256").update(file.bytes).digest("hex");
   const name = safeName(sourcePath, input.name);
@@ -347,7 +354,7 @@ export async function publishSandboxArtifact(input: {
     throw new Error("editable_path can only accompany a supported document or spreadsheet");
   }
   const editable = editablePath
-    ? await downloadSandboxFile(run.sandboxId, editablePath, MAX_WORKPIECE_STATE_BYTES)
+    ? await downloadSandboxFile(run.sandboxId, editablePath, MAX_WORKPIECE_STATE_BYTES, run)
     : null;
   if (editable) assertNoInjectedSecretBytes(editable.bytes, redactionValues);
   let workpieceState = workpieceKind
@@ -420,11 +427,11 @@ export async function publishSandboxArtifact(input: {
         })`,
       );
     }
-    await artifactStorage().put(digest, file.bytes);
-    if ((await artifactStorage().size(digest)) !== file.bytes.length) {
-      throw new Error("artifact storage size verification failed");
-    }
-    const revised = await db.transaction(async (tx) => {
+    const revised = await withArtifactStorageKeyLock(digest, async (tx) => {
+      await artifactStorage().put(digest, file.bytes);
+      if ((await artifactStorage().size(digest)) !== file.bytes.length) {
+        throw new Error("artifact storage size verification failed");
+      }
       const updated = await reviseArtifactPublication({
         orgId: input.orgId,
         id: target.id,
@@ -444,29 +451,36 @@ export async function publishSandboxArtifact(input: {
     // The new bytes invalidate any prior preview: regenerate (or clear) it so the
     // embedded PDF preview reflects the revised content, never the old version.
     const revisedWithPreview = await attachOfficePreview(
-      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, sourcePath },
+      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
       { regenerate: true },
     );
     const descriptor = toArtifactDescriptor(revisedWithPreview);
+    // A stale conversion may return the latest row for the caller, but it must
+    // not publish another operation's revision event under this run's identity.
+    const eventRecord = revisedWithPreview.sha256 === revised.sha256 &&
+        revisedWithPreview.workpieceRevision === revised.workpieceRevision
+      ? revisedWithPreview
+      : revised;
     await recordProviderEventIfAbsent({
-      id: `artifact.revised:${revisedWithPreview.id}:${revisedWithPreview.workpieceRevision}`,
+      id: `artifact.revised:${revised.id}:${revised.workpieceRevision}`,
       runId: run.id,
       threadId: run.threadId,
       provider: "skynet",
       eventType: "artifact.revised",
-      payload: descriptor,
+      payload: toArtifactDescriptor(eventRecord),
     });
     publishOrgChange(input.orgId, {
       type: "artifact",
       action: "updated",
-      artifactId: revisedWithPreview.id,
-      runId: revisedWithPreview.runId,
-      threadId: revisedWithPreview.threadId,
+      artifactId: eventRecord.id,
+      runId: eventRecord.runId,
+      threadId: eventRecord.threadId,
     });
     return { artifact: descriptor, record: revisedWithPreview, created: false };
   }
 
   const stored = await db.transaction(async (tx) => {
+    await lockArtifactStorageKey(tx, digest);
     // Serialize one logical publication across processes. Without this lock, a
     // creator that fails storage verification can roll back metadata already
     // returned by a concurrent idempotent publisher.
@@ -491,9 +505,9 @@ export async function publishSandboxArtifact(input: {
       workpieceKind,
       workpieceState,
     }, tx);
-    // Metadata is transactional but must precede bytes so orphan reclamation's
-    // final database check sees the in-flight publication. A storage failure
-    // rolls the row back while retaining at most a reclaimable content blob.
+    // The digest lock spans byte publication and this reference's commit. A
+    // storage failure rolls the row back while retaining at most a reclaimable
+    // content blob.
     await artifactStorage().put(digest, file.bytes);
     const storedSize = await artifactStorage().size(digest);
     if (storedSize !== file.bytes.length) {
@@ -506,17 +520,21 @@ export async function publishSandboxArtifact(input: {
   // Best-effort Office->PDF preview for a fresh Office binary (skips a re-publish
   // that already carries one). Non-fatal: a missing preview stays download-only.
   const record = await attachOfficePreview(
-    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, sourcePath },
+    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
     { regenerate: false },
   );
   const descriptor = toArtifactDescriptor(record);
+  const eventRecord = record.sha256 === stored.row.sha256 &&
+      record.workpieceRevision === stored.row.workpieceRevision
+    ? record
+    : stored.row;
   await recordProviderEventIfAbsent({
-    id: `artifact.created:${record.id}`,
+    id: `artifact.created:${stored.row.id}`,
     runId: run.id,
     threadId: run.threadId,
     provider: "skynet",
     eventType: "artifact.created",
-    payload: descriptor,
+    payload: toArtifactDescriptor(eventRecord),
   });
   if (stored.created) {
     publishOrgChange(input.orgId, {
@@ -563,6 +581,7 @@ export async function publishTrustedArtifact(input: {
   );
 
   const stored = await db.transaction(async (tx) => {
+    await lockArtifactStorageKey(tx, digest);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${[
       "trusted-artifact-publish",
       trustedOutputSourceAliases(sourcePath)[0],

@@ -1,5 +1,5 @@
 import { botsEnabled } from "../../bots/rollout";
-import { productChildThreadsEnabled } from "../../runs/thread-relationship-rollout";
+import { productChildThreadsEnabled } from "../../runs/thread-relationship-switch";
 import { errorMessage } from "../../util/error-message";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 /** The process's own view, org canary included. */
 export function localProductFlags(orgId: string | null, env: Env = process.env): GatewayProductFlags {
-  return { childThreads: productChildThreadsEnabled(orgId, env), bots: botsEnabled(orgId, env) };
+  return { childThreads: productChildThreadsEnabled(env), bots: botsEnabled(orgId, env) };
 }
 
 /** The primary API origin in gateway (bridge) mode, null when this process is the primary. */
@@ -136,11 +136,9 @@ export async function productFlagsForToolList(
     now: deps.now ?? Date.now,
   });
   if (!primary) return local;
-  // The primary's block is deployment-wide; a per-org canary allowlist on this
-  // process still adds its orgs.
-  const canaryOnly = local.childThreads && !productChildThreadsEnabled(null, env);
+  // The primary's block is deployment-wide.
   const effective: GatewayProductFlags = {
-    childThreads: primary.childThreads || canaryOnly,
+    childThreads: primary.childThreads,
     bots: primary.bots,
   };
   const now = (deps.now ?? Date.now)();

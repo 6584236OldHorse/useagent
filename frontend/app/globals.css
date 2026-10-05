@@ -2309,7 +2309,7 @@ html {
   --color-pill-tab-blue-hover-background: hsl(var(--neutral-700));
 
   /* Borders and separators (error border keeps theme.css red) */
-  --color-border-button-default:   hsl(var(--neutral-400));
+  --color-border-button-default:   hsl(var(--neutral-600)); /* one step above the raised surface; neutral-400 reads as a light line in this lifted palette */
   --color-border-button-hover:     hsl(var(--neutral-200));
   --color-border-button-active:    hsl(var(--neutral-300));
   --color-border-button-white:     hsl(228.75 24.24% 25.88%); /* #323852 */
@@ -3906,17 +3906,18 @@ html {
  * useAgent brand utilities  (ported from useagenthq — Grok/x.ai-inspired
  * differentiation layer). Adapted to AlignUI semantic tokens.
  *
- *   text-mono-label  uppercase tracked monospace micro-label for section
- *                    labels, rail captions, technical annotations.
+ *   text-mono-label  quiet sentence-case micro-label for section labels,
+ *                    rail captions and technical annotations. It keeps its
+ *                    historical name; the uppercase monospace treatment went
+ *                    on 2026-09-11 because it read as an engineering tool.
  *   bg-halftone      faint halftone dot field (masked to fade downward) used
  *                    at the top of brand headers.
  * ========================================================================= */
 @utility text-mono-label {
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 0.75rem;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 0.8125rem;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 @utility bg-halftone {
@@ -4232,20 +4233,6 @@ html {
   opacity: 0.6;
   user-select: none;
 }
-@keyframes ai-code-line-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-.ai-code-surface .ai-code-line {
-  animation: ai-code-line-in 250ms cubic-bezier(0.23, 1, 0.32, 1) both;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .useagent-orbit-active {
     animation: none;

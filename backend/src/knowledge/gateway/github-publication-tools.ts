@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { artifactStorage } from "../../artifacts/storage";
+import { withArtifactStorageKeyLock } from "../../artifacts/storage-key-lock";
 import type {
   GitHubChangeManifest,
   GitHubChangeManifestFile,
@@ -120,10 +121,16 @@ export interface PublicationToolDependencies {
   readonly getRun: typeof getRunForOrg;
   readonly resolveToken: typeof resolveGithubPublicationToken;
   readonly fetch: PublicationFetch;
-  readonly putPayload: (key: string, bytes: Uint8Array) => Promise<void>;
-  readonly readSandboxBundle: (sandboxId: string, path: string, workspaceRoot: string) => Promise<Uint8Array>;
+  readonly storePayloadAndFreeze: (
+    key: string,
+    bytes: Uint8Array,
+    input: Parameters<typeof freezeGitHubChangeSet>[0],
+  ) => ReturnType<typeof freezeGitHubChangeSet>;
+  readonly readSandboxBundle: (
+    sandboxId: string, path: string, workspaceRoot: string,
+    run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>,
+  ) => Promise<Uint8Array>;
   readonly readPayload: (key: string) => Promise<Uint8Array>;
-  readonly freeze: typeof freezeGitHubChangeSet;
   readonly getChangeSet: typeof getGitHubChangeSetForOrg;
   readonly getReceipt: typeof getGitHubPublicationReceiptForChangeSet;
   readonly ensureReceipt: typeof ensureGitHubPublicationReceipt;
@@ -142,8 +149,12 @@ const productionDependencies: PublicationToolDependencies = {
   getRun: getRunForOrg,
   resolveToken: resolveGithubPublicationToken,
   fetch,
-  putPayload: (key, bytes) => artifactStorage().put(key, bytes),
-  readSandboxBundle: async (sandboxId, path, workspaceRoot) => {
+  storePayloadAndFreeze: (key, bytes, input) =>
+    withArtifactStorageKeyLock(key, async (tx) => {
+      await artifactStorage().put(key, bytes);
+      return freezeGitHubChangeSet(input, tx);
+    }),
+  readSandboxBundle: async (sandboxId, path, workspaceRoot, run) => {
     const requested = path.trim();
     if (
       !requested ||
@@ -154,14 +165,13 @@ const productionDependencies: PublicationToolDependencies = {
     ) {
       throw new Error(`bundlePath must be a canonical non-secret path under ${workspaceRoot}`);
     }
-    const resolved = await resolveSandboxFilePath(sandboxId, requested);
+    const resolved = await resolveSandboxFilePath(sandboxId, requested, run);
     if (resolved !== requested || !resolved.startsWith(`${workspaceRoot}/`) || isProtectedInjectedSecretPath(resolved)) {
       throw new Error(`bundlePath must not traverse or use a symlink outside ${workspaceRoot}`);
     }
-    return (await downloadSandboxFile(sandboxId, resolved, MAX_BUNDLE_BYTES)).bytes;
+    return (await downloadSandboxFile(sandboxId, resolved, MAX_BUNDLE_BYTES, run)).bytes;
   },
   readPayload: (key) => artifactStorage().read(key),
-  freeze: freezeGitHubChangeSet,
   getChangeSet: getGitHubChangeSetForOrg,
   getReceipt: getGitHubPublicationReceiptForChangeSet,
   ensureReceipt: ensureGitHubPublicationReceipt,
@@ -409,6 +419,7 @@ async function prepare(
     run.sandboxId,
     requiredString(args.bundlePath, "bundlePath"),
     await resolveAttachedSandboxWorkspaceRoot({ sandboxId: run.sandboxId, sandboxProvider: run.sandboxProvider }),
+    run,
   );
   let bundle: unknown;
   try {
@@ -427,8 +438,7 @@ async function prepare(
     ...(args.summary ? { summary: args.summary } : {}),
   });
   const payloadSha = sha256(frozen.storedBytes);
-  await deps.putPayload(payloadSha, frozen.storedBytes);
-  const result = await deps.freeze({
+  const freezeInput: Parameters<typeof freezeGitHubChangeSet>[0] = {
     orgId: claims.orgId,
     userId: claims.userId,
     runId: claims.runId,
@@ -440,7 +450,8 @@ async function prepare(
     payloadSha256: payloadSha,
     payloadSizeBytes: frozen.storedBytes.byteLength,
     expiresAt: new Date(Date.now() + CHANGE_SET_TTL_MS),
-  });
+  };
+  const result = await deps.storePayloadAndFreeze(payloadSha, frozen.storedBytes, freezeInput);
   return textResult(
     `Frozen GitHub change set ${result.row.id} at ${result.row.repoFullName}@${result.row.baseSha}.`,
     { ...statusProjection(result.row, null), already_prepared: !result.created },

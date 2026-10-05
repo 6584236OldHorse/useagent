@@ -118,13 +118,15 @@ function dependencies(overrides: Partial<PublicationToolDependencies> = {}): Pub
     }) as never,
     resolveToken: async () => "server-secret",
     fetch: async () => Response.json({ object: { sha: SHA } }),
-    putPayload: async () => {},
+    storePayloadAndFreeze: async (_key, _bytes, input) => ({
+      row: changeSet({ baseSha: input.baseSha, payloadStorageKey: input.payloadStorageKey }),
+      created: true,
+    }),
     readSandboxBundle: async () => Buffer.from(JSON.stringify({
       version: 1,
       changes: [{ path: "README.md", action: "modify", contentBase64: "aGk=", mode: "100644" }],
     })),
     readPayload: async () => new Uint8Array(),
-    freeze: async () => ({ row, created: true }),
     getChangeSet: async () => row,
     getReceipt: async () => rec,
     ensureReceipt: async () => ({ row: rec, created: true }),
@@ -188,9 +190,13 @@ describe("GitHub publication gateway workflow", () => {
     ["box", "/home/user/work"],
   ] as const)("prepare uses the attached %s workspace, never a tool-supplied root", async (kind, root) => {
     const base = dependencies();
-    const reads: Array<[string, string, string]> = [];
+    const reads: Array<Parameters<PublicationToolDependencies["readSandboxBundle"]>> = [];
+    const run = { ...(await base.getRun(claims.orgId, claims.runId))!, sandboxProvider: kind,
+      expectedSandbox: { version: 1 as const, sandboxId: "sandbox-a", provider: kind,
+        credential: "env" as const, ownerOrgId: claims.orgId, ownerUserId: null,
+        credentialGeneration: "a".repeat(64) } };
     const execute = createGithubPublicationToolExecutor(dependencies({
-      getRun: async (...args) => ({ ...(await base.getRun(...args))!, sandboxProvider: kind }),
+      getRun: async () => run,
       readSandboxBundle: async (...args) => {
         reads.push(args);
         return base.readSandboxBundle(...args);
@@ -201,15 +207,15 @@ describe("GitHub publication gateway workflow", () => {
       bundlePath: `${root}/bundle.json`, workspaceRoot: "/tmp/untrusted",
     });
     expect(result.isError).not.toBe(true);
-    expect(reads).toEqual([["sandbox-a", `${root}/bundle.json`, root]]);
+    expect(reads).toEqual([["sandbox-a", `${root}/bundle.json`, root, run]]);
   });
 
   test("prepare freezes server-resolved base SHA and content-addressed payload for the live binding", async () => {
-    const frozenInputs: Array<Parameters<PublicationToolDependencies["freeze"]>[0]> = [];
+    const frozenInputs: Array<Parameters<PublicationToolDependencies["storePayloadAndFreeze"]>[2]> = [];
     const stored: Array<{ key: string; bytes: Uint8Array }> = [];
     const execute = createGithubPublicationToolExecutor(dependencies({
-      putPayload: async (key, bytes) => { stored.push({ key, bytes }); },
-      freeze: async (input) => {
+      storePayloadAndFreeze: async (key, bytes, input) => {
+        stored.push({ key, bytes });
         frozenInputs.push(input);
         return { row: changeSet({ baseSha: input.baseSha, payloadStorageKey: input.payloadStorageKey }), created: true };
       },
@@ -224,6 +230,35 @@ describe("GitHub publication gateway workflow", () => {
     expect(frozenInputs[0]).toMatchObject({ repoFullName: "acme/widget", baseRef: "main", baseSha: SHA });
     expect(stored[0]?.key).toBe(frozenInputs[0]?.payloadSha256);
     expect(stored[0]?.bytes.byteLength).toBeGreaterThan(0);
+  });
+
+  test("prepare uses the atomic production payload-and-freeze dependency when provided", async () => {
+    const combined: Array<{
+      key: string;
+      bytes: Uint8Array;
+      input: Parameters<PublicationToolDependencies["storePayloadAndFreeze"]>[2];
+    }> = [];
+    const execute = createGithubPublicationToolExecutor(dependencies({
+      storePayloadAndFreeze: async (key, bytes, input) => {
+        combined.push({ key, bytes, input });
+        return {
+          row: changeSet({ baseSha: input.baseSha, payloadStorageKey: input.payloadStorageKey }),
+          created: true,
+        };
+      },
+    }));
+
+    const result = await execute(claims, "github_changeset_prepare", {
+      repository: "acme/widget",
+      targetBranch: "main",
+      bundlePath: "/root/work/github-change-bundle.json",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(combined).toHaveLength(1);
+    expect(combined[0]?.key).toBe(combined[0]?.input.payloadStorageKey);
+    expect(combined[0]?.key).toBe(combined[0]?.input.payloadSha256);
+    expect(combined[0]?.bytes.byteLength).toBeGreaterThan(0);
   });
 
   test("publish is approval-gated by exact arguments and returns an existing idempotent receipt without republishing", async () => {

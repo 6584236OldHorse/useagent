@@ -21,7 +21,7 @@ export interface ThinkingProps {
   /** While true, the leading status slot shows the pixel loader and the label
    *  runs the shimmer sweep; the chevron is absent. Default true. */
   active?: boolean;
-  /** Tint the settled label as a failure (a trace with failed steps). */
+  /** Tint the settled label as a failure (the run itself failed, not a step it recovered from). */
   failed?: boolean;
   className?: string;
 }
@@ -114,7 +114,7 @@ export function Thinking({
       </button>
 
       {hasSteps && expanded && (
-        <div className="animate-ai-fade-up mt-1.5 ml-[11px] border-l border-border-button-default/60 pl-3">
+        <div className="animate-ai-fade-up mt-1.5 ml-[18px] border-l border-border-button-default/60 pl-3">
           <div className="flex flex-col gap-px py-0.5">{children}</div>
         </div>
       )}

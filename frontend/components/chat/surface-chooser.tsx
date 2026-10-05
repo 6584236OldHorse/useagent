@@ -11,6 +11,17 @@ import { cx as cn } from "@/utils/cx";
 
 export type SurfaceChoice = "desktop" | "terminal" | "artifacts" | "agents" | "diff";
 
+// The rail is a resizable sub-viewport panel (viewport breakpoints can't
+// describe it), so a container query on the switcher header collapses each
+// surface pill to icon-only (label -> sr-only keeps the accessible name) once
+// the strip is too narrow for up to 7 labels; scroll is the final fallback.
+export const RAIL_TAB_LABEL_COLLAPSE = "@max-[40rem]:sr-only";
+
+/** Rail chrome toggles (expand, collapse, open): quiet neutral icon buttons.
+ *  The ghost variant is accent-tinted, which reads as a selected state next to the tabs. */
+export const RAIL_ICON_BUTTON =
+  "bg-transparent text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary active:bg-background-tertiary-hover aria-pressed:bg-background-secondary-hover aria-pressed:text-text-primary";
+
 interface SurfaceOption {
   readonly id: SurfaceChoice;
   readonly label: string;

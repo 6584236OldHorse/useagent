@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import {
   DOCX_CONTENT_TYPE,
@@ -5,7 +6,9 @@ import {
   PPTX_CONTENT_TYPE,
   XLSX_CONTENT_TYPE,
 } from "@useagent/artifact-workspace";
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import { resolveRunSandbox, resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+
+type RunSandboxAuthority = Parameters<typeof resolveRunSandbox>[0];
 
 /** The Office binary content types LibreOffice can render to a PDF preview. */
 const OFFICE_PREVIEW_CONTENT_TYPES = new Set([
@@ -26,7 +29,9 @@ export function isOfficePreviewContentType(contentType: string): boolean {
 
 export interface OfficePreviewInput {
   readonly sandboxId: string;
-  readonly sourcePath: string;
+  readonly run?: RunSandboxAuthority;
+  readonly sourceName: string;
+  readonly sourceBytes: Uint8Array;
   readonly timeoutSeconds: number;
   readonly maxBytes: number;
 }
@@ -43,29 +48,55 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-const PREVIEW_OUTDIR = "/tmp/skynet-office-preview";
-
 async function providerConvert(input: OfficePreviewInput): Promise<Uint8Array | null> {
-  const provider = (await resolveSandboxBindingForSandbox(input.sandboxId)).provider;
-  const sandbox = await provider.get(input.sandboxId);
-  const stem = basename(input.sourcePath).replace(/\.[^.]+$/, "") || "preview";
-  const outPath = `${PREVIEW_OUTDIR}/${stem}.pdf`;
-  const command =
-    `rm -rf ${shellQuote(PREVIEW_OUTDIR)} && mkdir -p ${shellQuote(PREVIEW_OUTDIR)} && ` +
-    `soffice --headless --nolockcheck --convert-to pdf --outdir ${shellQuote(PREVIEW_OUTDIR)} ` +
-    `${shellQuote(input.sourcePath)}`;
-  const result = await sandbox.process.executeCommand(
-    command,
-    undefined,
-    undefined,
-    input.timeoutSeconds,
-  );
-  if ((result.exitCode ?? 1) !== 0) return null;
-  const info = await sandbox.fs.getFileDetails(outPath);
-  if (Number((info as { size?: number }).size ?? 0) > input.maxBytes) return null;
-  const bytes = await sandbox.fs.downloadFile(outPath);
-  if (bytes.length === 0 || bytes.length > input.maxBytes) return null;
-  return new Uint8Array(bytes);
+  const sandbox = input.run
+    ? await resolveRunSandbox(input.run)
+    : await (await resolveSandboxBindingForSandbox(input.sandboxId)).provider.get(input.sandboxId);
+  const extension = /\.(docx|xlsx|pptx)$/i.exec(basename(input.sourceName))?.[0].toLowerCase() ?? ".office";
+  const root = `/tmp/useagent-office-preview-${randomUUID()}`;
+  const sourcePath = `${root}/input${extension}`;
+  const outPath = `${root}/input.pdf`;
+  const profileUrl = `file://${root}/profile`;
+  let acquired = false;
+  try {
+    const directory = await sandbox.process.executeCommand(
+      `mkdir -m 700 -- ${shellQuote(root)}`,
+      undefined,
+      undefined,
+      input.timeoutSeconds,
+    );
+    if ((directory.exitCode ?? 1) !== 0) return null;
+    acquired = true;
+    await sandbox.fs.uploadFile(
+      Buffer.from(input.sourceBytes),
+      sourcePath,
+      input.timeoutSeconds,
+    );
+    const command =
+      `soffice --headless --nolockcheck ${shellQuote(`-env:UserInstallation=${profileUrl}`)} ` +
+      `--convert-to pdf --outdir ${shellQuote(root)} ${shellQuote(sourcePath)}`;
+    const result = await sandbox.process.executeCommand(
+      command,
+      undefined,
+      undefined,
+      input.timeoutSeconds,
+    );
+    if ((result.exitCode ?? 1) !== 0) return null;
+    const info = await sandbox.fs.getFileDetails(outPath);
+    if (Number((info as { size?: number }).size ?? 0) > input.maxBytes) return null;
+    const bytes = await sandbox.fs.downloadFile(outPath);
+    if (bytes.length === 0 || bytes.length > input.maxBytes) return null;
+    return new Uint8Array(bytes);
+  } finally {
+    if (acquired) {
+      await sandbox.process.executeCommand(
+        `rm -rf -- ${shellQuote(root)}`,
+        undefined,
+        undefined,
+        input.timeoutSeconds,
+      ).catch(() => undefined);
+    }
+  }
 }
 
 let override: OfficePreviewConverter | null = null;

@@ -49,6 +49,8 @@ describe("T3 environment client", () => {
     expect(command).toContain("/api/auth/browser-session");
     expect(command).toContain("chmod 600");
     expect(command).toContain('rm -f "$PAIRING"');
+    // The pairing replaces the jar in one rename; a concurrent pairing never sees it missing.
+    expect(command).not.toContain('rm -f "$COOKIE"');
     expect(command).not.toContain("echo $PAIRING");
     expect(command).not.toContain("0.0.0.0");
     expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
@@ -287,7 +289,7 @@ describe("T3 environment client", () => {
     expect(commands[1]).toBe(buildNativeRuntimeArtifactProbe(BOX_LAYOUT));
   });
 
-  test("prewarms private access without making an orchestration request", async () => {
+  test("prewarms private access and makes one shell request so a claimed sandbox skips it", async () => {
     const commands: string[] = [];
     const sandbox = {
       id: "cube-t3-private-access",
@@ -306,6 +308,9 @@ describe("T3 environment client", () => {
           if (command === buildRuntimeEnvironmentAuthenticationCommand()) {
             return { exitCode: 0, result: "" };
           }
+          if (command.includes("/api/orchestration/shell")) {
+            return { exitCode: 0, result: '{"projects":[],"threads":[]}' };
+          }
           throw new Error("unexpected orchestration request");
         },
       },
@@ -314,12 +319,16 @@ describe("T3 environment client", () => {
     await expect(
       prewarmRuntimeEnvironmentAccess(sandbox, new AbortController().signal),
     ).resolves.toBeUndefined();
+    // Access first, then exactly one shell request to build the runtime's state ahead of a run.
     expect(commands).toEqual([
       buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentAuthenticationCommand(),
+      expect.stringContaining("/api/orchestration/shell"),
     ]);
+    // The warm-up gets the boot script's budget, not a running runtime's.
+    expect(commands[4]).toContain("-m 60");
   });
 
   test("revalidates cached access and retries once when a request fails", async () => {

@@ -19,8 +19,10 @@ import {
 } from "./native-runtime-artifact";
 
 const RUNTIME_AUTH_DIRECTORY = `${RUNTIME_ENVIRONMENT_HOME}/skynet-auth`;
-const RUNTIME_COOKIE_JAR = `${RUNTIME_AUTH_DIRECTORY}/session.cookies`;
+export const RUNTIME_COOKIE_JAR = `${RUNTIME_AUTH_DIRECTORY}/session.cookies`;
 const RUNTIME_REQUEST_TIMEOUT_SECONDS = 15;
+/** The first shell request builds the runtime's state; the boot script gives it the same budget. */
+const RUNTIME_WARMUP_TIMEOUT_SECONDS = 60;
 const RUNTIME_HTTP_STATUS_MARKER = "__USEAGENT_T3_HTTP_STATUS__";
 
 export class RuntimeEnvironmentRequestError extends Error {
@@ -62,6 +64,8 @@ export interface RuntimeEnvironmentRequest {
   readonly method: "GET" | "POST";
   readonly path: RuntimeEnvironmentHttpPath;
   readonly payload?: Readonly<Record<string, unknown>>;
+  /** curl's own budget for this request; the default suits a running runtime. */
+  readonly timeoutSeconds?: number;
 }
 
 const authenticationOperations = new Map<string | object, Promise<void>>();
@@ -141,7 +145,6 @@ export function buildRuntimeEnvironmentAuthenticationCommand(
     `COOKIE="${RUNTIME_COOKIE_JAR}"`,
     'install -d -m 700 "$AUTH_DIR"',
     `if [ -s "$COOKIE" ] && curl -fsS -m 5 -b "$COOKIE" ${runtimeLoopbackUrl("/api/auth/session")} | ${sessionAssertionPipeline()}; then exit 0; fi`,
-    'rm -f "$COOKIE"',
     'PAIRING="$(mktemp "$AUTH_DIR/pairing.XXXXXX")"',
     'COOKIE_TMP="$(mktemp "$AUTH_DIR/session.XXXXXX")"',
     'cleanup() { rm -f "$PAIRING" "$COOKIE_TMP"; }',
@@ -168,7 +171,7 @@ export function buildRuntimeEnvironmentRequestCommand(request: RuntimeEnvironmen
 
   const curl = [
     "curl -sS",
-    `-m ${RUNTIME_REQUEST_TIMEOUT_SECONDS}`,
+    `-m ${request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS}`,
     `-b "${RUNTIME_COOKIE_JAR}"`,
     "-H 'accept: application/json'",
     `-w '\n${RUNTIME_HTTP_STATUS_MARKER}:%{http_code}'`,
@@ -253,6 +256,15 @@ export async function prewarmRuntimeEnvironmentAccess(
   signal: AbortSignal,
 ): Promise<void> {
   await ensureRuntimeEnvironmentAccess(sandbox, signal);
+  // The runtime's first shell request builds its state and took fourteen
+  // seconds on a fresh sandbox; a pooled sandbox pays it here, not on a run. It
+  // gets the boot script's budget and no access repair: a slow build is not a
+  // lost session, and a failure here only means a run pays the build itself.
+  await executeRuntimeEnvironmentRequest(sandbox, {
+    method: "GET",
+    path: "/api/orchestration/shell",
+    timeoutSeconds: RUNTIME_WARMUP_TIMEOUT_SECONDS,
+  }).catch(() => undefined);
 }
 
 async function establishRuntimeEnvironmentAccess(
@@ -305,7 +317,7 @@ async function executeRuntimeEnvironmentRequest(
     buildRuntimeEnvironmentRequestCommand(request),
     undefined,
     undefined,
-    RUNTIME_REQUEST_TIMEOUT_SECONDS + 2,
+    (request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS) + 2,
   );
 }
 
@@ -331,7 +343,7 @@ async function executeRuntimeEnvironmentFirstAccess(
         buildRuntimeEnvironmentFirstAccessCommand(request, layout),
         undefined,
         undefined,
-        RUNTIME_REQUEST_TIMEOUT_SECONDS + 2,
+        (request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS) + 2,
       );
       const response = parseRuntimeEnvironmentResponse(result);
       if (!runtimeEnvironmentRequestFailed(result, response)) {

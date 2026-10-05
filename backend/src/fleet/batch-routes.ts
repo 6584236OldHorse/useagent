@@ -1,3 +1,4 @@
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { RunAdmissionClosedError } from "../commands";
@@ -27,6 +28,7 @@ fleetBatchRoutes.post("/", async (c) => {
 
   const idempotencyKey = c.req.header("Idempotency-Key")?.trim() ?? "";
   if (!idempotencyKey) return c.json({ error: "idempotency_key_required" }, 400);
+  if (isReservedIdempotencyKey(idempotencyKey)) return c.json({ error: "reserved_idempotency_key" }, 400);
 
   let body: unknown;
   try {

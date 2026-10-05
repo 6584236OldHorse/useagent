@@ -10,6 +10,7 @@ import {
   resolveGithubSandboxToken,
 } from "../src/github/auth";
 import { githubAppConfig, githubAuthSource, githubConfigured } from "../src/env";
+import "./helpers";
 
 // A throwaway RSA key so we can both feed the App path a real private key AND
 // verify the JWT it signs — no network, fully deterministic.

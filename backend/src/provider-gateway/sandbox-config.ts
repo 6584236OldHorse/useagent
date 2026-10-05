@@ -89,8 +89,12 @@ export function mergeOpenCodeProviderConfig(
 export const SANDBOX_GENERATION = "provider-gateway-v17-useagent-mcp-gateway-only-secrets";
 const COMPATIBILITY_SANDBOX_GENERATION = "provider-gateway-v17-useagent-mcp-compatibility-secrets";
 export const SANDBOX_GENERATION_LABEL = CANONICAL_SANDBOX_GENERATION_LABEL;
-const SANDBOX_MARKER = "$HOME/.skynet/provider-gateway-generation";
-const OPENAI_TOKEN_FILE = "$HOME/.skynet/provider-openai.token";
+const LEGACY_SANDBOX_MARKER = "$HOME/.skynet/provider-gateway-generation";
+const CANONICAL_SANDBOX_MARKER = "$HOME/.useagent/provider-gateway-generation";
+const SANDBOX_MARKER = CANONICAL_SANDBOX_MARKER;
+const LEGACY_OPENAI_TOKEN_FILE = "$HOME/.skynet/provider-openai.token";
+const CANONICAL_OPENAI_TOKEN_FILE = "$HOME/.useagent/provider-openai.token";
+const OPENAI_TOKEN_FILE = CANONICAL_OPENAI_TOKEN_FILE;
 export const CLAUDE_CONFIG_DIR = "/tmp/skynet-claude-config";
 export const CLAUDE_CAPABILITY_DIR = "/tmp/useagent-claude-capability";
 export const CLAUDE_CAPABILITY_GID = 1000;
@@ -105,6 +109,10 @@ const CLAUDE_ONE_MILLION_CONTEXT_MODELS = new Set([
 
 function sandboxGeneration(mode: SandboxSecretMode = sandboxSecretMode()): string {
   return mode === "gateway_only" ? SANDBOX_GENERATION : COMPATIBILITY_SANDBOX_GENERATION;
+}
+
+function readPresentCanonicalOrLegacyFile(canonical: string, legacy: string): string {
+  return `if [ -e "${canonical}" ] || [ -L "${canonical}" ]; then file="${canonical}"; else file="${legacy}"; fi; test -r "$file" && test -s "$file" && cat "$file"`;
 }
 
 function mint(ctx: EngineRunContext, engine: EngineId, provider: ProviderId): string | null {
@@ -170,7 +178,7 @@ export function providerGatewayEndpoint(provider: ProviderId, versioned: boolean
   return `${config.publicUrl}${PROVIDER_GATEWAY_PATH}/${provider}${versioned ? "/v1" : ""}`;
 }
 
-function toolGatewayDescriptor(
+export function toolGatewayDescriptor(
   ctx: EngineRunContext,
   engine: "claude" | "codex" | "pi",
 ): ToolGatewayCapabilityDescriptor | null {
@@ -244,7 +252,7 @@ export function piProviderGatewayCapability(
   return baseUrl && bearerToken ? { provider, baseUrl, bearerToken } : null;
 }
 
-function claudeMcpConfig(descriptor: ToolGatewayCapabilityDescriptor | null): string {
+export function claudeMcpConfig(descriptor: ToolGatewayCapabilityDescriptor | null): string {
   return JSON.stringify({
     mcpServers: descriptor
       ? {
@@ -371,7 +379,10 @@ export function codexProviderConfigToml(
     "",
     "[model_providers.skynet.auth]",
     'command = "sh"',
-    `args = ["-c", ${JSON.stringify(`cat \"${OPENAI_TOKEN_FILE}\"`)}]`,
+    `args = ["-c", ${JSON.stringify(readPresentCanonicalOrLegacyFile(
+      CANONICAL_OPENAI_TOKEN_FILE,
+      LEGACY_OPENAI_TOKEN_FILE,
+    ))}]`,
     "refresh_interval_ms = 1",
     "timeout_ms = 5000",
     "",
@@ -389,17 +400,58 @@ export function codexProviderConfigToml(
   ].join("\n");
 }
 
-async function writePrivateFiles(
+export async function writePrivateFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
+  const compatibilityAliases: Readonly<Record<string, { legacy: string; relativeTarget: string }>> = {
+    [CANONICAL_OPENAI_TOKEN_FILE]: {
+      legacy: LEGACY_OPENAI_TOKEN_FILE,
+      relativeTarget: "../.useagent/provider-openai.token",
+    },
+    [CANONICAL_SANDBOX_MARKER]: {
+      legacy: LEGACY_SANDBOX_MARKER,
+      relativeTarget: "../.useagent/provider-gateway-generation",
+    },
+  };
+  const temporaryPaths: string[] = [];
+  const aliasedFiles = files.filter(({ path }) => compatibilityAliases[path]);
+  const leafChecks = aliasedFiles.flatMap(({ path }) => {
+    const alias = compatibilityAliases[path];
+    if (!alias) return [];
+    return [path, alias.legacy].map(
+      (leaf) => `if [ -d ${leaf} ] && [ ! -L ${leaf} ]; then exit 1; fi`,
+    );
+  });
   const writes = files.map(({ path, content }) => {
     const encoded = Buffer.from(content, "utf8").toString("base64");
+    const alias = compatibilityAliases[path];
+    if (alias) {
+      const leaf = path.slice(path.lastIndexOf("/") + 1);
+      const canonicalTemporary = `$HOME/.useagent/.${leaf}-${crypto.randomUUID()}.tmp`;
+      const legacyTemporary = `$HOME/.skynet/.${leaf}-${crypto.randomUUID()}.tmp`;
+      temporaryPaths.push(canonicalTemporary, legacyTemporary);
+      return [
+        `(umask 077; printf %s '${encoded}' | base64 -d > ${canonicalTemporary})`,
+        `chmod 600 ${canonicalTemporary}`,
+        `node -e 'require("node:fs").renameSync(process.argv[1],process.argv[2])' ${canonicalTemporary} ${path}`,
+        `ln -s ${alias.relativeTarget} ${legacyTemporary}`,
+        `node -e 'require("node:fs").renameSync(process.argv[1],process.argv[2])' ${legacyTemporary} ${alias.legacy}`,
+        `node -e 'const f=require("node:fs"),c=process.argv[1],l=process.argv[2],t=process.argv[3],s=f.lstatSync(c);if(!s.isFile()||s.isSymbolicLink()||(s.mode&511)!==384||!f.lstatSync(l).isSymbolicLink()||f.readlinkSync(l)!==t)process.exit(1)' ${path} ${alias.legacy} ${alias.relativeTarget}`,
+      ].join(" && ");
+    }
     return `printf %s '${encoded}' | base64 -d > ${path} && chmod 600 ${path}`;
   });
   const result = await sandbox.process.executeCommand(
-    `mkdir -p $HOME/.skynet $HOME/.claude $HOME/.codex && ` +
-      `chmod 700 $HOME/.skynet && ${writes.join(" && ")}`,
+    [
+      `trap 'rm -f -- ${temporaryPaths.join(" ")} 2>/dev/null || true' EXIT`,
+      "if [ -L $HOME/.skynet ] || [ -L $HOME/.useagent ]; then exit 1; fi",
+      "if [ -e $HOME/.skynet ]; then test -d $HOME/.skynet; else mkdir -m 700 $HOME/.skynet; fi",
+      "if [ -e $HOME/.useagent ]; then test -d $HOME/.useagent; else mkdir -m 700 $HOME/.useagent; fi",
+      "mkdir -p $HOME/.claude $HOME/.codex",
+      ...leafChecks,
+      ...writes,
+    ].join(" && "),
     undefined,
     undefined,
     20,
@@ -437,7 +489,7 @@ export function buildClaudeCapabilityWriteCommand(
   ].join(" && ");
 }
 
-async function writeClaudeCapabilityFiles(
+export async function writeClaudeCapabilityFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
@@ -452,7 +504,7 @@ async function writeClaudeCapabilityFiles(
   }
 }
 
-async function writeUserClaudeCapabilityFiles(
+export async function writeUserClaudeCapabilityFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
@@ -533,8 +585,12 @@ export async function providerGatewaySandboxIsCurrent(sandbox: SandboxHandle): P
     LEGACY_SANDBOX_GENERATION_LABEL,
   );
   if (labeledGeneration.conflict || labeledGeneration.value !== generation) return false;
+  const markerRead = readPresentCanonicalOrLegacyFile(
+    CANONICAL_SANDBOX_MARKER,
+    LEGACY_SANDBOX_MARKER,
+  );
   const result = await sandbox.process
-    .executeCommand(`test \"$(cat ${SANDBOX_MARKER} 2>/dev/null)\" = \"${generation}\"`, undefined, undefined, 10)
+    .executeCommand(`test \"$(${markerRead} 2>/dev/null)\" = \"${generation}\"`, undefined, undefined, 10)
     .catch(() => null);
   return result?.exitCode === 0;
 }

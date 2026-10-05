@@ -2,12 +2,13 @@ import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
 import { getCustomerRunForOrg } from "./repo";
 import { resolvePreviewSandbox } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
 import { createTerminalChunkDecoder } from "./terminal-decode";
 import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
-import { PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
+import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
 
 /** The notice line the pane recognizes as a declared capability gap (no reconnect loop). */
 export const TERMINAL_UNAVAILABLE_NOTICE = "[useAgent] terminal unavailable:";
@@ -44,6 +45,7 @@ terminalRoutes.use("*", orgScope);
 
 terminalRoutes.get(
   "/:id/terminal",
+  requireBrowserWebSocketOrigin,
   upgradeWebSocket((c) => {
     // Per-connection state, filled in onOpen (async work happens there — the
     // upgrade callback itself must return handlers synchronously). Capture the
@@ -71,7 +73,8 @@ terminalRoutes.get(
                 `run not found (${runId.slice(0, 8) || "no id"} org=${orgId ?? "none"})`,
               );
             }
-            const sandbox = await resolvePreviewSandbox(run.threadId);
+            const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, run.threadId);
+            const sandbox = await resolvePreviewSandbox(run.threadId, expectedSandbox);
             const sandboxId = sandbox.id;
             const state = (sandbox as { state?: string }).state;
             if (state === "stopped" || state === "paused" || state === "archived") {

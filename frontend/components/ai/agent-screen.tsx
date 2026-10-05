@@ -22,9 +22,9 @@ import { cx } from "@/utils/cx";
 
 export type AgentScreenStatus = "loading" | "working" | "idle";
 
-/** The sandbox desktop runs at 1440x900; the frame keeps that ratio so the
+/** The sandbox desktop runs at 1920x1080; the frame keeps that ratio so the
  *  scaled screen fills it edge to edge with no letterbox. */
-const AGENT_SCREEN_ASPECT = "aspect-[16/10]";
+const AGENT_SCREEN_ASPECT = "aspect-video";
 
 const STATUS: Record<AgentScreenStatus, { label: string; color: "soft" | "blue" | "neutral" }> = {
   loading: { label: "Loading", color: "soft" },
@@ -226,7 +226,7 @@ export function AgentScreen({
                 "relative overflow-hidden bg-black",
                 open
                   ? cx(
-                      "w-[min(92vw,calc((100dvh_-_7.5rem)*1.6))] max-w-full rounded-xl",
+                      "w-[min(92vw,calc((100dvh_-_7.5rem)*1.7778))] max-w-full rounded-xl",
                       AGENT_SCREEN_ASPECT,
                     )
                   : "group/screen size-full rounded-2xl border border-border-button-default shadow-card transition-shadow duration-150 hover:shadow-regular-sm",

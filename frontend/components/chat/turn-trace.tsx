@@ -3,7 +3,7 @@
 // The ONE block a turn's work renders as, in every thread: a Thinking header
 // ("Thinking" + the pixel loader while live, "Thought for 1m 12s" or "4 tool
 // calls, 2 messages" once settled) over short step lines behind a hairline
-// rule. A step line is: a muted check when done (an x when failed, the loader
+// rule. A step line is: a muted check when done (a muted x when failed, the loader
 // while it runs), the step's family glyph, a verb-first label, the object it
 // acted on in a chip (mono for a command, a path or a slug), and a muted
 // detail. A step opens in place to its payload (reasoning prose, a tool's
@@ -17,7 +17,7 @@
 // our semantic tokens.
 
 import { RiArrowDownSLine, RiCheckLine, RiCloseLine } from "@remixicon/react";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { PixelLoader } from "@/components/ai/loading-state";
 import { Thinking } from "@/components/ai/thinking";
 import { STEP_ICON } from "@/components/chat/step-icons";
@@ -55,7 +55,7 @@ function StatusGlyph({ status }: { status: TraceRowStatus }) {
       {status === "running" ? (
         <PixelLoader size="sm" className="text-text-secondary" />
       ) : status === "failed" ? (
-        <RiCloseLine className="size-3.5 text-text-error-primary" aria-hidden />
+        <RiCloseLine className="size-3.5 text-text-tertiary" aria-hidden />
       ) : (
         <RiCheckLine className="size-3.5 text-text-tertiary" aria-hidden />
       )}
@@ -121,10 +121,7 @@ const TraceRowView = memo(function TraceRowView({ row }: { row: TraceStepRow }) 
       <Icon className="size-3.5 shrink-0 text-text-tertiary opacity-80" aria-hidden />
       <span
         data-testid="trace-row-label"
-        className={cn(
-          "shrink-0 text-[12.5px] font-medium leading-5",
-          row.status === "failed" ? "text-text-error-primary" : "text-text-primary",
-        )}
+        className="shrink-0 text-[12.5px] font-medium leading-5 text-text-primary"
       >
         {row.label}
       </span>
@@ -235,6 +232,14 @@ export function TurnTrace({
 }) {
   const [open, setOpen] = useTurnUiState("trace", defaultOpen);
   const [showAll, setShowAll] = useTurnUiState("trace-all", false);
+  // The trace folds itself when the turn settles, unless the reader took the
+  // toggle into their own hands while it ran.
+  const touched = useRef(false);
+  const wasLive = useRef(live);
+  useEffect(() => {
+    if (wasLive.current && !live && !touched.current) setOpen(false);
+    wasLive.current = live;
+  }, [live, setOpen]);
   const hidden = showAll ? 0 : Math.max(0, rows.length - MAX_VISIBLE_TRACE_ROWS);
   const visible = hidden > 0 ? rows.slice(hidden) : rows;
 
@@ -250,7 +255,10 @@ export function TurnTrace({
         active={live}
         failed={header.failed}
         expanded={open}
-        onExpandedChange={setOpen}
+        onExpandedChange={(next) => {
+          touched.current = true;
+          setOpen(next);
+        }}
       >
         {hidden > 0 && (
           <button

@@ -3,7 +3,7 @@ import { db } from "../db/client";
 import { commands, type CommandState } from "../db/schema";
 import type { SlackEnvelope } from "./events";
 import { MAX_INBOUND_SLACK_FILES } from "./inbound-files";
-import { findSlackUser, findSlackWorkspace } from "./workspaces";
+import { findActiveSlackUser, findSlackWorkspace } from "./workspaces";
 import { findSlackThread } from "./repo";
 
 export const SLACK_INBOX_EVENT = "slack.inbox.event" as const;
@@ -198,7 +198,7 @@ async function resolveIngressIdentity(envelope: SlackEnvelope): Promise<SlackInb
   const slackUserId = envelope.event?.user?.trim() || null;
   const workspace = teamId ? await findSlackWorkspace(teamId) : null;
   const sender = workspace && teamId && slackUserId
-    ? await findSlackUser(teamId, slackUserId)
+    ? await findActiveSlackUser(teamId, slackUserId)
     : null;
   return {
     teamId,
@@ -528,7 +528,7 @@ export async function verifySlackInboxIdentity(
       ? { status: "verified", orgId: identity.orgId, actorId: null }
       : { status: "rebound", error: "slack_sender_binding_changed" };
   }
-  const sender = await findSlackUser(identity.teamId, identity.slackUserId);
+  const sender = await findActiveSlackUser(identity.teamId, identity.slackUserId);
   const currentActor = sender?.orgId === identity.orgId ? sender.userId : null;
   if (currentActor !== identity.actorId) {
     return { status: "rebound", error: "slack_sender_binding_changed" };

@@ -9,6 +9,8 @@ import {
   runtimeDevModeEnabled,
 } from "./security/runtime-secrets";
 
+const DEFAULT_FRONTEND_ORIGIN = "http://localhost:3400";
+
 /**
  * Dev mode gates every fail-OPEN behavior in the app: the seeded dev-org
  * fallback for unauthenticated requests (middleware/org.ts), the insecure
@@ -43,24 +45,28 @@ export function selfSignupEnabled(
   return runtimeDevModeEnabled(source);
 }
 
-/** Browser origins allowed to submit Better Auth requests. The two primary
- * origins remain implicit; additional rollout/alias hosts are explicit and
- * validated instead of being hard-coded into auth policy. */
+/** Origins allowed to submit Better Auth requests. Browser aliases remain
+ * explicit; the packaged desktop protocol is the only custom scheme. */
 export function betterAuthTrustedOrigins(
   source: Record<string, string | undefined> = process.env,
 ): string[] {
   const candidates = [
-    source.FRONTEND_ORIGIN ?? "http://localhost:3200",
+    source.FRONTEND_ORIGIN ?? DEFAULT_FRONTEND_ORIGIN,
     source.BETTER_AUTH_URL ?? "http://localhost:3201",
+    "useagent:/",
     ...(source.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
   ];
   const origins = new Set<string>();
   for (const candidate of candidates) {
     const value = candidate.trim();
     if (!value) continue;
+    if (value === "useagent:/") {
+      origins.add(value);
+      continue;
+    }
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("BETTER_AUTH_TRUSTED_ORIGINS accepts only HTTP(S) origins");
+      throw new Error("BETTER_AUTH_TRUSTED_ORIGINS accepts only HTTP(S) origins and the UseAgent desktop scheme");
     }
     origins.add(url.origin);
   }
@@ -125,7 +131,7 @@ export const env = {
   DATABASE_URL:
     process.env.DATABASE_URL ?? "postgres://postgres@localhost:5432/useagent",
   PORT: Number(process.env.PORT ?? 3201),
-  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN ?? "http://localhost:3200",
+  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN ?? DEFAULT_FRONTEND_ORIGIN,
   BETTER_AUTH_URL: process.env.BETTER_AUTH_URL ?? "http://localhost:3201",
   // Lazy so the dedicated gateway process can reuse non-auth configuration
   // helpers without importing the backend's cookie-signing root. The full app's
@@ -173,8 +179,8 @@ export function memoryConfig(): MemoryConfig | null {
 /**
  * Google social-sign-in config for better-auth (src/auth.ts). Gated exactly like
  * slackConfig(): read per call; BOTH `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
- * must be set or the provider is off — `googleAuthConfig()` returns null, the
- * "Continue with Google" button is disabled, and email/password still works. A
+ * must be set or the provider is off — `googleAuthConfig()` returns null and the
+ * "Continue with Google" button is disabled. A
  * partial (one of the two set) is a misconfiguration: warn and stay off rather
  * than half-enable.
  *

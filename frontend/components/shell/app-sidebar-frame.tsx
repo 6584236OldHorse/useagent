@@ -31,7 +31,6 @@ import {
   SidebarMenuItem,
   SidebarTrigger,
 } from "@/components/sidebar-kit/sidebar";
-import { useSession } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { SearchCommand } from "./search-command";
 import { NAV_ICON_TONE, type NavIconTone, SidebarNavItem } from "./sidebar-nav";
@@ -46,6 +45,9 @@ export type Route = {
   icon: RemixiconComponentType;
   href: string;
   active?: boolean;
+  /** Set false for a destination whose layout runs a backend loader: a viewport
+   * prefetch would re-run it on every router refresh and cache its seed. */
+  prefetch?: boolean;
   /** Brand tint for the icon, as on the previous rail. */
   tone?: NavIconTone;
   trailing?: ReactNode;
@@ -76,7 +78,7 @@ function NavGroup({ route }: { route: Route }) {
           <Icon
             className={cn(
               "size-3.5 shrink-0",
-              route.tone ? NAV_ICON_TONE[route.tone] : "text-foreground-icon-tertiary",
+              route.tone ? NAV_ICON_TONE[route.tone] : "text-text-secondary",
             )}
             aria-hidden
           />
@@ -84,7 +86,7 @@ function NavGroup({ route }: { route: Route }) {
         <span className="min-w-0 flex-1 truncate text-left">{route.title}</span>
         <RiArrowDownSLine
           className={cn(
-            "size-4 shrink-0 text-foreground-icon-tertiary transition-transform",
+            "size-4 shrink-0 text-text-secondary transition-transform",
             open && "rotate-180",
           )}
           aria-hidden
@@ -125,13 +127,14 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                 className={cn(
                   "justify-center rounded-2lg",
                   route.active
-                    ? "bg-linear-to-b from-accent-500 to-accent-600 text-white shadow-nav-selected hover:text-white"
+                    ? "bg-background-secondary-hover text-text-primary"
                     : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
                 )}
                 isActive={route.active}
                 render={
                   <Link
                     href={route.href}
+                    prefetch={route.prefetch}
                     aria-label={route.title}
                     aria-current={route.active ? "page" : undefined}
                   />
@@ -142,10 +145,10 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                   className={cn(
                     "size-4",
                     route.active
-                      ? "text-white"
+                      ? "text-text-primary"
                       : route.tone
                         ? NAV_ICON_TONE[route.tone]
-                        : "text-foreground-icon-tertiary",
+                        : "text-text-secondary",
                   )}
                   aria-hidden
                 />
@@ -153,6 +156,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
             ) : (
               <SidebarNavItem
                 href={route.href}
+                prefetch={route.prefetch}
                 icon={Icon}
                 tone={route.tone}
                 label={route.title}
@@ -170,17 +174,13 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
 /** The footer card is the trigger of the account menu (identity header,
  * Settings, Apps, Log out), so it opens exactly as before. */
 export function UserFooter() {
-  const { session } = useSession();
   const isCollapsed = useRailFolded();
-  const name = session?.user.name?.trim() || session?.user.email || "Guest";
-  const email = session?.user.email ?? "Not signed in";
-  const image = session?.user.image ?? null;
 
   return (
     <SidebarMenu>
       <SidebarMenuItem>
         <UserMenu
-          trigger={
+          trigger={({ name, email, image }) => (
             <span
               className={cn(
                 "flex w-full items-center gap-2.5 rounded-2lg px-2.5 py-2 transition-colors hover:bg-background-secondary-hover",
@@ -203,13 +203,13 @@ export function UserFooter() {
                     </span>
                   </span>
                   <RiExpandUpDownLine
-                    className="ml-auto size-4 shrink-0 text-foreground-icon-tertiary"
+                    className="ml-auto size-4 shrink-0 text-text-secondary"
                     aria-hidden
                   />
                 </>
               )}
             </span>
-          }
+          )}
         />
       </SidebarMenuItem>
     </SidebarMenu>
