@@ -14,6 +14,6 @@ CREATE TABLE IF NOT EXISTS "slack_access_requests" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "uq_slack_access_requests_sender" ON "slack_access_requests" ("team_id", "slack_user_id");
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_slack_access_requests_sender" ON "slack_access_requests" ("team_id", "slack_user_id", "org_id");
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_slack_access_requests_org_status" ON "slack_access_requests" ("org_id", "status");

@@ -342,6 +342,7 @@ export async function handleSlackEvent(
       teamId,
       slackUserId: event.user,
       orgId,
+      messageTs: ts,
       client: resolveSlackClient({ apiUrl: config.apiUrl, botToken }),
     });
     if (verdict !== "denied") {

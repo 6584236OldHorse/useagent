@@ -2704,6 +2704,58 @@ describe("slack workspace identity (fail closed)", () => {
     expect(after.body.requests.some((r) => r.name === slackUserId)).toBe(false);
   });
 
+  test("an admin-typed address never attaches a sender to an existing account, and a bad address is refused", async () => {
+    const slackUserId = `U-${uid("typed")}`;
+    const channel = `D${uid("dm")}`;
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("x")}`, ts: `${uid("ts")}.1` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
+    const listed = await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    const request = listed.body.requests.find((r) => r.name === slackUserId)!;
+    const [owner] = await db.execute(sql`select email from "user" where id = ${DEV_USER_ID}`);
+    const hijack = await json<{ message?: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: (owner as { email: string }).email } });
+    expect(hijack.status).toBe(409);
+    const bad = await json<{ message?: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: "not an email\r\nRCPT TO:<x@y>" } });
+    expect(bad.status).toBe(400);
+    const stillPending = await json<{ requests: Array<{ name: string }> }>("/api/team/access-requests");
+    expect(stillPending.body.requests.some((r) => r.name === slackUserId)).toBe(true);
+    const fine = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: `${uid("fresh")}@example.test` } });
+    expect(fine.body.status).toBe("allowed");
+    // The decision is final: a second answer finds nothing open.
+    const again = await json(`/api/team/access-requests/${request.id}/deny`, { method: "POST", body: {} });
+    expect(again.status).toBe(404);
+  });
+
+  test("removing the member closes the Slack door, and asking again reopens the request", async () => {
+    const slackUserId = `U-${uid("leaver")}`;
+    const channel = `D${uid("dm")}`;
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("x")}`, ts: `${uid("ts")}.1` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
+    const listed = await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    const request = listed.body.requests.find((r) => r.name === slackUserId)!;
+    const email = `${uid("leaver")}@example.test`;
+    await json(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email } });
+    const working = uid("working");
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${working}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => findRunByPrompt(`work ${working}`));
+    // The membership goes; the binding row stays but no longer counts.
+    await db.execute(sql`delete from member where user_id = (select id from "user" where email = ${email})`);
+    const after = uid("after");
+    const before = rec.messages.length;
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${after}`, ts: `${uid("ts")}.3` }));
+    await waitFor(async () => rec.messages.slice(before).find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(await findRunByPrompt(`work ${after}`)).toBeNull();
+    const reopened = await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    expect(reopened.body.requests.find((r) => r.name === slackUserId)?.id).toBe(request.id);
+    // Allowing again restores the same account, whatever address is typed now.
+    await json(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: "ignored@example.test" } });
+    const back = uid("back");
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `work ${back}`, ts: `${uid("ts")}.4` }));
+    const run = await waitFor(async () => findRunByPrompt(`work ${back}`));
+    const [account] = await db.execute(sql`select id from "user" where email = ${email}`);
+    expect(run.user_id).toBe((account as { id: string }).id);
+  });
+
   test("an event from an unmapped workspace is ignored", async () => {
     const marker = uid("noteam");
     const envelope = eventCallback(

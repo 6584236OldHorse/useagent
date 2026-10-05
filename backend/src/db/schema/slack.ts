@@ -187,8 +187,9 @@ export const slackOutbox = pgTable(
 );
 
 // A Slack sender the bot does not know yet, waiting for an admin's word. One row
-// per (team, Slack user). Allow creates the member and the slack_users binding;
-// Deny is remembered so the person is not asked about again.
+// per (team, Slack user, org): a workspace rebound to another org starts afresh.
+// Allow creates the member and the slack_users binding; Deny is remembered so
+// the person is not asked about again.
 export const slackAccessRequests = pgTable(
   "slack_access_requests",
   {
@@ -209,7 +210,7 @@ export const slackAccessRequests = pgTable(
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("uq_slack_access_requests_sender").on(t.teamId, t.slackUserId),
+    uniqueIndex("uq_slack_access_requests_sender").on(t.teamId, t.slackUserId, t.orgId),
     index("idx_slack_access_requests_org_status").on(t.orgId, t.status),
   ],
 );

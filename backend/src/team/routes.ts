@@ -79,5 +79,9 @@ teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
   });
   if (outcome === "not_found") return c.json({ message: "That request is no longer open" }, 404);
   if (outcome === "email_required") return c.json({ message: "Enter the email address they will sign in with" }, 400);
+  if (outcome === "email_invalid") return c.json({ message: "That does not look like an email address" }, 400);
+  if (outcome === "account_exists") {
+    return c.json({ message: "That address already has an account here. Only Slack can vouch that this person owns it, and it did not share their email." }, 409);
+  }
   return c.json({ status: outcome });
 });
