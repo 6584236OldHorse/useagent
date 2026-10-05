@@ -51,6 +51,7 @@ import { ComposerAddButton } from "@/components/pro/composer-panel/composer-pane
 import { ModelPicker } from "@/components/pro/model-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { backendFetch } from "@/lib/backend-fetch";
+import { loadRepoList } from "@/lib/repo-list";
 import {
   createRun,
   runCreateFailureMessage,
@@ -242,41 +243,21 @@ export function NewTaskComposer({
     }
   }, [model, selectableModels]);
 
-  // Real repositories for the multi-select repo picker (GET /api/repos — the
-  // backend-held GitHub token stays server-side). Empty when unconfigured, so the
-  // picker just shows "No repositories available".
+  // Real repositories for the multi-select repo picker: the page's shared list
+  // (GET /api/repos once per page, the backend-held GitHub token stays server-side).
+  // Empty when unconfigured, so the picker just shows "No repositories available".
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await backendFetch("/api/repos");
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          repos?: {
-            full_name?: string;
-            name?: string;
-            private?: boolean;
-            default_branch?: string;
-          }[];
-        };
-        if (cancelled || !Array.isArray(data.repos)) return;
-        const offeredRepos = data.repos
-          .filter(
-            (
-              r,
-            ): r is {
-              full_name: string;
-              name?: string;
-              private?: boolean;
-              default_branch?: string;
-            } => !!r.full_name,
-          )
-          .map((r) => ({
-            full_name: r.full_name,
-            name: r.name ?? r.full_name,
-            private: r.private,
-            default_branch: r.default_branch ?? "main",
-          }));
+        const repos = await loadRepoList();
+        if (cancelled) return;
+        const offeredRepos = repos.map((r) => ({
+          full_name: r.full_name,
+          name: r.name ?? r.full_name,
+          private: r.private,
+          default_branch: r.default_branch ?? "main",
+        }));
         setRepos(offeredRepos);
         if (
           initialRepository &&

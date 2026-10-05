@@ -12,16 +12,12 @@ import {
 } from "react";
 import { fetchSidebarRuns } from "@/app/(workspace)/agent/runs/runs-data";
 import { useOrgChanges } from "@/hooks/use-org-changes";
-import type { OrgChange } from "@/lib/org-changes";
+import { type OrgChange, STREAM_OPEN_GRACE_MS } from "@/lib/org-changes";
 import { fetchThreadRelationshipIndex } from "@/lib/thread-relationships-data";
 import type { SidebarRun } from "./working-project-status";
 
 const SidebarThreadsContext = createContext<readonly SidebarRun[] | null>(null);
 const SidebarThreadRelationshipsContext = createContext<readonly ThreadRelationship[] | null>(null);
-
-/** How long a mount waits for the invalidation stream to open before it takes
- *  its snapshot anyway (a blocked or slow stream must not leave the shell empty). */
-export const STREAM_OPEN_GRACE_MS = 1_500;
 
 export function refreshesSidebarThreads(change: OrgChange): boolean {
   return (

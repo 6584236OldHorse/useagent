@@ -2,6 +2,10 @@ import { decodeOrgChange, type OrgChange } from "@useagent/agent-client/org-chan
 
 export type { OrgChange };
 
+/** How long a page waits for the org stream to open before it takes its first snapshot
+ *  anyway; the open that follows a late stream revalidates it. */
+export const STREAM_OPEN_GRACE_MS = 1_500;
+
 type Listener = (change: OrgChange) => void;
 type OpenListener = () => void;
 export const parseOrgChange = decodeOrgChange;
