@@ -16,6 +16,7 @@ import {
   isPersistedModelAllowedForEngine,
   isReplyModelAllowedForEngine,
   OPENCODE_ALLOWED_MODELS,
+  openCodeRuntimeModelId,
 } from "./model-policy";
 import { FREE_MODEL_LANE_SEED, freeModelLaneCache } from "./free-model-lane";
 
@@ -54,6 +55,14 @@ describe("paid model policy", () => {
     expect(isModelAllowedForEngine("opencode", GEMINI_FLASH_MODEL)).toBe(true);
     expect(isModelAllowedForEngine("claude", "openai/gpt-5.6-sol")).toBe(false);
     expect(isModelAllowedForEngine("claude", KIMI_K3_MODEL)).toBe(false);
+  });
+
+  test("free lane ids map to the runtime id their provider understands", () => {
+    expect(openCodeRuntimeModelId("vendor/model:free")).toBe("openrouter/vendor/model:free");
+    expect(openCodeRuntimeModelId("opencode/big-pickle:free")).toBe("opencode/big-pickle");
+    expect(isPersistedModelAllowedForEngine("opencode", "opencode/big-pickle:free")).toBe(true);
+    expect(isModelAllowedForEngine("opencode", "opencode/big-pickle:free")).toBe(false);
+    expect(() => openCodeRuntimeModelId("opencode/claude-opus-5")).toThrow(/Unsupported OpenCode model provider/);
   });
 
   test("free OpenRouter slugs are an OpenCode-only lane", () => {

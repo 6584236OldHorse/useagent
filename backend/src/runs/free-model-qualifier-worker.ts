@@ -18,13 +18,17 @@ import {
   type PublishFreeModelLaneResult,
 } from "./free-model-registry-repo";
 import {
+  discoverOpenCodeZenFreeModels,
   discoverOpenRouterFreeModels,
   freeModelLaneCache,
+  MODELS_DEV_CATALOG_URL,
   OPENROUTER_CATALOG_TIMEOUT_MS,
   OPENROUTER_CATALOG_URL,
   type CatalogFetcher,
-  type OpenRouterFreeModelCandidate,
+  type FreeModelCandidate,
 } from "./free-model-lane";
+import { providerProven } from "./engine-readiness";
+import { providerCredentialName } from "../provider-gateway/provider";
 import type {
   FreeModelQualificationDriver,
   FreeModelQualificationResult,
@@ -49,7 +53,9 @@ const QUALIFIED_SUCCESS_RETRY_MS = 6 * 60 * 60_000;
 const SYSTEM_FAILURE_RETRY_MS = 30 * 60_000;
 const MODEL_FAILURE_BASE_RETRY_MS = 30 * 60_000;
 const MODEL_FAILURE_MAX_RETRY_MS = 24 * 60 * 60_000;
-const PUBLISHED_LANE_CAP = 8;
+/** The advertised lane holds up to this many models per source, so a second
+ * source is never crowded out by the first one's earlier qualifications. */
+const PUBLISHED_LANE_CAP_PER_PROVIDER = 8;
 
 /** On by default; FREE_MODEL_QUALIFIER=off is the kill switch (the lane then
  * stays at its last published generation). */
@@ -107,7 +113,7 @@ function productionRepository(database: Db = db): FreeModelQualifierRepository {
 
 export interface CatalogDiscoverySuccess {
   readonly ok: true;
-  readonly candidates: readonly OpenRouterFreeModelCandidate[];
+  readonly candidates: readonly FreeModelCandidate[];
 }
 
 export interface CatalogDiscoveryFailure {
@@ -118,11 +124,13 @@ export interface CatalogDiscoveryFailure {
 
 export type CatalogDiscoveryResult = CatalogDiscoverySuccess | CatalogDiscoveryFailure;
 
-export async function fetchOpenRouterFreeModelCandidates(
-  fetcher: CatalogFetcher = fetch,
+async function fetchCatalogCandidates(
+  fetcher: CatalogFetcher,
+  url: string,
+  discover: (catalog: unknown) => FreeModelCandidate[],
 ): Promise<CatalogDiscoveryResult> {
   try {
-    const response = await fetcher(OPENROUTER_CATALOG_URL, {
+    const response = await fetcher(url, {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(OPENROUTER_CATALOG_TIMEOUT_MS),
     });
@@ -136,13 +144,56 @@ export async function fetchOpenRouterFreeModelCandidates(
             : "invalid_response";
       return { ok: false, errorCode, httpStatus: response.status };
     }
-    const candidates = discoverOpenRouterFreeModels(await response.json());
+    const candidates = discover(await response.json());
     return candidates.length > 0
       ? { ok: true, candidates }
       : { ok: false, errorCode: "invalid_response", httpStatus: response.status };
   } catch {
     return { ok: false, errorCode: "transport_error", httpStatus: null };
   }
+}
+
+export function fetchOpenRouterFreeModelCandidates(
+  fetcher: CatalogFetcher = fetch,
+): Promise<CatalogDiscoveryResult> {
+  return fetchCatalogCandidates(fetcher, OPENROUTER_CATALOG_URL, discoverOpenRouterFreeModels);
+}
+
+export function fetchOpenCodeZenFreeModelCandidates(
+  fetcher: CatalogFetcher = fetch,
+): Promise<CatalogDiscoveryResult> {
+  return fetchCatalogCandidates(fetcher, MODELS_DEV_CATALOG_URL, discoverOpenCodeZenFreeModels);
+}
+
+/** OpenCode Zen is a source only where the deployment can run its models:
+ * the house key is set and the provider carries release evidence. Probing
+ * without either would only record system failures. */
+export function openCodeZenSourceEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return Boolean(env[providerCredentialName("opencode")]?.trim()) && providerProven("opencode", env);
+}
+
+/** OpenRouter is the lane's required source; OpenCode Zen joins when enabled,
+ * and its catalog being unreachable costs only this tick's Zen candidates. */
+export async function discoverFreeModelCandidates(
+  fetcher: CatalogFetcher = fetch,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<CatalogDiscoveryResult> {
+  const openrouter = await fetchOpenRouterFreeModelCandidates(fetcher);
+  if (!openrouter.ok || !openCodeZenSourceEnabled(env)) return openrouter;
+  const zen = await fetchOpenCodeZenFreeModelCandidates(fetcher);
+  if (!zen.ok) {
+    console.warn(
+      `[free-model-qualifier] OpenCode Zen catalog unavailable (${zen.errorCode}); OpenRouter candidates only this tick`,
+    );
+    return openrouter;
+  }
+  return {
+    ok: true,
+    candidates: [...openrouter.candidates, ...zen.candidates]
+      .toSorted((a, b) => b.contextLength - a.contextLength),
+  };
 }
 
 export function nextProbeAtForResult(
@@ -172,27 +223,30 @@ function sameLane(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((model, index) => model === right[index]);
 }
 
-/** Keep surviving current order, then append newly qualified catalog entries. */
+/** Keep surviving current order, then append newly qualified catalog entries,
+ * up to the cap for each source. */
 export function desiredPublishedLane(
   registry: FreeModelRegistrySnapshot,
-  catalog: readonly OpenRouterFreeModelCandidate[],
+  catalog: readonly FreeModelCandidate[],
 ): string[] {
-  const qualified = new Set(
+  const qualifiedProvider = new Map(
     registry.candidates
       .filter((candidate) => candidate.state === "qualified" && candidate.everQualified)
-      .map((candidate) => candidate.modelId),
+      .map((candidate) => [candidate.modelId, candidate.provider]),
   );
-  const catalogIds = catalog.map((candidate) => candidate.id);
-  const desired = (registry.state?.currentModelIds ?? [])
-    .filter((modelId) => qualified.has(modelId));
-  const seen = new Set(desired);
-  for (const modelId of catalogIds) {
-    if (qualified.has(modelId) && !seen.has(modelId)) {
-      desired.push(modelId);
-      seen.add(modelId);
-    }
-  }
-  return desired.slice(0, PUBLISHED_LANE_CAP);
+  const perProvider = new Map<string, number>();
+  const desired: string[] = [];
+  const admit = (modelId: string): void => {
+    const provider = qualifiedProvider.get(modelId);
+    if (provider === undefined || desired.includes(modelId)) return;
+    const count = perProvider.get(provider) ?? 0;
+    if (count >= PUBLISHED_LANE_CAP_PER_PROVIDER) return;
+    perProvider.set(provider, count + 1);
+    desired.push(modelId);
+  };
+  for (const modelId of registry.state?.currentModelIds ?? []) admit(modelId);
+  for (const candidate of catalog) admit(candidate.id);
+  return desired;
 }
 
 export interface FreeModelQualifierTickDeps {
@@ -258,7 +312,7 @@ export async function runFreeModelQualifierTick(
     };
   }
 
-  const discovery = await (deps.discover ?? fetchOpenRouterFreeModelCandidates)();
+  const discovery = await (deps.discover ?? discoverFreeModelCandidates)();
   deps.onDiscovered?.(discovery);
   if (!discovery.ok) {
     const published = await repository.publish({ modelIds: [], systemFailure: true });
@@ -275,8 +329,8 @@ export async function runFreeModelQualifierTick(
   const discovered = await repository.upsertDiscovered(
     discovery.candidates.map((candidate) => ({
       modelId: candidate.id,
-      provider: "openrouter",
-      source: "openrouter_catalog",
+      provider: candidate.provider,
+      source: candidate.provider === "opencode" ? "models_dev_catalog" : "openrouter_catalog",
     })),
   );
   let claimed = 0;

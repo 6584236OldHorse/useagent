@@ -7,7 +7,9 @@ import type { ClaimedFreeModelCandidate } from "./free-model-registry-repo";
 import type { FreeModelQualificationResult } from "./free-model-qualification-driver";
 import {
   desiredPublishedLane,
+  discoverFreeModelCandidates,
   fetchOpenRouterFreeModelCandidates,
+  openCodeZenSourceEnabled,
   freeModelQualifierEnabled,
   QUALIFIER_ADMISSION_WAIT_MS,
   respondToManualRefresh,
@@ -140,7 +142,11 @@ function fakeRepository(input: {
 function discovery(...ids: string[]) {
   return async () => ({
     ok: true as const,
-    candidates: ids.map((id, index) => ({ id, contextLength: 200_000 - index })),
+    candidates: ids.map((id, index) => ({
+      id,
+      contextLength: 200_000 - index,
+      provider: id.startsWith("opencode/") ? "opencode" as const : "openrouter" as const,
+    })),
   });
 }
 
@@ -213,7 +219,7 @@ describe("free-model qualifier worker", () => {
       }), { status: 200 })
     )).resolves.toEqual({
       ok: true,
-      candidates: [{ id: "vendor/new:free", contextLength: 100_000 }],
+      candidates: [{ id: "vendor/new:free", contextLength: 100_000, provider: "openrouter" }],
     });
   });
 
@@ -306,7 +312,7 @@ describe("free-model qualifier worker", () => {
         state: registryState([first.modelId, temporarilyMissing.modelId]),
         candidates: [first, temporarilyMissing],
       },
-      [{ id: first.modelId, contextLength: 100_000 }],
+      [{ id: first.modelId, contextLength: 100_000, provider: "openrouter" }],
     )).toEqual([first.modelId, temporarilyMissing.modelId]);
   });
 
@@ -658,4 +664,59 @@ describe("free-model qualifier worker", () => {
     expect((await worker.tick().result).status).toBe("completed");
     never.resolve(await openAdmission());
   }, 15_000);
+  test("OpenCode Zen joins discovery only where the deployment can run its models", async () => {
+    const openrouterCatalog = { data: [{ id: "vendor/new:free", context_length: 100_000, supported_parameters: ["tools"] }] };
+    const zenCatalog = { opencode: { models: { "big-pickle": { cost: { input: 0, output: 0 }, tool_call: true, limit: { context: 200_000 } } } } };
+    const urls: string[] = [];
+    const fetcher = async (url: string) => {
+      urls.push(url);
+      if (url.includes("openrouter")) return Response.json(openrouterCatalog);
+      return Response.json(zenCatalog);
+    };
+    expect(openCodeZenSourceEnabled({})).toBe(false);
+    expect(openCodeZenSourceEnabled({ OPENCODE_API_KEY: "zen" })).toBe(false);
+    expect(openCodeZenSourceEnabled({ OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" })).toBe(true);
+
+    const without = await discoverFreeModelCandidates(fetcher, {});
+    expect(without.ok && without.candidates.map((c) => c.id)).toEqual(["vendor/new:free"]);
+    expect(urls.filter((url) => url.includes("models.dev"))).toHaveLength(0);
+
+    const enabled = { OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" };
+    const both = await discoverFreeModelCandidates(fetcher, enabled);
+    expect(both.ok && both.candidates.map((c) => `${c.provider}:${c.id}`)).toEqual([
+      "opencode:opencode/big-pickle:free",
+      "openrouter:vendor/new:free",
+    ]);
+
+    // Zen's catalog failing costs only this tick's Zen candidates.
+    const zenDown = await discoverFreeModelCandidates(async (url: string) =>
+      url.includes("openrouter") ? Response.json(openrouterCatalog) : new Response(null, { status: 503 }), enabled);
+    expect(zenDown.ok && zenDown.candidates.map((c) => c.id)).toEqual(["vendor/new:free"]);
+    // OpenRouter failing is a catalog failure as before.
+    const routerDown = await discoverFreeModelCandidates(async () => new Response(null, { status: 503 }), enabled);
+    expect(routerDown).toEqual({ ok: false, errorCode: "provider_capacity", httpStatus: 503 });
+  });
+
+  test("the published lane caps each source separately", () => {
+    const qualified = (modelId: string, provider: string) => candidate(modelId, {
+      provider,
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const routerModels = Array.from({ length: 10 }, (_, i) => `vendor/model-${i}:free`);
+    const rows = [
+      ...routerModels.map((id) => qualified(id, "openrouter")),
+      qualified("opencode/big-pickle:free", "opencode"),
+    ];
+    const catalog = rows.map((row, index) => ({
+      id: row.modelId,
+      contextLength: 100_000 - index,
+      provider: row.provider as "openrouter" | "opencode",
+    }));
+    const lane = desiredPublishedLane({ state: registryState(routerModels), candidates: rows }, catalog);
+    expect(lane).toHaveLength(9);
+    expect(lane.slice(0, 8)).toEqual(routerModels.slice(0, 8));
+    expect(lane[8]).toBe("opencode/big-pickle:free");
+  });
 });

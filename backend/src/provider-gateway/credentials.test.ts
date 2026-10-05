@@ -145,6 +145,23 @@ describe("resolveProviderCredentialForRun precedence", () => {
     expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
   });
 
+  test("production house fallback also serves OpenCode Zen free models, never Zen's paid ones", async () => {
+    const zenDeps = deps({
+      resolveUserConnection: async () => null,
+      resolveOrgSecret: async () => null,
+      env: { OPENCODE_API_KEY: "zen-house", OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    });
+    expect(await resolveProviderCredentialForRun(
+      { orgId: "org-a", userId: "user-a", provider: "opencode", model: "opencode/big-pickle:free" },
+      zenDeps,
+    )).toEqual({ value: "zen-house", source: "backend_env" });
+    expect(await resolveProviderCredentialForRun(
+      { orgId: "org-a", userId: "user-a", provider: "opencode", model: "opencode/claude-opus-5" },
+      zenDeps,
+    )).toBeNull();
+  });
+
   test("production house fallback is restricted to provider-qualified OpenRouter free models", async () => {
     const free = await resolveProviderCredentialForRun(
       {

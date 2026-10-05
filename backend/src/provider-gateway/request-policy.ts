@@ -1,3 +1,4 @@
+import { openCodeZenModelId } from "./provider";
 import type { GatewayRun } from "./run-authorization";
 
 export type OutputLimitField = "max_tokens" | "max_output_tokens" | null;
@@ -12,7 +13,10 @@ function requestModelMatchesRun(run: GatewayRun, requested: unknown): boolean {
     ((run.model.startsWith("openai/") && requested === run.model.slice("openai/".length)) ||
       (run.engine === "opencode" &&
         run.model.startsWith("cerebras/") &&
-        requested === run.model.slice("cerebras/".length)));
+        requested === run.model.slice("cerebras/".length)) ||
+      (run.engine === "opencode" &&
+        run.model.startsWith("opencode/") &&
+        requested === openCodeZenModelId(run.model)));
 }
 
 /**

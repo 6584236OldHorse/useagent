@@ -558,10 +558,12 @@ describe("sandbox provider gateway config", () => {
     expect(options.openai?.baseURL).toEndWith("/api/provider/openai/v1");
     expect(options.openrouter?.baseURL).toEndWith("/api/provider/openrouter/v1");
     expect(options.cerebras?.baseURL).toEndWith("/api/provider/cerebras/v1");
+    expect(options.opencode?.baseURL).toEndWith("/api/provider/opencode/v1");
     expect(verifyProviderToken(options.anthropic?.apiKey)).toMatchObject({ provider: "anthropic" });
     expect(verifyProviderToken(options.openai?.apiKey)).toMatchObject({ provider: "openai" });
     expect(verifyProviderToken(options.openrouter?.apiKey)).toMatchObject({ provider: "openrouter" });
     expect(verifyProviderToken(options.cerebras?.apiKey)).toMatchObject({ provider: "cerebras" });
+    expect(verifyProviderToken(options.opencode?.apiKey)).toMatchObject({ provider: "opencode" });
     expect(SANDBOX_GENERATION).toBe("provider-gateway-v17-useagent-mcp-gateway-only-secrets");
     expect(providerGatewaySandboxLabels("run-a")).toEqual({
       "useagent-run": "run-a",

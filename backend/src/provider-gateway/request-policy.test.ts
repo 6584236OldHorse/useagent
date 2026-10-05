@@ -92,6 +92,17 @@ describe("provider request body policy", () => {
     )).toEqual({ ok: false, error: "model_not_allowed" });
   });
 
+  test("accepts Zen's own id or our lane id for an OpenCode Zen run, nothing else", () => {
+    const zenRun = { ...run, engine: "opencode", model: "opencode/big-pickle:free" } satisfies GatewayRun;
+    for (const model of ["big-pickle", "opencode/big-pickle:free"]) {
+      expect(applyProviderBodyPolicy(zenRun, JSON.stringify({ model }), "max_tokens", 100).ok).toBe(true);
+    }
+    expect(applyProviderBodyPolicy(zenRun, '{"model":"big-pickle:free"}', "max_tokens", 100))
+      .toEqual({ ok: false, error: "model_not_allowed" });
+    expect(applyProviderBodyPolicy(zenRun, '{"model":"opencode/claude-opus-5"}', "max_tokens", 100))
+      .toEqual({ ok: false, error: "model_not_allowed" });
+  });
+
   test("adds a missing output ceiling and preserves a smaller one", () => {
     const added = applyProviderBodyPolicy(run, '{"model":"gpt-5"}', "max_output_tokens", 100);
     expect(added.ok && JSON.parse(added.body).max_output_tokens).toBe(100);

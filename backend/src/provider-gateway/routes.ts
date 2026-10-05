@@ -5,7 +5,7 @@ import {
   ProviderGatewayAdmissionError,
 } from "./audit";
 import { resolveProviderCredentialForRun } from "./credentials";
-import { providerForEngine, type ProviderId } from "./provider";
+import { openCodeZenModelId, providerForEngine, type ProviderId } from "./provider";
 import { providerRequestLimits } from "./limits";
 import { applyProviderBodyPolicy, type OutputLimitField } from "./request-policy";
 import {
@@ -46,6 +46,7 @@ const UPSTREAM_ORIGINS: Record<ProviderId, string> = {
   openai: "https://api.openai.com",
   openrouter: "https://openrouter.ai/api",
   cerebras: "https://api.cerebras.ai",
+  opencode: "https://opencode.ai/zen",
 };
 
 export function providerUpstreamOrigin(
@@ -129,6 +130,13 @@ function normalizeCerebrasModelForUpstream(run: GatewayRun, body: string): strin
   if (run.engine !== "opencode" || !run.model.startsWith("cerebras/") || !body) return body;
   const parsed = JSON.parse(body) as Record<string, unknown>;
   if (parsed.model === run.model) parsed.model = run.model.slice("cerebras/".length);
+  return JSON.stringify(parsed);
+}
+
+function normalizeZenModelForUpstream(run: GatewayRun, body: string): string {
+  if (run.engine !== "opencode" || !run.model.startsWith("opencode/") || !body) return body;
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  if (parsed.model === run.model) parsed.model = openCodeZenModelId(run.model);
   return JSON.stringify(parsed);
 }
 
@@ -284,6 +292,8 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
       upstreamBody = normalizeOpenAIModelForUpstream(run, upstreamBody);
     } else if (target.provider === "cerebras") {
       upstreamBody = normalizeCerebrasModelForUpstream(run, upstreamBody);
+    } else if (target.provider === "opencode") {
+      upstreamBody = normalizeZenModelForUpstream(run, upstreamBody);
     }
 
     const resolved = await resolveCredential({
@@ -413,6 +423,10 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
   routes.post(
     "/cerebras/v1/chat/completions",
     proxy({ provider: "cerebras", upstreamPath: "/v1/chat/completions", outputLimitField: "max_tokens" }),
+  );
+  routes.post(
+    "/opencode/v1/chat/completions",
+    proxy({ provider: "opencode", upstreamPath: "/v1/chat/completions", outputLimitField: "max_tokens" }),
   );
   return routes;
 }

@@ -1,7 +1,14 @@
 import type { EngineId } from "../db/schema";
 
-export const PROVIDER_IDS = ["anthropic", "openai", "openrouter", "cerebras"] as const;
+export const PROVIDER_IDS = ["anthropic", "openai", "openrouter", "cerebras", "opencode"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
+
+/** OpenCode Zen's own model id for one of our "opencode/<id>:free" lane ids:
+ * the lane marks free models with ":free" (OpenRouter's convention); Zen's ids
+ * carry no marker. */
+export function openCodeZenModelId(model: string): string {
+  return model.slice("opencode/".length).replace(/:free$/, "");
+}
 
 export function providerForEngine(engine: EngineId, model: string): ProviderId | null {
   switch (engine) {
@@ -10,6 +17,7 @@ export function providerForEngine(engine: EngineId, model: string): ProviderId |
     case "pi":
       if (model.startsWith("openai/")) return "openai";
       if (model.startsWith("cerebras/")) return "cerebras";
+      if (model.startsWith("opencode/")) return "opencode";
       return model.includes("/") ? "openrouter" : "anthropic";
     case "claude":
     case "claude-sdk":
@@ -33,6 +41,8 @@ export function providerCredentialName(provider: ProviderId): string {
       return "OPENROUTER_API_KEY";
     case "cerebras":
       return "CEREBRAS_API_KEY";
+    case "opencode":
+      return "OPENCODE_API_KEY";
   }
 }
 

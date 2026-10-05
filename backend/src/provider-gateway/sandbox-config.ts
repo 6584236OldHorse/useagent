@@ -314,6 +314,7 @@ export function opencodeProviderGatewayOptions(
   const openaiToken = mintResidentThreadToken(ctx, "opencode", "openai");
   const openrouterToken = mintResidentThreadToken(ctx, "opencode", "openrouter");
   const cerebrasToken = mintResidentThreadToken(ctx, "opencode", "cerebras");
+  const zenToken = mintResidentThreadToken(ctx, "opencode", "opencode");
   // OpenCode passes provider options directly to the AI SDK; provider baseURLs
   // include `/v1` for the SDK-specific endpoint suffixes. Claude Code's
   // ANTHROPIC_BASE_URL seam differs and appends `/v1/messages` itself.
@@ -321,6 +322,7 @@ export function opencodeProviderGatewayOptions(
   const openaiBase = providerGatewayEndpoint("openai", true);
   const openrouterBase = providerGatewayEndpoint("openrouter", true);
   const cerebrasBase = providerGatewayEndpoint("cerebras", true);
+  const zenBase = providerGatewayEndpoint("opencode", true);
   return {
     ...(anthropicToken && anthropicBase
       ? { anthropic: { baseURL: anthropicBase, apiKey: anthropicToken } }
@@ -333,6 +335,11 @@ export function opencodeProviderGatewayOptions(
       : {}),
     ...(cerebrasToken && cerebrasBase
       ? { cerebras: { baseURL: cerebrasBase, apiKey: cerebrasToken } }
+      : {}),
+    // OpenCode's own Zen provider (the free lane's second source) rides the
+    // same gateway seam; its runtime adapter is OpenAI-compatible.
+    ...(zenToken && zenBase
+      ? { opencode: { baseURL: zenBase, apiKey: zenToken } }
       : {}),
   };
 }

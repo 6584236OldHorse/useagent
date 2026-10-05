@@ -195,6 +195,42 @@ describe("provider gateway routes", () => {
     expect(forwardedAuthorization).toBe("Bearer real-upstream-key");
   });
 
+  test("OpenCode Zen free models use chat completions under Zen's own id with the server-side key", async () => {
+    const zenClaims = { ...claims, provider: "opencode" as const };
+    const zenRun = { ...run, model: "opencode/big-pickle:free" };
+    let forwardedUrl = "";
+    let forwardedBody = "";
+    let forwardedAuthorization = "";
+    const upstream = {
+      token: zenClaims,
+      activeRun: zenRun,
+      fetchUpstream: async (input: string | URL | Request, init?: RequestInit) => {
+        forwardedUrl = String(input);
+        forwardedBody = String(init?.body);
+        forwardedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
+        return Response.json({ ok: true });
+      },
+    };
+    // The runtime sends Zen's id; our lane id (with the ":free" marker) is accepted too.
+    for (const requested of ["big-pickle", "opencode/big-pickle:free"]) {
+      const response = await app(upstream).request("/api/provider/opencode/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer sandbox-capability" },
+        body: JSON.stringify({ model: requested, max_tokens: 16 }),
+      });
+      expect(response.status).toBe(200);
+      expect(forwardedUrl).toBe("https://opencode.ai/zen/v1/chat/completions");
+      expect(JSON.parse(forwardedBody).model).toBe("big-pickle");
+      expect(forwardedAuthorization).toBe("Bearer real-upstream-key");
+    }
+    const other = await app(upstream).request("/api/provider/opencode/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer sandbox-capability" },
+      body: JSON.stringify({ model: "claude-opus-5", max_tokens: 16 }),
+    });
+    expect(other.status).toBe(403);
+  });
+
   test("replaces sandbox auth with the server-side key and preserves an SSE body", async () => {
     let captured: { url: string; init?: RequestInit } | null = null;
     let auditCompletions = 0;
