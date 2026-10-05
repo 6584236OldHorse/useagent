@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { SandboxNotFoundError, type SandboxProvider, type SandboxProviderKind } from "@useagent/sandbox-contract";
+import { parseLocalSandboxId } from "@useagent/runner-protocol";
 import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { runs } from "../db/schema";
@@ -11,9 +12,14 @@ import {
   sandboxProviderApiKey,
   sandboxProviderApiKeyFor,
   sandboxProviderKind,
+  sandboxProviderPorts,
   sandboxTemplate,
 } from "./provider";
 import { isSandboxProviderKind } from "./plugins";
+import { localPlugin, localProviderConfig } from "@useagent/sandbox-local";
+import { getRunnerPolicy, localRunnersEnabled } from "../runners/policy";
+import { activeRunnerSeam } from "../runners/directory";
+import { withRunnerBridgeContext } from "../runners/bridge-context";
 import { ExpectedSandboxMismatchError, parseExpectedSandboxBinding, type ExpectedSandboxBinding } from "./expected-binding";
 export { ExpectedSandboxMismatchError } from "./expected-binding";
 
@@ -57,6 +63,83 @@ export interface SandboxBindingDeps {
   /** Test seam: provider factories per kind (default: the plugin registry). */
   readonly providers?: Partial<Record<SandboxProviderKind, (apiKey: string) => SandboxProvider>>;
   readonly envProvider?: () => SandboxBinding | null;
+  /** Test seam: the user's connected machine and the org's policy (default: this process's runner view). */
+  readonly runners?: {
+    readonly onlineForUser: (orgId: string, userId: string) => BoundRunner | null;
+    readonly runner: (runnerId: string) => BoundRunner | null;
+    readonly policy: (orgId: string) => Promise<{ allowLocalExecution: boolean; allowLocalLogins: boolean }>;
+    readonly refresh?: () => Promise<void>;
+  };
+}
+
+/** What a binding needs to know about a machine. */
+export interface BoundRunner {
+  readonly id: string;
+  readonly orgId: string;
+  readonly userId: string;
+  readonly enrolledAt: string;
+  readonly logins: readonly string[];
+}
+
+function runnerSeam(deps: SandboxBindingDeps): NonNullable<SandboxBindingDeps["runners"]> {
+  if (deps.runners) return deps.runners;
+  const seam = activeRunnerSeam();
+  return { onlineForUser: seam.onlineForUser, runner: seam.runner, policy: getRunnerPolicy, refresh: seam.refresh };
+}
+
+function localBinding(runner: BoundRunner, logins: readonly string[], deps: SandboxBindingDeps): SandboxBinding {
+  const env = deps.env ?? process.env;
+  const config = localProviderConfig(env, { runnerId: runner.id, logins });
+  const build = deps.providers?.local ?? (() => localPlugin.createProvider(config, sandboxProviderPorts("local")));
+  return {
+    kind: "local",
+    provider: build(""),
+    snapshot: null,
+    credential: "user",
+    userId: runner.userId,
+    connectionUpdatedAt: runner.enrolledAt,
+  };
+}
+
+/** The user's connected machine, when the deployment and the organisation allow local execution. */
+async function localRunnerBinding(
+  scope: { readonly orgId: string; readonly userId: string },
+  deps: SandboxBindingDeps,
+): Promise<SandboxBinding | null> {
+  if (!localRunnersEnabled(deps.env)) return null;
+  const seam = runnerSeam(deps);
+  const runner = seam.onlineForUser(scope.orgId, scope.userId);
+  if (!runner) return null;
+  const policy = await seam.policy(scope.orgId);
+  if (!policy.allowLocalExecution) return null;
+  return localBinding(runner, policy.allowLocalLogins ? runner.logins : [], deps);
+}
+
+export class LocalExecutionDisabledError extends Error {
+  readonly code = "local_execution_disabled" as const;
+
+  constructor() {
+    super("Local execution is switched off for this organisation; the sandbox on the machine is kept.");
+    this.name = "LocalExecutionDisabledError";
+  }
+}
+
+/**
+ * The machine a recorded local sandbox lives on, connected or not; use fails
+ * with "not connected" when it is away. The deployment and organisation
+ * switches apply here too, so a retained sandbox cannot outlive them; the
+ * record stays and nothing falls back to another provider.
+ */
+async function localRecordedBinding(recorded: RecordedSandbox, deps: SandboxBindingDeps): Promise<SandboxBinding> {
+  const parsed = recorded.sandboxId ? parseLocalSandboxId(recorded.sandboxId) : null;
+  const runner = parsed ? runnerSeam(deps).runner(parsed.runnerId) : null;
+  if (!parsed || !runner) {
+    throw new Error("this sandbox was created on a machine that is no longer enrolled");
+  }
+  if (!localRunnersEnabled(deps.env)) throw new LocalExecutionDisabledError();
+  const policy = await runnerSeam(deps).policy(runner.orgId);
+  if (!policy.allowLocalExecution) throw new LocalExecutionDisabledError();
+  return localBinding(runner, policy.allowLocalLogins ? runner.logins : [], deps);
 }
 
 /** Captured provider configuration, not a fresh read of ambient credentials. */
@@ -187,6 +270,10 @@ export async function resolveSandboxBindingForRun(
   scope: { readonly orgId?: string | null; readonly userId?: string | null },
   deps: SandboxBindingDeps = {},
 ): Promise<SandboxBinding> {
+  if (scope.orgId && scope.userId) {
+    const local = await localRunnerBinding({ orgId: scope.orgId, userId: scope.userId }, deps);
+    if (local) return local;
+  }
   if (userComputersEnabled(deps.env) && scope.orgId && scope.userId) {
     const user = await userSandboxBinding({ orgId: scope.orgId, userId: scope.userId }, null, deps);
     if (user) return user;
@@ -195,6 +282,7 @@ export async function resolveSandboxBindingForRun(
 }
 
 interface RecordedSandbox {
+  readonly sandboxId?: string | null;
   readonly userId: string | null;
   readonly orgId: string | null;
   readonly sandboxProvider: SandboxProviderKind | null;
@@ -230,6 +318,7 @@ async function sandboxOwnerRecord(sandboxId: string, recorded: RecordedSandbox):
 }
 
 async function bindingForRecorded(recorded: RecordedSandbox | null, deps: SandboxBindingDeps): Promise<SandboxBinding> {
+  if (recorded?.sandboxProvider === "local") return localRecordedBinding(recorded, deps);
   if (recorded?.sandboxCredential === "user") {
     if (!recorded.orgId || !recorded.userId || !isComputerKind(recorded.sandboxProvider)) {
       throw new Error(
@@ -299,21 +388,31 @@ export async function getThreadExpectedSandbox(orgId: string, threadId: string, 
 
 /** Run-bound tools share the execution fence instead of resolving by ID alone. */
 export async function resolveRunSandbox(run: {
+  readonly id?: string;
   readonly orgId: string | null;
+  readonly userId?: string | null;
   readonly threadId: string;
   readonly sandboxId: string | null;
   readonly expectedSandbox?: ExpectedSandboxBinding | null;
 }) {
-  const expected = parseExpectedSandboxBinding(run.expectedSandbox) ??
-    (run.orgId ? await getThreadExpectedSandbox(run.orgId, run.threadId) : null);
-  if (expected) {
-    if (run.orgId !== expected.ownerOrgId || run.sandboxId !== expected.sandboxId) {
-      throw new ExpectedSandboxMismatchError();
-    }
-    return await resolveExpectedSandbox(expected, run.threadId);
-  }
-  if (!run.sandboxId) throw new Error("run has no sandbox");
-  return await (await resolveSandboxBindingForSandbox(run.sandboxId)).provider.get(run.sandboxId);
+  // A process without runner links reaches a local sandbox through the bridge,
+  // with a capability for this run; the context is captured when the link is built.
+  return withRunnerBridgeContext(
+    { orgId: run.orgId ?? "", userId: run.userId ?? "", runId: run.id ?? "", threadId: run.threadId },
+    async () => {
+      if (run.sandboxId && parseLocalSandboxId(run.sandboxId)) await runnerSeam({}).refresh?.();
+      const expected = parseExpectedSandboxBinding(run.expectedSandbox) ??
+        (run.orgId ? await getThreadExpectedSandbox(run.orgId, run.threadId) : null);
+      if (expected) {
+        if (run.orgId !== expected.ownerOrgId || run.sandboxId !== expected.sandboxId) {
+          throw new ExpectedSandboxMismatchError();
+        }
+        return await resolveExpectedSandbox(expected, run.threadId);
+      }
+      if (!run.sandboxId) throw new Error("run has no sandbox");
+      return await (await resolveSandboxBindingForSandbox(run.sandboxId)).provider.get(run.sandboxId);
+    },
+  );
 }
 
 /** The provider that created a sandbox, by sandbox id (for callers that hold only the id). */

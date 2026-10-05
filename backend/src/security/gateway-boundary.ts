@@ -1,4 +1,16 @@
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/** How a container on this machine names the host it runs on; the traffic never leaves the machine. */
+const HOST_ALIASES = new Set(["host.docker.internal", "host.containers.internal"]);
+
+/** A private-network address (RFC 1918, link-local, ULA): a container's route to the machine it runs on. */
+function isPrivateAddress(hostname: string): boolean {
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return /^\[f[cd][0-9a-f]{2}:/i.test(hostname) || /^\[fe80:/i.test(hostname);
+}
 const MIN_SIGNING_SECRET_LENGTH = 32;
 
 type GatewaySecretName =
@@ -28,7 +40,8 @@ export function validateGatewayPublicUrl(
   if (url.pathname !== "/") {
     throw new Error("gateway public URL must not include a path");
   }
-  const loopback = LOOPBACK_HOSTS.has(url.hostname);
+  // Development only: a plane on this machine, reached from a container through the host alias or the machine's private address.
+  const loopback = LOOPBACK_HOSTS.has(url.hostname) || HOST_ALIASES.has(url.hostname) || isPrivateAddress(url.hostname);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback && devModeEnabled(env))) {
     throw new Error("gateway public URL requires HTTPS (HTTP is local-development loopback only)");
   }

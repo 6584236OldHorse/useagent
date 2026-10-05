@@ -13,6 +13,8 @@ COPY packages/sandbox-contract/package.json ./packages/sandbox-contract/
 COPY packages/sandbox-daytona/package.json ./packages/sandbox-daytona/
 COPY packages/sandbox-cube/package.json ./packages/sandbox-cube/
 COPY packages/sandbox-box/package.json ./packages/sandbox-box/
+COPY packages/runner-protocol/package.json ./packages/runner-protocol/
+COPY packages/sandbox-local/package.json ./packages/sandbox-local/
 
 WORKDIR /app/backend
 RUN bun install --frozen-lockfile --production
@@ -35,9 +37,11 @@ COPY packages/sandbox-contract ./packages/sandbox-contract
 COPY packages/sandbox-daytona ./packages/sandbox-daytona
 COPY packages/sandbox-cube ./packages/sandbox-cube
 COPY packages/sandbox-box ./packages/sandbox-box
+COPY packages/runner-protocol ./packages/runner-protocol
+COPY packages/sandbox-local ./packages/sandbox-local
 
 RUN ln -s backend/node_modules /app/node_modules \
-    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box; do \
+    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box runner-protocol sandbox-local; do \
       rm -rf "/app/backend/node_modules/@useagent/${package}"; \
       ln -s "../../../packages/${package}" "/app/backend/node_modules/@useagent/${package}"; \
     done

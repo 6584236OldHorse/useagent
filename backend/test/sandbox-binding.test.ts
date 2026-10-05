@@ -31,6 +31,64 @@ async function userIdForCookies(cookies: string): Promise<string> {
   return id;
 }
 
+const runnerStub = {
+  id: "rn_test",
+  orgId: "org",
+  userId: "user",
+  name: "laptop",
+  enrolledAt: "2026-09-08T00:00:00.000Z",
+  fingerprint: "f".repeat(64),
+  logins: ["codex", "claude"] as readonly string[],
+} as unknown as import("../src/runners/registry").LiveRunner;
+
+describe("local runner binding", () => {
+  test("a connected machine runs the user's work, with logins only when the org allows them", async () => {
+    const built: string[] = [];
+    const seam = (allowLocalExecution: boolean, allowLocalLogins: boolean) => ({
+      onlineForUser: (orgId: string, userId: string) => (orgId === "org" && userId === "user" ? runnerStub : null),
+      runner: (id: string) => (id === "rn_test" ? runnerStub : null),
+      policy: async () => ({ allowLocalExecution, allowLocalLogins }),
+    });
+    const deps = {
+      env: {},
+      envProvider: () => envBinding,
+      providers: { local: () => { built.push("local"); return fakeProvider("local"); } },
+      runners: seam(true, true),
+    };
+    const binding = await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, deps);
+    expect(binding).toMatchObject({ kind: "local", credential: "user", userId: "user", snapshot: null, connectionUpdatedAt: "2026-09-08T00:00:00.000Z" });
+    expect(built).toEqual(["local"]);
+    expect(bindingSnapshot(binding, "DAYTONA_SNAPSHOT")).toBe("");
+    // Another user, the org switch off, or the deployment kill switch: the server's provider.
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "other" }, deps)).credential).toBe("env");
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, runners: seam(false, true) })).credential).toBe("env");
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, env: { LOCAL_RUNNERS: "off" } })).credential).toBe("env");
+  });
+
+  test("a recorded local sandbox resolves to its machine even while it is away", async () => {
+    const { cookies, orgId } = await createOrgSession("binding-local-user");
+    const userId = await userIdForCookies(cookies);
+    const seam = {
+      onlineForUser: () => null,
+      runner: (id: string) => (id === "rn_test" ? { ...runnerStub, orgId, userId } as typeof runnerStub : null),
+      policy: async () => ({ allowLocalExecution: true, allowLocalLogins: true }),
+    };
+    const deps = { env: {}, envProvider: () => envBinding, providers: { local: () => fakeProvider("local") }, runners: seam };
+    const created = await json<{ id: string }>("/api/runs", { method: "POST", cookies, body: { prompt: "Local work.", engine: "mock" } });
+    expect(created.status).toBe(201);
+    await setRunSandbox(created.body.id, "local:rn_test:c1", { kind: "local", credential: "user" });
+    expect((await resolveSandboxBindingForThread(orgId, created.body.id, deps)).kind).toBe("local");
+    expect((await resolveSandboxBindingForSandbox("local:rn_test:c1", deps)).kind).toBe("local");
+    // A machine that was un-enrolled cannot be resolved; nothing falls back to the server's account.
+    const gone = { ...deps, runners: { ...seam, runner: () => null } };
+    await expect(resolveSandboxBindingForSandbox("local:rn_test:c1", gone)).rejects.toThrow(/no longer enrolled/);
+    // The switches apply to retained sandboxes too; the record stays, nothing falls back.
+    await expect(resolveSandboxBindingForSandbox("local:rn_test:c1", { ...deps, env: { LOCAL_RUNNERS: "off" } })).rejects.toThrow(/switched off/);
+    const forbidden = { ...deps, runners: { ...seam, policy: async () => ({ allowLocalExecution: false, allowLocalLogins: true }) } };
+    await expect(resolveSandboxBindingForThread(orgId, created.body.id, forbidden)).rejects.toThrow(/switched off/);
+  });
+});
+
 describe("sandbox binding", () => {
   test("env binding builds the provider selected by the injected environment", () => {
     const previous = process.env.SANDBOX_PROVIDER;
