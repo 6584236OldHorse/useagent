@@ -1,18 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildDesktopReadinessCommand } from "./desktop-workstation";
 import { buildRuntimeEnvironmentBootScript, desktopLaunchPath, runtimeEnvironmentBootPath } from "./runtime-environment-boot";
 import { buildRuntimeEnvironmentAuthenticationCommand } from "./runtime-environment-client";
 import { buildRuntimeEnvironmentLaunchCommand, buildRuntimeEnvironmentReadinessCommand } from "./runtime-environment";
+import { sandboxRuntimeLayout } from "../sandboxes/provider";
 
 describe("sandbox boot entrypoint", () => {
-  const env = { RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" };
+  const env = {};
   const script = buildRuntimeEnvironmentBootScript(env);
 
   test("starts the plane's exact launch command in the background, waits on the plane's readiness probe, pairs, warms the shell and keeps the container alive", () => {
     expect(script.startsWith("#!/bin/sh\n")).toBe(true);
     const single = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     expect(script).toContain(`nohup sh -c ${single(buildRuntimeEnvironmentLaunchCommand(env))} >"/root/.skynet/t3/boot.log" 2>&1 &`);
-    expect(script).toContain(`until sh -c ${single(buildRuntimeEnvironmentReadinessCommand(env))}; do`);
+    expect(script).toContain(`until sh -c ${single(buildRuntimeEnvironmentReadinessCommand())}; do`);
     expect(script).toContain(`sh -c ${single(buildRuntimeEnvironmentAuthenticationCommand())} >>"/root/.skynet/t3/boot.log" 2>&1 || true`);
     expect(script).toContain("http://127.0.0.1:37733/api/orchestration/shell || true");
     expect(script.trimEnd().endsWith('[ "$#" -gt 0 ] && exec "$@"\nexec sleep infinity')).toBe(true);
@@ -27,9 +31,10 @@ describe("sandbox boot entrypoint", () => {
     expect(script).toContain('[ "$i" -ge 600 ] && break');
   });
 
-  test("the flags the runtime starts with follow the plane's environment at bake time", () => {
-    expect(script).toContain('"child-forwarding=on" > "/root/.skynet/t3/.useagent-runtime-flags"');
-    expect(buildRuntimeEnvironmentBootScript({})).toContain('"child-forwarding=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+  test("the baked boot starts the runtime with the plane's flags", () => {
+    expect(script).toContain('"mcp=off,continuations=off,instructions=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+    // The baked boot starts the runtime with third-party telemetry off.
+    expect(script).toContain("export T3CODE_TELEMETRY_ENABLED=false");
   });
 
   test("boots the desktop after the runtime is warm and marks the boot for the plane", () => {
@@ -52,5 +57,27 @@ describe("sandbox boot entrypoint", () => {
     expect(local).toContain('export HOME="/home/user"');
     expect(local).toContain('>"/home/user/.skynet/t3/boot.log"');
     expect(local).not.toContain("/root/");
+  });
+
+  test("restores the image's Bun to 755 before the runtime starts, so the plane's probe passes without an upload", async () => {
+    const cube = buildRuntimeEnvironmentBootScript({}, sandboxRuntimeLayout("cube"));
+    const line = '[ -f "/usr/local/bin/bun" ] && chmod 755 "/usr/local/bin/bun" 2>/dev/null || true';
+    expect(cube).toContain(line);
+    expect(cube.indexOf(line)).toBeLessThan(cube.indexOf("nohup sh -c"));
+    const directory = await mkdtemp(join(tmpdir(), "useagent-boot-bun-"));
+    try {
+      const bun = join(directory, "bun");
+      await Bun.write(bun, "#!/bin/sh\n");
+      await chmod(bun, 0o777);
+      const script = buildRuntimeEnvironmentBootScript({}, { home: directory, workdir: join(directory, "work"), runsAsRoot: false, bunExecutable: bun });
+      const chmodLine = script.split("\n").find((candidate) => candidate.includes("chmod 755"))!;
+      expect(Bun.spawnSync(["sh", "-c", chmodLine]).exitCode).toBe(0);
+      expect((await stat(bun)).mode & 0o777).toBe(0o755);
+      // A layout whose Bun is missing boots on.
+      await rm(bun);
+      expect(Bun.spawnSync(["sh", "-c", chmodLine]).exitCode).toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

@@ -98,8 +98,8 @@ export function Thinking({
           </span>
         )}
         {detail && (
-          <span className="min-w-0 truncate text-body-2-regular tabular-nums text-text-tertiary">
-            {detail}
+          <span className="-ml-1 min-w-0 truncate text-body-2-regular tabular-nums text-text-tertiary">
+            {`· ${detail}`}
           </span>
         )}
         {!active && hasSteps && (
@@ -114,7 +114,7 @@ export function Thinking({
       </button>
 
       {hasSteps && expanded && (
-        <div className="animate-ai-fade-up mt-1.5 ml-[18px] border-l border-border-button-default/60 pl-3">
+        <div className="animate-ai-fade-up mt-1.5 ml-[18px] trace-guide pl-3">
           <div className="flex flex-col gap-px py-0.5">{children}</div>
         </div>
       )}

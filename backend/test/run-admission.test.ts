@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { sql } from "drizzle-orm";
+import { db } from "../src/db/client";
 import {
+  getRunAdmissionWithin,
   getRunAdmission,
   RunAdmissionClosedError,
   setRunAdmission,
@@ -114,11 +117,18 @@ describe("durable run admission", () => {
     });
     await closeAdmission();
 
-    expect((await json("/api/runs", {
+    const refused = await json("/api/runs", {
       method: "POST",
       body: { prompt: "blocked", engine: "mock" },
       cookies: session.cookies,
-    })).status).toBe(503);
+    });
+    expect(refused.status).toBe(503);
+    // The web composer shows `message` verbatim, so the refusal reads plainly.
+    expect(refused.body).toEqual({
+      error: "run_admission_closed",
+      retryable: true,
+      message: "A release is being installed. Send your task again in a moment.",
+    });
     expect((await json(`/api/skills/${skill.body.id}/run`, {
       method: "POST",
       body: { prompt: "blocked", engine: "mock" },
@@ -164,4 +174,23 @@ describe("durable run admission", () => {
       }
     }
   });
+});
+
+test("a bounded admission read aborts in Postgres while a deployment holds the exclusive lock", async () => {
+  // The lock ids are the admission barrier's (src/commands/admission.ts).
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(1397445230, 1)`);
+    const started = Date.now();
+    let failure: (Error & { cause?: { code?: string } }) | null = null;
+    try {
+      await getRunAdmissionWithin(200);
+    } catch (error) {
+      failure = error as Error & { cause?: { code?: string } };
+    }
+    // SQLSTATE 55P03: Postgres cancelled the lock wait itself.
+    expect(failure?.cause?.code).toBe("55P03");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+  // With the hold released the same read answers.
+  expect((await getRunAdmissionWithin(200)).open).toBe(true);
 });

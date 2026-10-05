@@ -145,42 +145,54 @@ describe("resolveProviderCredentialForRun precedence", () => {
     expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
   });
 
-  test("production house fallback is restricted to provider-qualified OpenRouter free models", async () => {
-    const free = await resolveProviderCredentialForRun(
-      {
-        orgId: "org-a",
-        userId: "user-a",
-        provider: "openrouter",
-        model: "vendor/model:free",
-      },
-      deps({
-        resolveUserConnection: async () => null,
-        resolveOrgSecret: async () => null,
-        env: { OPENROUTER_API_KEY: "sk-house" },
-        devModeEnabled: () => false,
-      }),
-    );
-    expect(free).toEqual({ value: "sk-house", source: "backend_env" });
-
-    const paid = await resolveProviderCredentialForRun(
-      {
-        orgId: "org-a",
-        userId: "user-a",
-        provider: "openrouter",
-        model: "vendor/model",
-      },
-      deps({
-        resolveUserConnection: async () => null,
-        resolveOrgSecret: async () => null,
-        env: { OPENROUTER_API_KEY: "sk-house" },
-        devModeEnabled: () => false,
-      }),
-    );
-    expect(paid).toBeNull();
+  test("an OpenCode Zen free model runs on the house Zen account only, never a tenant's funded key", async () => {
+    const funded = deps({
+      resolveUserConnection: async () => "zen-user",
+      resolveOrgSecret: async () => "zen-org",
+      env: { OPENCODE_API_KEY: "zen-house", OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    });
+    const free = { orgId: "org-a", userId: "user-a", provider: "opencode" as const, model: "opencode/big-pickle:free" };
+    // Even with a user connection and an org secret present, the free model meets the house account.
+    expect(await resolveProviderCredentialForRun(free, funded))
+      .toEqual({ value: "zen-house", source: "backend_env" });
+    // Zen's paid models keep the tenant precedence and never fall back to the house.
+    expect(await resolveProviderCredentialForRun({ ...free, model: "opencode/claude-opus-5" }, funded))
+      .toEqual({ value: "zen-user", source: "user_connection" });
+    expect(await resolveProviderCredentialForRun(
+      { ...free, model: "opencode/claude-opus-5" },
+      deps({ resolveUserConnection: async () => null, resolveOrgSecret: async () => null, env: { OPENCODE_API_KEY: "zen-house" }, devModeEnabled: () => false }),
+    )).toBeNull();
+    // Without a house key a Zen free model has no credential at all.
+    expect(await resolveProviderCredentialForRun(
+      free,
+      deps({ resolveUserConnection: async () => "zen-user", resolveOrgSecret: async () => "zen-org", env: {}, devModeEnabled: () => false }),
+    )).toBeNull();
   });
-});
 
-describe("resolveProviderCredential (tenant-first, no user)", () => {
+  test("a free model runs on the member's key, then the organisation's, never the deployment's", async () => {
+    const free = { orgId: "org-a", userId: "user-a", provider: "openrouter" as const, model: "vendor/model:free" };
+    expect(await resolveProviderCredentialForRun(free, deps({
+      resolveUserConnection: async () => "sk-member",
+      resolveOrgSecret: async () => "sk-org",
+      env: { OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    }))).toEqual({ value: "sk-member", source: "user_connection" });
+    expect(await resolveProviderCredentialForRun(free, deps({
+      resolveUserConnection: async () => null,
+      resolveOrgSecret: async () => "sk-org",
+      env: { OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    }))).toEqual({ value: "sk-org", source: "org_secret" });
+    // No member or organisation key: production refuses rather than spend the deployment's key.
+    expect(await resolveProviderCredentialForRun(free, deps({
+      resolveUserConnection: async () => null,
+      resolveOrgSecret: async () => null,
+      env: { OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    }))).toBeNull();
+  });
+
   test("org secret wins over the house env", async () => {
     const resolved = await resolveProviderCredential(
       "org-a",
@@ -196,18 +208,33 @@ describe("resolveProviderCredential (tenant-first, no user)", () => {
 });
 
 describe("resolveChatProviderCredential", () => {
-  test("a customer connection key wins over the house key", async () => {
+  test("the member's connection key wins over the org secret and the house env", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
       deps({
         resolveUserConnection: async () => "sk-customer",
+        resolveOrgSecret: async () => "sk-org",
         env: { OPENROUTER_API_KEY: "sk-house" },
       }),
     );
     expect(resolved).toEqual({ value: "sk-customer", source: "user_connection" });
   });
 
-  test("falls back to the house key (explicit free-tier contract, even in production)", async () => {
+  test("without a member key the organisation's secret serves", async () => {
+    const resolved = await resolveChatProviderCredential(
+      { orgId: "org-a", userId: "user-a" },
+      deps({
+        resolveUserConnection: async () => null,
+        resolveOrgSecret: async (orgId, name) =>
+          orgId === "org-a" && name === "OPENROUTER_API_KEY" ? "sk-org" : null,
+        env: { OPENROUTER_API_KEY: "sk-house" },
+        devModeEnabled: () => false,
+      }),
+    );
+    expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
+  });
+
+  test("production fails closed: the house env never serves a member's chat turn", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
       deps({
@@ -216,14 +243,18 @@ describe("resolveChatProviderCredential", () => {
         devModeEnabled: () => false,
       }),
     );
-    expect(resolved).toEqual({ value: "sk-house", source: "backend_env" });
+    expect(resolved).toBeNull();
   });
 
-  test("returns null when neither a customer key nor a house key exists", async () => {
+  test("development mode may still use the house env when nothing else is stored", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
-      deps({ resolveUserConnection: async () => null, env: {} }),
+      deps({
+        resolveUserConnection: async () => null,
+        env: { OPENROUTER_API_KEY: "sk-house" },
+        devModeEnabled: () => true,
+      }),
     );
-    expect(resolved).toBeNull();
+    expect(resolved).toEqual({ value: "sk-house", source: "backend_env" });
   });
 });

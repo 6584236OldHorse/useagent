@@ -967,26 +967,19 @@ export function PdfEmbedSurface({
 }) {
   return (
     <div className="mt-4 flex min-h-0 flex-1 flex-col gap-2">
-      <object
-        data={url}
-        type="application/pdf"
-        aria-label="Embedded PDF preview"
+      <iframe
+        src={url}
+        title="Embedded PDF preview"
         className="min-h-[420px] w-full flex-1 rounded-xl border border-border-button-default bg-background-secondary-default"
+      />
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="self-start text-caption-1-medium text-accent-500 underline underline-offset-2"
       >
-        <div className="grid h-full place-items-center p-6 text-center text-body-2-regular text-text-secondary">
-          <p>
-            This PDF cannot preview inline here.{" "}
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent-500 underline underline-offset-2"
-            >
-              Open the PDF
-            </a>
-          </p>
-        </div>
-      </object>
+        Open the PDF
+      </a>
       <p className="text-caption-1-regular text-text-tertiary">{note}</p>
     </div>
   );
@@ -1066,7 +1059,7 @@ export function WorkpieceSurfaces({
   }
   if (editor.isSheetGrid) {
     return (
-      <SheetGridSurface workbook={editor.workbook} loading={editor.loading} onChange={editor.setWorkbook} />
+      <SheetGridSurface workbook={editor.workbook} loading={editor.loading} onChange={editor.setWorkbook} storageKey={editor.artifactId} />
     );
   }
   if (editor.isSlidesEditor) {

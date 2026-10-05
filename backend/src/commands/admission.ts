@@ -26,6 +26,9 @@ export interface AdmissionChange {
   readonly reason: string;
 }
 
+/** What a person sees while a release waits for in-flight runs; the web composer shows `message`. */
+const RELEASE_IN_PROGRESS = "A release is being installed. Send your task again in a moment.";
+
 export class RunAdmissionClosedError extends Error {
   readonly code = "run_admission_closed";
   readonly state: RunAdmissionState;
@@ -34,6 +37,11 @@ export class RunAdmissionClosedError extends Error {
     super(`Run admission is closed for ${state.operationId}: ${state.reason}`);
     this.name = "RunAdmissionClosedError";
     this.state = state;
+  }
+
+  /** The 503 body every run-starting route answers with. */
+  get body() {
+    return { error: this.code, retryable: true, message: RELEASE_IN_PROGRESS };
   }
 }
 
@@ -96,6 +104,17 @@ async function readUnderSharedLock(exec: Executor): Promise<RunAdmissionState> {
 
 export async function getRunAdmission(): Promise<RunAdmissionState> {
   return db.transaction(readUnderSharedLock);
+}
+
+/** The admission read for background work that must not wait behind a
+ * deployment's exclusive hold: Postgres aborts the lock wait after
+ * lockTimeoutMs (no connection is left waiting) and the read rejects, so the
+ * caller decides what to do without the state. */
+export async function getRunAdmissionWithin(lockTimeoutMs: number): Promise<RunAdmissionState> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`);
+    return readUnderSharedLock(tx);
+  });
 }
 
 /** Acquire the shared transaction barrier and reject new acceptance while a

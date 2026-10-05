@@ -6,8 +6,8 @@ import { OrbitKnotMark } from "@/components/foundations/brand/orbit-knot-mark";
 const RELEASES_URL = "https://github.com/useagenthq/useagent-pro/releases/latest";
 
 export const metadata: Metadata = {
-  title: "useAgent Desktop preview",
-  description: "Private access status for the useAgent Desktop v0.0.5 preview.",
+  title: "UseAgent Desktop preview",
+  description: "Private access status for the UseAgent Desktop v0.0.5 preview.",
 };
 
 export default function DownloadPage() {
@@ -16,11 +16,11 @@ export default function DownloadPage() {
       <section className="w-full max-w-2xl">
         <div className="flex items-center gap-2 text-text-primary">
           <OrbitKnotMark className="size-5" />
-          <span className="text-body-2-medium">useAgent</span>
+          <span className="text-body-2-medium">UseAgent</span>
         </div>
 
         <p className="mt-16 text-mono-label text-text-tertiary">v0.0.5 desktop preview</p>
-        <h1 className="mt-3 text-display-lg text-text-primary">useAgent Desktop for Mac.</h1>
+        <h1 className="mt-3 text-display-lg text-text-primary">UseAgent Desktop for Mac.</h1>
         <p className="mt-4 max-w-xl text-body-regular text-text-secondary">
           The desktop app connects your Mac as an isolated execution machine while your threads,
           memory, skills, and secrets stay on the control plane.

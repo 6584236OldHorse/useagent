@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { freeModelLaneCache } from "./free-model-lane";
 import {
   configuredEngineReadiness,
   configuredUserFacingEngines,
@@ -22,6 +23,11 @@ const PROD = {
   PROVIDER_GATEWAY_SECRET: "readiness-test-provider-gateway-secret-0123456789",
 } as const;
 
+
+// These tests read the Free lane's cold boot state (the seed). Other suites in the
+// same process adopt published lanes into the shared cache, so start from the seed.
+beforeEach(() => freeModelLaneCache.reset());
+
 describe("engine readiness advertisement", () => {
   test("a sandbox engine is not ready without a wired provider gateway", () => {
     const proven = {
@@ -38,7 +44,8 @@ describe("engine readiness advertisement", () => {
     const readiness = engineReadiness("opencode", unwired);
     expect(readiness).toMatchObject({ ready: false, reason: "gateway_unconfigured" });
     expect(readiness.message).toContain("GATEWAY_PUBLIC_URL");
-    expect(readyUserFacingEngines(unwired)).toEqual([]);
+    // Chat needs no gateway, so it is the only engine left standing.
+    expect(readyUserFacingEngines(unwired)).toEqual(["chat"]);
     expect(resolveAcceptedEngine("codex", unwired)).toMatchObject({
       ok: false,
       status: 403,
@@ -53,18 +60,16 @@ describe("engine readiness advertisement", () => {
       reason: "gateway_unconfigured",
     });
     // Chat never touches a sandbox, so it does not need the gateway.
-    expect(engineReadiness("chat", { ...unwired, OPENROUTER_API_KEY: "k" })).toMatchObject({ ready: true });
+    expect(engineReadiness("chat", unwired)).toMatchObject({ ready: true });
   });
 
-  test("advertises no-sandbox chat only when its direct provider is configured", () => {
-    expect(readyUserFacingEngines(PROD)).not.toContain("chat");
+  test("advertises no-sandbox chat without any deployment key, unless it is turned off", () => {
+    expect(readyUserFacingEngines(PROD)).toEqual(["chat"]);
+    expect(engineReadiness("chat", PROD)).toMatchObject({ ready: true, reason: "enabled" });
+    expect(readyUserFacingEngines({ ...PROD, CHAT: "off" })).not.toContain("chat");
+    expect(engineReadiness("chat", { ...PROD, CHAT: "off" })).toMatchObject({ ready: false });
 
-    const configured = { ...PROD, OPENROUTER_API_KEY: "test-openrouter-key" };
-    expect(readyUserFacingEngines(configured)).toEqual(["chat"]);
-    expect(engineReadiness("chat", configured)).toMatchObject({
-      ready: true,
-      reason: "enabled",
-    });
+    const configured = PROD;
     expect(engineModelsForReadyEngines(configured).chat).toContain(
       "anthropic/claude-sonnet-5",
     );
@@ -79,7 +84,7 @@ describe("engine readiness advertisement", () => {
       T3_RUN_ADAPTER_ENGINES: "codex,opencode",
     };
 
-    expect(readyUserFacingEngines(env)).toEqual([]);
+    expect(readyUserFacingEngines(env)).toEqual(["chat"]);
     expect(engineReadiness("claude", env)).toMatchObject({
       ready: false,
       reason: "not_proven",
@@ -181,7 +186,7 @@ describe("engine readiness advertisement", () => {
       ready: false,
       reason: "provider_unhealthy",
     });
-    expect(readyUserFacingEngines(env)).toEqual([]);
+    expect(readyUserFacingEngines(env)).toEqual(["chat"]);
     expect(configuredUserFacingEngines(env)).toContain("claude");
     expect(configuredEngineReadiness(env).claude).toMatchObject({
       ready: false,
@@ -212,7 +217,7 @@ describe("engine readiness advertisement", () => {
       PROVIDER_HEALTH_OPENROUTER: "verified",
     });
 
-    expect(Object.keys(models)).toEqual(["opencode"]);
+    expect(Object.keys(models).sort()).toEqual(["chat", "opencode"]);
     expect(models.opencode).toEqual([
       "openai/gpt-5.6-sol",
       "openai/gpt-5.6-luna",
@@ -221,8 +226,8 @@ describe("engine readiness advertisement", () => {
       "deepseek/deepseek-v4-flash",
       "google/gemini-3.7-flash",
       "minimax/minimax-m3:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
       "dots-studio/dots-3-note-preview:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
     ]);
   });
 
@@ -244,6 +249,12 @@ describe("engine readiness advertisement", () => {
     expect(engineModelReadyForDispatch("opencode", "cerebras/qwen-3.8-27b", {
       ...env,
       PROVIDER_HEALTH_CEREBRAS: "verified",
+    })).toBe(true);
+    // An OpenCode Zen free model needs Zen's own release evidence.
+    expect(modelProviderReadyForEngine("opencode", "opencode/big-pickle:free", env)).toBe(false);
+    expect(modelProviderReadyForEngine("opencode", "opencode/big-pickle:free", {
+      ...env,
+      PROVIDER_HEALTH_OPENCODE: "verified",
     })).toBe(true);
     expect(engineModelsForConfiguredEngines(env).opencode).not.toContain("claude-opus-5");
     expect(modelProviderReadinessErrorBody("opencode", "claude-opus-5", env)).toMatchObject({
@@ -341,5 +352,24 @@ describe("readiness remedy text", () => {
       provider: "anthropic",
       message: "Claude Code is configured, but no Anthropic connection is verified. Connect an Anthropic key in Settings, then retry.",
     });
+  });
+});
+
+describe("PROVIDER_ACCOUNTS and the model catalogs", () => {
+  test("a restricted provider's models leave the catalog of every account it does not list", () => {
+    const ready = { ENABLED_ENGINES: "opencode", PROVIDER_HEALTH_CEREBRAS: "verified" };
+    const env = { ...ready, PROVIDER_ACCOUNTS: "cerebras:owner@example.com" };
+    const all = engineModelsForConfiguredEngines(ready).opencode ?? [];
+    const cerebras = all.filter((model) => model.startsWith("cerebras/"));
+    expect(cerebras.length).toBeGreaterThan(0);
+    const owner = engineModelsForConfiguredEngines(env, "owner@example.com").opencode ?? [];
+    const other = engineModelsForConfiguredEngines(env, "someone@example.com").opencode ?? [];
+    const nobody = engineModelsForConfiguredEngines(env, null).opencode ?? [];
+    for (const model of cerebras) {
+      expect(owner).toContain(model);
+      expect(other).not.toContain(model);
+      expect(nobody).not.toContain(model);
+    }
+    expect(other.filter((model) => !model.startsWith("cerebras/"))).toEqual(all.filter((model) => !model.startsWith("cerebras/")));
   });
 });

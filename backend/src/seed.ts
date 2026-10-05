@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "./db/client";
 import { member, organization, user } from "./db/schema";
+import { allowDevOrg } from "./env";
 
 // ---------------------------------------------------------------------------
 // Dev fallback identity. When a request has no session, the org-scoping
@@ -10,7 +11,7 @@ import { member, organization, user } from "./db/schema";
 
 export const DEV_ORG_ID = "org-skynet-dev"; // documented legacy id - existing dev DBs depend on it
 export const DEV_ORG_SLUG = "skynet-dev";
-export const DEV_ORG_NAME = "useAgent Dev";
+export const DEV_ORG_NAME = "UseAgent Dev";
 export const DEV_USER_ID = "user-useagent-dev";
 export const DEV_USER_EMAIL = "dev@useagent.local";
 export const DEV_USER_NAME = "Dev User";
@@ -23,8 +24,10 @@ export function getDevContext(): { orgId: string; userId: string } {
 /** Create the dev org, dev user, and one membership row. Every step is
  * idempotent, so booting repeatedly is a no-op. No demo content is planted —
  * Knowledge and Skills start empty and fill only with real, user- or
- * agent-authored records. */
+ * agent-authored records. Only where the dev-org fallback is on: a production
+ * database gets no owner account nobody signs up for. */
 export async function seedDev(): Promise<void> {
+  if (!allowDevOrg()) return;
   const now = new Date();
 
   await db
@@ -61,12 +64,14 @@ export async function seedDev(): Promise<void> {
     .onConflictDoNothing();
 }
 
-/** The org id of the first membership for a user, or null if they have none. */
+/** The organisation a session without an active one lands in: the person's
+ *  earliest membership, which is the workspace created with their account. */
 export async function firstOrgForUser(userId: string): Promise<string | null> {
   const [row] = await db
     .select({ organizationId: member.organizationId })
     .from(member)
     .where(eq(member.userId, userId))
+    .orderBy(asc(member.createdAt), asc(member.id))
     .limit(1);
   return row?.organizationId ?? null;
 }

@@ -119,7 +119,7 @@ export class RemoteHost {
 		} = {},
 	): Promise<ProcessResult> {
 		const remainingMs = this.#deadlineAt - Date.now();
-		if (remainingMs <= 0) throw new Error("promotion exceeded 300000ms");
+		if (remainingMs <= 0) throw new Error("promotion exceeded its time budget");
 		const timeoutMs = Math.min(options.timeoutMs ?? remainingMs, remainingMs);
 		const bounded =
 			`timeout --foreground --signal=TERM --kill-after=5s ` +

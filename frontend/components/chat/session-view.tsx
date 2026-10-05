@@ -6,10 +6,7 @@ import {
   RiComputerLine,
   RiExpandDiagonal2Line,
   RiFileList2Line,
-  RiGitMergeLine,
   RiLayoutRightLine,
-  RiPagesLine,
-  RiRobot2Line,
   RiTerminalBoxLine,
 } from "@remixicon/react";
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
@@ -26,11 +23,8 @@ import { ArtifactsRail } from "@/components/chat/artifacts-rail";
 import {
   selectActiveSessionId,
   selectSessionCapabilities,
-  selectSessionCommandCatalog,
 } from "@/components/chat/canonical-timeline";
 import { type AssistantIdentity, Conversation } from "@/components/chat/conversation";
-import { DesktopPane } from "@/components/chat/desktop-pane";
-import { DiffPane } from "@/components/chat/diff-pane";
 import { decodeRunAccepted, type HandoffReceipt, handoffNotice } from "@/components/chat/handoff-receipts";
 import { useGatewayApprovals } from "@/components/chat/use-gateway-approvals";
 import { OrbBootIndicator } from "@/components/chat/orb-boot-indicator";
@@ -41,13 +35,14 @@ import {
   useRailWidth,
   useSplitTooNarrow,
 } from "@/components/chat/rail-resizer";
+import { RunFeedback } from "@/components/chat/run-feedback";
+import { SessionRailTabs } from "@/components/chat/session-rail-tabs";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
   RAIL_ICON_BUTTON,
-  RAIL_TAB_LABEL_COLLAPSE,
   railTabLabelFor,
   type SurfaceChoice,
-  SurfaceChooser,
+  SurfaceChooser, threadFacts,
 } from "@/components/chat/surface-chooser";
 import { useAgentsRailDeepLink } from "@/components/chat/use-agents-rail-deep-link";
 import { terminalRunIdForThread } from "@/components/chat/terminal-run-state";
@@ -59,13 +54,13 @@ import { useWorkpieceAutoOpen } from "@/components/chat/use-workpiece-auto-open"
 import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/chat/workpiece-auto-open";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
-import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { DesktopPane, DiffPane, EditorPane, SessionDetailsRail, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
 import { filesFromSteps } from "@/components/chat/file-entries";
 import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
-  type MemoryScope,
+  type MemoryScope, type PermissionMode,
   normalizeEngine,
   type RunStatus,
   supportsPreSessionModelSelection,
@@ -75,9 +70,9 @@ import { useReplyCommandCatalog } from "@/components/chat/use-reply-command-cata
 import { useWindowedThread } from "@/components/chat/use-windowed-thread";
 import type { ApiThreadOutlineTurn } from "@/components/chat/windowed-thread";
 import { runGitRefs, GitChips } from "@/components/session-ui/git-chip";
+import { OriginLink } from "@/components/session-ui/origin-link";
 import { Button } from "@/components/base/buttons/button";
 import { CloseButton } from "@/components/base/buttons/close-button";
-import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { RunLocation } from "@/components/runners/run-location";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { threadSubmissionLane, useThreadFamily } from "@/hooks/use-thread-family";
@@ -85,6 +80,7 @@ import type { InitialThreadRelationshipHint } from "@/lib/thread-relationship-hi
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun, createThreadMessage, runCreateFailureMessage } from "@/lib/create-run";
 import { cx } from "@/utils/cx";
+import { deriveRunningStartedAt } from "@/components/pro/running-phase";
 /**
  * The coding-session surface: a threaded conversation column beside a vertical
  * editor|terminal split. The whole thread renders as one conversation, driven by
@@ -169,13 +165,6 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       null,
     [snapshot.byId, newest.id, newest.engine_session_id],
   );
-  // The active session catalog's SNAPSHOT revision (latest commands.updated deliverySeq) - sent
-  // with a native-command intent so the backend fail-closed authorization rejects a stale catalog.
-  const commandCatalogRevision = useMemo(
-    () =>
-      selectSessionCommandCatalog([...snapshot.byId.values()], engineSessionId)?.revision ?? null,
-    [snapshot.byId, engineSessionId],
-  );
   // The ONE negotiated capability map for the current session: submission
   // behavior and surface visibility consume the same contract.
   const caps = useMemo(
@@ -196,6 +185,10 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   // (the inline fold groups the same rows per parent turn).
   const gatewayChildren = useMemo(() => deriveThreadGatewayChildren(turns), [turns]);
   const live = turns.some((t) => isLiveStatus(t.status));
+  // The composer's command catalog and the SNAPSHOT revision a native-command intent is sent
+  // with, so the backend's fail-closed authorization rejects a stale catalog.
+  const { catalogState, commands, revision: commandCatalogRevision } =
+    useReplyCommandCatalog(snapshot.byId, engineSessionId, newest.engine, rootId, live);
   const terminalRunId = terminalRunIdForThread(turns);
   // The turn currently producing events (running preferred; else the newest live
   // turn about to start) - the boot orb + live indicators read from it.
@@ -362,12 +355,12 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       command?: { name: string; args: string } | null,
       attachmentIds: readonly string[] = [],
       resources: readonly RunResourceSelection[] = [],
-      botMentions: readonly string[] = [],
+      botMentions: readonly string[] = [], permissionMode?: PermissionMode, reasoningEffort: string | null = null,
     ) => {
       // Native-question replies resume the blocked provider turn instead of enqueueing a run.
       if (activeQuestion && composerCanAnswerQuestion) {
-        if (attachmentIds.length > 0 || resources.length > 0 || botMentions.length > 0) {
-          throw new Error("You can't attach files or mention bots while answering a question");
+        if (command || attachmentIds.length > 0 || resources.length > 0 || botMentions.length > 0) {
+          throw new Error("You can't run commands, attach files or mention bots while answering a question");
         }
         const accepted = await submitQuestionAnswers(activeQuestion, [[text]]);
         if (!accepted) throw new Error("question reply failed");
@@ -381,12 +374,12 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
         }
         const res = submissionLane === "child"
           ? await createThreadMessage(rootId, {
-                text,
+                text, ...(permissionMode ? { permission_mode: permissionMode } : {}),
                 ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
               }, idempotencyKey)
           : await createRun(replyRunBody({
             text, engine, model: modelSelection ? model : null, parentRunId: newest.id, memoryScope,
-            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision,
+            attachmentIds, resources, botMentions, command, engineSessionId, commandCatalogRevision, permissionMode, reasoningEffort,
           }), idempotencyKey);
         if (!res.ok) throw new Error(await runCreateFailureMessage(res, `backend ${res.status}`));
         // Keep the accepted run visible until SSE/reconcile observes its durable id.
@@ -424,8 +417,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   useEffect(() => {
     if (pending && shouldRetireOptimistic(pending.runId, snapshot)) setPending(null);
   }, [pending, snapshot]);
-  // The ACTUALLY-RUNNING turn may not be the newest (rapid-fire replies make
-  // the newest a QUEUED run) - Stop and Send-now must target the running one.
+  // Queued replies may be newest; Stop, Send-now and elapsed target the running turn.
   const runningTurn = turns.find((t) => t.status === "running") ?? null;
   const headQueuedId = turns.find((t) => t.status === "queued")?.run.id ?? null;
   // The session-bar status reflects the thread's current activity: running if any
@@ -467,24 +459,24 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     if (!runningTurn) setStopError(null);
   }, [runningTurn]);
 
+  // The durable cancel of one run. Remove asks for a queued run only: one that
+  // started between the click and the request answers 409 and is left alone.
+  const cancelRun = useCallback(async (runId: string, onlyQueued = false) => {
+    const response = await backendFetch(`/api/runs/${runId}/cancel${onlyQueued ? "?only=queued" : ""}`, { method: "POST" });
+    if (!response.ok && !(onlyQueued && response.status === 409)) throw new Error(`backend ${response.status}`);
+  }, []);
+  const removeQueued = useCallback((runId: string) => cancelRun(runId, true), [cancelRun]);
   // Send-now steering (opencode's control, matched to our harness): cancel the
   // RUNNING turn; the per-thread command lane then auto-dispatches the head
   // queued turn immediately (FIFO promotion is already the lane's behavior).
-  // Only offered on the HEAD queued message so the queue order is preserved.
   const handleSendNow = useCallback(async () => {
     if (!runningTurn) return;
     setStopError(null);
-    try {
-      const response = await backendFetch(`/api/runs/${runningTurn.run.id}/cancel`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(`backend ${response.status}`);
-    } catch (error) {
-      // The queued bubble keeps its affordance; the user can retry with an
-      // explicit failure instead of a silent no-op.
+    // The queued row keeps its affordance; a failure is explicit, never a silent no-op.
+    await cancelRun(runningTurn.run.id).catch((error: unknown) => {
       setStopError(error instanceof Error ? error.message : "Could not stop this run");
-    }
-  }, [runningTurn]);
+    });
+  }, [cancelRun, runningTurn]);
 
   // Right rail: one tabbed panel, not stacked panes. Desktop and terminal are
   // useful before the first tool call, so the rail starts open on every real
@@ -647,8 +639,6 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [surfacesSheet, sheetSurfacesOpen]);
 
-  const { catalogState, commands } = useReplyCommandCatalog(snapshot.byId, engineSessionId, newest.engine);
-
   return (
     <WorkspaceOpenProvider value={openWorkpiece}>
       <ComposerPrefillProvider value={prefillComposer}>
@@ -674,16 +664,14 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 relationship={threadFamily.relationship}
                 parent={threadFamily.parent}
               />
-              {/* The thread's git identity: repos (+ chosen branch) come from the
-                  ROOT run's durable wire row - repos are inherited across a thread,
-                  so the SSR-provided root is authoritative for the page lifetime. */}
+              {/* Git identity and origin are thread-level: both read the ROOT run's durable wire row. */}
               <GitChips refs={runGitRefs(root)} />
+              <OriginLink connector={snapshot.byId.get(root.id)?.run.connector ?? root.connector} />
               <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              {/* Status pill + New session removed (user 2026-08-23): run state
-                  already lives in the composer/timeline and New thread in the
-                  sidebar - the header stays quiet. Stop remains the composer's. */}
+              {/* Status pill + New session removed (user 2026-08-23): run state lives in the composer/timeline, New thread in the sidebar, Stop in the composer. */}
+              <RunFeedback key={newest.id} runId={newest.id} />
               {/* In sheet mode (below md, or a too-narrow md+ split) this is
                   the rail's opener (the reopen strip covers side-by-side). */}
               {hasRuntimeSurfaces && !sheetSurfacesOpen && (
@@ -721,7 +709,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
           <Conversation
             turns={turns}
             defaultEngine={normalizeEngine(newest.engine)}
-            defaultModel={newest.model}
+            defaultModel={newest.model} defaultReasoningEffort={newest.reasoning_effort ?? null}
             // A reply inherits the thread's current scope (its newest run); the
             // composer lets the user change it. Legacy runs w/o a scope → "org".
             defaultMemoryScope={newest.memory_scope ?? "org"}
@@ -741,9 +729,9 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             gatewayApprovals={gatewayApprovals}
             onGatewayApprovalResolved={handleGatewayApprovalResolved}
             sendNowFor={runningTurn ? headQueuedId : null}
-            onSendNow={handleSendNow}
+            onSendNow={handleSendNow} onRemoveQueued={removeQueued}
             running={runningTurn !== null}
-            runStartedAt={runningTurn?.run.created_at ?? null}
+            runStartedAt={deriveRunningStartedAt(runningTurn)}
             stopping={stopping}
             stopError={stopError}
             onStop={handleStop}
@@ -857,88 +845,13 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             )}
           >
             <div className="@container border-border-button-default/50 flex h-12 shrink-0 items-center gap-2 border-b px-2">
-              <PillTabList
-                aria-label="Surface"
-                className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              >
-                {/* Agents leads the switcher, but only once a run has fanned
-                    out — no empty tab before then. */}
-                {hasSubagents && (
-                  <PillTab
-                    icon={RiRobot2Line}
-                    isSelected={railTab === "agents"}
-                    onSelect={() => setRailTabOverride("agents")}
-                    data-testid="rail-tab-agents"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Agents
-                  </PillTab>
-                )}
-                <PillTab
-                  icon={RiFileList2Line}
-                  isSelected={railTab === "artifacts"}
-                  onSelect={() => setRailTabOverride("artifacts")}
-                  data-testid="rail-tab-artifacts"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Files
-                </PillTab>
-                {/* Workspace holds the canonical workpieces the user opened from
-                    the conversation - only present once at least one is open. */}
-                {openWorkpieces.length > 0 && (
-                  <PillTab
-                    icon={RiPagesLine}
-                    isSelected={railTab === "workspace"}
-                    onSelect={() => setRailTabOverride("workspace")}
-                    data-testid="rail-tab-workspace"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Workspace
-                  </PillTab>
-                )}
-                {/* Diff appears once a real change set exists - the chooser
-                    card's "available when a real patch exists" promise. */}
-                {hasFiles && (
-                  <PillTab
-                    icon={RiGitMergeLine}
-                    isSelected={railTab === "diff"}
-                    onSelect={() => setRailTabOverride("diff")}
-                    data-testid="rail-tab-diff"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Diff
-                  </PillTab>
-                )}
-                <PillTab
-                  icon={RiCodeSSlashLine}
-                  isSelected={railTab === "editor"}
-                  onSelect={() => setRailTabOverride("editor")}
-                  data-testid="rail-tab-editor"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Editor
-                </PillTab>
-                <PillTab
-                  icon={RiTerminalBoxLine}
-                  isSelected={railTab === "terminal"}
-                  onSelect={() => setRailTabOverride("terminal")}
-                  data-testid="rail-tab-terminal"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Terminal
-                </PillTab>
-                {/* Desktop is a stable product surface. The pane itself waits
-                    for or wakes the thread's sandbox on demand. */}
-                <PillTab
-                  icon={RiComputerLine}
-                  isSelected={railTab === "desktop"}
-                  onSelect={() => setRailTabOverride("desktop")}
-                  data-testid="rail-tab-desktop"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Browser
-                </PillTab>
-              </PillTabList>
+              <SessionRailTabs
+                railTab={railTab}
+                hasSubagents={hasSubagents}
+                hasWorkspace={openWorkpieces.length > 0}
+                hasFiles={hasFiles}
+                onSelect={setRailTabOverride}
+              />
               <Button
                 variant="ghost"
                 size="small"
@@ -1021,7 +934,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     ) : (
                       <SurfaceChooser
                         agentsAvailable={hasSubagents}
-                        diffAvailable={hasFiles}
+                        diffAvailable={hasFiles} facts={threadFacts(allSteps)}
                         onSelect={setRailTabOverride}
                       />
                     )
@@ -1048,6 +961,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     <DiffPane turns={turns} />
                   ) : railTab === "editor" ? (
                     <EditorPane steps={allSteps} live={live} />
+                  ) : railTab === "details" ? (
+                    <SessionDetailsRail root={root} newest={newest} turns={turns} />
                   ) : (
                     <TerminalPane
                       steps={allSteps}

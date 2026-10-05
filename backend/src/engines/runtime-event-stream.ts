@@ -1,341 +1,145 @@
-import {
-  previewLinkBase,
-  type SandboxHandle,
-} from "../sandboxes/provider";
+// Follows one runtime thread over its socket until the caller is done with it.
+// The subscription first delivers the thread (a bounded snapshot), then
+// `synchronized`, then live events. `start` runs once, at `synchronized`, on
+// the subscribed socket: the turn's own command goes out only after the plane
+// is listening, so nothing it starts can be missed. Every change becomes a new
+// view handed to `applySnapshot`, in order. A socket that drops before the
+// caller is done resumes from the applied sequence (the runtime replays what
+// was missed, or sends a fresh snapshot when it cannot).
 import { setTimeout as delay } from "node:timers/promises";
-import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
-import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
+import type { SandboxHandle } from "../sandboxes/provider";
+import { registerRuntimeTurnSocket } from "./runtime-dispatch";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
+import { openRuntimeSocket } from "./runtime-rpc-socket";
+import { applyV2StreamItem, type V2MirrorState } from "./runtime-v2-mirror";
+import { runtimeThreadView } from "./runtime-v2-view";
+import { decodeV2ThreadStreamItem, RUNTIME_RPC, type V2ThreadSnapshot } from "./runtime-v2-wire";
 
-const SUBSCRIPTION_REQUEST_ID = 1;
-const SUBSCRIPTION_TAG = "orchestration.subscribeThread";
-const STREAM_ERROR_DRAIN_MS = 15_000;
+/** Consecutive reconnects without progress before the follow gives up. */
+const RESUME_LIMIT = 3;
+const RESUME_DELAY_MS = 1_000;
 
-export type RuntimeThreadStreamItem =
-  | { readonly kind: "snapshot"; readonly snapshot: RuntimeThreadSnapshot }
-  | { readonly kind: "event"; readonly event: RuntimeThreadStreamEvent }
-  | { readonly kind: "synchronized" };
-
-export interface RuntimeThreadStreamEvent {
-  readonly sequence: number;
-  readonly aggregateKind: "thread";
-  readonly aggregateId: string;
-}
-
-type RuntimeRpcFrame = Readonly<Record<string, unknown>>;
-
-type RuntimeRpcChunk = RuntimeRpcFrame & {
-  readonly _tag: "Chunk";
-  readonly requestId: string | number;
-  readonly values: readonly unknown[];
-};
-
-type RuntimeRpcExit = RuntimeRpcFrame & {
-  readonly _tag: "Exit";
-  readonly requestId: string | number;
-  readonly exit: { readonly _tag: "Success" | "Failure" };
-};
-
-function isRuntimeRpcChunk(frame: RuntimeRpcFrame): frame is RuntimeRpcChunk {
-  return (
-    frame._tag === "Chunk" &&
-    (typeof frame.requestId === "string" || typeof frame.requestId === "number") &&
-    Array.isArray(frame.values)
-  );
-}
-
-function isRuntimeRpcExit(frame: RuntimeRpcFrame): frame is RuntimeRpcExit {
-  if (
-    frame._tag !== "Exit" ||
-    (typeof frame.requestId !== "string" && typeof frame.requestId !== "number") ||
-    !frame.exit ||
-    typeof frame.exit !== "object"
-  ) {
-    return false;
-  }
-  const tag = (frame.exit as Readonly<Record<string, unknown>>)._tag;
-  return tag === "Success" || tag === "Failure";
-}
-
-function parseRuntimeRpcFrame(data: string): RuntimeRpcFrame | undefined {
-  const parsed = JSON.parse(data) as unknown;
-  return parsed && typeof parsed === "object"
-    ? parsed as RuntimeRpcFrame
-    : undefined;
-}
-
-export function buildRuntimeThreadSubscriptionRequest(
-  threadId: string,
-  afterSequence?: number,
-): Readonly<Record<string, unknown>> {
+export function buildRuntimeThreadSubscription(threadId: string, afterSequence?: number): Readonly<Record<string, unknown>> {
   return {
-    _tag: "Request",
-    id: SUBSCRIPTION_REQUEST_ID,
-    tag: SUBSCRIPTION_TAG,
-    payload: {
-      threadId,
-      ...(afterSequence === undefined ? {} : { afterSequence }),
-      requestCompletionMarker: true,
-    },
-    headers: [],
+    threadId,
+    ...(afterSequence === undefined ? {} : { afterSequence }),
+    acceptBoundedSnapshot: true,
+    requestCompletionMarker: true,
   };
 }
 
-function isRuntimeThreadSnapshot(value: unknown): value is RuntimeThreadSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const snapshot = value as {
-    readonly snapshotSequence?: unknown;
-    readonly thread?: unknown;
-  };
-  if (!Number.isInteger(snapshot.snapshotSequence) || (snapshot.snapshotSequence as number) < 0) {
-    return false;
-  }
-  if (!snapshot.thread || typeof snapshot.thread !== "object") return false;
-  const thread = snapshot.thread as Readonly<Record<string, unknown>>;
-  return typeof thread.id === "string" &&
-    (thread.latestTurn === null || typeof thread.latestTurn === "object") &&
-    Array.isArray(thread.messages) &&
-    Array.isArray(thread.activities) &&
-    (thread.session === null || typeof thread.session === "object");
+/** Raised for a failure of the caller's own callbacks, which a resume must not retry. */
+class CallbackFailure {
+  constructor(readonly error: unknown) {}
 }
 
-function isRuntimeThreadStreamEvent(value: unknown): value is RuntimeThreadStreamEvent {
-  if (!value || typeof value !== "object") return false;
-  const event = value as Readonly<Record<string, unknown>>;
-  return Number.isInteger(event.sequence) &&
-    (event.sequence as number) >= 0 &&
-    event.aggregateKind === "thread" &&
-    typeof event.aggregateId === "string";
-}
-
-export function decodeRuntimeThreadStreamItems(data: string): readonly RuntimeThreadStreamItem[] {
-  const frame = parseRuntimeRpcFrame(data);
-  if (
-    !frame ||
-    !isRuntimeRpcChunk(frame) ||
-    frame.requestId !== SUBSCRIPTION_REQUEST_ID ||
-    !frame.values.length
-  ) {
-    return [];
-  }
-  return frame.values.filter((value): value is RuntimeThreadStreamItem => {
-    if (!value || typeof value !== "object" || !("kind" in value)) return false;
-    const item = value as { readonly kind?: unknown; readonly snapshot?: unknown; readonly event?: unknown };
-    return item.kind === "synchronized" ||
-      (item.kind === "snapshot" && isRuntimeThreadSnapshot(item.snapshot)) ||
-      (item.kind === "event" && isRuntimeThreadStreamEvent(item.event));
-  });
-}
-
-function messageText(data: unknown): Promise<string> {
-  if (typeof data === "string") return Promise.resolve(data);
-  if (data instanceof ArrayBuffer) {
-    return Promise.resolve(new TextDecoder().decode(data));
-  }
-  if (data instanceof Blob) return data.text();
-  return Promise.reject(new Error("The provider stream returned an unsupported frame"));
-}
-
-export async function followRuntimeThreadSnapshots(input: {
+export interface FollowRuntimeThreadInput {
   readonly sandbox: SandboxHandle;
   readonly threadId: string;
-  readonly initialSequence: number;
   readonly signal: AbortSignal;
-  readonly readSnapshot: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
-  readonly applySnapshot: (snapshot: RuntimeThreadSnapshot) => Promise<boolean>;
-  readonly subscribe?: typeof subscribeRuntimeThread;
-}): Promise<void> {
-  let observedSequence = input.initialSequence;
-  let refreshThroughSequence = observedSequence;
-  let refreshOperation: Promise<void> | null = null;
-  let refreshError: unknown;
-  let applicationTail: Promise<void> = Promise.resolve();
-  let terminalObserved = false;
-  const stopped = new AbortController();
-  const signal = AbortSignal.any([input.signal, stopped.signal]);
-  const apply = (value: unknown): Promise<boolean> => {
-    let keepFollowing = true;
-    const operation = applicationTail.then(async () => {
-      if (signal.aborted) {
-        keepFollowing = false;
-        return;
-      }
-      if (!isRuntimeThreadSnapshot(value)) return;
-      if (value.thread.id !== input.threadId || value.snapshotSequence <= observedSequence) return;
-      observedSequence = value.snapshotSequence;
-      keepFollowing = await input.applySnapshot(value);
-      if (!keepFollowing) {
-        terminalObserved = true;
-        stopped.abort();
-      }
-    });
-    applicationTail = operation;
-    return operation.then(() => keepFollowing);
-  };
-  const scheduleRefresh = (sequence: number): void => {
-    if (sequence <= observedSequence || signal.aborted) return;
-    refreshThroughSequence = Math.max(refreshThroughSequence, sequence);
-    if (refreshOperation) return;
-    refreshOperation = (async () => {
-      try {
-        while (!signal.aborted && observedSequence < refreshThroughSequence) {
-          const targetSequence = refreshThroughSequence;
-          await apply(await input.readSnapshot(signal));
-          if (observedSequence < targetSequence && !signal.aborted) {
-            await delay(125, undefined, { signal });
-          }
-        }
-      } catch (error) {
-        if (!input.signal.aborted && !stopped.signal.aborted) refreshError = error;
-        stopped.abort();
-      } finally {
-        refreshOperation = null;
-      }
-    })();
-  };
-  const awaitRefresh = async () => {
-    const operation = refreshOperation;
-    if (operation) await operation;
-  };
-  const awaitApplications = async () => {
-    await applicationTail;
-  };
+  /** Runs once the subscription has caught up, before any live event is followed. */
+  readonly start?: () => Promise<void>;
+  /** Receives every new view of the thread, with the runtime state it came from; returning false ends the follow. */
+  readonly applySnapshot: (snapshot: RuntimeThreadSnapshot, source: V2ThreadSnapshot) => Promise<boolean>;
+  /** Called whenever the socket shows it is alive (a frame or a pong). */
+  readonly onHeard?: () => void;
+  readonly open?: typeof openRuntimeSocket;
+  readonly resumeDelayMs?: number;
+}
 
-  let streamError: unknown;
-  try {
-    await (input.subscribe ?? subscribeRuntimeThread)(
-      input.sandbox,
-      input.threadId,
-      undefined,
-      signal,
-      async (item) => {
-        if (item.kind === "snapshot") return await apply(item.snapshot);
-        if (
-          item.kind === "event" &&
-          item.event.aggregateId === input.threadId &&
-          item.event.sequence > observedSequence
-        ) {
-          scheduleRefresh(item.event.sequence);
-        }
-        return true;
-      },
-    );
-    await awaitRefresh();
-    await awaitApplications();
-    stopped.abort();
-  } catch (error) {
-    streamError = error;
-    // A terminal notification can beat its authoritative refresh to a broken
-    // socket. Drain work already in flight before classifying the transport
-    // failure, bounded independently of the caller's cancellation/deadline.
-    await Promise.race([
-      awaitRefresh().then(awaitApplications),
-      delay(STREAM_ERROR_DRAIN_MS, undefined, { signal }),
-    ]).catch(() => {});
-    stopped.abort();
-  }
-  if (refreshError) throw refreshError;
-  if (streamError && !terminalObserved) throw streamError;
-  if (!terminalObserved && !input.signal.aborted) {
-    throw new Error("The provider thread subscription ended before a terminal snapshot");
+/**
+ * Resolves when `applySnapshot` ends the follow or the signal aborts. Rejects
+ * with the error of `start` or `applySnapshot`, or with the transport's error
+ * once resuming stopped making progress.
+ */
+export async function followRuntimeThread(input: FollowRuntimeThreadInput): Promise<void> {
+  const open = input.open ?? openRuntimeSocket;
+  let state = null as V2MirrorState | null;
+  let started = input.start === undefined;
+  let done = false;
+  let attempts = 0;
+  for (;;) {
+    if (input.signal.aborted) return;
+    const startSequence = state?.sequence ?? -1;
+    let synchronizedHere = false;
+    let failure: CallbackFailure | null = null;
+    let transportError: unknown;
+    try {
+      const socket = await open({ sandbox: input.sandbox, signal: input.signal, onHeard: input.onHeard });
+      const withdraw = registerRuntimeTurnSocket(input.sandbox.id, input.threadId, socket);
+      try {
+        await socket.stream(
+          RUNTIME_RPC.subscribeThread,
+          buildRuntimeThreadSubscription(input.threadId, state?.sequence),
+          async (values) => {
+            let changed = false;
+            let synchronized = false;
+            for (const value of values) {
+              const item = decodeV2ThreadStreamItem(value);
+              if (!item) continue;
+              if (item.kind === "synchronized") {
+                synchronized = true;
+                continue;
+              }
+              const next = applyV2StreamItem(state, item, input.threadId);
+              state = next.state;
+              changed ||= next.changed;
+            }
+            synchronizedHere ||= synchronized;
+            try {
+              if (synchronized && !started) {
+                started = true;
+                await input.start!();
+              }
+              const source = state && { snapshotSequence: state.sequence, projection: state.projection };
+              if (changed && source && !(await input.applySnapshot(runtimeThreadView(source), source))) {
+                done = true;
+                return false;
+              }
+            } catch (error) {
+              failure = new CallbackFailure(error);
+              return false;
+            }
+            return true;
+          },
+        );
+      } finally {
+        withdraw();
+        socket.close();
+      }
+    } catch (error) {
+      transportError = error;
+    }
+    if (failure) throw (failure as CallbackFailure).error;
+    if (done || input.signal.aborted) return;
+    // Progress is the cursor moving or the turn being dispatched, not a resent snapshot.
+    const progressed = ((state as V2MirrorState | null)?.sequence ?? -1) > startSequence || (synchronizedHere && startSequence < 0);
+    attempts = progressed ? 1 : attempts + 1;
+    if (attempts > RESUME_LIMIT) {
+      throw transportError ?? new Error("The provider thread subscription ended before the turn settled");
+    }
+    await delay(input.resumeDelayMs ?? RESUME_DELAY_MS, undefined, { signal: input.signal }).catch(() => {});
   }
 }
 
-export async function subscribeRuntimeThread(
+/** One request-response RPC to the runtime: true once it exits successfully,
+ *  false on a failed exit, a closed socket, the timeout or an abort. */
+export async function requestRuntimeRpc(
   sandbox: SandboxHandle,
-  threadId: string,
-  afterSequence: number | undefined,
+  tag: string,
+  payload: Readonly<Record<string, unknown>>,
   signal: AbortSignal,
-  onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-): Promise<void> {
-  const [ticket, preview] = await Promise.all([
-    issueRuntimeEnvironmentWebSocketTicket(sandbox, signal),
-    sandbox.getPreviewLink(RUNTIME_ENVIRONMENT_PORT),
-  ]);
-  const url = new URL(preview.url.replace(/^http/, "ws"));
-  url.pathname = "/ws";
-  url.searchParams.set("wsTicket", ticket);
-
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    let processing = Promise.resolve();
-    const socket = new WebSocket(url.toString(), {
-      headers: { ...previewLinkBase(preview).headers },
-    });
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", abort);
-      try {
-        socket.close();
-      } catch {
-        // Socket may not have reached OPEN.
-      }
-      if (error) reject(error);
-      else resolve();
-    };
-    const abort = () => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          _tag: "Interrupt",
-          requestId: SUBSCRIPTION_REQUEST_ID,
-        }));
-      }
-      finish();
-    };
-    signal.addEventListener("abort", abort, { once: true });
-
-    socket.onopen = () => {
-      socket.send(
-        JSON.stringify(buildRuntimeThreadSubscriptionRequest(threadId, afterSequence)),
-      );
-    };
-    socket.onmessage = (event) => {
-      processing = processing
-        .then(async () => {
-          const text = await messageText(event.data);
-          const frame = parseRuntimeRpcFrame(text);
-          if (!frame) return;
-          if (
-            isRuntimeRpcChunk(frame) &&
-            frame.requestId === SUBSCRIPTION_REQUEST_ID
-          ) {
-            socket.send(JSON.stringify({
-              _tag: "Ack",
-              requestId: SUBSCRIPTION_REQUEST_ID,
-            }));
-            for (const item of decodeRuntimeThreadStreamItems(text)) {
-              if (
-                (item.kind === "snapshot" && item.snapshot.thread.id !== threadId) ||
-                (item.kind === "event" && item.event.aggregateId !== threadId)
-              ) {
-                continue;
-              }
-              if (!(await onItem(item))) {
-                finish();
-                return;
-              }
-            }
-            return;
-          }
-          if (
-            isRuntimeRpcExit(frame) &&
-            frame.requestId === SUBSCRIPTION_REQUEST_ID
-          ) {
-            finish(
-              frame.exit._tag === "Failure"
-                ? new Error("The provider thread subscription failed")
-                : undefined,
-            );
-          }
-        })
-        .catch((error) => finish(error instanceof Error ? error : new Error(String(error))));
-    };
-    socket.onerror = () => finish(new Error("The provider stream connection failed"));
-    socket.onclose = () => {
-      if (!settled) finish(new Error("The provider stream closed before the turn settled"));
-    };
-    if (signal.aborted) abort();
-  });
+  timeoutMs: number,
+): Promise<boolean> {
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+  let socket: Awaited<ReturnType<typeof openRuntimeSocket>> | undefined;
+  try {
+    socket = await openRuntimeSocket({ sandbox, signal: bounded });
+    await socket.call(tag, payload);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    socket?.close();
+  }
 }

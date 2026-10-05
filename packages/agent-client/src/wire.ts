@@ -23,6 +23,30 @@ export const MEMORY_SCOPES = ["org", "personal"] as const;
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 
 /**
+ * The permission policy a run was started with: what its resident runtime may
+ * do without asking. The last four are the runtime's own modes (Guard is
+ * "approval-required"; Guard with edits auto-applied is "auto-accept-edits");
+ * "read-only" is Guard plus the control plane refusing every command and file
+ * change, so the run can look but never write.
+ */
+export const PERMISSION_MODES = [
+  "read-only",
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/**
+ * Where a thread was asked to run, chosen on its root run: "local" is the
+ * person's connected machine, "cloud" the hosted provider. Absent means the
+ * cloud; a reply inherits its thread's.
+ */
+export const RUN_LOCATIONS = ["cloud", "local"] as const;
+export type RunLocation = (typeof RUN_LOCATIONS)[number];
+
+/**
  * Which harness executes a run. `mock` is the scripted trace; `chat` is the
  * no-sandbox conversational path; the agent engines (opencode / claude / codex)
  * execute inside the per-thread sandbox. `daytona` / `claude-sdk` are legacy ids
@@ -166,6 +190,24 @@ export interface RunUpload {
   readonly created_at: string;
 }
 
+/** Where a turn arrived from when it was not typed in the product: the connector
+ *  (`slack`), the sender's display name and avatar as that channel showed them at
+ *  ingress (fetched server-side, never by the browser), and the message's
+ *  permalink there. Null or absent for turns typed in the product. */
+export interface RunConnector {
+  readonly source: string;
+  readonly sender_name: string | null;
+  readonly sender_avatar_url: string | null;
+  readonly permalink: string | null;
+  /** The kind of conversation the turn arrived from (Slack: a DM, a group DM,
+   *  a channel or a private channel). Absent on rows stamped before it existed;
+   *  the web then reads the kind off the permalink. */
+  readonly channel_kind?: "dm" | "group_dm" | "channel" | "private_channel" | null;
+  /** The channel's name without the leading #, once looked up; null for DMs,
+   *  group DMs and channels the workspace token cannot describe. */
+  readonly channel_name?: string | null;
+}
+
 // ── Runs + steps (GET /api/runs, GET /api/runs/:id?thread=1) ──────────────────
 
 export interface ApiStep {
@@ -187,6 +229,9 @@ export interface ApiRun {
   project_id?: string | null;
   prompt: string;
   model: string;
+  /** The reasoning effort the run was accepted with; null runs on the runtime's
+   *  default. Tolerant: an older backend omits it. */
+  reasoning_effort?: string | null;
   engine: EngineId;
   status: RunStatus;
   summary: string | null;
@@ -198,12 +243,21 @@ export interface ApiRun {
    *  user turn. `parent_run_id` alone cannot tell them apart - replies set it too. */
   child_session: boolean;
   thread_id: string;
+  /** The run's place in its thread, assigned at acceptance under the thread's
+   *  lock: the lossless order clients sort a thread by (`created_at` loses its
+   *  microseconds on the wire). Absent only from a backend that predates it;
+   *  rows from before the column report 0 and sort by `created_at` among
+   *  themselves. */
+  thread_seq?: number;
   /** The engine's own native session id (opencode `ses_*`), when one was recorded.
    *  The thread's latest non-null value deep-links the Live tab into that session. */
   engine_session_id: string | null;
   /** The provider sandbox this run executed on (null before provisioning, for
    *  sandbox-less engines, and once the box is released). */
   sandbox_id: string | null;
+  /** The sandbox provider the run was bound to at acceptance ("daytona", "cube",
+   *  "box" or "local"); absent from an older backend, null while unbound. */
+  sandbox_provider?: string | null;
   /** Legacy single-repo mirror (= repos[0] ?? null), clean "owner/name". */
   repo: string | null;
   /** GitHub repos this thread works in (each clean "owner/name"); [] = bare workdir.
@@ -216,6 +270,12 @@ export interface ApiRun {
   resolved_resources: RunResource[];
   /** Which team-memory pool this run reads/writes (default "org"). */
   memory_scope: MemoryScope;
+  /** The permission policy this run was started with. Absent only on rows from
+   *  a backend that predates the field; the server always reports it. */
+  permission_mode?: PermissionMode;
+  /** Where the thread was asked to run ("local" is the person's machine). Null
+   *  on rows from before the choice existed; absent from an older backend. */
+  run_location?: RunLocation | null;
   /** Pinned skill revision this run loaded (null when none). Immutable: links a
    *  historical run to the EXACT skill version/hash it used. */
   skill_id: string | null;
@@ -224,6 +284,9 @@ export interface ApiRun {
   /** Inbound attachments the user sent with this turn, claimed by the run. [] =
    *  none. Rendered on the user's bubble; bytes via `/api/uploads/:id/content`. */
   uploads: RunUpload[];
+  /** The connector this turn arrived through, when it was not typed in the
+   *  product. Tolerant: an older backend omits it. */
+  connector?: RunConnector | null;
   created_at: string;
   updated_at: string;
   steps: ApiStep[];
@@ -250,6 +313,7 @@ type ApiRunSummaryBase = Pick<
   | "repo"
   | "repos"
   | "repo_specs"
+  | "connector"
   | "created_at"
   | "updated_at"
 >;
@@ -319,6 +383,8 @@ const RUN_STATUS_SET: ReadonlySet<string> = new Set(RUN_STATUSES);
 const STEP_KIND_SET: ReadonlySet<string> = new Set(STEP_KINDS);
 const ENGINE_ID_SET: ReadonlySet<string> = new Set(ENGINE_IDS);
 const MEMORY_SCOPE_SET: ReadonlySet<string> = new Set(MEMORY_SCOPES);
+const PERMISSION_MODE_SET: ReadonlySet<string> = new Set(PERMISSION_MODES);
+const RUN_LOCATION_SET: ReadonlySet<string> = new Set(RUN_LOCATIONS);
 const RESOURCE_CAPABILITY_SET: ReadonlySet<string> = new Set([
   "content.read",
   "code.checkout",
@@ -363,6 +429,28 @@ function decodeRunUpload(value: unknown): RunUpload | null {
     content_type: record.content_type,
     size_bytes: record.size_bytes,
     created_at: record.created_at,
+  };
+}
+
+/** Decode the OPTIONAL connector on a run row: absent, null, or malformed reads
+ *  as "typed in the product" rather than failing the whole row. */
+function decodeRunConnector(value: unknown): RunConnector | null {
+  const record = asRecord(value);
+  if (
+    !record ||
+    typeof record.source !== "string" ||
+    record.source.length === 0 ||
+    !isNullableString(record.sender_name) ||
+    !isNullableString(record.sender_avatar_url) ||
+    !isNullableString(record.permalink)
+  ) {
+    return null;
+  }
+  return {
+    source: record.source,
+    sender_name: record.sender_name,
+    sender_avatar_url: record.sender_avatar_url,
+    permalink: record.permalink,
   };
 }
 
@@ -488,6 +576,7 @@ function decodeApiRunSummaryBase(value: unknown): ApiRunSummaryBase | null {
     repo: record.repo,
     repos: record.repos,
     repo_specs: repoSpecs as RepoRef[],
+    connector: decodeRunConnector(record.connector),
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
@@ -637,6 +726,9 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     !record.resolved_resources.every(isRunResource) ||
     typeof record.memory_scope !== "string" ||
     !MEMORY_SCOPE_SET.has(record.memory_scope) ||
+    !(record.permission_mode === undefined ||
+      (typeof record.permission_mode === "string" && PERMISSION_MODE_SET.has(record.permission_mode))) ||
+    !(record.thread_seq === undefined || typeof record.thread_seq === "number") ||
     !isNullableString(record.skill_id) ||
     !(record.skill_version === null || typeof record.skill_version === "number") ||
     !isNullableString(record.skill_content_hash) ||
@@ -659,8 +751,19 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     // Tolerant on purpose: a response from a backend that predates the field
     // must still decode, so absence reads as "no sandbox recorded".
     sandbox_id: isNullableString(record.sandbox_id) ? record.sandbox_id : null,
+    ...(isNullableString(record.sandbox_provider) ? { sandbox_provider: record.sandbox_provider } : {}),
     resolved_resources: record.resolved_resources,
     memory_scope: record.memory_scope as MemoryScope,
+    // Absent only from a backend that predates the field: the chip then shows nothing.
+    ...(typeof record.permission_mode === "string"
+      ? { permission_mode: record.permission_mode as PermissionMode }
+      : {}),
+    // An explicit null (a row from before the choice) stays distinct from an
+    // older backend that omits the field; an unknown value reads as omitted.
+    ...(record.run_location === null || (typeof record.run_location === "string" && RUN_LOCATION_SET.has(record.run_location))
+      ? { run_location: record.run_location as RunLocation | null }
+      : {}),
+    ...(typeof record.thread_seq === "number" ? { thread_seq: record.thread_seq } : {}),
     skill_id: record.skill_id,
     skill_version: record.skill_version,
     skill_content_hash: record.skill_content_hash,

@@ -6,10 +6,15 @@
 // reimplements a renderer, it only feeds one.
 
 import type { PlanEntry } from "@/components/agent-ui/plan-checklist";
+import {
+  type CanonicalChildEventLike,
+  deriveChildrenView,
+} from "@/components/chat/canonical-children";
 import type { TimelineMarker, TimelineNode } from "@/components/chat/timeline";
 import type { ApiStep, EngineId } from "@/components/chat/types";
 import type { AgentPanelRowModel } from "@/components/session-ui/agent-panel-row";
 import type { ChangedFile } from "@/components/session-ui/changed-files";
+import type { RunUpload } from "@/components/chat/run-uploads";
 
 // Deterministic clock (never Date.now(): SSR + client must agree, no hydration drift).
 const T0 = Date.parse("2026-08-17T09:00:00.000Z");
@@ -244,13 +249,12 @@ export const conversation: SampleTurn[] = [
       text("t-1", "I'll start by mapping the current middleware chain and the existing 429 path."),
       tool({
         kind: "command",
-        label: "ls src/gateway",
+        label: "list src/gateway",
         code: {
-          tool: "bash",
-          input: { command: "ls src/gateway" },
-          output: "middleware.ts\nrouter.ts\ntypes.ts\n__tests__/",
-          exit_code: 0,
-          duration_ms: 180,
+          tool: "list",
+          input: { path: "src/gateway" },
+          output: "src/gateway/\n  middleware.ts\n  router.ts\n  types.ts",
+          durationMs: 180,
         },
       }),
       tool({
@@ -601,13 +605,174 @@ export const agentRows: readonly AgentPanelRowModel[] = [
 ];
 
 /** Composer upload tray state: a ready image, one uploading, one failed. */
-export const sampleUploads = [
-  { localId: "u1", id: "up-1", name: "current-429.png", sizeBytes: 48_120, status: "ready" as const },
-  { localId: "u2", id: null, name: "har-capture.json", sizeBytes: 210_400, status: "uploading" as const },
-  { localId: "u3", id: null, name: "trace.zip", sizeBytes: 1_400_000, status: "error" as const },
+/** A small gradient "photo" so the image tile has a thumbnail without a binary asset. */
+const SAMPLE_THUMBNAIL = `data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6b8afd"/><stop offset="1" stop-color="#d96ba3"/></linearGradient></defs><rect width="56" height="56" fill="url(#g)"/><circle cx="19" cy="21" r="7" fill="#fff" fill-opacity=".85"/><path d="M0 46l17-13 12 9 10-7 17 13v8H0z" fill="#fff" fill-opacity=".55"/></svg>',
+)}`;
+
+const sampleUpload = (
+  localId: string,
+  name: string,
+  kind: RunUpload["kind"],
+  over: Partial<RunUpload> = {},
+): RunUpload => ({
+  localId,
+  id: `up-${localId}`,
+  name,
+  sizeBytes: 48_120,
+  status: "ready",
+  kind,
+  previewUrl: null,
+  progress: 100,
+  ...over,
+});
+
+/** Ten attachments: every tile kind, an upload in flight, a failed one, and two
+ *  past the eight the row shows before folding the rest behind a count. */
+export const sampleUploads: readonly RunUpload[] = [
+  sampleUpload("u1", "current-429.png", "image", { previewUrl: SAMPLE_THUMBNAIL }),
+  sampleUpload("u2", "har-capture.json", "code", { id: null, sizeBytes: 210_400, status: "uploading", progress: 42 }),
+  sampleUpload("u3", "trace.zip", "file", { id: null, sizeBytes: 1_400_000, status: "error" }),
+  sampleUpload("u4", "rate-limits.xlsx", "spreadsheet"),
+  sampleUpload("u5", "rollout-plan.pptx", "presentation"),
+  sampleUpload("u6", "incident-notes.pdf", "document"),
+  sampleUpload("u7", "gateway.ts", "code"),
+  sampleUpload("u8", "replay.mp4", "video"),
+  sampleUpload("u9", "runbook.md", "document"),
+  sampleUpload("u10", "pods.csv", "spreadsheet"),
 ];
 
 export const THREAD_ERROR_SUMMARY =
   "Run failed: the staging cluster rejected the manifest (ImagePullBackOff on gateway:2.4.0).";
 
 export const USER_STOP_SUMMARY = "Stopped by user";
+
+// ── Subagent rows (the inline fold under a turn) ─────────────────────────────
+
+/** Two settled subagents as the event log carries them: the parent's spawn
+ *  steps naming each child session, the children's own steps stamped with that
+ *  session (each with the duration the engine reported), and the canonical
+ *  child lifecycle with role, model, usage and result. */
+export const subagentSteps: ApiStep[] = [
+  sampleStep({
+    kind: "task",
+    label: "Subagent - k6 load test",
+    chip: "subagent",
+    code: {
+      tool: "task",
+      input: {
+        description: "Run the k6 load test at 5x burst",
+        prompt: "Run scripts/loadtest/rate-limit.js at 5x burst and report throttle rate + p99.",
+      },
+      native: { sessionID: "ses_root", callID: "call_k6", childSessionID: "ses_k6" },
+    },
+  }),
+  sampleStep({
+    kind: "command",
+    label: "read rate-limit.js",
+    code: {
+      tool: "read",
+      input: { file_path: "scripts/loadtest/rate-limit.js" },
+      output: "import http from 'k6/http';\nexport const options = { vus: 250, duration: '60s' };",
+      durationMs: 120,
+      native: { sessionID: "ses_k6" },
+    },
+  }),
+  sampleStep({
+    kind: "command",
+    label: "k6 run scripts/loadtest/rate-limit.js",
+    code: {
+      tool: "bash",
+      input: { command: "k6 run scripts/loadtest/rate-limit.js --vus 250 --duration 60s" },
+      output: "checks.............: 100.00%\nhttp_req_duration..: p(99)=86ms\nthrottled..........: 41%",
+      exit_code: 0,
+      duration_ms: 61_400,
+      native: { sessionID: "ses_k6" },
+    },
+  }),
+  sampleStep({
+    kind: "file",
+    label: "write report.md",
+    code: {
+      tool: "write",
+      input: {
+        file_path: "loadtest/report.md",
+        content: "# k6 at 5x burst\n\n41% throttled, p99 86ms, 0 5xx.",
+      },
+      durationMs: 210,
+      native: { sessionID: "ses_k6" },
+    },
+  }),
+  sampleStep({
+    kind: "task",
+    label: "Subagent - docs writer",
+    chip: "subagent",
+    code: {
+      tool: "task",
+      input: { description: "Write the rate-limit docs page" },
+      native: { sessionID: "ses_root", callID: "call_docs", childSessionID: "ses_docs" },
+    },
+  }),
+  sampleStep({
+    kind: "file",
+    label: "write rate-limits.md",
+    code: {
+      tool: "write",
+      input: { file_path: "docs/api/rate-limits.md", content: "# Rate limits\n\n100 requests per minute per org." },
+      durationMs: 340,
+      native: { sessionID: "ses_docs" },
+    },
+  }),
+];
+
+export const subagentEvents: readonly CanonicalChildEventLike[] = [
+  {
+    kind: "child.started",
+    seq: 1,
+    ts: T0,
+    childId: "ses_k6",
+    launchToolCallId: "call_k6",
+    title: "k6 load test",
+    state: { status: "running", role: "loadtest", model: "claude-sonnet-5", usage: { totalTokens: 18_400 } },
+  },
+  {
+    kind: "child.completed",
+    seq: 2,
+    ts: T0 + 72_400,
+    childId: "ses_k6",
+    status: "ok",
+    state: { usage: { totalTokens: 18_400, durationMs: 72_400 } },
+    result:
+      "Ran scripts/loadtest/rate-limit.js at 5x burst (250 VUs for 60s). The limiter held the org to its budget: 41% of requests were throttled with 429 + Retry-After, p99 stayed at 86ms against an 84ms baseline, and there were zero 5xx responses. The per-second throttle series and the k6 summary are in loadtest/report.md.",
+  },
+  {
+    kind: "child.started",
+    seq: 3,
+    ts: T0 + 4_000,
+    childId: "ses_docs",
+    launchToolCallId: "call_docs",
+    title: "Docs writer",
+    state: { status: "running", role: "docs", model: "claude-haiku-4-5", usage: { totalTokens: 2_100 } },
+  },
+  {
+    kind: "child.completed",
+    seq: 4,
+    ts: T0 + 36_000,
+    childId: "ses_docs",
+    status: "ok",
+    state: { usage: { totalTokens: 2_950, durationMs: 32_000 } },
+    result: "Wrote docs/api/rate-limits.md and linked it from the gateway README.",
+  },
+];
+
+/** The same children as the conversation fold renders them (one derivation). */
+export const subagentRows = (() => {
+  const view = deriveChildrenView(subagentSteps, [], subagentEvents);
+  return view.cards.map((card) => ({
+    card,
+    fidelity: card.aliases
+      .map((alias) => view.fidelity.get(alias))
+      .find((match) => match !== undefined),
+    steps: subagentSteps.filter((step) => view.ownerByStep.get(step.id) === card.id),
+  }));
+})();

@@ -175,7 +175,7 @@ describe("Cube sandbox provider", () => {
     connect.mockRestore();
   });
 
-  test("maps useAgent create options onto the E2B-compatible Cube API", async () => {
+  test("maps UseAgent create options onto the E2B-compatible Cube API", async () => {
     process.env.CUBE_API_URL = "http://127.0.0.1:3000";
     process.env.CUBE_PROXY_SCHEME = "https";
     process.env.CUBE_SANDBOX_DOMAIN = "sandbox.example.com";
@@ -235,6 +235,32 @@ describe("Cube sandbox provider", () => {
     } finally {
       create.mockRestore();
       getInfo.mockRestore();
+    }
+  });
+
+  test("a retained sandbox reconnects with its lifetime, not the SDK's 5-minute default", async () => {
+    process.env.SANDBOX_AUTO_STOP_MIN = "10";
+    const getInfo = spyOn(E2BSandbox, "getInfo").mockResolvedValue(sandboxInfo({ state: "paused" }));
+    const connect = spyOn(E2BSandbox, "connect").mockResolvedValue(fakeSandbox());
+    try {
+      await cubeSandboxProvider("cube-key", ready).get("cube-1");
+      expect(connect).toHaveBeenCalledWith("cube-1", expect.objectContaining({ timeoutMs: 10 * 60_000 }));
+    } finally {
+      getInfo.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
+  test("pause stops an idle sandbox by id without connecting to it", async () => {
+    const pause = spyOn(E2BSandbox, "pause").mockResolvedValue(true);
+    const connect = spyOn(E2BSandbox, "connect").mockResolvedValue(fakeSandbox());
+    try {
+      await cubeSandboxProvider("cube-key", ready).pause?.("cube-1");
+      expect(pause).toHaveBeenCalledWith("cube-1", expect.objectContaining({ apiKey: "cube-key" }));
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      pause.mockRestore();
+      connect.mockRestore();
     }
   });
 
@@ -573,14 +599,7 @@ describe("Cube sandbox provider", () => {
     process.env.CUBE_PROXY_SCHEME = "https";
     process.env.CUBE_OPS_ACCESS_TOKEN = "ops-token";
     process.env.CUBE_OPS_URL = "http://127.0.0.1:12088/opsapi/v1";
-    let page = 0;
-    const list = spyOn(E2BSandbox, "list").mockReturnValue({
-      get hasNext() { return page === 0; },
-      nextItems: async () => {
-        page += 1;
-        return [sandboxInfo({ state: "running" })];
-      },
-    } as ReturnType<typeof E2BSandbox.list>);
+    const list = spyOn(E2BSandbox, "list");
     const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
       nodeID: "node-a",
       healthy: true,
@@ -589,7 +608,6 @@ describe("Cube sandbox provider", () => {
     }]), { status: 200 }));
 
     await expect(cubeSandboxProvider("", ready).inventory?.()).resolves.toMatchObject({
-      activeSandboxes: 1,
       nodes: [{
         id: "node-a",
         ready: true,
@@ -602,8 +620,23 @@ describe("Cube sandbox provider", () => {
       "http://127.0.0.1:12088/opsapi/v1/nodes",
       expect.objectContaining({ headers: { Authorization: "Bearer ops-token" } }),
     );
+    expect(list).not.toHaveBeenCalled();
     list.mockRestore();
     fetchSpy.mockRestore();
+  });
+
+  test("inventory without CubeOps returns nothing and lists nothing", async () => {
+    delete process.env.CUBE_OPS_ACCESS_TOKEN;
+    const list = spyOn(E2BSandbox, "list");
+    const fetchSpy = spyOn(globalThis, "fetch");
+    try {
+      await expect(cubeSandboxProvider("", ready).inventory?.()).resolves.toEqual({});
+      expect(list).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      list.mockRestore();
+      fetchSpy.mockRestore();
+    }
   });
 });
 

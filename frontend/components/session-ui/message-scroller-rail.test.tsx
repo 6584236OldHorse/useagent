@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   deriveScrollerTicks,
+  jumpToTurn,
   MessageScrollerRail,
   MIN_TURNS_FOR_SCROLLER,
   pickActiveTurnIndex,
@@ -11,6 +12,13 @@ import {
 
 const turnsOf = (...prompts: string[]) =>
   prompts.map((prompt, i) => ({ run: { id: `run-${i}`, prompt } }));
+
+test("rail jumps synchronously to the selected turn with the existing inset", () => {
+  const container = { scrollTop: 100, getBoundingClientRect: () => ({ top: 20 } as DOMRect) };
+  const turn = { getBoundingClientRect: () => ({ top: 240 } as DOMRect) };
+  jumpToTurn(container, turn);
+  expect(container.scrollTop).toBe(312);
+});
 
 describe("tick derivation", () => {
   test("one tick per turn, id-keyed, with a cleaned prompt snippet", () => {

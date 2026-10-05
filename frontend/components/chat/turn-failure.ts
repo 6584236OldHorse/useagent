@@ -36,6 +36,7 @@ export function failureRow(failure: TurnFailure): TraceStepRow {
     label: failure.label,
     chip: null,
     detail: firstLine(failure.reason),
+    durationMs: null,
     status: "failed",
     body: { kind: "failure", reason: failure.reason },
   };

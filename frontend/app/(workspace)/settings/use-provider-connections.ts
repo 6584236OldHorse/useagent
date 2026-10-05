@@ -23,6 +23,7 @@ function useProviderConnectionsState() {
   const [deploymentProviders, setDeploymentProviders] = useState<Partial<
     Record<ProviderConnectionProvider, boolean>
   > | null>(null);
+  const [offeredProviders, setOfferedProviders] = useState<string[] | null>(null);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
@@ -42,6 +43,7 @@ function useProviderConnectionsState() {
     const config = configResult.status === "fulfilled" ? configResult.value : null;
     setEnabledSandboxEngines(config?.enabledSandboxEngines ?? null);
     setDeploymentProviders(config?.deploymentProviders ?? null);
+    setOfferedProviders(config?.offeredProviders ?? null);
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -57,6 +59,7 @@ function useProviderConnectionsState() {
   return {
     connections,
     deploymentProviders,
+    offeredProviders,
     enabledSandboxEngines,
     error,
     load,

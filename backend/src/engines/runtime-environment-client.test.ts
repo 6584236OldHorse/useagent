@@ -1,18 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
   buildRuntimeEnvironmentFirstAccessCommand,
   buildRuntimeEnvironmentAuthenticationCommand,
+  buildRuntimeEnvironmentProtocolProbeCommand,
   buildRuntimeEnvironmentRequestCommand,
   buildRuntimeEnvironmentSessionProbeCommand,
   buildRuntimeEnvironmentWebSocketTicketCommand,
   decodeRuntimeEnvironmentCommandOutput,
+  invalidateRuntimeEnvironmentAccess,
   issueRuntimeEnvironmentWebSocketTicket,
   prewarmRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeEnvironmentAccessValidated,
   RuntimeEnvironmentRequestError,
+  setRuntimeArtifactVerificationsForTest,
 } from "./runtime-environment-client";
-import { buildRuntimeEnvironmentReadinessCommand } from "./runtime-environment";
+import { buildRuntimeEnvironmentReadinessCommand, RUNTIME_GENERATION } from "./runtime-environment";
 import { buildNativeRuntimeArtifactProbe } from "./native-runtime-artifact";
 
 const ROOT_LAYOUT = {
@@ -27,7 +31,60 @@ const BOX_LAYOUT = {
   bunExecutable: "/usr/local/bin/bun",
 } as const;
 
+// Artifact verifications this process "persisted", per test: a fresh backend
+// knows none, so first accesses run the artifact probe unless a test says so.
+let verifiedArtifacts = new Set<string>();
+beforeEach(() => {
+  verifiedArtifacts = new Set();
+  setRuntimeArtifactVerificationsForTest({
+    verified: async (sandboxId, generation) => verifiedArtifacts.has(`${sandboxId}:${generation}`),
+    record: async (sandboxId, generation) => void verifiedArtifacts.add(`${sandboxId}:${generation}`),
+  });
+});
+afterEach(() => setRuntimeArtifactVerificationsForTest(null));
+
 describe("T3 environment client", () => {
+  test("a sandbox an earlier backend process verified skips the artifact probe on first access", async () => {
+    const request = { method: "GET", path: "/api/orchestration/shell" } as const;
+    const harness = (id: string) => {
+      const commands: string[] = [];
+      const sandbox = {
+        id,
+        process: {
+          executeCommand: async (command: string) => {
+            commands.push(command);
+            return { exitCode: 0, result: '{"projects":[],"threads":[]}\n__USEAGENT_T3_HTTP_STATUS__:200' };
+          },
+        },
+      } as unknown as SandboxHandle;
+      return { sandbox, commands };
+    };
+
+    // First time: the probe runs in the first-access command and its pass is recorded.
+    const fresh = harness("cube-t3-artifact-fresh");
+    await requestRuntimeEnvironment(fresh.sandbox, request, new AbortController().signal);
+    expect(fresh.commands[0]).toBe(buildRuntimeEnvironmentFirstAccessCommand(request, ROOT_LAYOUT));
+    expect(fresh.commands[0]).toContain("# native-runtime-verified");
+    expect(verifiedArtifacts.has(`cube-t3-artifact-fresh:${RUNTIME_GENERATION}`)).toBe(true);
+
+    // After a backend restart (no access cached), a recorded sandbox skips only the probe.
+    verifiedArtifacts.add(`cube-t3-artifact-known:${RUNTIME_GENERATION}`);
+    const known = harness("cube-t3-artifact-known");
+    await requestRuntimeEnvironment(known.sandbox, request, new AbortController().signal);
+    expect(known.commands).toHaveLength(1);
+    expect(known.commands[0]).toBe(buildRuntimeEnvironmentFirstAccessCommand(request, ROOT_LAYOUT, true));
+    expect(known.commands[0]).not.toContain("# native-runtime-verified");
+    expect(known.commands[0]).toContain(buildRuntimeEnvironmentReadinessCommand());
+    expect(known.commands[0]).toContain(buildRuntimeEnvironmentSessionProbeCommand());
+    expect(runtimeEnvironmentAccessValidated(known.sandbox)).toBe(true);
+
+    // A record for another generation proves nothing about this one.
+    verifiedArtifacts.add("cube-t3-artifact-old:useagent-runtime-v0");
+    const old = harness("cube-t3-artifact-old");
+    await requestRuntimeEnvironment(old.sandbox, request, new AbortController().signal);
+    expect(old.commands[0]).toContain("# native-runtime-verified");
+  });
+
   test("decodes the bounded HTTP status marker for runtime and canary callers", () => {
     expect(decodeRuntimeEnvironmentCommandOutput([
       '{"projects":[],"threads":[]}',
@@ -42,7 +99,7 @@ describe("T3 environment client", () => {
     const command = buildRuntimeEnvironmentAuthenticationCommand();
 
     expect(command).toContain(
-      '"/root/.local/share/useagent/native-runtime/90dc3ebbb74b0e85f41c4cb3105a9f8994ce0bfa/bin/t3" auth pairing create',
+      '"/root/.local/share/useagent/native-runtime/dd2b1389590f13819dfa6ecbf894454a72400770/bin/t3" auth pairing create',
     );
     expect(command).not.toMatch(/(^|\s)t3 auth pairing create/);
     expect(command).toContain('--json >"$PAIRING"');
@@ -60,7 +117,7 @@ describe("T3 environment client", () => {
     const command = buildRuntimeEnvironmentAuthenticationCommand(BOX_LAYOUT);
 
     expect(command).toContain(
-      '"/home/user/.local/share/useagent/native-runtime/90dc3ebbb74b0e85f41c4cb3105a9f8994ce0bfa/bin/t3" auth pairing create',
+      '"/home/user/.local/share/useagent/native-runtime/dd2b1389590f13819dfa6ecbf894454a72400770/bin/t3" auth pairing create',
     );
     expect(command).not.toContain("/root");
     expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
@@ -79,7 +136,7 @@ describe("T3 environment client", () => {
     const hostile = `hello'; touch /tmp/not-allowed; #`;
     const command = buildRuntimeEnvironmentRequestCommand({
       method: "POST",
-      path: "/api/orchestration/dispatch",
+      path: "/api/projects/mutate",
       payload: { message: hostile },
     });
 
@@ -93,7 +150,7 @@ describe("T3 environment client", () => {
     expect(() =>
       buildRuntimeEnvironmentRequestCommand({
         method: "POST",
-        path: "/api/orchestration/dispatch",
+        path: "/api/projects/mutate",
       }),
     ).toThrow("requires a payload");
     expect(() =>
@@ -106,9 +163,51 @@ describe("T3 environment client", () => {
     expect(() =>
       buildRuntimeEnvironmentRequestCommand({
         method: "GET",
-        path: "/api/orchestration/threads/thread-1;touch-/tmp/nope",
+        path: "/api/orchestration/threads/thread-1;touch-/tmp/nope/bounded",
       }),
     ).toThrow("invalid runtime loopback path");
+  });
+
+  test("names the orchestration protocol on every request and reads threads through their bounded window", () => {
+    const command = buildRuntimeEnvironmentRequestCommand({ method: "GET", path: "/api/orchestration/shell" });
+    expect(command).toContain("-H 'x-t3-orchestration-protocol: 2'");
+    expect(buildRuntimeEnvironmentRequestCommand({
+      method: "GET", path: "/api/orchestration/threads/skynet-thread-1/bounded",
+    })).toContain("'http://127.0.0.1:37733/api/orchestration/threads/skynet-thread-1/bounded'");
+    expect(() => buildRuntimeEnvironmentRequestCommand({
+      method: "POST", path: "/api/orchestration/dispatch" as never, payload: {},
+    })).toThrow("invalid runtime loopback path");
+  });
+
+  test("accepts only a runtime that speaks orchestration protocol 2", () => {
+    const probe = buildRuntimeEnvironmentProtocolProbeCommand();
+    expect(probe).toContain("127.0.0.1:37733/.well-known/t3/environment");
+    expect(Bun.spawnSync(["bash", "-n", "-c", probe]).exitCode).toBe(0);
+    const script = /node -e (".*")$/.exec(probe)?.[1];
+    const check = (descriptor: unknown) => Bun.spawnSync(["node", "-e", JSON.parse(script!)], {
+      stdin: new TextEncoder().encode(JSON.stringify(descriptor)),
+    }).exitCode;
+    expect(check({ orchestrationProtocolVersion: 2 })).toBe(0);
+    expect(check({ orchestrationProtocolVersion: 1 })).toBe(1);
+    expect(check({ label: "an older runtime" })).toBe(1);
+  });
+
+  test("fails access closed when the runtime is not protocol 2", async () => {
+    const sandbox = {
+      id: "cube-t3-protocol-1",
+      process: {
+        executeCommand: async (command: string) => {
+          if (command === buildRuntimeEnvironmentProtocolProbeCommand()) return { exitCode: 1, result: "" };
+          if (command.includes("/api/orchestration/shell") && command.includes(buildRuntimeEnvironmentProtocolProbeCommand())) {
+            return { exitCode: 1, result: "" };
+          }
+          return { exitCode: 0, result: "" };
+        },
+      },
+    } as unknown as SandboxHandle;
+    await expect(requestRuntimeEnvironment(
+      sandbox, { method: "GET", path: "/api/orchestration/shell" }, new AbortController().signal,
+    )).rejects.toThrow("does not speak orchestration protocol 2");
   });
 
   test("skips repeated readiness and auth probes after validated access", async () => {
@@ -132,6 +231,7 @@ describe("T3 environment client", () => {
       },
     } as unknown as SandboxHandle;
 
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(false);
     await expect(
       requestRuntimeEnvironment<{ projects: unknown[]; threads: unknown[] }>(
         sandbox,
@@ -139,6 +239,8 @@ describe("T3 environment client", () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual({ projects: [], threads: [] });
+    // A warm runtime: the adapter may read its shell alongside the provider bridge.
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(true);
     await expect(
       requestRuntimeEnvironment<{ projects: unknown[]; threads: unknown[] }>(
         sandbox,
@@ -155,6 +257,8 @@ describe("T3 environment client", () => {
       expect.stringContaining("/api/orchestration/shell"),
     ]);
     expect(Bun.spawnSync(["bash", "-n", "-c", commands[0]!]).exitCode).toBe(0);
+    invalidateRuntimeEnvironmentAccess(sandbox);
+    expect(runtimeEnvironmentAccessValidated(sandbox)).toBe(false);
   });
 
   test("falls back to the existing auth repair when the coalesced first access is stale", async () => {
@@ -240,8 +344,9 @@ describe("T3 environment client", () => {
     ]);
 
     expect(commands.filter((command) => command === firstAccess)).toHaveLength(1);
+    // A ready runtime on this release's artifact is not checksummed again.
     expect(commands.filter((command) => command === buildNativeRuntimeArtifactProbe(ROOT_LAYOUT)))
-      .toHaveLength(1);
+      .toHaveLength(0);
     expect(commands.filter((command) => command === buildRuntimeEnvironmentAuthenticationCommand()))
       .toHaveLength(1);
     expect(commands.filter((command) => command === buildRuntimeEnvironmentRequestCommand(request)))
@@ -250,7 +355,7 @@ describe("T3 environment client", () => {
 
   test("bootstraps Box authentication with the same native runtime launcher", async () => {
     const commands: string[] = [];
-    const request = { method: "GET", path: "/api/orchestration/snapshot" } as const;
+    const request = { method: "GET", path: "/api/orchestration/shell" } as const;
     const firstAccess = buildRuntimeEnvironmentFirstAccessCommand(request, BOX_LAYOUT);
     const sandbox = {
       id: "cube-t3-auth-bootstrap",
@@ -284,9 +389,10 @@ describe("T3 environment client", () => {
       ),
     ).resolves.toEqual({ projects: [] });
     expect(commands).toContain(buildRuntimeEnvironmentAuthenticationCommand(BOX_LAYOUT));
+    expect(commands).toContain(buildRuntimeEnvironmentProtocolProbeCommand());
     expect(commands).toHaveLength(6);
     expect(commands[0]).toBe(firstAccess);
-    expect(commands[1]).toBe(buildNativeRuntimeArtifactProbe(BOX_LAYOUT));
+    expect(commands[1]).toBe(buildRuntimeEnvironmentReadinessCommand());
   });
 
   test("prewarms private access and makes one shell request so a claimed sandbox skips it", async () => {
@@ -308,6 +414,9 @@ describe("T3 environment client", () => {
           if (command === buildRuntimeEnvironmentAuthenticationCommand()) {
             return { exitCode: 0, result: "" };
           }
+          if (command === buildRuntimeEnvironmentProtocolProbeCommand()) {
+            return { exitCode: 0, result: "" };
+          }
           if (command.includes("/api/orchestration/shell")) {
             return { exitCode: 0, result: '{"projects":[],"threads":[]}' };
           }
@@ -321,10 +430,10 @@ describe("T3 environment client", () => {
     ).resolves.toBeUndefined();
     // Access first, then exactly one shell request to build the runtime's state ahead of a run.
     expect(commands).toEqual([
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
       buildRuntimeEnvironmentAuthenticationCommand(),
+      buildRuntimeEnvironmentProtocolProbeCommand(),
       expect.stringContaining("/api/orchestration/shell"),
     ]);
     // The warm-up gets the boot script's budget, not a running runtime's.
@@ -377,9 +486,9 @@ describe("T3 environment client", () => {
         ROOT_LAYOUT,
       ),
       expect.stringContaining("/api/orchestration/shell"),
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
+      buildRuntimeEnvironmentProtocolProbeCommand(),
       expect.stringContaining("/api/orchestration/shell"),
     ]);
   });
@@ -417,7 +526,7 @@ describe("T3 environment client", () => {
 
     const request = requestRuntimeEnvironment(
       sandbox,
-      { method: "GET", path: "/api/orchestration/threads/thread-missing" },
+      { method: "GET", path: "/api/orchestration/threads/thread-missing/bounded" },
       new AbortController().signal,
     );
 
@@ -432,7 +541,7 @@ describe("T3 environment client", () => {
     });
     expect(commands).toEqual([
       buildRuntimeEnvironmentFirstAccessCommand(
-        { method: "GET", path: "/api/orchestration/threads/thread-missing" },
+        { method: "GET", path: "/api/orchestration/threads/thread-missing/bounded" },
         ROOT_LAYOUT,
       ),
     ]);
@@ -455,6 +564,9 @@ describe("T3 environment client", () => {
           if (command === buildRuntimeEnvironmentSessionProbeCommand()) {
             return { exitCode: 0, result: "" };
           }
+          if (command === buildRuntimeEnvironmentProtocolProbeCommand()) {
+            return { exitCode: 0, result: "" };
+          }
           if (command === buildRuntimeEnvironmentWebSocketTicketCommand()) {
             ticketRequests += 1;
             return ticketRequests === 2
@@ -474,15 +586,43 @@ describe("T3 environment client", () => {
     ).resolves.toBe("0123456789abcdef");
 
     expect(commands).toEqual([
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
+      buildRuntimeEnvironmentProtocolProbeCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),
-      buildNativeRuntimeArtifactProbe(ROOT_LAYOUT),
       buildRuntimeEnvironmentReadinessCommand(),
       buildRuntimeEnvironmentSessionProbeCommand(),
+      buildRuntimeEnvironmentProtocolProbeCommand(),
       buildRuntimeEnvironmentWebSocketTicketCommand(),
     ]);
+  });
+});
+
+describe("runtime request failures carry the runtime's own reason", () => {
+  test("an orchestration refusal reads as its reason and detail", async () => {
+    const { runtimeEnvironmentErrorDetail } = await import("./runtime-environment-client");
+    expect(
+      runtimeEnvironmentErrorDetail({
+        reason: "orchestration_dispatch_failed",
+        traceId: "27ad985f",
+        cause: {
+          _tag: "OrchestrationCommandInvariantError",
+          commandType: "thread.session.stop",
+          detail: "thread t1 was re-engaged after settle; skipping session stop",
+        },
+      }),
+    ).toBe("orchestration_dispatch_failed: thread t1 was re-engaged after settle; skipping session stop");
+  });
+
+  test("a named error body reads as its message, and an empty body adds nothing", async () => {
+    const { runtimeEnvironmentErrorDetail } = await import("./runtime-environment-client");
+    expect(runtimeEnvironmentErrorDetail({ name: "ProviderModelNotFoundError", data: { message: "Model not found: x" } })).toBe(
+      "Model not found: x",
+    );
+    expect(runtimeEnvironmentErrorDetail({ error: "boom" })).toBe("boom");
+    expect(runtimeEnvironmentErrorDetail({})).toBeUndefined();
+    expect(runtimeEnvironmentErrorDetail(undefined)).toBeUndefined();
+    expect(runtimeEnvironmentErrorDetail({ message: "x".repeat(300) })?.length).toBe(240);
   });
 });

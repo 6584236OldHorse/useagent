@@ -112,13 +112,14 @@ async function verifyDependencyLock(manifest: NativeRuntimeManifest): Promise<vo
       `native runtime dependency lock mismatch: expected ${manifest.dependencyLockSha256}, got ${lockHash}`,
     );
   }
+  // The closure carries the runtime release it was frozen for as its own version.
   const packageJson: unknown = await Bun.file(dependencyPackagePath).json();
-  const dependency = packageJson && typeof packageJson === "object" && !Array.isArray(packageJson)
-    ? (packageJson as { dependencies?: Record<string, unknown> }).dependencies?.t3
+  const version = packageJson && typeof packageJson === "object" && !Array.isArray(packageJson)
+    ? (packageJson as { version?: unknown }).version
     : undefined;
-  if (dependency !== manifest.dependencyVersion) {
+  if (version !== manifest.dependencyVersion) {
     throw new Error(
-      `native runtime dependency version mismatch: expected ${manifest.dependencyVersion}, got ${String(dependency)}`,
+      `native runtime dependency version mismatch: expected ${manifest.dependencyVersion}, got ${String(version)}`,
     );
   }
 }

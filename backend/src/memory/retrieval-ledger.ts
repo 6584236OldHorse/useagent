@@ -104,9 +104,9 @@ export async function recordContextRetrieval(
   record: typeof recordProviderEvent = recordProviderEvent,
 ): Promise<void> {
   if (recall.items.length === 0 && !recall.degraded) return;
-  // Retrieval happens at run START, before any provider part, so the shared
-  // per-run sequencer (provider-events.ts) mints this frame seq 0 and every
-  // opencode capture a strictly higher one — no two emitters collide on a seq.
+  // Recorded once the prompt is composed, after the sandbox and session were
+  // prepared (their frames come first) and before the prompt is sent. The shared
+  // per-run sequencer (provider-events.ts) gives it a unique seq whatever came first.
   await record({
     id: `ctxret_${runId}`,
     runId,

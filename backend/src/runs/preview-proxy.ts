@@ -170,11 +170,21 @@ export function buildForwardHeaders(src: Headers, auth: Readonly<Record<string, 
   return headers;
 }
 
+/** Sandbox-authored bytes render in an opaque origin, never as the product:
+ *  no product cookies, storage or same-origin API access. Mirrored by the
+ *  desktop pane's iframe `sandbox` attribute and the desktop app's frame policy. */
+export const PREVIEW_SANDBOX_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+
 export function buildProxyResponse(upstream: Response): Response {
   const headers = new Headers();
   upstream.headers.forEach((value, key) => {
     if (!STRIP_RESPONSE.has(key.toLowerCase())) headers.set(key, value);
   });
+  headers.set("Content-Security-Policy", PREVIEW_SANDBOX_POLICY);
+  headers.set("X-Content-Type-Options", "nosniff");
+  // The opaque page loads its own module scripts and data cross-origin. The
+  // capability in the URL authorizes them, never an ambient credential.
+  headers.set("Access-Control-Allow-Origin", "*");
   // SSE hygiene — mirror runs/routes.ts: stop any proxy buffering/transforming
   // an event-stream so token deltas arrive live in the embed.
   if ((upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {

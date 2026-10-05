@@ -28,24 +28,26 @@ import type { ApiRun, RunStatus } from "@/components/chat/types";
 
 /* ------------------------------------------------------------------ store -- */
 
-let openRunId: string | null = null;
+type PaneTarget = { runId: string; childSession: boolean };
+
+let openTarget: PaneTarget | null = null;
 const listeners = new Set<() => void>();
 
 function emit() {
   for (const l of listeners) l();
 }
 
-/** Open (or switch) the subagent pane onto `runId`. Callable from anywhere. */
-export function openSubagentPane(runId: string) {
-  if (openRunId === runId) return;
-  openRunId = runId;
+/** Open (or switch) the peek pane onto `runId`. Callable from anywhere. */
+export function openSubagentPane(runId: string, childSession = false) {
+  if (openTarget?.runId === runId && openTarget.childSession === childSession) return;
+  openTarget = { runId, childSession };
   emit();
 }
 
-/** Close the subagent pane, returning focus to the parent session. */
+/** Close the peek pane, returning focus to the page underneath. */
 export function closeSubagentPane() {
-  if (openRunId === null) return;
-  openRunId = null;
+  if (openTarget === null) return;
+  openTarget = null;
   emit();
 }
 
@@ -56,10 +58,10 @@ function subscribe(cb: () => void) {
   };
 }
 
-function useOpenRunId(): string | null {
+function useOpenTarget(): PaneTarget | null {
   return useSyncExternalStore(
     subscribe,
-    () => openRunId,
+    () => openTarget,
     () => null,
   );
 }
@@ -83,7 +85,7 @@ export function CloseButton() {
     <button
       type="button"
       onClick={closeSubagentPane}
-      aria-label="Close subagent pane"
+      aria-label="Close pane"
       className="text-text-secondary hover:bg-background-secondary-hover flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors"
     >
       <RiCloseLine className="size-4" aria-hidden />
@@ -92,11 +94,21 @@ export function CloseButton() {
 }
 
 /** Header shell reused for the loading / error states (no run loaded yet). */
-export function PaneStub({ children }: { children: React.ReactNode }) {
+export function PaneStub({
+  children,
+  childSession = false,
+  label,
+}: {
+  children: React.ReactNode;
+  childSession?: boolean;
+  label?: "Run";
+}) {
   return (
     <>
       <header className="border-border-button-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
-        <span className="text-mono-label text-text-tertiary">Subagent</span>
+        <span className="text-mono-label text-text-tertiary">
+          {label ?? (childSession ? "Subagent" : "Session")}
+        </span>
         <span className="ml-auto" />
         <CloseButton />
       </header>
@@ -110,7 +122,7 @@ export function PaneStub({ children }: { children: React.ReactNode }) {
 const SubagentPaneBody = dynamic(() => import("@/components/chat/subagent-pane-body"), {
   ssr: false,
   loading: () => (
-    <PaneStub>
+    <PaneStub label="Run">
       <LoadingState label="Loading run" />
     </PaneStub>
   ),
@@ -122,35 +134,41 @@ const SubagentPaneBody = dynamic(() => import("@/components/chat/subagent-pane-b
  * overlay/backdrop, so the parent session behind it stays interactive.
  */
 export function SubagentPane() {
-  const runId = useOpenRunId();
+  const target = useOpenTarget();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
   // Esc closes the pane (parent session regains focus).
   useEffect(() => {
-    if (!runId) return;
+    if (!target) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeSubagentPane();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runId]);
+  }, [target]);
 
   if (!mounted) return null;
-  const open = runId !== null;
+  const open = target !== null;
 
   return createPortal(
     <aside
       aria-hidden={!open}
-      aria-label="Subagent pane"
+      aria-label={`${target?.childSession ? "Subagent" : "Session"} pane`}
       className={cn(
         "border-border-button-default bg-background-primary-default shadow-sidebar fixed inset-y-0 right-0 z-40 flex h-dvh w-[440px] max-w-[92vw] flex-col border-l",
         "transition-transform duration-300 ease-out",
         open ? "translate-x-0" : "pointer-events-none translate-x-full",
       )}
     >
-      {runId !== null && <SubagentPaneBody key={runId} runId={runId} />}
+      {target !== null && (
+        <SubagentPaneBody
+          key={target.runId}
+          runId={target.runId}
+          childSession={target.childSession}
+        />
+      )}
     </aside>,
     document.body,
   );
@@ -165,7 +183,7 @@ function SubagentChip({ run }: { run: ThreadRun }) {
   return (
     <button
       type="button"
-      onClick={() => openSubagentPane(run.id)}
+      onClick={() => openSubagentPane(run.id, true)}
       title={run.prompt}
       className="border-border-button-default bg-background-primary-default text-text-secondary hover:bg-background-primary-hover inline-flex max-w-full shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-caption-1-medium transition-colors"
     >
@@ -198,7 +216,7 @@ export function SubagentChips({
 }) {
   const exclude = new Set([rootId, ...excludeIds]);
   const subs = thread.filter(
-    (run) => run.child_session && run.parent_run_id !== null && !exclude.has(run.id),
+    (run) => run.child_session === true && run.parent_run_id !== null && !exclude.has(run.id),
   );
   if (subs.length === 0) return null;
 

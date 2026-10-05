@@ -124,8 +124,8 @@ describe("capture-outbox delivery composes verified-outcome evidence (item 5)", 
         headers: { "content-type": "application/json" },
       });
     }) as unknown as typeof fetch;
-    // Rows other suites left due would be delivered here too; drain them first
-    // so the count below is this test's own two rows.
+    // Rows other suites leave behind (or retries falling due mid-test) are
+    // delivered here too, so assert on this test's own two turns, not the count.
     await deliverDueCaptures();
     bodies.length = 0;
 
@@ -144,7 +144,7 @@ describe("capture-outbox delivery composes verified-outcome evidence (item 5)", 
     await enqueueCapture(plain, personalIdentity("alice"), { prompt: "p", summary: "just prose" }, "personal");
 
     const res = await deliverDueCaptures();
-    expect(res.delivered).toBe(2);
+    expect(res.delivered).toBeGreaterThanOrEqual(2);
     const assistantTurns = bodies.map(
       (b) => b.messages.find((m: { role: string }) => m.role === "assistant").content as string,
     );

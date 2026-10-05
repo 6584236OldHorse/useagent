@@ -1,13 +1,12 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
 import {
-  ENGINE_IDS,
-  MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
-import { isMemoryScope } from "../memory/scope";
+import type { RunLocation } from "@useagent/agent-client/wire";
+import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
@@ -28,6 +27,7 @@ import {
   type RunCommandIntent,
 } from "../commands";
 import { FleetQueueLimitError } from "../fleet/intake";
+import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
@@ -51,9 +51,8 @@ import {
 import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
-import { stopRun } from "./stop";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
-import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
+import { parseResumeCursor, resolveNativeResume, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -66,14 +65,14 @@ import { completeCanonicalRuns } from "./canonicalization-outbox";
 import { subscribeThread } from "./thread-signals";
 import { registerRunChangesRoute } from "./changes-route";
 import type { ApiStep } from "./repo";
-import { defaultModelForEngine, isReplyModelAllowedForEngine } from "./model-policy";
+import { defaultModelForEngine, isReplyModelAllowedForEngine, replyModelAdmittedForUser } from "./model-policy";
 import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
   modelProviderReadyForEngine,
-  USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
+import { registerRunCancelRoute } from "./cancel-route";
 import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
@@ -82,8 +81,11 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, type RunCreateBody } from "./run-create-policy";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runModelAndEngine, runPermissionMode, type RunCreateBody } from "./run-create-policy";
+import { reasoningEffortSupportForRun, resolveReasoningEffort } from "./reasoning-effort";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
+import { machineUnavailable, runLocationChoice } from "./run-location";
+import { SpendAllowanceExceededError } from "./spend";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
 runsRoutes.use("*", orgScope);
@@ -123,21 +125,11 @@ export async function handleRunCreate(
   const botMentions = runBotMentions(c.get("orgId"), body.bot_mentions);
   if ("status" in botMentions) return c.json(botMentions.body, botMentions.status);
   const requestedResources = decodeRunResourceSelections(body.resources ?? []);
-  if (!requestedResources) {
-    return c.json({ error: "resources must be an array of valid resource selections" }, 400);
-  }
+  if (!requestedResources) return c.json({ error: "resources must be an array of valid resource selections" }, 400);
 
-  const requestedModel =
-    typeof body.model === "string" && body.model.trim()
-      ? body.model.trim()
-      : null;
-  let requestedEngine: EngineId | null = null;
-  if (body.engine !== undefined && body.engine !== null && body.engine !== "") {
-    if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) {
-      return c.json({ error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` }, 400);
-    }
-    requestedEngine = body.engine as EngineId;
-  }
+  const selection = runModelAndEngine(body);
+  if (!selection.ok) return c.json({ error: selection.error }, 400);
+  const { model: requestedModel, engine: requestedEngine } = selection;
 
   const id = crypto.randomUUID();
 
@@ -151,8 +143,10 @@ export async function handleRunCreate(
   let inheritedResources: readonly RunResource[] = [];
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
+  let parentReasoningEffort: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
+  let parentRunLocation: RunLocation | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
   // reply resumes the thread's live session). A native-command intent's client-supplied session
   // id is validated against THIS, never trusted on its own.
@@ -160,9 +154,7 @@ export async function handleRunCreate(
   if (body.parent_run_id !== undefined && body.parent_run_id !== null) {
     const rawParent =
       typeof body.parent_run_id === "string" ? body.parent_run_id.trim() : "";
-    if (!rawParent) {
-      return c.json({ error: "parent_run_id must be a run id string" }, 400);
-    }
+    if (!rawParent) return c.json({ error: "parent_run_id must be a run id string" }, 400);
     const parent = await getRunForOrg(c.get("orgId"), rawParent);
     if (!parent) return c.json({ error: "parent run not found" }, 404);
     parentRunId = parent.id;
@@ -174,8 +166,10 @@ export async function handleRunCreate(
         : legacyParentResources(parent.repos, "web");
     parentScope = parent.memoryScope;
     parentModel = parent.model;
+    parentReasoningEffort = parent.reasoningEffort;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
+    parentRunLocation = parent.runLocation;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
       parent.engineSessionId ?? null;
   }
@@ -217,23 +211,19 @@ export async function handleRunCreate(
   }
 
   // Memory scope: an explicit choice from the authenticated user (validated) wins;
-  // otherwise a reply INHERITS its parent's scope and a root run defaults to "org".
-  // ONLY the scope enum is read from the body — never any identity (org/user is
-  // always server-resolved). An unknown value is a client error, not a fallback.
-  let memoryScope: MemoryScope;
-  let requestedMemoryScope: MemoryScope | null = null;
-  if (body.memory_scope !== undefined && body.memory_scope !== null) {
-    if (!isMemoryScope(body.memory_scope)) {
-      return c.json(
-        { error: `memory_scope must be one of: ${MEMORY_SCOPES.join(", ")}` },
-        400,
-      );
-    }
-    requestedMemoryScope = body.memory_scope;
-    memoryScope = requestedMemoryScope;
-  } else {
-    memoryScope = parentScope ?? "org";
-  }
+  // otherwise a reply INHERITS its parent's and a root run defaults to "org".
+  // Permission mode: only an explicit choice is taken here; an omitted mode is
+  // resolved at the insert, under the thread lock, so an older parent or a read
+  // made before a narrowing reply cannot widen the thread.
+  const scope = runMemoryScope(body.memory_scope, parentScope);
+  if (!scope.ok) return c.json({ error: scope.error }, 400);
+  const { memoryScope, requestedMemoryScope } = scope;
+  const permission = runPermissionMode(body.permission_mode);
+  if (!permission.ok) return c.json({ error: permission.error }, 400);
+  const { permissionMode } = permission;
+  // Run location: a root run's cloud-or-machine choice (the machine's availability is asked below, of a new acceptance only); a reply inherits.
+  const location = runLocationChoice(body.run_location, parentRunId !== null);
+  if (!location.ok) return c.json(location.body, location.status);
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -245,9 +235,7 @@ export async function handleRunCreate(
   if (body.skill !== undefined && body.skill !== null) {
     const sel = body.skill as { id?: unknown; version?: unknown };
     const rawId = typeof sel.id === "string" ? sel.id.trim() : "";
-    if (!rawId) {
-      return c.json({ error: "skill.id must be a skill id string" }, 400);
-    }
+    if (!rawId) return c.json({ error: "skill.id must be a skill id string" }, 400);
     const version =
       typeof sel.version === "number" &&
       Number.isInteger(sel.version) &&
@@ -299,12 +287,14 @@ export async function handleRunCreate(
   const intent: RunCommandIntent = {
     prompt: finalPrompt,
     model: requestedModel,
+    reasoningEffort: body.reasoning_effort == null ? null : String(body.reasoning_effort),
     engine: requestedEngine,
     parentRunId,
     requestedRepos,
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
+    permissionMode: permissionMode ?? null, runLocation: location.runLocation ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -333,7 +323,7 @@ export async function handleRunCreate(
         });
   } catch (error) {
     if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
+      return c.json(error.body, 503);
     }
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     throw error;
@@ -347,23 +337,25 @@ export async function handleRunCreate(
     return c.json({ error: "idempotency_key_reused", reason: replay.reason }, 409);
   }
   // Mutable authorization/readiness checks apply only to first acceptance.
-  if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
-    return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
-  }
-  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId") }, parentEngine ?? requestedEngine);
-  if (!resolvedEngine.ok) {
-    return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
-  }
+  const machine = location.runLocation === "local" ? await machineUnavailable({ orgId: c.get("orgId"), userId: c.get("userId") }) : null;
+  if (machine) return c.json(machine.body, machine.status);
+  if (parentEngine && requestedEngine && requestedEngine !== parentEngine) return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
+  const runLocation = location.runLocation ?? parentRunLocation;
+  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, parentEngine ?? requestedEngine);
+  if (!resolvedEngine.ok) return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   const engine = resolvedEngine.engine;
   const inheritedModel =
     parentModel && isReplyModelAllowedForEngine(engine, parentModel, parentModel)
       ? parentModel
       : defaultModelForEngine(engine);
   const model = requestedModel ?? inheritedModel;
-  if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
+  if (!(await replyModelAdmittedForUser(engine, model, parentModel, c.get("userId")))) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
-  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
+  const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;
+  const effort = resolveReasoningEffort(body.reasoning_effort, await reasoningEffortSupportForRun(engine, model, actor), parentReasoningEffort);
+  if (!effort.ok) return c.json({ error: effort.error, engine, efforts: effort.efforts }, 400);
+  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
 
@@ -372,9 +364,7 @@ export async function handleRunCreate(
       id: requestedSkillId,
       version: requestedSkillVersion ?? undefined,
     });
-    if (!pinned) {
-      return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
-    }
+    if (!pinned) return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
     skillId = pinned.skillId;
     skillVersion = pinned.version;
     skillContentHash = pinned.contentHash;
@@ -440,7 +430,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, runLocation: location.runLocation, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId
@@ -452,9 +442,8 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
-    if (error instanceof UploadClaimError) {
-      return c.json({ error: "upload_unavailable" }, 409);
-    }
+    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
+    if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
@@ -463,9 +452,8 @@ export async function handleRunCreate(
         409,
       );
     }
-    if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
-    }
+    if (error instanceof RunAdmissionClosedError) return c.json(error.body, 503);
+    if (error instanceof SpendAllowanceExceededError || error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
@@ -499,26 +487,7 @@ export async function handleRunCreate(
 
 runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
-// POST /:id/cancel — durable user Stop. Records a `run.cancel` command
-// (idempotent), fails a not-yet-started (queued) run atomically, signals a live
-// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
-// runs still working in threads this one delegated to. Org-scoped (a
-// cross-org/missing id is a 404). A run that already settled is a no-op.
-runsRoutes.post("/:id/cancel", async (c) => {
-  const id = c.req.param("id");
-  const outcome = await stopRun({ orgId: c.get("orgId"), actorId: c.get("userId"), runId: id });
-  switch (outcome.status) {
-    case "not_found":
-      return c.json({ error: "run not found" }, 404);
-    case "settled":
-      return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
-    case "cancelling":
-      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
-    default:
-      return assertNever(outcome);
-  }
-});
-
+registerRunCancelRoute(runsRoutes);
 registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);
@@ -727,9 +696,8 @@ runsRoutes.get("/:id/events", async (c) => {
 //   native   { threadId, runId, frame }    versioned native frame (dedupe by eventId+seq)
 //   done     { threadId, runId, status }   settles ONE run; does NOT close the stream
 //
-// Reconnect replays a full snapshot + latest native frames per run; stable ids make
-// that idempotent (no thread-global sequence — deliberately simpler, correct at this
-// scale). The old per-run `/:id/events` route is untouched (the rollback path).
+// Reconnect replays the snapshot plus, per thread-resume.ts, the native frames and canonical
+// rows the browser's cursors do not cover. The old per-run `/:id/events` route is untouched.
 //
 // A cap of MAX_QUEUE queued live frames bounds memory: on overflow the connection
 // closes so the browser reconnects to a fresh authoritative snapshot rather than
@@ -746,7 +714,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
-  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"));
+  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"), c.req.queries("nativeAfter"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;
@@ -853,13 +821,11 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         for (const s of steps) m.set(s.idx, `${s.id}|${s.code_json ?? ""}`);
       };
 
+      const nativeSeen = (runId: string): Map<string, number> =>
+        nativeSeenByRun.get(runId) ?? nativeSeenByRun.set(runId, new Map()).get(runId)!;
       // Emit a native frame if it advances its eventId's seq (dedupe replay/live).
       const sendNative = (runId: string, frame: NativeFrame): void => {
-        let m = nativeSeenByRun.get(runId);
-        if (!m) {
-          m = new Map();
-          nativeSeenByRun.set(runId, m);
-        }
+        const m = nativeSeen(runId);
         if ((m.get(frame.eventId) ?? -1) >= frame.seq) return;
         m.set(frame.eventId, frame.seq);
         sendFrame("native", { threadId, runId, frame });
@@ -961,19 +927,21 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         sendFrame("snapshot", { threadId, runs: thread });
         for (const run of thread) seedStepDedupe(run.id, run.steps);
 
-        // 3. Replay every native frame (deduped by eventId+seq); the gateway also writes them.
+        // 3. Runs whose canonicalization is COMPLETE (H2), read BEFORE the canonical rows so a
+        //    run finalized between the reads announces completion via the live loop. A sealed
+        //    run the browser proved it holds (thread-resume.ts) counts as sent up to its cursor
+        //    and replays only what is above it; every other run replays every frame.
+        const completes = await completeCanonicalRuns(threadId);
+        const native = await resolveNativeResume(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
         for (const run of thread) {
-          for (const frame of await getNativeFramesSince(run.id, -1)) {
+          for (const held of native.retained(run.id)) nativeSeen(run.id).set(held.eventId, held.seq);
+          for (const frame of await native.replay(run.id)) {
             if (closed) return;
             sendNative(run.id, frame);
           }
         }
 
-        // 3b. Read which runs are canonicalization-COMPLETE (H2) BEFORE the rows, so a run
-        //     finalized between the reads announces completion via the live loop after its
-        //     rows; replay the rows above the cursor (deduped by deliverySeq), then the
-        //     completions: React trusts a run's canonical lane ONLY after its completion.
-        const completes = await completeCanonicalRuns(threadId);
+        // 3b. Canonical rows above the cursor (deduped by deliverySeq), then the completions.
         for (const event of await loadCanonicalThread(threadId, resume.canonicalAfter)) {
           if (closed) return;
           sendCanonical(event);

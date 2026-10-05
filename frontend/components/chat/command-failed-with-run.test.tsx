@@ -53,7 +53,7 @@ describe("a command step the run's failure cut short", () => {
     const html = renderToStaticMarkup(
       <Timeline nodes={nodes} live={false} trace={{ durationMs: 31_605, defaultOpen: true }} />,
     );
-    expect(html).toContain("1 tool call, 1 failed");
+    expect(html).toContain("ran 1 command · 1 failed");
     expect(html).toContain('data-status="failed"');
     expect(html).toContain('aria-label="Failed"');
     expect(html).not.toContain('aria-label="Completed"');

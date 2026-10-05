@@ -18,12 +18,16 @@ export type StopOutcome =
   /** The run had already settled; `runStatus` is what the record holds. */
   | { readonly status: "settled"; readonly runStatus: string }
   /** `replay` is a repeated Stop; `children` counts delegated runs newly stopped with it. */
-  | { readonly status: "cancelling"; readonly replay: boolean; readonly children: number };
+  | { readonly status: "cancelling"; readonly replay: boolean; readonly children: number }
+  /** `onlyQueued` found a run that had already started; nothing was recorded. */
+  | { readonly status: "started"; readonly runStatus: string };
 
 interface StopInput {
   readonly orgId: string;
   readonly actorId: string | null;
   readonly runId: string;
+  /** Cancel the run only while it is still queued (a Remove from the queue). */
+  readonly onlyQueued?: boolean;
 }
 
 interface RunRow {
@@ -36,7 +40,9 @@ type CancelResult =
   /** The run was already settled when the cancel was recorded. */
   | { readonly kind: "terminal"; readonly runStatus: string }
   /** The cancel is recorded; `settledAs` when another party finalized the run meanwhile. */
-  | { readonly kind: "cancelled" | "replay"; readonly settledAs?: string };
+  | { readonly kind: "cancelled" | "replay"; readonly settledAs?: string }
+  /** A queued-only cancel met a run that had started; it was left alone. */
+  | { readonly kind: "started"; readonly runStatus: string };
 
 const LIVE_STATUSES = ["queued", "running"] as const;
 // ponytail: bounded parameter lists per query; a recursive query if delegation trees ever get that wide
@@ -66,6 +72,7 @@ async function recordCancel(input: StopInput, run: RunRow): Promise<CancelResult
   const outcome = await acceptRunCancel({ ...input, runId: run.id });
   if (outcome.status === "not_found") return { kind: "terminal", runStatus: run.status };
   if (outcome.status === "terminal") return { kind: "terminal", runStatus: outcome.runStatus };
+  if (outcome.status === "started") return { kind: "started", runStatus: outcome.runStatus };
   const kind = outcome.status === "already" ? "replay" : "cancelled";
   const status = outcome.status === "accepted" ? outcome.runStatusWas : (await runRow(input.orgId, run.id))?.status;
   return { kind, status };
@@ -80,7 +87,7 @@ async function signalRun(run: RunRow): Promise<string | undefined> {
 /** Record and signal in one step; the reader's own run takes this path. */
 async function cancelRun(input: StopInput, run: RunRow): Promise<CancelResult> {
   const recorded = await recordCancel(input, run);
-  if (recorded.kind === "terminal" || recorded.status !== "running") return recorded;
+  if (recorded.kind === "terminal" || recorded.kind === "started" || recorded.status !== "running") return recorded;
   const settledAs = await signalRun(run);
   return settledAs ? { kind: recorded.kind, settledAs } : { kind: recorded.kind };
 }
@@ -196,6 +203,7 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
   if (!root) return { status: "not_found" };
   const rootResult = await cancelRun(input, root);
   if (rootResult.kind === "terminal") return { status: "settled", runStatus: rootResult.runStatus };
+  if (rootResult.kind === "started") return { status: "started", runStatus: rootResult.runStatus };
 
   // Every cancel in a pass is recorded before any actor in it is signalled:
   // a signalled actor's teardown pumps its thread, and whatever it would
@@ -230,7 +238,8 @@ export async function stopRun(input: StopInput): Promise<StopOutcome> {
     let progressed = false;
     for (const run of fresh) {
       try {
-        const recorded = await recordCancel(input, run);
+        // Delegated work is stopped outright; the queued-only guard was the root's alone.
+        const recorded = await recordCancel({ ...input, onlyQueued: false }, run);
         handled.add(run.id);
         failed.delete(run.id);
         touched.add(run.threadId);

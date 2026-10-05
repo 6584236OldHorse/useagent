@@ -1,3 +1,4 @@
+import { providerOfferedToUser } from "./provider-accounts";
 import { decryptOrgSecretByName } from "../secrets/store";
 import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 import { resolveGatewayProviderApiKeyCredential } from "./api-key-credentials";
@@ -26,6 +27,20 @@ export interface ProviderCredentialResolvers {
   readonly resolveOrgSecret?: (orgId: string, name: string) => Promise<string | null>;
   readonly env?: Record<string, string | undefined>;
   readonly devModeEnabled?: (env?: Record<string, string | undefined>) => boolean;
+  /** Test seam for the PROVIDER_ACCOUNTS account read (default: the user table). */
+  readonly userEmail?: (userId: string) => Promise<string | null>;
+}
+
+/** How long a run waits for its credential reads before failing the turn. */
+export const PROVIDER_CREDENTIAL_WAIT_MS = 10_000;
+
+/** The run's own clock for credential reads. Callers wrap the whole resolution
+ *  in awaitWithSignal with this signal: Stop aborts it, and a blocked read (a
+ *  lock on the secrets or connections tables) cannot hold the run past the
+ *  deadline. */
+export function credentialWaitSignal(signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(PROVIDER_CREDENTIAL_WAIT_MS);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
 }
 
 async function defaultOrgSecret(orgId: string, name: string): Promise<string | null> {
@@ -77,6 +92,16 @@ export async function resolveProviderCredentialForRun(
   deps: ProviderCredentialResolvers = {},
 ): Promise<ResolvedProviderCredential | null> {
   const resolveUserConnection = deps.resolveUserConnection ?? resolveGatewayProviderApiKeyCredential;
+  // A provider PROVIDER_ACCOUNTS withholds from this run's user has no key for
+  // it, whoever connected one: the gate and the gateway both resolve here.
+  if (!(await providerOfferedToUser(input.provider, input.userId, deps.env ?? process.env, deps.userEmail))) return null;
+  // A Free-lane model on OpenCode Zen runs on the deployment's Zen account
+  // only: its free marker is ours, so a model Zen reprices must meet the house
+  // account's empty balance, never a tenant's funded key.
+  if (input.provider === "opencode" && input.model?.endsWith(":free")) {
+    const houseKey = (deps.env ?? process.env).OPENCODE_API_KEY?.trim();
+    return houseKey ? { value: houseKey, source: "backend_env" } : null;
+  }
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,
@@ -85,39 +110,26 @@ export async function resolveProviderCredentialForRun(
     });
     if (userCredential) return { value: userCredential, source: "user_connection" };
   }
-  const resolved = await resolveProviderCredential(input.orgId, input.provider, deps);
-  if (resolved) return resolved;
-
-  // The public Free lane is the one production exception to the paid-provider
-  // tenant boundary: `:free` OpenRouter variants cost no shared provider quota,
-  // so the hosted key can make the advertised zero-cost lane usable without a
-  // per-user connection. Paid models remain tenant/BYOK-only in production.
-  if (
-    input.provider === "openrouter" &&
-    input.model?.includes("/") &&
-    input.model.endsWith(":free")
-  ) {
-    const houseKey = (deps.env ?? process.env).OPENROUTER_API_KEY?.trim();
-    if (houseKey) return { value: houseKey, source: "backend_env" };
-  }
-  return null;
+  // Free models are free on the member's own OpenRouter key, so they follow
+  // the same order as paid ones: the member's connection, then the
+  // organisation's secret, and in production nothing else. The deployment's
+  // own keys never serve a member's run.
+  return resolveProviderCredential(input.orgId, input.provider, deps);
 }
 
 /**
- * Resolve the OpenRouter credential for the lightweight Chat surface (#122) and
- * the `chat` engine. A customer's connected BYO key wins so their own quota is
- * spent; otherwise the shared house key serves. Unlike a sandboxed run, chat is
- * the instant house-provided tier, so falling back to the house key is an
- * EXPLICIT, documented contract - not a silent substitution. Once a customer key
- * is chosen it is the only key used: an invalid customer key surfaces the real
- * OpenRouter error to the caller instead of quietly re-billing the house.
+ * Resolve the OpenRouter credential for the Chat surface and the `chat` engine.
+ * Same order as a run: the member's connected key, then the organisation's
+ * stored secret, and in production nothing else. The deployment's own key never
+ * serves a member's turn. Once a key is chosen it is the only key used: an
+ * invalid member key surfaces the real OpenRouter error instead of quietly
+ * billing another account.
  */
 export async function resolveChatProviderCredential(
   input: { orgId: string; userId?: string | null },
   deps: ProviderCredentialResolvers = {},
 ): Promise<ResolvedProviderCredential | null> {
   const resolveUserConnection = deps.resolveUserConnection ?? resolveGatewayProviderApiKeyCredential;
-  const env = deps.env ?? process.env;
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,
@@ -126,6 +138,5 @@ export async function resolveChatProviderCredential(
     });
     if (userCredential) return { value: userCredential, source: "user_connection" };
   }
-  const houseKey = env.OPENROUTER_API_KEY?.trim();
-  return houseKey ? { value: houseKey, source: "backend_env" } : null;
+  return resolveProviderCredential(input.orgId, "openrouter", deps);
 }

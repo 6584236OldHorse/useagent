@@ -6,12 +6,10 @@
  * `task_display_mode` of `timeline` or `plan`.
  *
  * Everything in this module is PURE (no I/O) so each shape and translation is
- * unit-testable with fixtures: steps become task updates, plan/todo steps
- * become plan updates, and narration deltas become exact-offset markdown
- * segments. The outbox owns delivery; the watcher and run finalization own
- * sequencing.
+ * unit-testable with fixtures: a tool step names the thread card's current
+ * verb, and narration deltas become exact-offset markdown segments. The outbox
+ * owns delivery; the watcher and run finalization own sequencing.
  */
-import type { CardPhase } from "./card";
 
 export type SlackStreamTaskDisplayMode = "timeline" | "plan";
 export type SlackSessionStatus = "processing" | "active";
@@ -53,7 +51,7 @@ export const STREAM_NARRATION_CAP = 12_000;
 function truncate(text: string, max: number): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+  return `${trimmed.slice(0, codePointCut(trimmed, Math.max(0, max - 1))).trimEnd()}…`;
 }
 
 /** Split free text into markdown chunks WITHOUT altering a single character -
@@ -61,10 +59,20 @@ function truncate(text: string, max: number): string {
  *  tail arithmetic at stopStream. Empty text yields no chunks. */
 export function markdownChunksFor(text: string): SlackMarkdownStreamChunk[] {
   const chunks: SlackMarkdownStreamChunk[] = [];
-  for (let at = 0; at < text.length; at += MARKDOWN_CHUNK_CAP) {
-    chunks.push({ type: "markdown_text", text: text.slice(at, at + MARKDOWN_CHUNK_CAP) });
+  for (let at = 0; at < text.length; ) {
+    const end = codePointCut(text, at + MARKDOWN_CHUNK_CAP);
+    chunks.push({ type: "markdown_text", text: text.slice(at, end) });
+    at = end;
   }
   return chunks;
+}
+
+/** `end` moved back one unit when it would split a surrogate pair, so no
+ *  stored or streamed string is ever ill-formed. Never moves past the text. */
+export function codePointCut(text: string, end: number): number {
+  if (end >= text.length) return text.length;
+  const unit = text.charCodeAt(end - 1);
+  return unit >= 0xd800 && unit <= 0xdbff ? end - 1 : end;
 }
 
 export function taskUpdateChunk(input: {
@@ -152,16 +160,6 @@ function normalizeStreamChunk(raw: unknown): SlackStreamChunk | null {
     ...(output ? { output } : {}),
     ...taskSourcesField(source.sources),
   };
-}
-
-export function planUpdateChunk(title: string): SlackPlanUpdateStreamChunk {
-  return { type: "plan_update", title: truncate(title, TASK_TEXT_CAP) || "Plan" };
-}
-
-/** The stream's opening: one root task card spinning on the run title. No
- *  markdown here - every streamed char stays in the settled message body. */
-export function openingStreamChunks(title: string): readonly SlackStreamChunk[] {
-  return [taskUpdateChunk({ id: "run", title, status: "in_progress" })];
 }
 
 // ── Tool cards ───────────────────────────────────────────────────────────────
@@ -324,113 +322,25 @@ function unwrapUrl(raw: string): string {
   }
 }
 
-/** Progress chunks for a card revision: a card still open under another id
- *  completes first (a new call starting means the last one yielded, for engines
- *  that never send a completion), then the revision itself. Returns the card
- *  left open, if any. Pure state-in/state-out so the pairing is unit-testable. */
-export function stepProgressChunks(
-  open: SlackTaskUpdateStreamChunk | null,
-  chunk: SlackTaskUpdateStreamChunk,
-): { chunks: readonly SlackTaskUpdateStreamChunk[]; open: SlackTaskUpdateStreamChunk | null } {
-  const yielded =
-    chunk.status === "in_progress" && open !== null && open.id !== chunk.id && open.status === "in_progress";
-  return {
-    chunks: yielded ? [{ ...open, status: "complete" }, chunk] : [chunk],
-    open: chunk.status === "in_progress" ? chunk : open?.id === chunk.id ? null : open,
-  };
-}
-
-/** A plan/todos step (todowrite tool or a `plan` chip) becomes ONE plan_update
- *  chunk titling the plan's live progress. Null for a non-plan step. */
-export function planUpdateFromStep(step: {
-  readonly label: string;
-  readonly chip: string | null;
-  readonly codeJson: string | null;
-}): SlackPlanUpdateStreamChunk | null {
-  let parsed: unknown;
-  try {
-    parsed = step.codeJson ? JSON.parse(step.codeJson) : null;
-  } catch {
-    parsed = null;
-  }
-  const code = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  const tool = typeof code?.tool === "string" ? code.tool : null;
-  if (step.chip !== "plan" && tool !== "todowrite") return null;
-  const input = code?.input && typeof code.input === "object" ? (code.input as Record<string, unknown>) : null;
-  const todos = Array.isArray(input?.todos)
-    ? input.todos.filter((t): t is Record<string, unknown> => Boolean(t) && typeof t === "object")
-    : [];
-  if (todos.length === 0) return planUpdateChunk(step.label);
-  const done = todos.filter((t) => {
-    const status = typeof t.status === "string" ? t.status : "";
-    return status === "completed" || status === "complete" || status === "done";
-  }).length;
-  const current = todos.find((t) => t.status === "in_progress");
-  const currentText = typeof current?.content === "string" ? current.content : null;
-  const head = `Plan ${done}/${todos.length}`;
-  return planUpdateChunk(currentText ? `${head}: ${currentText}` : head);
-}
-
-/** Chars of card JSON the stop restates at most, so finalization never builds
- *  a payload the outbox refuses: the newest cards win, and a card past the
- *  budget still closes with a bare id/title/status in its settled state. */
-export const TERMINAL_CARD_BUDGET = 6_000;
-
-/** Terminal task closures for stopStream: the recent tool cards restated from
- *  their durable rows (a card still open settles to complete/error, a settled
- *  one is repeated as is, since a live append pending at finalization is
- *  dropped) and the root run task. The reply text itself travels separately
- *  (narration tail + closing markdown, sliced at delivery). */
-export function terminalTaskChunks(input: {
-  readonly phase: CardPhase;
-  readonly title: string;
-  readonly cards?: readonly SlackTaskUpdateStreamChunk[];
-  readonly budget?: number;
-}): readonly SlackStreamChunk[] {
-  const status: SlackTaskUpdateStatus = input.phase === "failed" ? "error" : "complete";
-  const budget = input.budget ?? TERMINAL_CARD_BUDGET;
-  const restated: SlackTaskUpdateStreamChunk[] = [];
-  let spent = 0;
-  for (const card of (input.cards ?? []).toReversed()) {
-    const settled = card.status === "in_progress" ? { ...card, status } : card;
-    const size = JSON.stringify(settled).length;
-    if (spent + size <= budget) {
-      spent += size;
-      restated.unshift(settled);
-    } else {
-      // Slack may only ever have seen this card in_progress (its completion
-      // append fenced at finalization), so even a settled card closes bare.
-      restated.unshift({ type: "task_update", id: card.id, title: card.title, status: settled.status });
-    }
-  }
-  return [
-    ...restated,
-    taskUpdateChunk({
-      id: "run",
-      title: input.phase === "failed" ? "Run failed" : input.title,
-      status,
-    }),
-  ];
-}
-
-/** The markdown appended AFTER the narration tail at stopStream. Empty when the
- *  streamed narration already CONTAINS the reply (the common live case) -
- *  correctness first: when in doubt the reply is re-stated, never dropped. */
+/** The markdown the reply needs AFTER the narration: empty when the narration
+ *  already CONTAINS the reply (the common live case), the whole reply when
+ *  nothing streamed - correctness first: when in doubt the reply is re-stated,
+ *  never dropped, and never cut (the caller splits what one message cannot
+ *  hold into messages of its own). */
 export function composeStreamClosing(input: {
   readonly status: "completed" | "failed";
   readonly summary: string;
-  /** The narration the stream body will contain (already capped). */
+  /** The complete narration the turn streamed. */
   readonly narration: string;
 }): string {
   const summary = input.summary.trim();
-  const summaryCapped = truncate(summary, MARKDOWN_CHUNK_CAP);
   if (input.status === "failed") {
     const prefix = input.narration ? "\n\n" : "";
-    return `${prefix}**Run failed**${summaryCapped ? `: ${summaryCapped}` : ""}`;
+    return `${prefix}**Run failed**${summary ? `: ${summary}` : ""}`;
   }
-  if (!input.narration) return summaryCapped || "Done.";
+  if (!input.narration) return summary || "Done.";
   if (!summary || input.narration.includes(summary)) return "";
-  return `\n\n${summaryCapped}`;
+  return `\n\n${summary}`;
 }
 
 /** Ordered narration accumulator for the watcher: deltas buffer in, `take()`
@@ -451,7 +361,9 @@ export function createNarrationBuffer(cap = STREAM_NARRATION_CAP): {
     take() {
       if (!pending) return null;
       const room = Math.max(0, cap - offset);
-      const text = pending.slice(0, room);
+      // The cap never splits a surrogate pair: the pair reaches Slack whole
+      // from the accepted offset at stop.
+      const text = pending.slice(0, codePointCut(pending, room));
       pending = "";
       if (!text) return null;
       const at = offset;
@@ -464,13 +376,14 @@ export function createNarrationBuffer(cap = STREAM_NARRATION_CAP): {
   };
 }
 
-/** The live shimmer text for the working step ("<App> is working: <step>"). */
-export function statusTextForStep(label: string): string {
-  return `is working: ${truncate(label, 120)}`;
-}
-
-/** Slack DM channel ids start with "D" - the only surface where the free-text
- *  thread status (assistant.threads.setStatus) is documented to render. */
-export function directMessageChannel(channelId: string): boolean {
-  return channelId.startsWith("D");
-}
+/** The calm phrases the working shimmer shows (assistant.threads.setStatus:
+ *  `status` is the first, `loading_messages` the whole set Slack rotates).
+ *  Plain and neutral, never a tool label. */
+export const WORKING_PHRASES = [
+  "Working on it",
+  "Looking into it",
+  "Still on it",
+  "Putting it together",
+  "Checking the details",
+  "Nearly there",
+] as const;

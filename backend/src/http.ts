@@ -13,5 +13,13 @@ export type AppEnv = {
     // requests leave it undefined. Management routes assert it is NOT set so a
     // bearer key can never mint or revoke keys.
     bearerAuthenticated?: boolean;
+    /** How the org middleware established the identity: a verified session, or
+     *  the dev fallback (allowed only when ALLOW_DEV_ORG permits). Routes that
+     *  must not treat the dev user as a person read this instead of resolving
+     *  the session a second time. */
+    identitySource?: "session" | "dev";
+    /** Set only by the preview capability scope (runs/preview-capability.ts):
+     *  the sandbox port a capability-authenticated preview request may reach. */
+    previewPort?: number;
   };
 };

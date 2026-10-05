@@ -638,6 +638,125 @@
       "when": 1792800000002,
       "tag": "0092_slack_access_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1792800000003,
+      "tag": "0093_runs_prompt_delivered_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1792800000004,
+      "tag": "0094_run_feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1792800000005,
+      "tag": "0095_slack_card_pacing",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1792800000006,
+      "tag": "0096_slack_card_applied_revision",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1792800000009,
+      "tag": "0099_sandbox_minutes",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1792800000012,
+      "tag": "0102_runs_connector",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1792800000013,
+      "tag": "0103_runs_permission_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1792800000014,
+      "tag": "0104_spend_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1792800000015,
+      "tag": "0105_runs_reasoning_effort",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1792800000016,
+      "tag": "0106_runs_run_location",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1792800000017,
+      "tag": "0107_session_command_catalogs",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1792800000018,
+      "tag": "0108_free_model_probe_budget",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1792800000019,
+      "tag": "0109_slack_identity_lookup_channel_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1792800000020,
+      "tag": "0110_slack_threads_muted_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1792800000021,
+      "tag": "0111_provider_connection_status_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1792800000022,
+      "tag": "0112_run_preamble_hashes",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1792800000023,
+      "tag": "0113_runtime_artifact_verifications",
+      "breakpoints": true
     }
   ]
 }

@@ -17,6 +17,9 @@ import {
   type UserFacingEngineId,
 } from "../runs/engine-readiness";
 import { allowedModelsForEngine, defaultModelForEngine } from "../runs/model-policy";
+import { modelOfferedTo } from "../provider-gateway/provider-accounts";
+import { providerForEngine, type ProviderId } from "../provider-gateway/provider";
+import { reasoningEffortSupport } from "../runs/reasoning-effort";
 import type { NativeCodexModelCatalog } from "../provider-connections/codex-model-catalog";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 
@@ -35,6 +38,8 @@ export interface CapabilityCatalogOptions {
   readonly productChildThreadsConfigured?: boolean;
   readonly botsConfigured?: boolean;
   readonly codexModelCatalog?: NativeCodexModelCatalog;
+  /** The reader's email; a provider PROVIDER_ACCOUNTS restricts is listed only for the accounts it names. */
+  readonly account?: string | null;
 }
 
 export interface CapabilityCatalogModel {
@@ -43,6 +48,8 @@ export interface CapabilityCatalogModel {
   readonly dispatchable: boolean;
   readonly policyAllowed: boolean;
   readonly displayName?: string;
+  /** Whose key pays for this model's run, so a picker can say which key it needs. */
+  readonly provider?: ProviderId;
   readonly nativeAvailable?: true;
   readonly defaultReasoningEffort?: string;
   readonly supportedReasoningEfforts?: readonly string[];
@@ -141,6 +148,7 @@ function buildEngine(
   env: Record<string, string | undefined>,
   gatewayConfigured: boolean,
   codexModelCatalog?: NativeCodexModelCatalog,
+  account: string | null = null,
 ): CapabilityCatalogEngine {
   const baseReadiness = engineReadiness(engine, env);
   const subscriptionCatalogUnavailable = engine === "codex" &&
@@ -163,28 +171,29 @@ function buildEngine(
   const nativeModels = engine === "codex"
     ? new Map(codexModelCatalog?.models.map((model) => [model.id, model]) ?? [])
     : new Map();
-  const modelIds = engine === "codex"
+  const modelIds = (engine === "codex"
     ? [...new Set([...allowedModelIds, ...nativeModels.keys()])]
-    : allowedModelIds;
+    : allowedModelIds).filter((id) => modelOfferedTo(engine as EngineId, id, account, env));
   const models = modelIds.map((id) => {
     const policyAllowed = policyModels.has(id);
     const nativeModel = nativeModels.get(id);
     const dispatchable = policyAllowed &&
       readiness.ready &&
       engineModelReadyForDispatch(engine as EngineId, id, env);
+    // The effort seam the picker may offer: the native Codex catalog's own list
+    // when it knows the model, the engine's policy set otherwise, none elsewhere.
+    const effort = reasoningEffortSupport(engine as EngineId, nativeModel);
+    const provider = providerForEngine(engine as EngineId, id);
     return {
       id,
       default: id === defaultModel,
       dispatchable,
       policyAllowed,
       ...(nativeModel?.displayName ? { displayName: nativeModel.displayName } : {}),
+      ...(provider ? { provider } : {}),
       ...(nativeModel ? { nativeAvailable: true as const } : {}),
-      ...(nativeModel?.defaultReasoningEffort
-        ? { defaultReasoningEffort: nativeModel.defaultReasoningEffort }
-        : {}),
-      ...(nativeModel?.supportedReasoningEfforts.length
-        ? { supportedReasoningEfforts: nativeModel.supportedReasoningEfforts }
-        : {}),
+      ...(effort.defaultEffort ? { defaultReasoningEffort: effort.defaultEffort } : {}),
+      ...(effort.efforts.length ? { supportedReasoningEfforts: effort.efforts } : {}),
       ...(!dispatchable
         ? {
             degradationReason: !policyAllowed
@@ -264,7 +273,7 @@ export function buildCapabilityCatalog(options: CapabilityCatalogOptions): Capab
     scope: "pre_run",
     bots: options.botsConfigured === true,
     engines: USER_FACING_ENGINES.map((engine) =>
-      buildEngine(engine, env, options.gatewayConfigured, options.codexModelCatalog),
+      buildEngine(engine, env, options.gatewayConfigured, options.codexModelCatalog, options.account ?? null),
     ),
     tools: { gatewayConfigured: options.gatewayConfigured, families: familyConfigured, declared: tools },
     nativeSlashCommands: { catalog: "session_runtime", currentRun: null },

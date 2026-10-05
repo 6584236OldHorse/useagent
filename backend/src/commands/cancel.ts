@@ -4,6 +4,7 @@ import { isUniqueViolation } from "../db/pg-errors";
 import { commands, runs, type RunStatus } from "../db/schema";
 import { setAdmissionState } from "../fleet/admission-repo";
 import { releaseLeaseForRun } from "../fleet/lease-repo";
+import { accrueRunSandboxMinutes } from "../runs/sandbox-minutes";
 import { publishRunLifecycleChange } from "../runs/org-signals";
 import { isInternalRunOrigin } from "../runs/origin";
 import { completeRun } from "../runs/repo";
@@ -52,7 +53,9 @@ export type CancelOutcome =
   /** No such run in this org. */
   | { readonly status: "not_found" }
   /** The run already settled — nothing to cancel. */
-  | { readonly status: "terminal"; readonly runStatus: RunStatus };
+  | { readonly status: "terminal"; readonly runStatus: RunStatus }
+  /** `onlyQueued` asked for a run that has not started, but it has: left alone, nothing recorded. */
+  | { readonly status: "started"; readonly runStatus: RunStatus };
 
 /**
  * Accept a durable `run.cancel` for a run, org-scoped. Idempotent by
@@ -63,6 +66,9 @@ export async function acceptRunCancel(input: {
   orgId: string;
   actorId: string | null;
   runId: string;
+  /** Cancel only while the run is still queued (a Remove from the queue): a run
+   *  that dispatch started meanwhile answers `started` and is not touched. */
+  onlyQueued?: boolean;
 }): Promise<CancelOutcome> {
   // Fast idempotency path (outside any tx): a prior Stop short-circuits. Catching
   // the unique violation INSIDE the tx would poison it (an aborted tx can't be
@@ -106,6 +112,11 @@ export async function acceptRunCancel(input: {
       // A concurrent Stop may have recorded the intent while this one waited.
       const priorUnderLock = await findCancel(input.orgId, input.runId, tx);
       if (priorUnderLock !== null) return { status: "already" as const, threadId: priorUnderLock };
+      // Decided under the thread's dispatch lock, so a claim that raced this
+      // cancel has either committed (the run reads running) or waits behind it.
+      if (input.onlyQueued && run.status !== "queued") {
+        return { status: "started" as const, runStatus: run.status };
+      }
 
       // Durable intent record, written already-completed (never stuck).
       await tx.insert(commands).values({
@@ -135,6 +146,9 @@ export async function acceptRunCancel(input: {
           update commands set state = 'completed', updated_at = now()
           where run_id = ${input.runId} and kind = ${RUN_CREATE} and state <> 'completed'`);
         await releaseLeaseForRun(input.runId, tx);
+        // A queued run can already hold a lease on the thread's retained sandbox;
+        // this is its only settlement, so its minutes are charged here.
+        await accrueRunSandboxMinutes(run, tx);
         await setAdmissionState(input.runId, "canceled", tx);
       }
 

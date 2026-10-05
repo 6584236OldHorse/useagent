@@ -43,8 +43,21 @@ export type PromotionResult =
 	| { status: "compensated"; history: ReleaseHistory; error: string }
 	| { status: "failed-closed"; history: ReleaseHistory; error: string };
 
+export interface OperationOptions {
+	/**
+	 * How long admission stays closed while in-flight runs finish before the
+	 * backend swap. The swap waits for zero in-flight runs, so no run is cut;
+	 * a wait past this ceiling compensates, which reopens admission. Zero swaps
+	 * at once and does cut them.
+	 */
+	readonly waitForRunsMs: number;
+}
+
+export const defaultWaitForRunsMs = 120 * 60_000;
+const defaultOptions: OperationOptions = { waitForRunsMs: defaultWaitForRunsMs };
+
+/** The swap itself: from the last in-flight run finishing to admission reopening. */
 const admissionWindowMs = 30_000;
-const drainTimeoutMs = 10_000;
 const stopTimeoutMs = 5_000;
 const startTimeoutMs = 10_000;
 const caddyTimeoutMs = 3_000;
@@ -165,6 +178,7 @@ async function executeOperation(
 	history: ReleaseHistory,
 	kind: "promote" | "rollback",
 	target: ReleaseRecord,
+	options: OperationOptions,
 ): Promise<PromotionResult> {
 	history = beginOperation(history, kind, target, effects.now());
 	await effects.persistHistory(history);
@@ -187,27 +201,30 @@ async function executeOperation(
 		}
 
 		history = await persistPhase(effects, history, "close-admission");
-		const admissionClosedAt = performance.now();
-		const remainingAdmissionMs = (step: string): number => {
-			const remaining = Math.floor(
-				admissionWindowMs - (performance.now() - admissionClosedAt),
+		await effects.closeAdmission(admissionWindowMs);
+		admissionClosed = true;
+
+		// The wait is outside the swap window: runs already admitted finish at
+		// their own pace while new ones are refused. The only ceiling is the
+		// operator's; past it the promote compensates and reopens admission.
+		history = await persistPhase(effects, history, "drain-backend");
+		if (
+			options.waitForRunsMs > 0 &&
+			!(await effects.drainBackend(options.waitForRunsMs))
+		) {
+			throw new Error(
+				`in-flight runs did not finish within ${options.waitForRunsMs}ms; reopening admission`,
 			);
+		}
+
+		const swapStartedAt = Date.now();
+		const remainingAdmissionMs = (step: string): number => {
+			const remaining = admissionWindowMs - (Date.now() - swapStartedAt);
 			if (remaining <= 0) {
 				throw new Error(`admission window exhausted before ${step}`);
 			}
 			return remaining;
 		};
-		await effects.closeAdmission(remainingAdmissionMs("admission close"));
-		admissionClosed = true;
-
-		history = await persistPhase(effects, history, "drain-backend");
-		if (
-			!(await effects.drainBackend(
-				Math.min(drainTimeoutMs, remainingAdmissionMs("backend drain")),
-			))
-		) {
-			throw new Error(`backend did not drain within ${drainTimeoutMs}ms`);
-		}
 
 		const active = history.pending?.from;
 		if (active) {
@@ -280,19 +297,23 @@ export async function promote(
 	effects: PromotionEffects,
 	history: ReleaseHistory,
 	manifest: ReleaseManifest,
+	options: OperationOptions = defaultOptions,
 ): Promise<PromotionResult> {
 	const plan = planNextRelease(history);
 	const promotedAt = effects.now();
-	return executeOperation(effects, history, "promote", {
-		manifest,
-		color: plan.targetColor,
-		promotedAt,
-	});
+	return executeOperation(
+		effects,
+		history,
+		"promote",
+		{ manifest, color: plan.targetColor, promotedAt },
+		options,
+	);
 }
 
 export async function rollback(
 	effects: PromotionEffects,
 	history: ReleaseHistory,
+	options: OperationOptions = defaultOptions,
 ): Promise<PromotionResult> {
 	if (!history.current || !history.previous) {
 		throw new Error("rollback requires current and previous releases");
@@ -300,8 +321,11 @@ export async function rollback(
 	if (history.current.color === history.previous.color) {
 		throw new Error("rollback target must use the inactive release color");
 	}
-	return executeOperation(effects, history, "rollback", {
-		...history.previous,
-		promotedAt: effects.now(),
-	});
+	return executeOperation(
+		effects,
+		history,
+		"rollback",
+		{ ...history.previous, promotedAt: effects.now() },
+		options,
+	);
 }

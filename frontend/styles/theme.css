@@ -159,6 +159,9 @@
  * Figma. Direction inferred — confirm visually against Figma.
  * --------------------------------------------------------------------------- */
 :root {
+  /* The one easing curve for UI motion (entrances, reveals, the answer fade): a fast
+     start that settles softly. Import EASE_OUT from lib/motion for motion/react. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   /* Foreground (icons + on-fill content) */
   --color-foreground-full:               var(--color-white);
   --color-foreground-icon-primary:       var(--color-neutral-950);
@@ -266,7 +269,15 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-white);
   --color-ai-chat-composer-add-background:       var(--color-neutral-100);
   --color-ai-chat-composer-add-hover-background: var(--color-neutral-200);
+  --color-composer-panel-tab-background:         var(--color-neutral-200);
+  --color-composer-panel-add-background:         var(--color-neutral-200);
+  --color-composer-panel-add-hover-background:   var(--color-neutral-300);
+  --color-composer-panel-tile-border:            var(--color-neutral-200);
   --color-agent-progress-ring:                     var(--color-neutral-700);
+  /* Questionnaire number key: background/secondary in light, one tone
+   * lighter than the row in dark, stepping again while its row is hovered. */
+  --color-questionnaire-key-background:          var(--color-neutral-100);
+  --color-questionnaire-key-hover-background:    var(--color-neutral-200);
   --color-button-ghost-background:                var(--color-accent-100);
   --color-button-ghost-hover:                     var(--color-accent-200);
   --color-button-ghost-active:                    var(--color-accent-300);
@@ -441,7 +452,13 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-neutral-700);
   --color-ai-chat-composer-add-background:       var(--color-neutral-700);
   --color-ai-chat-composer-add-hover-background: var(--color-neutral-600);
+  --color-composer-panel-tab-background:         color-mix(in srgb, var(--color-neutral-700) 50%, transparent);
+  --color-composer-panel-add-background:         var(--color-neutral-700);
+  --color-composer-panel-add-hover-background:   var(--color-neutral-600);
+  --color-composer-panel-tile-border:            color-mix(in srgb, var(--color-white) 14%, transparent);
   --color-agent-progress-ring:                     color-mix(in srgb, var(--color-white) 50%, transparent);
+  --color-questionnaire-key-background:          var(--color-neutral-700);
+  --color-questionnaire-key-hover-background:    var(--color-neutral-600);
   --color-button-ghost-background:                var(--color-accent-900);
   --color-button-ghost-hover:                     var(--color-accent-800);
   --color-button-ghost-active:                    var(--color-accent-700);
@@ -669,7 +686,13 @@
   --color-theme-toggle-sidebar-selected-background: var(--color-theme-toggle-sidebar-selected-background);
   --color-ai-chat-composer-add-background:       var(--color-ai-chat-composer-add-background);
   --color-ai-chat-composer-add-hover-background: var(--color-ai-chat-composer-add-hover-background);
+  --color-composer-panel-tab-background:         var(--color-composer-panel-tab-background);
+  --color-composer-panel-add-background:         var(--color-composer-panel-add-background);
+  --color-composer-panel-add-hover-background:   var(--color-composer-panel-add-hover-background);
+  --color-composer-panel-tile-border:            var(--color-composer-panel-tile-border);
   --color-agent-progress-ring:                     var(--color-agent-progress-ring);
+  --color-questionnaire-key-background:          var(--color-questionnaire-key-background);
+  --color-questionnaire-key-hover-background:    var(--color-questionnaire-key-hover-background);
   --color-button-ghost-background:                var(--color-button-ghost-background);
   --color-button-ghost-hover:                     var(--color-button-ghost-hover);
   --color-button-ghost-active:                    var(--color-button-ghost-active);

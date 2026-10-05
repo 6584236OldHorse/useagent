@@ -50,14 +50,10 @@ delete process.env.CODE_INDEX_INTERVAL_MIN;
 
 process.env.WORKER_STEP_DELAY_MS = process.env.WORKER_STEP_DELAY_MS ?? "5";
 
-// The Free model lane refreshes itself from OpenRouter's public catalog on
-// manifest traffic. Pin the SHARED cache's fetcher to an instant failure so no
-// test ever leaves the process (the lane then serves its curated seed); suites
-// that exercise the refresh install their own fixture fetcher per test.
-const { setFreeModelCatalogFetcherForTest } = await import(
-  "../src/runs/free-model-lane"
-);
-setFreeModelCatalogFetcherForTest(async () => new Response(null, { status: 503 }));
+// The Free-model qualifier reads OpenRouter's public catalog and starts probe
+// runs on its tick. The unit suite never leaves the process, so its kill
+// switch is set; the lane serves the generation the test database migrated in.
+process.env.FREE_MODEL_QUALIFIER = "off";
 // Same for the gateway's read of the primary's product flags: a fixture origin
 // such as 127.0.0.1:3201 may be a live server on a developer machine.
 const { setPrimaryProductFlagsFetcherForTest } = await import(
@@ -75,6 +71,14 @@ process.env.FLEET_ORG_MAX_ACTIVE_SANDBOXES =
   process.env.FLEET_ORG_MAX_ACTIVE_SANDBOXES ?? "100000";
 process.env.FLEET_ORG_MAX_QUEUE_DEPTH =
   process.env.FLEET_ORG_MAX_QUEUE_DEPTH ?? "1000000";
+// The host budget defaults to the single prod host (12 000 millicores, 62 GiB).
+// Suites that simulate crashed workers leave sandbox leases in 'active' at
+// 2 000 millicores each, and nothing collects them here (the reconciler is off),
+// so six of them fill that budget and every later run queues on capacity until
+// a fleet suite truncates the leases. Open it like the limits above; the fleet
+// suites narrow it per test.
+process.env.FLEET_HOST_CPU_MILLICORES = process.env.FLEET_HOST_CPU_MILLICORES ?? "100000000";
+process.env.FLEET_HOST_MEMORY_MIB = process.env.FLEET_HOST_MEMORY_MIB ?? "100000000";
 // Fast reconciler tick when a test starts the loop explicitly.
 process.env.FLEET_TICK_MS = process.env.FLEET_TICK_MS ?? "200";
 // The general suite drives admission explicitly (no background loop pumping
@@ -120,3 +124,14 @@ process.env.SLACK_OUTBOX_TICK_MS = process.env.SLACK_OUTBOX_TICK_MS ?? "3600000"
 // process-global fetch fixtures and attribute another run's writes to this test.
 process.env.MEMORY_OUTBOX_TICK_MS = process.env.MEMORY_OUTBOX_TICK_MS ?? "3600000";
 process.env.SLACK_OUTBOX_BASE_MS = process.env.SLACK_OUTBOX_BASE_MS ?? "20";
+
+// Build the schema once per process, before the first test file. helpers.ts
+// (via src/index) runs the same migrator at boot, but a database-backed file
+// that never imports it (a repo test with its own fixtures) otherwise depends
+// on running AFTER one that does: alone, or first in CI's file order, it dies
+// with `relation "runs" does not exist`. The migrator skips applied entries,
+// so the boot call that follows is a cheap no-op and the suite pays for the
+// schema exactly once, as before.
+const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+const { db } = await import("../src/db/client");
+await migrate(db, { migrationsFolder: `${import.meta.dir}/../drizzle` });

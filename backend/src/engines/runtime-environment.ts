@@ -1,7 +1,9 @@
 import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import { executeSandboxCommandOnce } from "../sandboxes/command-prefetch";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import { operatorEnv } from "./runtime-env";
 import { TOOL_GATEWAY_SERVER_NAME } from "../knowledge/gateway/descriptor";
+import { CLAUDE_CONFIG_DIR } from "../provider-gateway/sandbox-config";
 import {
   ensureNativeRuntimeArtifact,
   NATIVE_RUNTIME_ARTIFACT,
@@ -16,11 +18,12 @@ import {
 
 export const RUNTIME_ENVIRONMENT_PORT = 37_733;
 export const RUNTIME_GENERATION_LABEL = "useagent.runtime";
-// Native wire/session compatibility, not the application release number. The
-// nightly fork retains the v8 wire/session contract; exact distribution bytes
-// are verified separately. A future incompatible generation needs an explicit
-// workspace-preserving upgrade, never delete-and-recreate of retained threads.
-const DEFAULT_RUNTIME_GENERATION = "useagent-runtime-v8";
+// Native wire/session compatibility, not the application release number. v9 is
+// the runtime's orchestration protocol 2; exact distribution bytes are verified
+// separately. A sandbox of another generation fails closed with its workspace
+// kept (thread-sandbox.ts); the switch recreates retained sandboxes by hand,
+// never by delete-and-recreate here.
+const DEFAULT_RUNTIME_GENERATION = "useagent-runtime-v9";
 
 export function runtimeGeneration(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -48,9 +51,17 @@ const RUNTIME_FLAGS_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-flag
 /** Present while the image's boot entrypoint is still bringing the runtime up. */
 export const RUNTIME_BOOT_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-booting`;
 
-export function runtimeEnvironmentFlags(env: Readonly<Record<string, string | undefined>> = process.env): string {
-  return `child-forwarding=${runtimeCodexChildForwardingEnabled(env) ? "on" : "off"}`;
+// The runtime's own MCP tools, its self-started continuations, its runtime text in the agent's
+// instructions and its telemetry are always off; they ride the marker so a runtime started without
+// the switches is never accepted as ready.
+export function runtimeEnvironmentFlags(): string {
+  return "mcp=off,continuations=off,instructions=off,telemetry=off";
 }
+/** Pins the runtime settings that would let it start runs by itself (both default off today). */
+const RUNTIME_SETTINGS_PINS_SCRIPT =
+  'const fs=require("node:fs");const p=process.argv[1];let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}' +
+  ';c.continueThreadsAfterServerUpdate=false;c.autoResumeLimitedThreads=false' +
+  ';const t=p+".tmp";fs.writeFileSync(t,JSON.stringify(c));fs.chmodSync(t,0o600);fs.renameSync(t,p)';
 const RUNTIME_READINESS_DEADLINE_MS = 60_000;
 const RUNTIME_READINESS_DELAY_MS = 100;
 const RUNTIME_STOP_DEADLINE_MS = 15_000;
@@ -96,12 +107,10 @@ export function runtimeEnvironmentEnabled(
   return value === "1" || value === "true";
 }
 
-export function buildRuntimeEnvironmentReadinessCommand(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): string {
+export function buildRuntimeEnvironmentReadinessCommand(): string {
   return [
     `test "$(cat \"${RUNTIME_MCP_SERVER_MARKER}\" 2>/dev/null)" = "${TOOL_GATEWAY_SERVER_NAME}"`,
-    `test "$(cat \"${RUNTIME_FLAGS_MARKER}\" 2>/dev/null)" = "${runtimeEnvironmentFlags(env)}"`,
+    `test "$(cat \"${RUNTIME_FLAGS_MARKER}\" 2>/dev/null)" = "${runtimeEnvironmentFlags()}"`,
     `test "$(cat \"${RUNTIME_ENVIRONMENT_HOME}/.useagent-native-runtime\" 2>/dev/null)" = "${NATIVE_RUNTIME_ARTIFACT.archiveSha256}:${NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256}"`,
     `curl -fsS -m 3 -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/auth/session`,
   ].join(" && ");
@@ -137,12 +146,7 @@ export async function resolveRuntimeWorkspaceRoot(
     runsAsRoot: true,
   },
 ): Promise<string> {
-  const result = await sandbox.process.executeCommand(
-    buildRuntimeIdentityPreflightCommand(layout),
-    undefined,
-    undefined,
-    10,
-  );
+  const result = await executeSandboxCommandOnce(sandbox, buildRuntimeIdentityPreflightCommand(layout), 10);
   const workdir = result.result?.trim();
   if ((result.exitCode ?? 1) !== 0 || workdir !== layout.workdir) {
     throw new Error(
@@ -174,17 +178,6 @@ export function runtimeNoProgressTimeoutMs(
     : DEFAULT_NO_PROGRESS_TIMEOUT_MS;
 }
 
-export function runtimeCodexChildForwardingEnabled(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  const value = operatorEnv(
-    env,
-    "RUNTIME_CODEX_CHILD_EVENT_FORWARDING",
-    "T3_CODEX_CHILD_EVENT_FORWARDING",
-  )?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "on";
-}
-
 export function buildRuntimeEnvironmentLaunchCommand(
   env: Readonly<Record<string, string | undefined>> = process.env,
   layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
@@ -200,21 +193,28 @@ export function buildRuntimeEnvironmentLaunchCommand(
     "export T3CODE_HOST=0.0.0.0",
     `export T3CODE_PORT=${RUNTIME_ENVIRONMENT_PORT}`,
     `export T3_CODEX_REQUIRED_MCP_SERVERS=${TOOL_GATEWAY_SERVER_NAME}`,
-    // The embedded T3 Codex adapter suppresses child-thread notifications by
-    // default. Keep a separate operator kill switch from graph READ/SHADOW.
-    ...(runtimeCodexChildForwardingEnabled(env)
-      ? [
-          "export RUNTIME_CODEX_CHILD_EVENT_FORWARDING=true",
-          "export T3_CODEX_CHILD_EVENT_FORWARDING=true",
-        ]
-      : []),
+    // Agents get the plane's tools only: no runtime MCP server that could create threads,
+    // forks or schedules the plane never sees, and no run the runtime starts by itself.
+    "export T3_PROVIDER_MCP=off",
+    "export T3_PROVIDER_CONTINUATIONS=off",
+    // The plane writes the agent's preamble; none of the runtime's own text is added to it.
+    "export T3_PROVIDER_INSTRUCTIONS=off",
+    // Not secret: the runtime's own Claude session helpers (fork, subagent resume) look
+    // transcripts up here, where the Claude wrapper keeps them.
+    `export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR}"`,
     "export T3CODE_NO_BROWSER=true",
     "export T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false",
     "export T3CODE_LOG_WS_EVENTS=false",
-    `mkdir -p "${runtimeHome}" "${layout.workdir}"`,
+    // Customer sandboxes send no analytics to a third party (T3 batches to PostHog by default).
+    "export T3CODE_TELEMETRY_ENABLED=false",
+    `mkdir -p "${runtimeHome}/userdata" "${layout.workdir}"`,
+    // A database from the previous runtime would be imported with a transcript excerpt on top of
+    // the history the plane injects; such a sandbox is never reused.
+    `if [ -e "${runtimeHome}/userdata/state.sqlite" ]; then echo "previous runtime state present; the sandbox must be recreated" >&2; exit 1; fi`,
+    `node -e '${RUNTIME_SETTINGS_PINS_SCRIPT}' "${runtimeHome}/userdata/settings.json"`,
     `test -x "${nativeRuntimeExecutable(layout)}"`,
     `printf '%s\\n' "${TOOL_GATEWAY_SERVER_NAME}" > "${runtimeHome}/.useagent-required-mcp"`,
-    `printf '%s\\n' "${runtimeEnvironmentFlags(env)}" > "${runtimeHome}/.useagent-runtime-flags"`,
+    `printf '%s\\n' "${runtimeEnvironmentFlags()}" > "${runtimeHome}/.useagent-runtime-flags"`,
     `printf '%s\\n' "${NATIVE_RUNTIME_ARTIFACT.archiveSha256}:${NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256}" > "${runtimeHome}/.useagent-native-runtime"`,
     // Org secrets are deliberately NOT sourced into the T3 process environment:
     // the codex provider adapter composes child/session environments from the
@@ -265,7 +265,9 @@ async function provisionRuntimeEnvironment(
   try {
     const layout = runtimeEnvironmentLayout(sandbox);
     if (signal.aborted) throw new Error("Provider runtime start aborted");
-    await ensureNativeRuntimeArtifact(sandbox, layout, signal);
+    // Readiness requires the artifact marker of this release, which only a
+    // launch from a verified install writes; the whole-tree checksum is for the
+    // repair path below, not for a runtime that is already up on it.
     let healthy = await runtimeEnvironmentHealthy(sandbox);
     let outcome: RunTimingOutcome = healthy ? RUN_TIMING_OUTCOMES.ready : RUN_TIMING_OUTCOMES.repaired;
     if (!healthy && (await runtimeEnvironmentBooting(sandbox))) {
@@ -281,6 +283,7 @@ async function provisionRuntimeEnvironment(
       if (healthy) outcome = RUN_TIMING_OUTCOMES.booted;
     }
     if (!healthy) {
+      await ensureNativeRuntimeArtifact(sandbox, layout, signal);
       // A healthy old binary can still own the port even when provenance fails.
       await stopRuntimeEnvironment(sandbox, signal);
       await deleteRuntimeEnvironmentSessionIfPresent(sandbox);

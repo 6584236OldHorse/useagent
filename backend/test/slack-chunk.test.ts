@@ -68,4 +68,28 @@ describe("chunkSlackText", () => {
       expect(fenceLines.length % 2).toBe(0);
     }
   });
+
+  test("a hard cut inside an oversized line never splits a surrogate pair", () => {
+    const line = `${"a".repeat(3_899)}😀${"b".repeat(50)}`;
+    const chunks = chunkSlackText(line);
+    expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+    expect(chunks.map((c) => c.replace(/\n\n_\(continued…\)_$/, "")).join("")).toBe(line);
+  });
+
+  test("a fence whose language tag eats the whole budget still makes progress on an emoji body", () => {
+    const block = "```" + "x".repeat(3_900) + "\n😀\n```";
+    const chunks = chunkSlackText(block);
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+    expect(chunks.join("")).toContain("😀");
+  });
+
+  test("an oversized language tag is cut so every piece stays within the bound", () => {
+    for (const tag of [3_900, 5_000]) {
+      const chunks = chunkSlackText("```" + "x".repeat(tag) + "\n" + "😀".repeat(3_000) + "\n```");
+      for (const c of chunks) expect(c.length).toBeLessThanOrEqual(SLACK_MSG_LIMIT);
+      expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+      expect(chunks.join("")).toContain("😀");
+    }
+  });
 });

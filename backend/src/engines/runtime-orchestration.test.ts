@@ -4,8 +4,8 @@ import {
   assistantText,
   hasOpenRuntimeToolCall,
   buildRuntimeProjectCreateCommand,
-  buildRuntimeSessionStopCommand,
   buildRuntimeThreadCreateCommand,
+  buildRuntimeTurnInterruptCommand,
   buildRuntimeTurnStartCommand,
   runtimeActivityProviderEvent,
   runtimeActivityRevision,
@@ -28,19 +28,11 @@ const context = { runId: "run/unsafe", threadId: "thread unsafe", model: "gpt-5.
 const baselineRedactor = createSecretRedactor([]);
 
 describe("T3 orchestration projection", () => {
-  test("builds the native retained-session stop command", () => {
-    expect(buildRuntimeSessionStopCommand(
-      "thread-1",
-      "2026-09-05T00:00:00.000Z",
-      "revision-1",
-    ))
-      .toMatchObject({
-        type: "thread.session.stop",
-        commandId: "skynet-session-stop-revision-1-thread-1",
-        threadId: "thread-1",
-        onlyIfSettled: true,
-        createdAt: "2026-09-05T00:00:00.000Z",
-      });
+  test("interrupts a run by its id, never a whole thread", () => {
+    const command = buildRuntimeTurnInterruptCommand("skynet-thread-1", "run-7", "turn aborted");
+    expect(command).toMatchObject({ type: "run.interrupt", threadId: "skynet-thread-1", runId: "run-7", reason: "turn aborted" });
+    expect(command.commandId).toStartWith("skynet-turn-interrupt-");
+    expect(buildRuntimeTurnInterruptCommand("t", "r").commandId).not.toBe(buildRuntimeTurnInterruptCommand("t", "r").commandId);
   });
 
   test("derives stable transport-safe project and thread ids", () => {
@@ -48,36 +40,46 @@ describe("T3 orchestration projection", () => {
     expect(runtimeThreadId(context)).toBe("skynet-thread-thread-unsafe");
   });
 
-  test("builds a first-turn bootstrap using the selected provider instance", () => {
-    const command = buildRuntimeTurnStartCommand(
-      context,
-      "codex",
-      "use every prompt without keyword routing",
-      "2026-08-12T00:00:00.000Z",
-      true,
-    );
-    expect(command.type).toBe("thread.turn.start");
-    expect(command.modelSelection).toEqual({
-      instanceId: "codex",
-      model: "gpt-5.6-luna",
-      options: [],
+  test("sends the run's message to start now, as the plane's own message", () => {
+    const command = buildRuntimeTurnStartCommand(context, "codex", "use every prompt without keyword routing");
+    expect(command).toMatchObject({
+      type: "message.dispatch",
+      commandId: "skynet-turn-run-unsafe",
+      threadId: "skynet-thread-thread-unsafe",
+      messageId: "skynet-message-run-unsafe",
+      text: "use every prompt without keyword routing",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "start_immediately" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.6-luna", options: [] },
     });
-    expect(command.bootstrap).toBeDefined();
-    expect(command.runtimeMode).toBe("full-access");
-    expect((command.message as { text: string }).text).toBe(
-      "use every prompt without keyword routing",
-    );
+    // The mode lives on the thread; protocol 2 commands carry no client clock.
+    expect(command).not.toHaveProperty("runtimeMode");
+    expect(command).not.toHaveProperty("createdAt");
+    expect(command).not.toHaveProperty("bootstrap");
   });
 
-  test("builds an explicit thread before HTTP turn dispatch", () => {
+  test("never builds a fork or a merge-back: branching stays with the plane", async () => {
+    const source = await Bun.file(new URL("./runtime-v2-wire.ts", import.meta.url)).text();
+    expect(source).not.toContain("thread.fork");
+    expect(source).not.toContain("thread.merge_back");
+    expect(source).not.toContain("restoreFiles");
+  });
+
+  test("builds an explicit thread before the turn is dispatched", () => {
     expect(
       buildRuntimeThreadCreateCommand(
         { runId: "run-1", threadId: "thread-1", model: "gpt-5.6-luna" },
         "codex",
-        "2026-08-12T00:00:00.000Z",
       ),
     ).toMatchObject({
       type: "thread.create",
+      createdBy: "user",
+      creationSource: "web",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
       threadId: "skynet-thread-thread-1",
       projectId: "skynet-project-thread-1",
       modelSelection: { instanceId: "codex", model: "gpt-5.6-luna" },
@@ -85,7 +87,7 @@ describe("T3 orchestration projection", () => {
     });
   });
 
-  test("maps useAgent OpenCode catalog ids onto T3 provider-qualified ids", () => {
+  test("maps UseAgent OpenCode catalog ids onto T3 provider-qualified ids", () => {
     expect(runtimeModelId("opencode", "openai/gpt-5.6-luna")).toBe(
       "openai/gpt-5.6-luna",
     );
@@ -126,7 +128,6 @@ describe("T3 orchestration projection", () => {
       buildRuntimeThreadCreateCommand(
         opencodeContext,
         "opencode",
-        "2026-08-12T00:00:00.000Z",
       ),
     ).toMatchObject({
       modelSelection: {
@@ -139,8 +140,6 @@ describe("T3 orchestration projection", () => {
         opencodeContext,
         "opencode",
         "test",
-        "2026-08-12T00:00:00.000Z",
-        false,
       ),
     ).toMatchObject({
       modelSelection: {
@@ -197,9 +196,11 @@ describe("T3 orchestration projection", () => {
 
   test("builds a project rooted in the prepared sandbox workspace", () => {
     expect(
-      buildRuntimeProjectCreateCommand(context, "/root/work", "2026-08-12T00:00:00.000Z"),
+      buildRuntimeProjectCreateCommand(context, "/root/work"),
     ).toMatchObject({
       type: "project.create",
+      commandId: "skynet-project-create-run-unsafe",
+      title: "UseAgent thread unsafe",
       projectId: "skynet-project-thread-unsafe",
       workspaceRoot: "/root/work",
     });
@@ -267,7 +268,7 @@ describe("T3 orchestration projection", () => {
     };
     expect(activityStep(mcpCompleted)).toMatchObject({
       kind: "command",
-      label: "useAgent · memory_search",
+      label: "UseAgent · memory_search",
       code_json: {
         tool: "memory_search",
         server: "skynet-knowledge",
@@ -451,7 +452,7 @@ describe("T3 orchestration projection", () => {
     } as const;
     expect(shouldProjectRuntimeActivity(summaryOnlyMcp)).toBe(true);
     expect(activityStep(summaryOnlyMcp)).toMatchObject({
-      label: "useAgent · computer_screenshot",
+      label: "UseAgent · computer_screenshot",
       code_json: {
         server: "skynet-knowledge",
         tool: "computer_screenshot",
@@ -471,7 +472,7 @@ describe("T3 orchestration projection", () => {
         },
       },
     })).toMatchObject({
-      label: "useAgent · github_clone_repository",
+      label: "UseAgent · github_clone_repository",
       code_json: {
         server: "skynet-knowledge",
         tool: "github_clone_repository",
@@ -521,7 +522,7 @@ describe("T3 orchestration projection", () => {
         },
       },
     })).toMatchObject({
-      label: "useAgent · computer_screenshot",
+      label: "UseAgent · computer_screenshot",
       code_json: {
         server: "skynet-knowledge",
         tool: "computer_screenshot",
@@ -548,7 +549,7 @@ describe("T3 orchestration projection", () => {
       },
     } as const;
     expect(activityStep(structuredMcpActivity)).toMatchObject({
-      label: "useAgent · github_create_pull_request",
+      label: "UseAgent · github_create_pull_request",
       code_json: {
         server: "skynet-knowledge",
         tool: "github_create_pull_request",

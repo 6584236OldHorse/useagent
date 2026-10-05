@@ -84,7 +84,7 @@ describe("T3 native user input", () => {
     expect(previewCalls).toBe(1);
   });
 
-  test("maps ordered useAgent card answers to T3's native question ids", () => {
+  test("maps ordered UseAgent card answers to T3's native question ids", () => {
     expect(runtimeQuestionAnswers(
       snapshot(),
       "skynet-thread-thread-1",

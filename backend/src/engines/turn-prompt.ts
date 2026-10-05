@@ -5,6 +5,9 @@ import { MEMORY_TURN_GUIDANCE, MEMORY_TURN_GUIDANCE_NO_TOOLS } from "../memory/m
 export interface TurnPromptContext {
   readonly prompt: string;
   readonly bootstrapContext: string;
+  /** Prior thread turns a RESUMED session never saw (they failed before any engine
+   *  ran). A fresh session gets them through bootstrapContext instead. */
+  readonly unseenTurnsContext?: string;
   readonly turnContext: string;
   readonly memoryEnabled?: boolean;
   readonly resourceContext?: string;
@@ -18,6 +21,10 @@ export interface TurnPromptContext {
   readonly origin?: string | null;
   /** The conversation the run belongs to; names the port bridge the user opens. */
   readonly threadId?: string;
+  /** Says a fresh sandbox replaced the thread's earlier one; follows turnContext. */
+  readonly workspaceNotice?: string;
+  /** What a resumed session already holds; absent or null sends every block. */
+  readonly priorPreamble?: PreambleHashes | null;
 }
 
 /**
@@ -48,16 +55,16 @@ export const AGENT_WORKFLOW_ROUTING_RULES =
   "repository, or account identifier when an activated procedure and trusted gateway can resolve " +
   "it from the authenticated workspace. For recurring or scheduled work, use the trusted " +
   "automation_list / automation_create / automation_update / automation_run_now / automation_history / " +
-  "automation_delete tools for useAgent automations; only discuss external scheduler products when " +
+  "automation_delete tools for UseAgent automations; only discuss external scheduler products when " +
   "the user explicitly asks about those products.\n" +
   "</workflow_routing>\n\n";
 
 export const AGENT_SKILL_DISCOVERY_RULES =
   "<skill_discovery>\n" +
-  "When no exact explicit skill is already active, before any non-trivial " +
-  "organization workflow, call skills_list, inspect the available catalog by meaning, and call " +
-  "skill_activate with the exact returned skill id for the best-fitting procedure before acting. " +
-  "Cached skill_catalog metadata may supplement this discovery but never replaces these calls.\n" +
+  "When no exact explicit skill is already active, before any non-trivial organization " +
+  "workflow: if a listed skill_catalog entry fits by meaning, call skill_activate with its exact " +
+  "id directly. Call skills_list only when no listed entry fits, then activate the best-fitting " +
+  "procedure by its exact returned id before acting.\n" +
   "</skill_discovery>\n\n";
 
 function productFanoutRoutingRules(
@@ -107,11 +114,61 @@ function servedPortsContext(
     "</served_ports>\n\n";
 }
 
+/** Content hashes of the preamble blocks a native session holds: the fixed rule
+ * blocks, the skill catalog page and the bot roster. Stored with the run that
+ * delivered them; rows stored before the roster was hashed have no `bots`. */
+export interface PreambleHashes {
+  readonly rules: string;
+  readonly catalog: string;
+  readonly bots?: string;
+}
+
+/** Bots are reachable only through the gateway tools; a turn that cannot reach
+ * them (no gateway, or an internal origin such as Slack) must not be told to use them. */
+function botsReachable(ctx: TurnPromptContext, executionCapabilities: ExecutionCapabilitySnapshot): boolean {
+  const tools = executionCapabilities.facilities.tools;
+  return tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
+}
+
+/** The blocks a resumed session is sent only when they changed since it last
+ * received them. The skill discovery rule belongs to the rules unless a pinned
+ * skill governs the turn, which also replaces the catalog. */
+function preambleBlocks(
+  ctx: TurnPromptContext,
+  executionCapabilities: ExecutionCapabilitySnapshot,
+  env: Readonly<Record<string, string | undefined>>,
+): { readonly rules: string; readonly catalog: string; readonly bots: string } {
+  return {
+    rules: executionCapabilityPrompt(executionCapabilities) +
+      AGENT_WORKFLOW_ROUTING_RULES +
+      productFanoutRoutingRules(ctx, executionCapabilities, env) +
+      servedPortsContext(ctx, executionCapabilities, env) +
+      (ctx.skillContext ? "" : AGENT_SKILL_DISCOVERY_RULES),
+    catalog: ctx.skillContext ? "" : (ctx.skillCatalogContext ?? ""),
+    bots: botsReachable(ctx, executionCapabilities) ? (ctx.botContext ?? "") : "",
+  };
+}
+
+const preambleHash = (text: string): string =>
+  new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 32);
+
+/** The preamble hashes a session holds once this turn's prompt is delivered. */
+export function turnPreambleHashes(
+  ctx: TurnPromptContext,
+  executionCapabilities: ExecutionCapabilitySnapshot,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): PreambleHashes {
+  const blocks = preambleBlocks(ctx, executionCapabilities, env);
+  return { rules: preambleHash(blocks.rules), catalog: preambleHash(blocks.catalog), bots: preambleHash(blocks.bots) };
+}
+
 /**
  * Compose the exact text sent to an engine for one turn. Fresh sessions receive
- * reconstructed thread history and global rules. Resumed sessions receive only
- * current per-turn workflow, skill, upload, and memory context before the user's
- * prompt. Validated native commands are delivered byte-verbatim.
+ * reconstructed thread history and global rules. Resumed sessions receive the
+ * thread turns their native history lacks, the rule blocks, skill catalog and
+ * bot roster only when they changed since the session last received them (priorPreamble),
+ * then the per-turn skill, upload, and memory context before the user's prompt.
+ * Validated native commands are delivered byte-verbatim.
  */
 export function composeTurnPrompt(
   ctx: TurnPromptContext,
@@ -120,31 +177,52 @@ export function composeTurnPrompt(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
   if (ctx.commandName) return ctx.prompt;
-  const skillReference = ctx.skillContext ||
-    AGENT_SKILL_DISCOVERY_RULES + (ctx.skillCatalogContext ?? "");
-  // Bots are reachable only through the gateway tools; a turn that cannot reach them
-  // (no gateway, or an internal origin such as Slack) must not be told to use them.
   const tools = executionCapabilities.facilities.tools;
   const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway";
-  const botsReachable = gatewayReachable && ctx.origin === null;
   // Memory works through the same gateway tools on every origin (automations and
   // handoffs included); a session without them is told so rather than left to
   // invent a memory file in the sandbox. Said once per session with the operating
   // rules: a resumed session still holds it, and only the recalled facts change.
   const memoryRules = ctx.memoryEnabled ? (gatewayReachable ? MEMORY_TURN_GUIDANCE : MEMORY_TURN_GUIDANCE_NO_TOOLS) : "";
+  const blocks = preambleBlocks(ctx, executionCapabilities, env);
+  const held = resumed ? ctx.priorPreamble : null;
   const perTurn =
-    executionCapabilityPrompt(executionCapabilities) +
-    AGENT_WORKFLOW_ROUTING_RULES +
-    productFanoutRoutingRules(ctx, executionCapabilities, env) +
-    servedPortsContext(ctx, executionCapabilities, env) +
-    (botsReachable ? (ctx.botContext ?? "") : "") +
-    skillReference +
+    (held?.rules === preambleHash(blocks.rules) ? "" : blocks.rules) +
+    (held?.bots === preambleHash(blocks.bots) ? "" : blocks.bots) +
+    (ctx.skillContext ?? "") +
+    (held?.catalog === preambleHash(blocks.catalog) ? "" : blocks.catalog) +
     (ctx.resourceContext ?? "") +
     (ctx.inputContext ?? "") +
-    ctx.turnContext;
-  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
+    ctx.turnContext +
+    (ctx.workspaceNotice ?? "");
+  const prefix = resumed
+    ? (ctx.unseenTurnsContext ?? "") + perTurn
+    : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
   return `${prefix}<current_user_request>\n${ctx.prompt}\n</current_user_request>`;
 }
+
+/**
+ * The adapter-side compose: waits for the context the worker gathers while the
+ * sandbox is prepared, records what was recalled, then composes. It also notes
+ * the preamble the session will hold, which the delivery stamp stores; a native
+ * command sends none, so the next turn sends the blocks again (a compaction may
+ * have dropped them).
+ */
+export async function composeRunTurnPrompt(
+  ctx: EngineRunContext,
+  resumed: boolean,
+  executionCapabilities: ExecutionCapabilitySnapshot,
+): Promise<string> {
+  if (ctx.pendingTurnContext) {
+    const ready = await ctx.pendingTurnContext;
+    Object.assign(ctx, ready.parts);
+    await ready.recordRetrieval();
+  }
+  ctx.signal.throwIfAborted();
+  ctx.deliveredPreamble = ctx.commandName ? null : turnPreambleHashes(ctx, executionCapabilities);
+  return composeTurnPrompt(ctx, resumed, executionCapabilities);
+}
 import type { ExecutionCapabilitySnapshot } from "@useagent/agent-harness/canonical";
+import type { EngineRunContext } from "./types";
 import { executionCapabilityPrompt } from "./execution-capabilities";
 import { portProxyUrl } from "../runs/port-proxy-url";

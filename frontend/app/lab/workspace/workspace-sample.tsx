@@ -7,8 +7,8 @@
 // without a backend. The click-to-open flow is the real WorkspaceOpenProvider ->
 // ArtifactRow context path used in a live session.
 
-import type { ArtifactDescriptor } from "@useagent/agent-client";
 import {
+  artifactWorkpieceExports,
   contentTypeForName,
   DECK_THEME_PRESETS,
   DOCUMENT_THEME_PRESETS,
@@ -27,13 +27,11 @@ import {
   SheetGridSurface,
   WorkpieceCodeView,
 } from "@/app/(library)/agent/artifacts/[id]/artifact-editor-surfaces";
-import { ComposerPrefillProvider } from "@/components/chat/composer-prefill-context";
 import { Timeline } from "@/components/chat/conversation";
 import type { TimelineNode } from "@/components/chat/timeline";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import {
   type OpenWorkpieceTab,
-  WorkpieceFollowUpComposer,
   WorkpieceHeader,
   WorkpieceTabStrip,
 } from "@/components/chat/workspace-pane";
@@ -59,9 +57,9 @@ const SAMPLE_DOC_HTML =
   '<p>See the <a href="https://example.com/owners">owners sheet</a> for the full list.</p>';
 
 // A themed workbook fixture (v2): a styled header row, currency + percent number
-// formats, and a Total row of =SUM / ratio formulas, plus a second sheet - so the
-// grid review shows multi-sheet tabs, computed formula cells with the raw formula
-// in the value bar, and number formatting.
+// formats, and a Total row of =SUM / ratio formulas, plus an Accounts sheet whose
+// columns read as tags, dates, a status and links - so the grid review shows the
+// sheets as views, computed formula cells, number formatting and typed columns.
 const HEADER = { bold: true, fill: "#eef2ff", color: "#1e293b" } as const;
 const SAMPLE_WORKBOOK: Workbook = {
   schemaVersion: 2,
@@ -98,15 +96,26 @@ const SAMPLE_WORKBOOK: Workbook = {
     },
     {
       id: "sheet-2",
-      name: "Notes",
-      rowCount: 3,
-      colCount: 2,
-      cells: {
-        A1: { v: "Owner", fmt: { bold: true } },
-        B1: { v: "Priya" },
-        A2: { v: "Updated", fmt: { bold: true } },
-        B2: { v: "2026-08-18" },
-      },
+      name: "Accounts",
+      rowCount: 13,
+      colCount: 5,
+      cells: Object.fromEntries(
+        [
+          ["Company", "Categories", "Last contact", "Strength", "Website"],
+          ["Alpine Churn", "B2B, Gelato, Wholesale", "2026-09-08", "Very strong", "alpine-churn.example.com"],
+          ["Amber Scoop", "Gelato, B2B", "2025-06-02", "No communication", "amber-scoop.example.com"],
+          ["Andes Snow Creamery", "Gelato, Catering", "2024-11-20", "Very weak", "andes-snow.example.com"],
+          ["Apricot Atlas", "Sorbet, Imports", "2025-10-14", "Very weak", "apricot-atlas.example.com"],
+          ["Aurora Scoops", "Gelato, Seasonal", "2026-09-07", "Very strong", "aurora-scoops.example.com"],
+          ["Baltic Berry", "Dairy-free, Seasonal, B2C", "2026-08-12", "Weak", "baltic-berry.example.com"],
+          ["Black Sesame Social", "Vegan, Cafe, B2C", "2026-09-07", "Very strong", "black-sesame.example.com"],
+          ["Blue Fig Gelato", "Gelato, Cafe", "2025-07-30", "Very weak", "blue-fig.example.com"],
+          ["Boreal Batch", "Dairy-free, Local, Seasonal", "2026-09-08", "Very strong", "boreal-batch.example.com"],
+          ["Cacao Norte", "B2B, Local, Wholesale", "2024-09-01", "No communication", "cacao-norte.example.com"],
+          ["Cape Vanilla Co.", "Wholesale, Imports", "2025-05-19", "Very weak", "cape-vanilla.example.com"],
+          ["Cedar Spoon", "Cafe, Local, Seasonal", "2026-09-10", "Very strong", "cedar-spoon.example.com"],
+        ].flatMap((row, r) => row.map((v, c) => [`${"ABCDE"[c]}${r + 1}`, { v }])),
+      ),
     },
   ],
 };
@@ -194,29 +203,10 @@ export function WorkspaceSample() {
     return JSON.stringify(deck, null, 2);
   };
   const dirtyFor = (id: string) => (id === "wp-doc" ? docHtml !== SAMPLE_DOC_HTML : false);
-
-  // The "Ask a follow-up" composer feeds the session reply lane through the prefill
-  // context; the lab captures the seeded message to show the workpieceRef prefix.
-  const [followUp, setFollowUp] = useState<string | null>(null);
-  const labArtifact = (tab: OpenWorkpieceTab): ArtifactDescriptor => ({
-    id: tab.id,
-    run_id: "run-lab",
-    thread_id: "thread-lab",
-    name: tab.name,
-    source_path: `/work/${tab.name}`,
-    content_type: contentTypeForName(tab.name),
-    size_bytes: 4096,
-    sha256: "0".repeat(64),
-    created_at: "2026-08-18T00:00:00.000Z",
-    preview_url: `/api/artifacts/${tab.id}/content`,
-    download_url: `/api/artifacts/${tab.id}/content?download=1`,
-    preview_pdf_url: null,
-    workpiece: null,
-  });
-  const labKind = (name: string) => inferWorkpieceKind(name, contentTypeForName(name)) ?? "document";
+  const exportFormatFor = (name: string) =>
+    artifactWorkpieceExports(inferWorkpieceKind(name, contentTypeForName(name)) ?? "document")[0]?.format;
 
   return (
-    <ComposerPrefillProvider value={setFollowUp}>
     <WorkspaceOpenProvider value={openWorkpiece}>
       <main data-testid="workspace-sample" className="min-h-full bg-background-primary-default p-6">
         <div className="mx-auto max-w-6xl">
@@ -271,18 +261,8 @@ export function WorkspaceSample() {
                           onSave={() => setDocHtml(SAMPLE_DOC_HTML)}
                           downloadUrl="#"
                           exportUrl="#"
+                          exportFormat={exportFormatFor(tab.name)}
                         />
-                        <WorkpieceFollowUpComposer
-                          artifact={labArtifact(tab)}
-                          kind={labKind(tab.name)}
-                          revision={3}
-                        />
-                        {followUp && (
-                          <div className="shrink-0 border-b border-status-purple-text/30 bg-status-purple-background/40 px-3 py-1.5 text-caption-1-regular text-text-secondary">
-                            Seeded the reply composer:{" "}
-                            <span className="text-text-primary">{followUp.replace(/\n/g, " ")}</span>
-                          </div>
-                        )}
                         <div className="flex min-h-0 flex-1 flex-col overflow-auto px-3 pb-3">
                           {tab.id === "wp-pdf" ? (
                             viewMode === "code" ? (
@@ -316,6 +296,5 @@ export function WorkspaceSample() {
         </div>
       </main>
     </WorkspaceOpenProvider>
-    </ComposerPrefillProvider>
   );
 }

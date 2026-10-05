@@ -234,6 +234,8 @@ export async function createChildSession(input: {
         resolvedResources: intake.resources,
         attachmentIds: [],
         memoryScope: input.memoryScope,
+        // A child cannot do more than the turn that spawned it, whoever asked for it.
+        permissionMode: parent.permissionMode,
         skillId: null,
         skillVersion: null,
         skillContentHash: null,

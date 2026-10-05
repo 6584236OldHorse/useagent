@@ -1,63 +1,47 @@
 /**
- * Block Kit RUN CARD for a Slack-started run. A Slack-originated run posts ONE
- * structured card (not a bare ack + plain text) that is UPDATED in place as the
- * run progresses: header + status, a context row (model + repos), an "Open in
- * useAgent" url button, and the final answer appended when the run settles.
+ * Block Kit THREAD CARD for a Slack-rooted thread. One card per Slack thread,
+ * posted once (chat.postMessage) and advanced in place (chat.update) as its
+ * turns run: a native `task_card` (spinner, tick or error glyph beside the
+ * short run title; the model and repo folded behind its chevron as `details`;
+ * the current step verb as `output` while a turn runs) followed by the
+ * "Open in useAgent" button. Nothing else: no phase label, no divider, no
+ * answer - every turn's answer is its own message under the card.
  *
- * PURE by design (no I/O, no Slack calls) so the card shape is unit-testable with
- * fixtures; the outbox (post_card/update_card) and the watcher own delivery. The
- * caller always keeps `text` as the notification/fallback string, so a Block Kit
- * post/update that fails can degrade to a plain-text reply and never lose the
- * answer.
+ * PURE by design (no I/O, no Slack calls) so the card shape is unit-testable
+ * with fixtures; the outbox (post_card/update_card) owns delivery.
  */
 import type { RunStatus } from "../db/schema";
 import type { RepoRef } from "../github/repo-ref";
-import { toSlackMrkdwn } from "./mrkdwn";
+import { codePointCut } from "./streaming";
 
-/** Card lifecycle phase, mapped from the run status the card is rendered for. */
-export type CardPhase = "queued" | "running" | "completed" | "failed";
+/** The task_card status: a spinner while a turn runs, then a tick or an error glyph. */
+export type CardStatus = "in_progress" | "complete" | "error";
 
 /** Everything the pure builder needs. All strings pre-cleaned; no I/O here. */
 export interface RunCardInput {
-  /** The task title (derived from the prompt - first line). */
+  /** The thread's task title (derived from the root prompt). */
   readonly title: string;
-  readonly phase: CardPhase;
+  readonly status: CardStatus;
   readonly model: string;
-  /** Repos the run is bound to (clean "owner/name" + optional branch). */
+  /** Repos the thread is bound to (clean "owner/name" + optional branch). */
   readonly repoSpecs: readonly RepoRef[];
-  /** The run's web session URL (FRONTEND_ORIGIN/session/<threadId>). */
+  /** The thread's web session URL (FRONTEND_ORIGIN/session/<threadId>). */
   readonly webUrl: string;
-  /** Short "working: <step>" line while running (optional; omitted otherwise). */
-  readonly workingStep?: string;
-  /** The final answer (agent Markdown), set when the run settles. */
-  readonly answer?: string;
-  /** True for the card that closes a NATIVE stream: the streamed message body
-   *  already carries the reply, so the card stays chrome-only (linked title,
-   *  context row, button) and never repeats the answer. */
-  readonly omitAnswer?: boolean;
+  /** The current step verb while a turn runs; absent once it settles. */
+  readonly output?: string | null;
 }
 
-// Block Kit length caps (Slack docs): a header plain_text tops out at 150 chars,
-// a section mrkdwn field at 3000, a button text at 75. Truncate defensively so a
-// long title/answer never gets the whole card rejected as invalid_blocks.
-const HEADER_CAP = 148;
-const SECTION_CAP = 2900;
-const CONTEXT_CAP = 2000;
+// Block Kit length caps (Slack docs): plain-text titles top out at 150 chars,
+// rich_text is generous. Truncate defensively so a long title can never get
+// the whole card rejected as invalid_blocks.
+const CARD_TITLE_CAP = 148;
+const RICH_TEXT_CAP = 2000;
 
-/** Status emoji + human label for each phase (Pluto-style indicator). */
-const PHASE_META: Record<CardPhase, { emoji: string; label: string }> = {
-  queued: { emoji: ":hourglass_flowing_sand:", label: "Queued" },
-  running: { emoji: ":gear:", label: "Running" },
-  completed: { emoji: ":white_check_mark:", label: "Completed" },
-  failed: { emoji: ":x:", label: "Failed" },
-};
-
-/** Map a run's terminal/lifecycle status onto a card phase. */
-export function phaseForStatus(status: RunStatus): CardPhase {
-  if (status === "completed") return "completed";
-  if (status === "failed") return "failed";
-  if (status === "running") return "running";
-  return "queued";
+/** Map a run's lifecycle status onto the card status. */
+export function cardStatusFor(status: RunStatus): CardStatus {
+  if (status === "completed") return "complete";
+  if (status === "failed") return "error";
+  return "in_progress";
 }
 
 /** The run's web session URL: FRONTEND_ORIGIN + "/session/" + threadId. Pure -
@@ -66,20 +50,38 @@ export function sessionUrl(origin: string, threadId: string): string {
   return `${origin.replace(/\/+$/, "")}/session/${threadId}`;
 }
 
-/** Truncate to `max` chars on a whole-grapheme-ish boundary, adding an ellipsis. */
+/** Truncate to `max` units on a code point (never inside a surrogate pair),
+ *  adding an ellipsis. */
 function truncate(text: string, max: number): string {
   const t = text.trim();
   if (t.length <= max) return t;
-  return t.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
+  return t.slice(0, codePointCut(t, Math.max(0, max - 1))).trimEnd() + "…";
 }
 
-/** Derive a task title from a (cleaned) prompt: first non-empty line, truncated. */
+/** Slack mention markup as a reader sees it: a labelled user or channel keeps
+ *  its label (`@dana`, `#general`), a broadcast keeps its word (`@here`), and
+ *  a bare id is dropped so a raw `U05…` never shows. */
+export function stripMentions(text: string): string {
+  return text
+    .replace(/<@[^>|]+\|([^>]*)>/g, "@$1")
+    .replace(/<#[^>|]+\|([^>]*)>/g, "#$1")
+    .replace(/<!(here|channel|everyone)>/g, "@$1")
+    .replace(/<!subteam\^[^>|]+\|@?([^>]*)>/g, "@$1")
+    .replace(/<[@#!][^>]*>/g, "")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+/** A thread title tops out well under Slack's cap: one short line. */
+const TITLE_CAP = 64;
+
+/** Derive a task title from a prompt: the first sentence of its first
+ *  non-empty line (the whole line when that sentence is too short to stand
+ *  alone), mention markup rendered or dropped, capped short. */
 export function deriveTitle(prompt: string): string {
-  const firstLine = prompt
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  return truncate(firstLine ?? "Run", HEADER_CAP);
+  const line = stripMentions(prompt).split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const sentence = line.match(/^(.*?[.!?])(?:\s|$)/)?.[1];
+  const title = sentence && sentence.length >= 16 ? sentence : line;
+  return truncate(title.replace(/\.$/, ""), TITLE_CAP) || "Run";
 }
 
 /** Render the repo binding as "owner/repo · branch", with "+N more" past the first. */
@@ -91,103 +93,49 @@ function repoSummary(repoSpecs: readonly RepoRef[]): string | null {
   return extra > 0 ? `${head}  +${extra} more` : head;
 }
 
-/** The context row text: model, then repos when bound. Single mrkdwn string. */
-function contextText(model: string, repoSpecs: readonly RepoRef[]): string {
+/** The line folded behind the chevron: model, then the repos when bound. */
+function detailsText(model: string, repoSpecs: readonly RepoRef[]): string {
   const repos = repoSummary(repoSpecs);
-  const parts = [`*Model:* ${model}`];
-  if (repos) parts.push(`*Repo:* ${repos}`);
-  return truncate(parts.join("   ·   "), CONTEXT_CAP);
+  return truncate(repos ? `${model} · ${repos}` : model, RICH_TEXT_CAP);
 }
 
-/** The header line: status emoji + label (literal), then the title as a BOLD
- *  LINK to the run's web session. Only the title is escaped - a `:emoji:`
- *  shortcode must keep its colons and underscores intact, and the phase label
- *  is fixed chrome. A mrkdwn link label additionally cannot contain `>` or `|`
- *  (they terminate the link), so those become spaces. */
-function headerText(input: RunCardInput): string {
-  const meta = PHASE_META[input.phase];
-  const prefix = `${meta.emoji} ${meta.label}: `;
-  const title = escapeMrkdwn(truncate(input.title, Math.max(1, HEADER_CAP - prefix.length)))
-    .replace(/[>|]/g, " ");
-  return `${prefix}<${input.webUrl}|${title}>`;
+/** One plain rich_text block (what task_card `details` and `output` take). */
+function richText(text: string): unknown {
+  return {
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  };
 }
 
 /**
- * Build the Block Kit `blocks` array + a plain-text notification/fallback string
- * for a run card. Pure: the same input always yields the same blocks. The
- * returned `text` is what a plain-text reply would say if Block Kit is rejected,
- * so the answer is never lost.
+ * Build the Block Kit `blocks` array + the plain-text notification string for
+ * the thread card. Pure: the same input always yields the same blocks.
  */
 export function buildRunCard(input: RunCardInput): { blocks: unknown[]; text: string } {
-  const meta = PHASE_META[input.phase];
-  const blocks: unknown[] = [
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*${headerText(input)}*` },
-    },
-    {
-      type: "context",
-      elements: [{ type: "mrkdwn", text: contextText(input.model, input.repoSpecs) }],
-    },
-  ];
-
-  // A short "working: <step>" context line while running (progress feedback).
-  if (input.phase === "running" && input.workingStep) {
-    blocks.push({
-      type: "context",
-      elements: [{ type: "mrkdwn", text: `_working: ${escapeMrkdwn(truncate(input.workingStep, CONTEXT_CAP))}_` }],
-    });
-  }
-
-  // The "Open in useAgent" url button (no interactivity handler needed).
-  blocks.push({
-    type: "actions",
-    elements: [
+  const title = truncate(input.title, CARD_TITLE_CAP) || "Run";
+  const output = input.output?.trim();
+  return {
+    blocks: [
       {
-        type: "button",
-        text: { type: "plain_text", text: "Open in useAgent", emoji: true },
-        url: input.webUrl,
-        action_id: "open_in_useagent",
+        type: "task_card",
+        task_id: "thread",
+        title,
+        status: input.status,
+        details: richText(detailsText(input.model, input.repoSpecs)),
+        ...(output ? { output: richText(truncate(output, RICH_TEXT_CAP)) } : {}),
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Open in UseAgent", emoji: true },
+            url: input.webUrl,
+            action_id: "open_in_useagent",
+          },
+        ],
       },
     ],
-  });
-
-  // The final answer, appended when the run settles (mrkdwn, capped).
-  const answerText = answerSection(input);
-  if (answerText) {
-    blocks.push({ type: "divider" });
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: answerText } });
-  }
-
-  return { blocks, text: fallbackText(input, meta.label) };
-}
-
-/** The settled answer as a capped mrkdwn section, or null while non-terminal
- *  (or when the streamed message body already carries the reply). */
-function answerSection(input: RunCardInput): string | null {
-  if (input.omitAnswer) return null;
-  if (input.phase !== "completed" && input.phase !== "failed") return null;
-  const answer = input.answer?.trim() ? toSlackMrkdwn(input.answer.trim()) : "";
-  if (input.phase === "completed") {
-    return truncate(answer || "Done.", SECTION_CAP);
-  }
-  // Failed: warn with the reason when present.
-  return truncate(answer ? `:warning: Run failed: ${answer}` : ":warning: Run failed.", SECTION_CAP);
-}
-
-/** The plain-text notification/fallback string mirrored from the card contents. */
-function fallbackText(input: RunCardInput, statusLabel: string): string {
-  const answer = answerSection(input);
-  if (answer) return answer; // terminal: the answer IS the message body
-  const repos = repoSummary(input.repoSpecs);
-  const bits = [`${statusLabel}: ${input.title}`, input.model];
-  if (repos) bits.push(repos);
-  return bits.join(" - ");
-}
-
-/** Escape mrkdwn control chars in card CHROME (title/step) so a stray `*`/`_`
- *  in a task title cannot break the card layout. The answer body is deliberately
- *  NOT escaped: it goes through toSlackMrkdwn to render agent Markdown. */
-function escapeMrkdwn(text: string): string {
-  return text.replace(/[*_~`]/g, (c) => `​${c}`);
+    text: title,
+  };
 }

@@ -32,14 +32,82 @@ import {
   setCodexNativeOutputReceiptRecorderForTest,
 } from "./codex-native-output-import";
 import {
+  codexSubscriptionAppServerArgs,
+  codexSubscriptionAppServerEnvironment,
   codexSubscriptionRelayPublicOrigin,
   codexSubscriptionRelayRoutes,
   issueCodexSubscriptionRelayCapability,
+  openCodexRelaySession,
   setCodexSubscriptionRelayDependenciesForTest,
   type CodexSubscriptionRelayBinding,
 } from "./codex-subscription-relay";
 
+// The per-run app-server runs on the backend host: every default-on feature
+// that could start a process, browser or plugin there stays off. Shell and
+// file tools reach the sandbox through the run's remote environment.
+const HOST_EXECUTION_OFF = [
+  "apps", "plugins", "remote_plugin", "plugin_sharing", "tool_suggest", "skill_mcp_dependency_install",
+  "hooks", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+  "in_app_browser", "in_app_local_automation", "shell_snapshot",
+].flatMap((feature) => ["-c", `features.${feature}=false`]);
+
 describe("Codex subscription relay public origin", () => {
+  test("enables the native plan tool and keeps host-side execution features off on the per-run model app-server", () => {
+    expect(codexSubscriptionAppServerArgs(null, "http://127.0.0.1:43112")).toEqual([
+      "app-server",
+      "--stdio",
+      "--code-mode-host",
+      "http://127.0.0.1:43112",
+      "-c",
+      "tools.update_plan.enabled=true",
+      ...HOST_EXECUTION_OFF,
+    ]);
+    const toolGateway = {
+      serverName: "useagent",
+      url: "https://useagent.example.test/api/internal/tool-gateway",
+      bearerToken: "mcp-bearer-secret",
+    } as const;
+    const args = codexSubscriptionAppServerArgs(toolGateway, "http://127.0.0.1:43112");
+    expect(args).toEqual([
+      "app-server",
+      "--stdio",
+      "--code-mode-host",
+      "http://127.0.0.1:43112",
+      "-c",
+      "tools.update_plan.enabled=true",
+      ...HOST_EXECUTION_OFF,
+      "-c",
+      'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
+      "-c",
+      'mcp_servers.useagent.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"',
+    ]);
+    // The bearer travels in the environment only, and no override makes Codex
+    // start a helper or command here: it would run in the thread's cwd, which
+    // exists only in the sandbox (a headers helper died there with EACCES).
+    expect(args.join(" ")).not.toContain("mcp-bearer-secret");
+    expect(args.filter((arg) => /(^|\.)(\w+_helper|command)=/.test(arg))).toEqual([]);
+    expect(codexSubscriptionAppServerEnvironment("/host/codex-home", toolGateway)).toMatchObject({
+      CODEX_HOME: "/host/codex-home",
+      USEAGENT_TOOL_GATEWAY_BEARER_TOKEN: "mcp-bearer-secret",
+    });
+    expect(codexSubscriptionAppServerEnvironment("/host/codex-home", null)).not.toHaveProperty("USEAGENT_TOOL_GATEWAY_BEARER_TOKEN");
+  });
+
+  test("never starts an app-server that would run model code on this host", () => {
+    for (const url of ["", "https://127.0.0.1:43112", "http://10.0.0.5:43112", "grpc://127.0.0.1:43112"]) {
+      expect(() => codexSubscriptionAppServerArgs(null, url)).toThrow();
+    }
+    const grant = {
+      binding: binding(),
+      runtime: runtime(),
+      execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      publicOrigin: "http://127.0.0.1:1",
+    };
+    expect(() => issueCodexSubscriptionRelayCapability({ ...grant, codeModeHostUrl: "http://sandbox.example.test:37737" }))
+      .toThrow("Codex code-mode host must be a loopback HTTP tunnel");
+    issueCodexSubscriptionRelayCapability({ ...grant, codeModeHostUrl: "http://127.0.0.1:43112" }).close();
+  });
+
   test("uses an explicit relay host without changing the Better Auth origin", () => {
     expect(
       codexSubscriptionRelayPublicOrigin({
@@ -90,6 +158,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -153,6 +222,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       toolGateway: {
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
@@ -188,20 +258,12 @@ describe("Codex subscription run relay", () => {
     expect(spawnInput).toEqual({
       codexHome: "/host/codex-home",
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
-      toolGateway: {
+      codeModeHostUrl: "http://127.0.0.1:43112",
+      toolGateway: expect.objectContaining({
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
         bearerToken: "mcp-bearer-secret",
-        authorizationHeader: "Bearer mcp-bearer-secret",
-        expiresAt: 999_999,
-        binding: {
-          orgId: "org-1",
-          userId: "user-1",
-          threadId: "thread-1",
-          runId: "run-1",
-          scope: "run",
-        },
-      },
+      }),
     });
     await finishRelayInitialization(socket, child, 1);
     child.received.splice(0);
@@ -258,6 +320,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
 
@@ -286,6 +349,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const browserSocket = new WebSocket(capability.url, {
@@ -299,6 +363,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(secondCapability.url);
@@ -320,6 +385,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -362,6 +428,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const first = await opened(firstCapability.url);
@@ -381,6 +448,7 @@ describe("Codex subscription run relay", () => {
       binding: { ...binding(), runId: "run-2" },
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const resumed = await opened(resumeCapability.url);
@@ -402,6 +470,7 @@ describe("Codex subscription run relay", () => {
       binding: { ...binding(), runId: "run-3" },
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const forged = await opened(forgedCapability.url);
@@ -436,6 +505,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -466,6 +536,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -502,6 +573,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -582,6 +654,7 @@ describe("Codex subscription run relay", () => {
       },
       runtime: selected,
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -920,6 +993,298 @@ describe("Codex subscription run relay", () => {
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
 
+describe("Codex relay sessions across runs", () => {
+  const EXEC = "ws://127.0.0.1:43111/opaque-exec-grant";
+  const CODE_MODE = "http://127.0.0.1:43112";
+  const scope = () => {
+    const { runId: _runId, model: _model, ...rest } = binding();
+    return rest;
+  };
+  const resume = async (socket: WebSocket, child: ReturnType<typeof fakeAppServer>, id: number, model: string) => {
+    const frame = JSON.stringify({ id, method: "thread/resume", params: { threadId: "provider-thread-1", cwd: "/root/work", model } });
+    socket.send(frame);
+    await eventually(() => expect(child.received).toContain(frame));
+    const reply = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ id, result: { thread: { id: "provider-thread-1" } } })}\n`);
+    await reply;
+  };
+  const turnStart = (id: number, model: string) => JSON.stringify({
+    id,
+    method: "turn/start",
+    params: {
+      model,
+      threadId: "provider-thread-1",
+      environments: [{ environmentId: "skynet-sandbox-1-run-1", cwd: "/root/work", runtimeWorkspaceRoots: ["/root/work"] }],
+    },
+  });
+
+  test("a reusable session takes a new connection after the last closed, never two at once", async () => {
+    const server = startRelayServer();
+    const children = [fakeAppServer(), fakeAppServer()];
+    let spawned = 0;
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => children[spawned++]!.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+
+    const first = await opened(session.url);
+    sockets.push(first);
+    await eventually(() => expect(session.connected).toBe(true));
+    const concurrent = new WebSocket(session.url);
+    const concurrentClosed = socketClosed(concurrent);
+    await opened(concurrent);
+    expect(await concurrentClosed).toMatchObject({ code: 1008 });
+
+    const firstClosed = socketClosed(first);
+    first.close();
+    await firstClosed;
+    await eventually(() => expect(session.connected).toBe(false));
+    const second = await opened(session.url);
+    sockets.push(second);
+    await initializeRelay(second, children[1]!, 1);
+    expect(spawned).toBe(2);
+    expect(children[0]!.wasKilled()).toBe(true);
+
+    // Closing the session ends its live connection and app-server too.
+    const secondClosed = socketClosed(second);
+    session.close();
+    await secondClosed;
+    expect(children[1]!.wasKilled()).toBe(true);
+    const late = new WebSocket(session.url);
+    const lateClosed = socketClosed(late);
+    await opened(late).catch(() => {});
+    expect((await lateClosed).code).toBe(1008);
+  });
+
+  test("a run starts at most its turn and one continuation", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    for (const id of [3, 4]) {
+      socket.send(turnStart(id, "gpt-5.5"));
+      await eventually(() => expect(child.received.some((frame) => frame.includes(`"id":${id}`))).toBe(true));
+    }
+    const closed = socketClosed(socket);
+    socket.send(turnStart(5, "gpt-5.5"));
+    expect(await closed).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":5'))).toBe(false);
+    session.close();
+  });
+
+  test("between runs a turn is refused and nothing connects; the next run brings its own model", async () => {
+    const server = startRelayServer();
+    const children = [fakeAppServer(), fakeAppServer()];
+    const spawnedWith: unknown[] = [];
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: (input) => {
+        spawnedWith.push(input.toolGateway);
+        return children[spawnedWith.length - 1]!.process;
+      },
+    });
+    const toolGateway = { serverName: "useagent", url: "https://useagent.example.test/api/internal/tool-gateway", bearerToken: "thread-bearer"  } as const;
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+
+    const first = await opened(session.url);
+    sockets.push(first);
+    await initializeRelay(first, children[0]!, 1);
+    await resume(first, children[0]!, 2, "gpt-5.5");
+    session.deactivate();
+    const refused = socketClosed(first);
+    first.send(turnStart(3, "gpt-5.5"));
+    expect(await refused).toMatchObject({ code: 1008 });
+    expect(children[0]!.received.some((frame) => frame.includes('"id":3'))).toBe(false);
+
+    // Between runs the capability opens nothing, and spawns nothing here.
+    await eventually(() => expect(session.connected).toBe(false));
+    const betweenRuns = new WebSocket(session.url);
+    const betweenRunsClosed = socketClosed(betweenRuns);
+    await opened(betweenRuns).catch(() => {});
+    expect((await betweenRunsClosed).code).toBe(1008);
+    expect(spawnedWith).toHaveLength(1);
+
+    session.activate({ runId: "run-2", model: "gpt-5.6-luna" });
+    const second = await opened(session.url);
+    sockets.push(second);
+    await initializeRelay(second, children[1]!, 1);
+    await resume(second, children[1]!, 2, "gpt-5.6-luna");
+    second.send(turnStart(3, "gpt-5.6-luna"));
+    await eventually(() => expect(children[1]!.received.some((frame) => frame.includes('"id":3'))).toBe(true));
+    const mismatched = socketClosed(second);
+    second.send(turnStart(4, "gpt-5.5"));
+    expect(await mismatched).toMatchObject({ code: 1008 });
+    // Every app-server of the session holds its one thread-scoped bearer.
+    expect(spawnedWith).toEqual([toolGateway, toolGateway]);
+    session.close();
+  });
+
+  test("answers the runtime's unsubscribe itself and keeps the session's app-server and connection", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    child.received.splice(0);
+    session.deactivate();
+
+    const reply = collectMessages(socket, 1);
+    socket.send(JSON.stringify({ id: 3, method: "thread/unsubscribe", params: { threadId: "provider-thread-1" } }));
+    expect(await reply).toEqual([JSON.stringify({ id: 3, result: { status: "unsubscribed" } })]);
+    expect(child.received).toEqual([]);
+    expect(session.connected).toBe(true);
+    expect(child.wasKilled()).toBe(false);
+    session.close();
+  });
+
+  test("steering or compacting needs an active run, and compaction counts toward its turn starts", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    const compact = (id: number) => JSON.stringify({ id, method: "thread/compact/start", params: { threadId: "provider-thread-1" } });
+    socket.send(compact(3));
+    socket.send(turnStart(4, "gpt-5.5"));
+    await eventually(() => expect(child.received.some((frame) => frame.includes('"id":4'))).toBe(true));
+    const limited = socketClosed(socket);
+    socket.send(compact(5));
+    expect(await limited).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":5'))).toBe(false);
+
+    session.close();
+  });
+
+  test("a steer of the active turn reaches the app-server only while a run is active", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    const started = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ method: "turn/started", params: { threadId: "provider-thread-1", turn: { id: "turn-1" } } })}\n`);
+    await started;
+    const steer = (id: number) => JSON.stringify({
+      id, method: "turn/steer", params: { threadId: "provider-thread-1", expectedTurnId: "turn-1", input: [{ type: "text", text: "and this" }] },
+    });
+    socket.send(steer(3));
+    await eventually(() => expect(child.received.some((frame) => frame.includes('"id":3'))).toBe(true));
+    session.deactivate();
+    const refused = socketClosed(socket);
+    socket.send(steer(4));
+    expect(await refused).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":4'))).toBe(false);
+    session.close();
+  });
+
+  test("native output belongs to the run whose turn produced it, never to the run active when it lands", async () => {
+    process.env.FINISHED_WORK_ROLLOUT = "shadow";
+    const storage = new InMemoryArtifactStorage();
+    setArtifactStorageForTest(storage);
+    const fixture = await nativeOutputFixture();
+    const nextRunId = crypto.randomUUID();
+    await createRun({
+      id: nextRunId, prompt: "next turn", model: "gpt-5.5", engine: "codex", orgId: "org-skynet-dev",
+      userId: null, parentRunId: null, threadId: fixture.runId, repos: [], memoryScope: "org",
+    });
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    const selected = { ...runtime(), codexHome: fixture.codexHome };
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => selected,
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: { ...scope(), orgId: "org-skynet-dev", threadId: fixture.runId },
+      runtime: selected, execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: fixture.runId, model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 800);
+    await resume(socket, child, 801, "gpt-5.5");
+    const started = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ method: "turn/started", params: { threadId: "provider-thread-1", turn: { id: "turn-1" } } })}\n`);
+    await started;
+
+    // The next run is active by the time the first turn's image lands.
+    session.deactivate();
+    session.activate({ runId: nextRunId, model: "gpt-5.5" });
+    const imagePath = join(fixture.generatedImages, "late.png");
+    await writeFile(imagePath, PNG);
+    const forwarded = collectMessages(socket, 1);
+    child.stdout.write(`${nativeImageFrame(imagePath)}\n`);
+    await forwarded;
+
+    let attributed = 0;
+    for (let attempt = 0; attempt < 100 && attributed === 0; attempt += 1) {
+      attributed = (await db.select().from(artifacts).where(eq(artifacts.runId, fixture.runId))).length;
+      if (attributed === 0) await Bun.sleep(20);
+    }
+    expect(attributed).toBe(1);
+    expect(await db.select().from(artifacts).where(eq(artifacts.runId, nextRunId))).toHaveLength(0);
+    session.close();
+  });
+});
+
 async function nativeOutputFixture() {
   const root = await mkdtemp(join(await realpath(tmpdir()), "codex-relay-output-"));
   tempRoots.push(root);
@@ -960,6 +1325,7 @@ async function initializedNativeOutputRelay(runId: string, codexHome: string) {
     },
     runtime: selected,
     execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+    codeModeHostUrl: "http://127.0.0.1:43112",
     publicOrigin: `http://127.0.0.1:${server.port}`,
   });
   const socket = await opened(capability.url);

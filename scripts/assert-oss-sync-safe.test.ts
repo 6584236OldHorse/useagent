@@ -28,4 +28,9 @@ describe("Pro to OSS sync boundary", () => {
     }
     expect(() => assertOssSyncSafe([".github/workflows/ci.yml", "deploy/compose/promotion.ts"])).not.toThrow();
   });
+
+  test("rejects the licensed BoardUI Pro components", () => {
+    expect(() => assertOssSyncSafe(["frontend/components/pro/agent-limits-card.tsx"]))
+      .toThrow("OSS sync contains private paths");
+  });
 });

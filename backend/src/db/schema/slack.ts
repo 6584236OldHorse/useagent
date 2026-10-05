@@ -1,4 +1,5 @@
 import {
+  bigint,
   foreignKey,
   index,
   integer,
@@ -66,6 +67,23 @@ export const slackThreads = pgTable(
     // Null until the card is posted (or when the card post failed and the plain
     // reply is used instead). One card per rooted Slack thread.
     cardTs: text("card_ts"),
+    // The newest revision applied to the card and the run that produced it:
+    // a retried older revision never regresses the card, while a turn's
+    // terminal revision still settles the state its own late live revision
+    // left behind. `card_updated_at` paces revisions to Slack's chat.update
+    // guidance (at most one every few seconds).
+    // `card_revision` is the monotonic high-water mark (a superseded revision
+    // never becomes due again, even after a repost); `card_applied_revision`
+    // and its run are the exact identity of what the card shows (a replay of
+    // that revision is a no-op, a turn's terminal revision below its own later
+    // live one is still due).
+    cardRevision: bigint("card_revision", { mode: "number" }).notNull().default(0),
+    cardAppliedRevision: bigint("card_applied_revision", { mode: "number" }),
+    cardRevisionRunId: text("card_revision_run_id"),
+    cardUpdatedAt: timestamp("card_updated_at", { withTimezone: true }),
+    // Set while a person has muted the bot in this thread ("mute" as a reply);
+    // it then ignores every message there except "unmute".
+    mutedAt: timestamp("muted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

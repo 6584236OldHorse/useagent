@@ -74,6 +74,7 @@ describe("failureRow", () => {
       label: "Engine error",
       chip: null,
       detail: REASON,
+      durationMs: null,
       status: "failed",
       body: { kind: "failure", reason: REASON },
     });

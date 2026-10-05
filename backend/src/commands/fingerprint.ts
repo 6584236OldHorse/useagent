@@ -8,6 +8,7 @@ export function runIntentFromAcceptedRun(
   return {
     prompt: run.prompt,
     model: run.model,
+    reasoningEffort: run.reasoningEffort ?? null,
     engine: run.engine,
     parentRunId: run.parentRunId,
     requestedRepos: run.repos,
@@ -16,6 +17,8 @@ export function runIntentFromAcceptedRun(
     requestedResources: [],
     attachmentIds: run.attachmentIds ?? [],
     memoryScope: run.memoryScope ?? "org",
+    permissionMode: run.permissionMode ?? null,
+    runLocation: run.runLocation ?? null,
     skillId: run.skillId ?? null,
     skillVersion: run.skillVersion ?? null,
     commandName: run.commandName ?? null,
@@ -65,6 +68,17 @@ export function runIntentFingerprint(intent: RunCommandIntent): string {
     intent.commandSessionId,
     intent.commandCatalogRevision,
   ];
+  // An explicit permission mode is part of the intent (a read-only turn is not
+  // the same turn as a full-access one). It joins the hash only when the caller
+  // chose one, so the fingerprints of every earlier submission stay unchanged.
+  if (intent.permissionMode) fields.push(intent.permissionMode);
+  // The reasoning effort joins the intent only when one was requested, for the
+  // same reason.
+  if (intent.reasoningEffort) fields.push(["reasoning_effort", intent.reasoningEffort]);
+  // Where a root run was asked to execute is part of its intent (a turn on the
+  // person's machine is not the same turn as one on the cloud); like the mode
+  // it joins the hash only when chosen, so every earlier fingerprint holds.
+  if (intent.runLocation) fields.push(["run_location", intent.runLocation]);
   if (intent.expectedSandbox) {
     fields.push([
       intent.expectedSandbox.version,

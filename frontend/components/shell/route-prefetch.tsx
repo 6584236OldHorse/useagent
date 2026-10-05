@@ -2,31 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { APP_ROUTES } from "@/lib/route-chunks";
 import { type Connection, warmRouteChunks } from "@/lib/warm-route-chunks";
-
-/** Every top-level page a signed-in user can reach from the rails, except
- * /bots: its layout seeds the roster on the server above the loading boundary,
- * so a prefetch would cache that roster for the static window and the panel does
- * not refresh its seed on first mount. Bots loads fresh on the hop. */
-export const APP_ROUTES = [
-  "/dashboard",
-  "/agent/new",
-  "/agent/runs",
-  "/settings",
-  "/skills",
-  "/playbooks",
-  "/agent/automations",
-  "/knowledge",
-  "/memory",
-  "/learnings",
-  "/wiki",
-  "/review",
-  "/apps",
-  "/agent/artifacts",
-  "/agent/plugins",
-  "/tasks",
-  "/secrets",
-] as const;
 
 /**
  * Warm every app route once the first page is idle, so an in-app hop never waits
@@ -46,8 +23,9 @@ export function RoutePrefetch() {
     const cancel = window.cancelIdleCallback ?? window.clearTimeout;
     const handle = schedule(() => {
       for (const href of APP_ROUTES) router.prefetch(href);
-      // Then the code itself: every signed-in route's chunks, so a first hop
-      // downloads nothing (a dynamic page's prefetch stops at its loading boundary).
+      // Then the code itself: the chunks of the routes the rails link to, so a first
+      // hop to one downloads nothing (a dynamic page's prefetch stops at its loading
+      // boundary); a detail page or an unlinked page fetches its own on the hop.
       void warmRouteChunks({ connection: (navigator as Navigator & { connection?: Connection }).connection }).catch(() => undefined);
     });
     return () => cancel(handle);

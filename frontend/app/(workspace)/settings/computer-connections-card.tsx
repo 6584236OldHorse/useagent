@@ -254,6 +254,12 @@ function ComputerSection({
   );
 }
 
+/** The managed card's title names the provider the deployment points at ("E2B
+ *  sandboxes", "Cube sandboxes", "Daytona sandboxes") once the config says. */
+export function managedSandboxesTitle(label: string | null): string {
+  return label ? `${label} sandboxes` : "Managed sandboxes";
+}
+
 /**
  * Computer providers: the managed runtime the server runs today, then each
  * bring-your-own provider with the same write-only key + snapshot form.
@@ -268,7 +274,7 @@ export function ComputerConnectionsCard() {
         if (!cancelled) setSandboxConfig(config);
       })
       .catch(() => {
-        if (!cancelled) setSandboxConfig({ provider: null, host: null, userComputers: false });
+        if (!cancelled) setSandboxConfig({ provider: null, label: null, host: null, userComputers: false });
       });
     return () => {
       cancelled = true;
@@ -285,7 +291,7 @@ export function ComputerConnectionsCard() {
           <RiCloudLine aria-hidden className="size-5 shrink-0 text-foreground-icon-tertiary" />
           <div className="min-w-0">
             <p className="text-body-2-medium text-text-primary">
-              Managed sandboxes
+              {managedSandboxesTitle(sandboxConfig?.label ?? null)}
             </p>
             <p className="text-caption-1-regular text-text-tertiary">
               {sandboxConfig?.host

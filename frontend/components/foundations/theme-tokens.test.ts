@@ -341,7 +341,73 @@ describe("shared theme tokens", () => {
     expect(semantic?.["--color-text-tertiary"]).toBe("hsl(var(--neutral-500))");
     expect(contrast("#4e7358", "#f2f8f3")).toBeGreaterThanOrEqual(4.5);
   });
+
+  test("Neobrutal reads as black on its cool canvas and keeps AA on every fill", () => {
+    const blocks = extractBlocks(".neobrutal {").map(parseTokens);
+    const ramp = blocks.find((tokens) => tokens["--neutral-950"]);
+    expect(ramp?.["--neutral-950"]).toBe("0 0% 0%");
+    const semantic = blocks.find((tokens) => tokens["--color-border-button-default"]);
+    expect(semantic?.["--color-border-button-default"]).toBe("hsl(var(--neutral-950))");
+    expect(semantic?.["--color-background-secondary-hover"]).toBe("hsl(var(--blue-300))");
+    expect(semantic?.["--shadow-card"]).toBe("4px 4px 0 0 hsl(var(--neutral-950))");
+    // Text tiers and accent-as-text on the canvas (#dde9fd), the panel fill
+    // (#ebf2fe) and the white cards; black labels on the main blue (#5294ff)
+    // used for CTAs, selection and kbd.
+    for (const surface of ["#dde9fd", "#ebf2fe", "#ffffff"]) {
+      expect(contrast("#000000", surface)).toBeGreaterThanOrEqual(7);
+      expect(contrast("#3d3d3d", surface)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast("#5b5f6a", surface)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast("#2a58b8", surface)).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(contrast("#000000", "#5294ff")).toBeGreaterThanOrEqual(7);
+  });
+
+  test("a bar's track sits a step above the raised surface in every dark theme", () => {
+    // The usage card's bars draw on a popover on the raised surface (neutral-700);
+    // a track at the same step vanished in dark, so the dark overlays set it to
+    // neutral-400. The light overlays keep their hairline neutral-200.
+    for (const selector of [".dark {", ".dusk {", ".aura {", ".harbor {", ".phosphor {", ".slate {", ".sakura-night {"]) {
+      const overlay = extractBlocks(selector).map(parseTokens).find((tokens) => tokens["--color-chart-track"]);
+      expect(overlay?.["--color-chart-track"]).toBe("hsl(var(--neutral-400))");
+      expect(overlay?.["--color-background-primary-default"] ?? "hsl(var(--neutral-700))").not.toBe(overlay?.["--color-chart-track"]);
+    }
+    for (const selector of [".phosphor-light {", ".sakura {"]) {
+      const overlay = extractBlocks(selector).map(parseTokens).find((tokens) => tokens["--color-chart-track"]);
+      expect(overlay?.["--color-chart-track"]).toBe("hsl(var(--neutral-200))");
+    }
+  });
+
+  test("the work-log guide draws from the tertiary text token so it reads in light", () => {
+    // The guide is a masked column filled with one token mixed over transparent.
+    // The hairline token it used before is nearly the card colour in light
+    // (about 1.1:1 on white); the tertiary text grey at 55% clears 2:1 on the
+    // card in light (#666666 on white) and in dark (#a1a1a1 on #2e2e2e). The
+    // sRGB mix below stands in for the oklab mix; the floor has room for the gap.
+    const guide = globals.slice(globals.indexOf("@utility trace-guide"));
+    const fill = guide.slice(0, guide.indexOf("mask-image"));
+    expect(fill).toContain("color-mix(in oklab, var(--color-text-tertiary) 55%, transparent)");
+    expect(fill).not.toContain("--color-border-button-default");
+    expect(contrast(mix("#ebebeb", 0.7, "#ffffff"), "#ffffff")).toBeLessThan(1.2);
+    expect(contrast(mix("#666666", 0.55, "#ffffff"), "#ffffff")).toBeGreaterThanOrEqual(2);
+    expect(contrast(mix("#a1a1a1", 0.55, "#2e2e2e"), "#2e2e2e")).toBeGreaterThanOrEqual(2);
+  });
 });
+
+/** `weight` of `over` laid on `under`, mixed per sRGB channel. */
+const mix = (over: string, weight: number, under: string): string => {
+  const channels = (hex: string) =>
+    hex.slice(1).match(/.{2}/g)?.map((channel) => Number.parseInt(channel, 16)) ?? [];
+  const top = channels(over);
+  const base = channels(under);
+  if (top.length !== 3 || base.length !== 3) throw new Error(`invalid hex colors ${over} ${under}`);
+  return `#${top
+    .map((value, index) =>
+      Math.round(value * weight + (base[index] ?? 0) * (1 - weight))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+};
 
 const contrast = (foreground: string, background: string): number => {
   const [foregroundLuminance, backgroundLuminance] = [foreground, background]
@@ -373,3 +439,22 @@ const relativeLuminance = (hex: string): number => {
 
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
 };
+
+  test("the composer panel tokens are defined in light, dark and every component overlay", () => {
+    // A theme without the overlay entry falls back to the light value, so the
+    // tab, the add button and the tile border would go pale on a dark theme.
+    const tokens = [
+      "--color-composer-panel-tab-background",
+      "--color-composer-panel-add-background",
+      "--color-composer-panel-add-hover-background",
+      "--color-composer-panel-tile-border",
+    ];
+    const overlays = [".dusk {", ".aura {", ".harbor {", ".phosphor {", ".slate {", ".sakura-night {", ".sakura {", ".phosphor-light {"];
+    for (const token of tokens) {
+      expect(lightSemantic[token], `light lacks ${token}`).toBeDefined();
+      expect(darkSemantic[token], `dark lacks ${token}`).toBeDefined();
+      for (const selector of overlays) {
+        expect(componentOverlay(selector)[token], `${selector} lacks ${token}`).toBeDefined();
+      }
+    }
+  });

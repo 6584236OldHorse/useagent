@@ -23,8 +23,17 @@ import {
   UserBubble,
 } from "@/components/chat/conversation";
 import { FollowUpRows } from "@/components/chat/follow-up-rows";
-import { RunUploadChips, type RunUpload } from "@/components/chat/run-uploads";
+import { ChatTabStrip } from "@/components/chat/chat-tabs";
+import { ReplyComposer } from "@/components/chat/reply-composer";
+import type { RunUpload } from "@/components/chat/run-uploads";
+import { SubagentRow } from "@/components/chat/subagent-row";
+import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { RunningFooter } from "@/components/pro/running-footer";
+import { UsageCard } from "@/components/pro/usage-card";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { ChangedFilesCard } from "@/components/session-ui/changed-files-tree";
@@ -42,7 +51,9 @@ import {
   isUserStopSummary,
   ThreadErrorBanner,
 } from "@/components/session-ui/thread-error-banner";
+import { ProjectThreadList } from "@/components/session-ui/project-thread-tree";
 import { WorkedForFold } from "@/components/session-ui/worked-for-fold";
+import { type BookmarkRow, BookmarksSection } from "@/components/shell/sidebar-bookmarks";
 import { cx } from "@/utils/cx";
 import { LongThreadSample } from "./long-thread-sample";
 import {
@@ -55,16 +66,25 @@ import {
   PROPOSED_PLAN_MARKDOWN,
   sampleUploads,
   type SampleTurn,
+  subagentRows,
   THREAD_ERROR_SUMMARY,
   USER_STOP_SUMMARY,
 } from "./session-sample-data";
+import {
+  detailsTurns,
+  sampleBookmarks,
+  sampleRun,
+  sampleTabs,
+  sampleThreads,
+} from "./shell-panels-data";
 
 /** Left-rail index: every covered type, linked to where it renders. */
 const INDEX: readonly { label: string; href: string }[] = [
   { label: "User message + attachment", href: "#turn-1" },
+  { label: "Work log pill (Worked · counts · duration)", href: "#turn-1" },
   { label: "Context recall fold (skill / memory / knowledge)", href: "#turn-1" },
   { label: "Reasoning / thinking fold", href: "#turn-1" },
-  { label: "Tool work groups (bash / read / search / web)", href: "#turn-1" },
+  { label: "Tool rows (Run / List / Error chip / durations)", href: "#turn-1" },
   { label: "File edit with line diff", href: "#turn-1" },
   { label: "File receipt row", href: "#turn-1" },
   { label: "Memory write chip", href: "#turn-1" },
@@ -85,7 +105,9 @@ const INDEX: readonly { label: string; href: string }[] = [
   { label: "Changed-files card + tree", href: "#changed-files" },
   { label: "File-diff view (hunks)", href: "#file-diff" },
   { label: "Child-agent panel rows", href: "#agents" },
-  { label: "Composer upload tray", href: "#uploads" },
+  { label: "Subagent rows (one line folded, tool rows + Summary open)", href: "#subagents" },
+  { label: "Shell panels (Details rail, chat tabs, Bookmarks)", href: "#shell-panels" },
+  { label: "Composer attachments", href: "#uploads" },
   { label: "Follow-ups + sources (closing turn grammar)", href: "#conversation" },
   { label: "Long thread (windowed rendering)", href: "#long-thread" },
 ];
@@ -182,6 +204,15 @@ export function SessionSample() {
   // What the composer WOULD receive from a follow-up pick in the conversation;
   // the lab has no live composer, so the handoff renders as a preview box.
   const [proposedPrefill, setProposedPrefill] = useState<string | null>(null);
+  // The lab's Bookmarks keep their pins in state, so a rail row dragged (or
+  // pinned) onto the section really lands there and unpins from it.
+  const [pins, setPins] = useState<readonly BookmarkRow[]>(sampleBookmarks);
+  const pinChat = (id: string) =>
+    setPins((current) => {
+      const row = sampleThreads.find((thread) => thread.id === id);
+      if (!row || current.some((pin) => pin.id === id)) return current;
+      return [...current, { id, title: row.label, href: `#${id}` }];
+    });
   useEffect(() => {
     setMounted(true);
     setLiveStartedAt(new Date(Date.now() - 48_000).toISOString());
@@ -349,9 +380,9 @@ export function SessionSample() {
               owner="plan-checklist via tool-step-row (Agents / subagent activity)"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                In the main conversation a plan folds into a generic work row; the rich
-                collapsible card is the Agents-rail / subagent-activity rendering
-                (ToolStepRow -&gt; PlanChecklist). Both variants shown.
+                A plan is a folded pill in the same grammar as the Thinking header, in the
+                conversation and in the Agents rail alike (ToolStepRow renders the same
+                PlanChecklist). Both entry points shown.
               </p>
               <ToolStepRow step={planTodoStep} state="running" />
               <PlanChecklist title="Implementation plan" entries={planEntries} />
@@ -399,21 +430,86 @@ export function SessionSample() {
             </Surface>
 
             <Surface
-              id="uploads"
-              title="Composer upload tray"
-              owner="run-uploads (RunUploadChips)"
+              id="subagents"
+              title="Subagent rows - one line folded, tool rows + Summary open"
+              owner="subagent-row (subagents-fold)"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                A user&rsquo;s attached image is a composer affordance, not a thumbnail on
-                the historical user bubble. Image content itself renders as an artifact
-                card (with a click-to-expand lightbox) in the conversation above.
+                A settled subagent is one line: its name, role and how long it ran.
+                Opened, its own tool rows carry the durations the engine reported and
+                its result sits in a Summary card behind More. Both come from the same
+                children projection the conversation fold reads.
               </p>
-              <div className="rounded-xl border border-border-button-default bg-background-primary-default pt-2">
-                <RunUploadChips
+              <ul className="space-y-px">
+                {subagentRows.map((row, index) => (
+                  <SubagentRow
+                    key={row.card.id}
+                    card={row.card}
+                    fidelity={row.fidelity}
+                    steps={row.steps}
+                    runLive={false}
+                    defaultOpen={index === 0}
+                  />
+                ))}
+              </ul>
+            </Surface>
+
+            <Surface
+              id="shell-panels"
+              title="Shell panels - chat tabs, Bookmarks, the Details rail"
+              owner="chat-tabs · sidebar-bookmarks · session-details-rail"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The chat tabs sit across the top of the transcript (the open chats, the
+                current one selected); Bookmarks is the rail section a chat row drops
+                onto; the Details rail is the surface with Environment, Task plan and
+                Usage, every value read from the run rows and the usage frames the thread
+                already holds.
+              </p>
+              <div className="rounded-2xl border border-border-button-default bg-background-primary-default">
+                <ChatTabStrip tabs={sampleTabs} activeId="turn-2" onClose={() => {}} />
+              </div>
+              <div className="grid gap-4 md:grid-cols-[16rem_1fr]">
+                <div className="rounded-2xl border border-border-button-default bg-sidebar p-2">
+                  <BookmarksSection
+                    rows={pins}
+                    activeHref="#turn-1"
+                    onPin={pinChat}
+                    onUnpin={(id) => setPins((current) => current.filter((pin) => pin.id !== id))}
+                  />
+                  <p className="text-mono-label px-2.5 pb-1 pt-3 text-text-tertiary">Threads</p>
+                  <ProjectThreadList
+                    threads={sampleThreads}
+                    threadHref={(thread) => `#${thread.id}`}
+                    ariaLabel="Sample threads"
+                    onPinThread={pinChat}
+                  />
+                </div>
+                <div className="h-[34rem] overflow-hidden rounded-2xl border border-border-button-default bg-background-primary-default">
+                  <SessionDetailsRail root={sampleRun} newest={sampleRun} turns={detailsTurns} />
+                </div>
+              </div>
+            </Surface>
+
+            <Surface
+              id="uploads"
+              title="Composer attachments"
+              owner="composer-attachments (ComposerAttachmentRow)"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                Picked, dropped or pasted files sit above the prompt as tiles: an image
+                shows its thumbnail, any other file its typed icon over the name, each
+                with a remove mark. Past eight, the rest fold behind a count. Image
+                content itself renders as an artifact card (with a click-to-expand
+                lightbox) in the conversation above.
+              </p>
+              <div className="rounded-xl border border-border-button-default bg-background-primary-default">
+                <ComposerAttachmentRow
                   uploads={uploads}
                   onRemove={(u) =>
                     setUploads((current) => current.filter((item) => item.localId !== u.localId))
                   }
+                  className="p-3"
                 />
               </div>
               <a
@@ -424,7 +520,128 @@ export function SessionSample() {
                 Jump to the image artifact + lightbox in turn 1
               </a>
             </Surface>
+
+            <Surface
+              id="composer-status"
+              title="Reply composer with its status tray"
+              owner="reply-composer · composer-status-bar"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The status tray hangs under the card: where the run executes, then
+                the branch and the project, with the engine, the spend and the
+                context meter at the right. The round add button at the left of the
+                footer opens the attach menu.
+              </p>
+              <div
+                data-testid="composer-status-sample"
+                className="rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <ReplyComposer
+                  engine="codex"
+                  model="gpt-5.6-sol"
+                  memoryScope="org"
+                  pending={false}
+                  enableUploads
+                  onReply={() => {}}
+                  permission={
+                    <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
+                  status={
+                    <ComposerStatusBar
+                      run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}
+                      branch="rl-staging"
+                      project="gateway"
+                      agent="Codex"
+                      context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                      spend={{ spent: 12.34, allowance: 100, runs: 3 }}
+                    />
+                  }
+                />
+              </div>
+            </Surface>
+
+            <Surface
+              id="composer-running"
+              title="Reply composer while a run is in flight"
+              owner="reply-composer · running-footer · composer-status-bar"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The running footer sits above the card and the send action reads Queue;
+                the status tray stays where it is under the card.
+              </p>
+              <div
+                data-testid="composer-running-sample"
+                className="rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <ReplyComposer
+                  engine="codex"
+                  model="gpt-5.6-sol"
+                  memoryScope="org"
+                  pending={false}
+                  enableUploads
+                  running
+                  onStop={() => {}}
+                  runStartedAt={new Date(Date.now() - 84_000).toISOString()}
+                  onReply={() => {}}
+                  permission={
+                    <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
+                  lead={
+                    <RunningFooter
+                      status={{ phase: "working", label: "Working", sentence: "Editing gateway/routes.ts", toolCalls: 7, agentsRunning: 0, agentsDone: 1 }}
+                      model="GPT-5.6 Sol"
+                      startedAt={new Date(Date.now() - 84_000).toISOString()}
+                      onStop={() => {}}
+                    />
+                  }
+                  status={
+                    <ComposerStatusBar
+                      run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}
+                      branch="rl-staging"
+                      project="gateway"
+                      agent="Codex"
+                      context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                      spend={{ spent: 12.34, allowance: 100, runs: 3 }}
+                    />
+                  }
+                />
+              </div>
+            </Surface>
           </div>
+
+          {/* The status tab's context popover as the reference's usage card, with
+              the member's figures supplied so every row shows here. */}
+          <Surface id="usage-card" title="Usage card (the context ring's popover)" owner="usage-card · agent-limits-card">
+            <p className="text-caption-1-regular text-text-tertiary">
+              The context window over the buckets the runtime's usage frames carry, expandable
+              to the breakdown; under it the member's usage limits, sandbox minutes and spend,
+              with a bar while a cap is set and no reset line. On a runtime that reports no
+              window the card shows the token readout alone.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div
+                data-testid="usage-card-sample"
+                className="w-[320px] max-w-full rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <UsageCard
+                  context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                  minutes={{ used: 12, cap: 600 }}
+                  spend={{ spent: 12.34, allowance: 100, runs: 3 }}
+                  onCompact={() => {}}
+                />
+              </div>
+              <div
+                data-testid="usage-card-sample-no-window"
+                className="w-[320px] max-w-full rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <UsageCard
+                  context={{ used: 92_400, cached: 61_000, window: null, input: 29_800, output: 1_420 }}
+                  minutes={{ used: 12, cap: null }}
+                  spend={{ spent: 5, allowance: null, runs: 1 }}
+                />
+              </div>
+            </div>
+          </Surface>
 
           {/* A settled markdown answer rendered on its own, so the AgentAnswer
               summary path (used when a turn carries no narration) is also visible. */}

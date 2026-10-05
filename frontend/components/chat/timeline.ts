@@ -170,7 +170,7 @@ export interface TimelinePlanEntry {
 /** Provider-neutral rows rendered in the conversation, including durable artifact receipts. */
 export type TimelineNode =
   | { kind: "marker"; key: string; marker: TimelineMarker }
-  | { kind: "text"; key: string; text: string }
+  | { kind: "text"; key: string; text: string; messageId?: string; final?: boolean }
   | { kind: "reasoning"; key: string; text: string }
   | { kind: "artifact"; key: string; artifact: TimelineArtifact }
   | { kind: "file"; key: string; file: TimelineFileChange }
@@ -364,6 +364,168 @@ function partText(payload: unknown): string | null {
   return typeof t === "string" && t.trim() ? t : null;
 }
 
+export type AssistantNarrationEvent =
+  | {
+      readonly kind: "anchor";
+      readonly seq: number;
+      readonly sessionId: string;
+      readonly parentSessionId: string | null;
+      readonly messageId: string;
+      readonly role: string;
+      readonly turnId: string;
+    }
+  | {
+      readonly kind: "snapshot";
+      readonly seq: number;
+      readonly sessionId: string;
+      readonly parentSessionId: string | null;
+      readonly messageId: string;
+      readonly role: string;
+      readonly turnId: string;
+      readonly text: string;
+      readonly revision: string;
+      readonly segment: number;
+      readonly segmentCount: number;
+      readonly final: boolean;
+      readonly streaming: boolean;
+    };
+
+interface AssistantNarrationUpdate {
+  readonly seq: number;
+  readonly text: string;
+  readonly revision: string;
+  readonly segment: number;
+  readonly segmentCount: number;
+  readonly final: boolean;
+}
+
+/** Fold bounded authoritative assistant snapshots into one root narration node. */
+export function projectAssistantNarration(events: readonly AssistantNarrationEvent[]): readonly {
+  messageId: string;
+  text: string;
+  final: boolean;
+  anchorSeq: number;
+  updateSeq: number;
+}[] {
+  const anchors = new Map<string, { sessionId: string; turnId: string; seq: number }>();
+  for (const event of events) {
+    if (event.kind !== "anchor" || event.role !== "assistant" || event.parentSessionId !== null)
+      continue;
+    const previous = anchors.get(event.messageId);
+    if (!previous || event.seq < previous.seq)
+      anchors.set(event.messageId, {
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        seq: event.seq,
+      });
+  }
+
+  const updates = new Map<string, AssistantNarrationUpdate[]>();
+  for (const event of events) {
+    if (event.kind !== "snapshot") continue;
+    const anchor = anchors.get(event.messageId);
+    if (
+      !anchor ||
+      event.sessionId !== anchor.sessionId ||
+      event.parentSessionId !== null ||
+      event.role !== "assistant" ||
+      event.turnId !== anchor.turnId
+    )
+      continue;
+    if (
+      !Number.isInteger(event.segment) ||
+      !Number.isInteger(event.segmentCount) ||
+      event.segment < 0 ||
+      event.segmentCount < 1 ||
+      event.segment >= event.segmentCount
+    )
+      continue;
+    const messageUpdates = updates.get(event.messageId) ?? [];
+    messageUpdates.push({
+      seq: event.seq,
+      text: event.text,
+      revision: event.revision,
+      segment: event.segment,
+      segmentCount: event.segmentCount,
+      final: event.final,
+    });
+    updates.set(event.messageId, messageUpdates);
+  }
+
+  return [...anchors.entries()]
+    .flatMap(([messageId, anchor]) => {
+      const messageUpdates = updates.get(messageId) ?? [];
+      const latest = messageUpdates.reduce<AssistantNarrationUpdate | null>(
+        (current, frame) => (!current || frame.seq > current.seq ? frame : current),
+        null,
+      );
+      if (!latest) return [];
+      const segments = new Map<number, AssistantNarrationUpdate>();
+      for (const update of messageUpdates) {
+        // Within an append-only epoch, earlier prefix chunks retain the count
+        // they had when captured. The latest update owns current extent/state.
+        if (update.revision !== latest.revision || update.segment >= latest.segmentCount) continue;
+        const previous = segments.get(update.segment);
+        if (!previous || update.seq > previous.seq) segments.set(update.segment, update);
+      }
+      if (segments.size !== latest.segmentCount) return [];
+      return [
+        {
+          messageId,
+          text: Array.from(
+            { length: latest.segmentCount },
+            (_, segment) => segments.get(segment)?.text ?? "",
+          ).join(""),
+          final: latest.final,
+          anchorSeq: anchor.seq,
+          updateSeq: latest.seq,
+        },
+      ];
+    })
+    .toSorted((a, b) => a.anchorSeq - b.anchorSeq);
+}
+
+function nativeAssistantNarration(
+  frames: NativeSnapshot["nativeFrames"],
+): AssistantNarrationEvent[] {
+  return frames.flatMap<AssistantNarrationEvent>((frame): AssistantNarrationEvent[] => {
+    if (frame.provider !== "t3" || !frame.native.sessionId || !frame.native.messageId) return [];
+    const payload = asRecord(frame.payload);
+    if (typeof payload?.role !== "string" || typeof payload.turnId !== "string") return [];
+    const identity = {
+      seq: frame.seq,
+      sessionId: frame.native.sessionId,
+      parentSessionId: frame.native.parentSessionId,
+      messageId: frame.native.messageId,
+      role: payload.role,
+      turnId: payload.turnId,
+    };
+    if (frame.eventType === "t3.message.started") return [{ kind: "anchor" as const, ...identity }];
+    if (
+      frame.eventType !== "t3.message.updated" ||
+      typeof payload.text !== "string" ||
+      typeof payload.revision !== "string" ||
+      typeof payload.segment !== "number" ||
+      typeof payload.segmentCount !== "number" ||
+      typeof payload.final !== "boolean" ||
+      typeof payload.streaming !== "boolean"
+    )
+      return [];
+    return [
+      {
+        kind: "snapshot" as const,
+        ...identity,
+        text: payload.text,
+        revision: payload.revision,
+        segment: payload.segment,
+        segmentCount: payload.segmentCount,
+        final: payload.final,
+        streaming: payload.streaming,
+      },
+    ];
+  });
+}
+
 /**
  * A pure-narration pseudo-step, NOT a real tool. The adapter emits the final
  * assistant answer as a synthetic `task` step and bare "Thinking…" placeholders;
@@ -424,6 +586,22 @@ export function buildTimeline(native: NativeSnapshot, live: boolean): TimelineNo
 
   type Ranked = { node: TimelineNode; k0: number; k1: number; k2: number };
   const ranked: Ranked[] = [];
+
+  for (const message of projectAssistantNarration(nativeAssistantNarration(nativeFrames))) {
+    if (!message.text) continue;
+    ranked.push({
+      node: {
+        kind: "text",
+        key: `message:${message.messageId}`,
+        text: message.text,
+        messageId: message.messageId,
+        final: message.final,
+      },
+      k0: message.anchorSeq,
+      k1: 0,
+      k2: message.updateSeq,
+    });
+  }
 
   // Durable artifacts appear after the turn's narration/tools. Delivery receipts
   // enrich the creation row instead of rendering a provider-specific duplicate.

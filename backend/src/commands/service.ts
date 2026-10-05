@@ -2,6 +2,7 @@ import { isUniqueViolation } from "../db/pg-errors";
 import { runIntentFingerprint, runIntentFromAcceptedRun } from "./fingerprint";
 import { findCommandByKey, insertCommandWithRun } from "./repo";
 import type { CommandRecord } from "./repo";
+import { getLatestThreadRun } from "../runs/repo";
 import type { RunCommandInput, RunCommandIntent, RunCommandOutcome } from "./types";
 import { publishRunLifecycleChange } from "../runs/org-signals";
 import {
@@ -13,9 +14,12 @@ import {
   type UnattendedRunOrigin,
 } from "../runs/origin";
 import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
+import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
+import { assertSandboxMinutes, SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { assertRunPromptLimit } from "./prompt-policy";
 import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { commands, runs } from "../db/schema";
@@ -55,6 +59,7 @@ function serializeRunCommandPayload(
     botHandoff: input.botHandoff ?? null,
     prompt: input.run.prompt,
     model: input.run.model,
+    reasoningEffort: input.run.reasoningEffort ?? null,
     engine: input.run.engine,
     parentRunId: input.run.parentRunId,
     threadId: input.run.threadId,
@@ -62,6 +67,8 @@ function serializeRunCommandPayload(
     resolvedResources: input.run.resolvedResources ?? [],
     attachmentIds: input.run.attachmentIds ?? [],
     memoryScope: input.run.memoryScope,
+    permissionMode: input.run.permissionMode ?? null,
+    runLocation: input.run.runLocation ?? null,
     skillId: input.run.skillId,
     skillVersion: input.run.skillVersion,
     commandName: input.run.commandName,
@@ -142,7 +149,7 @@ async function assertExpectedSandboxMapping(
     eq(runs.orgId, input.orgId),
     eq(runs.threadId, input.run.threadId),
     isNotNull(runs.sandboxId),
-  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+  )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
   if (
     !mapping ||
     mapping.sandboxId !== expected.sandboxId ||
@@ -317,6 +324,10 @@ async function acceptRunCommandWithOrigin(
   const fingerprint = acceptedFingerprint(intent, input.threadRelationship);
   const payload = serializeRunCommandPayload(input, intent, fingerprint, source);
   const commandId = crypto.randomUUID();
+  // Read before the thread lock: a pool read made while a transaction holds its
+  // connection can starve the pool. False only for a provider PROVIDER_ACCOUNTS
+  // withholds from this actor, which is then refused like any unknown model.
+  const modelOffered = await modelOfferedToUser(input.run.engine, input.run.model, input.actorId);
 
   let outcome: RunCommandOutcome | null;
   try {
@@ -333,7 +344,7 @@ async function acceptRunCommandWithOrigin(
           const [head] = await tx.select({ id: runs.id }).from(runs).where(and(
             eq(runs.orgId, input.orgId),
             eq(runs.threadId, input.run.threadId),
-          )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+          )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
           if (head?.id !== input.expectedThreadHeadRunId) throw new StaleThreadHeadError();
         }
         if (expectedSandbox) await assertExpectedSandboxMapping(input, expectedSandbox, tx);
@@ -342,6 +353,10 @@ async function acceptRunCommandWithOrigin(
         // close waits for already-accepting transactions, then every later new
         // acceptance observes the durable closed state.
         await assertRunAdmissionOpen(tx);
+        // The spend cap is checked here, on NEW work only (a keyed replay above
+        // still returns its original run), as a lock-free read of the committed
+        // figure so this transaction takes no lock that could close a cycle.
+        await assertSpendAllowance(input.orgId, input.actorId, tx);
         assertRunPromptLimit(intent.prompt);
         assertRunPromptLimit(input.run.prompt);
 
@@ -353,13 +368,26 @@ async function acceptRunCommandWithOrigin(
         const modelAllowed = persistedPolicy
           ? isPersistedModelAllowedForEngine(input.run.engine, input.run.model)
           : isModelAllowedForEngine(input.run.engine, input.run.model);
-        if (!modelAllowed) {
+        if (!modelAllowed || !modelOffered) {
           throw new Error(
             `model ${input.run.model} is not allowed for engine ${input.run.engine}`,
           );
         }
+        // Where the thread runs: a root run's choice, or the thread's for a reply
+        // that carries none, resolved once here for the login readiness below and
+        // for the row itself.
+        const runLocation = input.run.runLocation ?? (input.run.parentRunId
+          ? (await getLatestThreadRun(input.orgId, input.run.threadId, tx))?.runLocation ?? null
+          : null);
+        // Sandbox minutes are checked here, on NEW work only (a keyed replay
+        // above still returns its original run), as a lock-free read of the
+        // committed ledger, once it is known where the turn runs. A chat turn
+        // holds no sandbox and passes.
+        if (input.run.engine !== "chat") {
+          await assertSandboxMinutes(input.orgId, input.actorId, tx, { threadId: input.run.threadId, runLocation });
+        }
         const dispatchReady = await dispatchReadyForUser(
-          { orgId: input.orgId, userId: input.actorId },
+          { orgId: input.orgId, userId: input.actorId, runLocation },
           input.run.engine,
           input.run.model,
           persistedPolicy ? "persisted" : "accepted",
@@ -379,7 +407,7 @@ async function acceptRunCommandWithOrigin(
             actorId: input.actorId,
             payloadFingerprint: fingerprint,
             payload,
-            run: input.run,
+            run: { ...input.run, runLocation },
             expectedSandbox,
             origin,
             priority,
@@ -394,10 +422,15 @@ async function acceptRunCommandWithOrigin(
   } catch (err) {
     // A concurrent request with the same org/key but a different root thread can
     // win the unique index. The losing transaction is aborted, so resolve the
-    // winner only AFTER withThreadLifecycleLock rolls it back.
-    if (input.idempotencyKey && isUniqueViolation(err)) {
-      const existing = await findCommandByKey(input.orgId, input.idempotencyKey);
-      if (existing) return classifyReplay(existing, fingerprint, origin, source);
+    // winner only AFTER withThreadLifecycleLock rolls it back. The same applies
+    // to a spend or minutes refusal: a keyed retry that read the fast path
+    // before its winner committed, then met a cap, still replays the committed winner.
+    if (
+      input.idempotencyKey &&
+      (isUniqueViolation(err) || err instanceof SpendAllowanceExceededError || err instanceof SandboxMinutesExceededError)
+    ) {
+      const replay = await replayCommittedWinner(input.orgId, input.idempotencyKey, fingerprint, origin, source);
+      if (replay) return replay;
     }
     throw err;
   }
@@ -419,6 +452,19 @@ async function acceptRunCommandWithOrigin(
   }
 
   return { status: "created", runId: input.run.id, commandId };
+}
+
+/** After a lost race or a refusal: the committed keyed winner, if any, still
+ *  answers for this submission exactly as the fast path would have. */
+export async function replayCommittedWinner(
+  orgId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+  origin: TrustedRunOrigin | null,
+  source: ConnectorRunSource | null,
+): Promise<RunCommandOutcome | null> {
+  const existing = await findCommandByKey(orgId, idempotencyKey);
+  return existing ? classifyReplay(existing, fingerprint, origin, source) : null;
 }
 
 /** Public product acceptance. Origin is always null and is not caller-settable. */

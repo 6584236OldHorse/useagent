@@ -9,10 +9,11 @@ import {
 import { BoxApiError } from "@useagent/sandbox-box";
 import { SandboxNotFoundError } from "@useagent/sandbox-contract";
 import { readFileSync } from "node:fs";
-import { resolveRetainedSandbox, reviveRetainedSandbox, RetainedSandboxRuntimeMismatchError, sandboxHasRequiredLabels } from "./thread-sandbox";
+import { acquireThreadSandbox, resolveRetainedSandbox, reviveRetainedSandbox, RetainedSandboxRuntimeMismatchError, sandboxHasRequiredLabels } from "./thread-sandbox";
 import type { EngineRunContext } from "./types";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
+  MachineNotConnectedError,
   PersonalSandboxConnectionUnavailableError,
   sandboxBindingExpectation,
   type SandboxBinding,
@@ -20,6 +21,34 @@ import {
 import { forgetLiveThreadSandbox, rememberLiveThreadSandbox } from "./sandbox-runtime";
 
 describe("shared thread sandbox lease", () => {
+  test("a collaborator's reply on a thread placed on a machine reuses the retained sandbox without being asked for a machine of their own", async () => {
+    const retainedSandbox = { id: "local:rn_a:c1", state: "started", cpu: 64, memory: 256, labels: {} } as unknown as SandboxHandle;
+    const machine: SandboxBinding = { kind: "local", provider: {} as SandboxBinding["provider"], snapshot: null, credential: "user", userId: "owner", logins: [] };
+    const ctx = { runId: "run-b", threadId: "thread-a", orgId: "org", userId: "collaborator", runLocation: "local", emit: async () => undefined } as unknown as EngineRunContext;
+    let fresh = 0;
+    const persisted: unknown[] = [];
+    const dependencies = {
+      retained: async () => ({ sandbox: retainedSandbox, binding: machine }),
+      bindingForThread: async (): Promise<SandboxBinding> => { throw new Error("no fence on this run"); },
+      bindingForRun: async (): Promise<SandboxBinding> => { fresh++; throw new MachineNotConnectedError(); },
+      persist: async (runId: string, sandboxId: string, record: unknown) => { persisted.push([runId, sandboxId, record]); },
+    };
+    try {
+      const lease = await acquireThreadSandbox(ctx, { snapshot: "snap", chip: "runtime:codex" }, dependencies);
+      expect(lease.sandbox).toBe(retainedSandbox);
+      expect(lease.binding).toBe(machine);
+      expect(lease.reused).toBe(true);
+      expect(fresh).toBe(0);
+      expect(persisted).toEqual([["run-b", "local:rn_a:c1", { kind: "local", credential: "user" }]]);
+      // With nothing retained the thread's choice is asked of the collaborator and fails plainly, never the cloud.
+      await expect(acquireThreadSandbox(ctx, { snapshot: "snap", chip: "runtime:codex" }, { ...dependencies, retained: async () => null }))
+        .rejects.toBeInstanceOf(MachineNotConnectedError);
+      expect(fresh).toBe(1);
+    } finally {
+      forgetLiveThreadSandbox("thread-a", retainedSandbox.id);
+    }
+  });
+
   test("constrained revival verifies owner and connection before lookup and bypasses ID-only cache", async () => {
     let lookedUp = 0;
     const fresh = { id: "pinned", state: "started" } as SandboxHandle;
@@ -118,6 +147,36 @@ describe("shared thread sandbox lease", () => {
     expect(deleted).toBe(0);
     expect(forgotten).toBe(0);
     expect(files.get("draft.txt")).toBe("unpublished work");
+  });
+
+  test("a started retained sandbox's warm checks start alongside its credential check, a paused one's never", async () => {
+    const events: string[] = [];
+    const credentials = Promise.withResolvers<boolean>();
+    const started = { id: "warm-started", state: "started" } as unknown as SandboxHandle;
+    const paused = { id: "warm-paused", state: "paused", start: async () => { events.push("resumed"); } } as unknown as SandboxHandle;
+    const reviveOne = (sandbox: SandboxHandle, credentialsCurrent: () => Promise<boolean>) => {
+      const binding = { kind: "cube", provider: { get: async () => sandbox } } as unknown as SandboxBinding;
+      return reviveRetainedSandbox(
+        { threadId: `thread-${sandbox.id}`, orgId: "org", emit: async () => undefined } as unknown as EngineRunContext,
+        sandbox.id,
+        { chip: "runtime:codex", onStarted: (warm, warmBinding) => events.push(`warm:${warm.id}:${warmBinding.kind}`) },
+        { threadBinding: async () => binding, sandboxBinding: async () => binding, credentialsCurrent },
+      );
+    };
+
+    const revived = reviveOne(started, () => {
+      events.push("credentials");
+      return credentials.promise;
+    });
+    await Bun.sleep(0);
+    // The warm checks are issued before the credential check has decided.
+    expect(events).toEqual(["warm:warm-started:cube", "credentials"]);
+    credentials.resolve(true);
+    expect((await revived).sandbox).toBe(started);
+
+    events.length = 0;
+    await reviveOne(paused, async () => true);
+    expect(events).toEqual(["resumed"]);
   });
 
   test("preserves retained mappings for revoked credentials, auth failures, and unknown errors", async () => {

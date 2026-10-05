@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { CANONICAL_SCHEMA_VERSION } from "@useagent/agent-harness/canonical";
 import { db } from "../src/db/client";
-import { runs } from "../src/db/schema";
+import { providerEvents, runs } from "../src/db/schema";
 import { isBearerAllowedPath } from "../src/middleware/bearer";
 import { MODEL_QUALIFICATION_RUN_ORIGIN } from "../src/runs/origin";
 import { persistCanonicalEvents } from "../src/runs/canonical-events";
 import { createRootExecution, recordNativeChildSpawn } from "../src/runs/execution-graph-repo";
+import { stageExecutionGraphObservation } from "../src/runs/execution-graph-pending-repo";
 import { executionGraphEnabled } from "../src/runs/execution-graph-switch";
 import { createOrgSession, json, uid } from "./helpers";
 
@@ -22,6 +23,37 @@ describe("execution graph switch", () => {
     expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "read" })).toBe(true);
     expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "shadow" })).toBe(true);
     expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: " OFF " })).toBe(false);
+  });
+
+  test("reports a graph with an unplaced provider observation as incomplete", async () => {
+    const owner = await createOrgSession(uid("graph-gap"));
+    const accepted = await json<{ id: string }>("/api/runs", {
+      method: "POST",
+      cookies: owner.cookies,
+      body: { prompt: "execution graph gap", engine: "mock" },
+    });
+    const runId = accepted.body.id;
+    const path = `/api/runs/${runId}/executions`;
+    expect((await json<{ incomplete: boolean }>(path, { cookies: owner.cookies })).body.incomplete).toBe(false);
+
+    await db.insert(providerEvents).values({
+      id: `${runId}:orphan`, runId, threadId: runId, seq: 1, provider: "t3", eventType: "t3.activity.task.started",
+    });
+    await stageExecutionGraphObservation({
+      orgId: owner.orgId,
+      runId,
+      provider: "t3",
+      providerEventId: `${runId}:orphan`,
+      deliverySeq: 1,
+      structure: {
+        kind: "spawn",
+        nativeParentSessionId: "missing-parent",
+        nativeChildSessionId: "orphan",
+        relevant: true,
+        executionRequired: true,
+      },
+    });
+    expect((await json<{ incomplete: boolean }>(path, { cookies: owner.cookies })).body.incomplete).toBe(true);
   });
 
   test("keeps the graph route session-only and hidden while switched off", async () => {
@@ -45,6 +77,7 @@ describe("execution graph switch", () => {
       version: number;
       run_id: string;
       graph_cursor: number;
+      incomplete: boolean;
       executions: unknown[];
       delegation_edges: unknown[];
       has_more: boolean;
@@ -56,6 +89,7 @@ describe("execution graph switch", () => {
         version: 1,
         run_id: accepted.body.id,
         graph_cursor: 0,
+        incomplete: false,
         executions: [],
         delegation_edges: [],
         has_more: false,

@@ -15,7 +15,7 @@ FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe6
 ARG NODE_VERSION=24.19.0
 ARG BUN_VERSION=1.3.14
 ARG T3_CODE_VERSION=0.0.39-nightly.20260906.1293
-ARG CODEX_CLI_VERSION=0.153.3
+ARG CODEX_CLI_VERSION=0.159.3
 ARG CLAUDE_CODE_VERSION=2.1.226
 ARG OPENCODE_VERSION=1.18.7
 
@@ -25,17 +25,31 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       acl \
+      adwaita-icon-theme \
       bash \
+      budgie-core \
       build-essential \
       ca-certificates \
       chromium \
       curl \
       dbus-x11 \
+      dconf-cli \
       ffmpeg \
+      fonts-cantarell \
+      fonts-noto-mono \
+      gir1.2-budgie-1.0 \
+      gir1.2-peas-1.0 \
       git \
+      gnome-backgrounds \
+      gnome-settings-daemon \
+      gnome-terminal \
+      hicolor-icon-theme \
       jq \
+      libglib2.0-bin \
+      librsvg2-common \
       novnc \
       openssh-client \
+      pcmanfm \
       procps \
       python3 \
       python3-pip \
@@ -43,14 +57,47 @@ RUN apt-get update \
       socat \
       sudo \
       unzip \
+      upower \
+      webp-pixbuf-loader \
       websockify \
       x11-utils \
       x11vnc \
+      xclip \
       xdotool \
+      xserver-xorg-core \
+      xserver-xorg-legacy \
+      xserver-xorg-video-dummy \
       xz-utils \
     && mkdir -p /usr/share/useagent \
     && dpkg-query -W -f '${binary:Package}=${Version}\n' > /usr/share/useagent/base-packages.txt \
     && rm -rf /var/lib/apt/lists/*
+
+# The panel loads its applets through libpeas and its own typelib (gir1.2-peas-1.0,
+# gir1.2-budgie-1.0); Debian's budgie-core does not depend on them, and without them
+# the panel logs "Typelib file for namespace 'Peas' not found" and runs empty. Its
+# status applet then needs UPower on the system bus (upower; the launcher starts the
+# bus as root through sudo on this unprivileged layout) or it dereferences a null client.
+# The desktop (Budgie on a real Xorg dummy display at 1920x1080, x11vnc and
+# noVNC for the stream) is the stack the native recipe's desktop step installs
+# on the cloud bases. Here it is part of the base, so that step finds it
+# complete and stops before writing its own files: rootfs/ carries those files
+# instead (the display and dconf defaults here, the home files below), and
+# backend/src/sandboxes/local-sandbox-base.test.ts holds them equal to the
+# recipe. The wrapper config runs Xorg as the user on this layout: a container
+# without CAP_IPC_OWNER (Docker's default) lets a root Xorg attach none of the
+# shared-memory segments x11vnc creates as uid 1000.
+COPY rootfs/etc /etc
+RUN dconf update \
+    && test -r /usr/share/dbus-1/system-services/org.freedesktop.UPower.service \
+    && gtk-update-icon-cache -f -q /usr/share/icons/Adwaita \
+    && gtk-update-icon-cache -f -q /usr/share/icons/hicolor \
+    && for binary in Xorg budgie-daemon budgie-panel budgie-wm dbus-launch dconf gnome-terminal pcmanfm pgrep websockify x11vnc xdotool xdpyinfo chromium; do \
+         command -v "$binary" >/dev/null || { echo "missing $binary" >&2; exit 1; }; \
+       done \
+    && test -x /usr/libexec/gsd-xsettings \
+    && ls /usr/lib/*/girepository-1.0/Peas-1.0.typelib /usr/lib/*/girepository-1.0/Budgie-1.0.typelib >/dev/null \
+    && test -r /usr/share/novnc/vnc.html \
+    && test -r /etc/dconf/db/local
 
 # Node from the official tarball for this architecture, checked against the
 # release's checksum list; Bun from its release archive, checked the same way.
@@ -92,6 +139,11 @@ RUN useradd -m -u 1000 -s /bin/bash user \
     && chmod 0440 /etc/sudoers.d/user \
     && test "$(id -u user)" = 1000 \
     && command -v setfacl && command -v setpriv && command -v socat
+
+# The desktop's home files: the wallpaper and icons pcmanfm draws, the launchers.
+COPY --chown=user:user rootfs/home/user /home/user
+RUN test -x /home/user/Desktop/files.desktop \
+    && test -r /home/user/.config/pcmanfm/useagent/desktop-items-0.conf
 
 USER user
 ENV HOME=/home/user

@@ -123,12 +123,18 @@ export function piBridgeProviderEvent(
     case "usage.updated":
       return {
         ...base,
-        id: `${ctx.runId}:pi:${nativeSessionId}:usage`,
+        id: `${ctx.runId}:pi:${nativeSessionId}:usage:${body.messageId ?? frame.seq}`,
         eventType: "part.step-finish",
-        nativeMessageId: `pi:${nativeSessionId}:assistant`,
+        nativeMessageId: body.messageId ?? `pi:${nativeSessionId}:assistant`,
         payload: {
-          tokens: { input: body.inputTokens, output: body.outputTokens },
+          tokens: {
+            input: body.inputTokens,
+            output: body.outputTokens,
+            cache: { read: body.cacheReadTokens, write: body.cacheWriteTokens },
+            total: body.totalTokens,
+          },
           cost: body.costUsd,
+          contextWindow: body.contextWindow,
           bridgeSeq: frame.seq,
         },
       };

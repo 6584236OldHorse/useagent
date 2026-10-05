@@ -50,6 +50,20 @@ describe("OpenCode generated config placement", () => {
     expect(command).not.toContain("tee");
   });
 
+  test("warms OpenCode's model catalog cache before the config is written", () => {
+    const command = buildOpencodeConfigWriteCommand("e30=");
+    const warm = command.indexOf("https://models.dev/api.json");
+    const write = command.indexOf("> ~/.config/opencode/opencode.json");
+
+    expect(warm).toBeGreaterThan(-1);
+    expect(warm).toBeLessThan(write);
+    expect(command).toContain("-z ~/.cache/opencode/models.json");
+    expect(command).toContain("--max-time 10");
+    // A failed or unchanged fetch keeps the file OpenCode already has.
+    expect(command).toContain("[ -s ~/.cache/opencode/models.json.new ]");
+    expect(command).toContain("rm -f ~/.cache/opencode/models.json.new; true)");
+  });
+
   test("rejects shell input that is not base64", () => {
     expect(() => buildOpencodeConfigWriteCommand("$(touch /tmp/nope)")).toThrow(
       "opencode config must be base64 encoded",

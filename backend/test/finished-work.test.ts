@@ -746,7 +746,7 @@ describe("finished work finalization", () => {
     }
   });
 
-  test("off finalization does not wait on the finished-work advisory lock", async () => {
+  test("off finalization still waits for an in-flight explicit artifact publication", async () => {
     process.env.FINISHED_WORK_ROLLOUT = "off";
     const runId = await freshRun("codex");
     let releaseLock!: () => void;
@@ -766,7 +766,9 @@ describe("finished work finalization", () => {
     ]);
     releaseLock();
     await holder;
-    expect(result).not.toBe("timeout");
+    // Explicit user-facing output publication is a hard completion contract,
+    // independent of the broader finished-work rollout's enforcement mode.
+    expect(result).toBe("timeout");
     expect(await finalizing).toMatchObject({ applied: true, status: "completed" });
   });
 

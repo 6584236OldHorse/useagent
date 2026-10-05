@@ -24,7 +24,6 @@ interface Capabilities {
 }
 
 interface ConfigResponse {
-  sandbox?: { provider?: "cube" | "daytona" | "box" };
   capabilities?: Capabilities;
 }
 
@@ -124,9 +123,9 @@ export function PluginsPanel() {
         />
         <CapabilityRow
           icon={RiPlugLine}
-          name={`${config?.sandbox?.provider === "cube" ? "Cube" : config?.sandbox?.provider === "daytona" ? "Daytona" : config?.sandbox?.provider === "box" ? "Box" : "Sandbox"} runtime`}
-          detail="Deployment-wide sandbox provider every run starts in"
-          enabled={Boolean(config?.sandbox?.provider)}
+          name="Cloud runtime"
+          detail="The sandboxes every run starts in"
+          enabled={Boolean(config)}
         />
         <CapabilityRow
           icon={RiToolsLine}

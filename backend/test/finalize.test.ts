@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { finalizeRun } from "../src/runs/finalize";
 import { getCapture } from "../src/memory/capture-outbox";
 import { acceptRunCommand } from "../src/commands";
+import { acceptRunCancel, CANCEL_SUMMARY } from "../src/commands/cancel";
+import { COMPACT_STOPPED_WAITING_SUMMARY } from "../src/engines/runtime-compact-contract";
 import { recoverStaleRuns, type ReconcileProbe } from "../src/runs/recovery";
 import {
   createRun,
@@ -11,6 +13,7 @@ import {
   setRunSandbox,
   setRunStatus,
 } from "../src/runs/repo";
+import * as runsRepo from "../src/runs/repo";
 import { db } from "../src/db/client";
 import { artifacts } from "../src/db/schema";
 import { sql } from "drizzle-orm";
@@ -121,6 +124,33 @@ describe("finalizeRun — transactional memory capture (GAP 2)", () => {
       const after = JSON.parse(capAfter!.payload) as { summary: string };
       expect(after.summary).toBe(before.summary);
     });
+  });
+
+  test("durable cancellation selects compact wait-only copy from the locked run", async () => {
+    for (const [commandName, status, expected] of [
+      ["compact", "running", COMPACT_STOPPED_WAITING_SUMMARY],
+      [null, "running", CANCEL_SUMMARY],
+      ["compact", "queued", CANCEL_SUMMARY],
+    ] as const) {
+      const id = crypto.randomUUID();
+      await createRun({
+        id,
+        prompt: commandName ? "/compact" : "ordinary turn",
+        model: "claude-opus-5",
+        engine: "mock",
+        orgId: ORG,
+        userId: null,
+        parentRunId: null,
+        threadId: id,
+        commandName,
+      });
+      await setRunStatus(id, status);
+      await acceptRunCancel({ orgId: ORG, actorId: null, runId: id });
+
+      await finalizeRun(id, "completed", "provider completed concurrently", 1);
+
+      expect(await getRun(id)).toMatchObject({ status: "failed", summary: expected });
+    }
   });
 
   test("a failed run does NOT enqueue a capture", async () => {
@@ -255,5 +285,32 @@ describe("finalizeRun — transactional memory capture (GAP 2)", () => {
         "Reconciled after restart: the session finished with 3 edits",
       );
     });
+  });
+});
+
+describe("finalizeRun - transient database failures", () => {
+  test("a transient error inside the settlement transaction is retried instead of stranding the run", async () => {
+    const id = await freshRun("transient settle");
+    const original = runsRepo.completeRun;
+    let failures = 0;
+    const completeRun = spyOn(runsRepo, "completeRun").mockImplementation(
+      async (...args: Parameters<typeof original>) => {
+        if (failures === 0) {
+          failures += 1;
+          throw Object.assign(new Error("Failed query"), { cause: { code: "40P01" } });
+        }
+        return original(...args);
+      },
+    );
+    const warned = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await finalizeRun(id, "failed", "settled after a retry", 5))
+        .toMatchObject({ applied: true, status: "failed" });
+    } finally {
+      completeRun.mockRestore();
+      warned.mockRestore();
+    }
+    expect(failures).toBe(1);
+    expect(await getRun(id)).toMatchObject({ status: "failed", summary: "settled after a retry" });
   });
 });

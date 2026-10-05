@@ -6,7 +6,10 @@ import {
   codexAuthStatusLabel,
   codexLoginUrl,
   type ProviderConnectionMeta,
+  MODEL_PROVIDER_CONNECTION_PROVIDERS,
+  offeredConnectionProviders,
   providerConnectionViews,
+  rejectedKeyNotice,
   safeCodexChatGptLogin,
   safeCodexChatGptStatus,
   safeEnabledSandboxEngines,
@@ -66,6 +69,16 @@ describe("provider connection presentation", () => {
     ).toBe("Team");
     expect(statusLabel(null)).toBe("Not connected");
     expect(statusLabel({ ...base, provider: "openai", authMethod: "api_key" })).toBe("Connected");
+  });
+
+  test("a key the provider rejected reads as needing a new key, not Connected", () => {
+    const rejected = { ...base, provider: "openrouter", authMethod: "api_key", status: "reauth_required" } as const;
+    expect(statusLabel(rejected)).toBe("Reauth required");
+    expect(rejectedKeyNotice(rejected, "OpenRouter")).toBe(
+      "OpenRouter rejected this key (expired or revoked). Save a new key to reconnect.",
+    );
+    expect(rejectedKeyNotice({ ...rejected, status: "connected" }, "OpenRouter")).toBeNull();
+    expect(rejectedKeyNotice(null, "OpenRouter")).toBeNull();
   });
 
   test("accepts only browser-safe ChatGPT login URLs", () => {
@@ -198,4 +211,13 @@ describe("provider connection presentation", () => {
       "codex",
     ]);
   });
+});
+
+test("a provider the server withholds from this account has no row", () => {
+  expect(offeredConnectionProviders(null)).toEqual([...MODEL_PROVIDER_CONNECTION_PROVIDERS]);
+  const offered = offeredConnectionProviders(["openrouter", "anthropic", "daytona"]);
+  expect(offered).not.toContain("cerebras");
+  expect(offered).toContain("openrouter");
+  expect(providerConnectionViews([], ["openrouter"]).map((view) => view.provider)).toEqual(["openrouter"]);
+  expect(providerConnectionViews([]).length).toBe(MODEL_PROVIDER_CONNECTION_PROVIDERS.length);
 });

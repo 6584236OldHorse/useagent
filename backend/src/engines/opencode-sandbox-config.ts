@@ -19,6 +19,7 @@ import {
   mergeOpenCodeProviderConfig,
   opencodeProviderGatewayOptions,
 } from "../provider-gateway/sandbox-config";
+import { providerOfferedToUser, restrictedProviders } from "../provider-gateway/provider-accounts";
 import type { SandboxHandle } from "../sandboxes/provider";
 import {
   THREAD_TOKEN_REUSE_WINDOW_MS,
@@ -44,12 +45,28 @@ export interface PreparedOpenCodeConfig {
   readonly required: boolean;
 }
 
+/** OpenCode resolves model ids against the catalog it loads when its process
+ *  starts: the cache file when one exists, else the snapshot bundled at its own
+ *  build time, and it never re-reads after that. A sandbox starts with no cache,
+ *  so every model models.dev added after the snapshot (new free models, a new
+ *  Gemini) fails as "Model not found" even though OpenRouter serves it. Warming
+ *  the cache before the process starts makes the current catalog the one it
+ *  loads. Conditional on the file's date, bounded, and never fatal: a failed
+ *  fetch leaves whatever was there, and OpenCode falls back to its snapshot. */
+export const OPENCODE_CATALOG_WARM_COMMAND =
+  "mkdir -p ~/.cache/opencode && " +
+  "(curl -sfL --max-time 10 -z ~/.cache/opencode/models.json -o ~/.cache/opencode/models.json.new " +
+  "https://models.dev/api.json 2>/dev/null && [ -s ~/.cache/opencode/models.json.new ] && " +
+  "mv -f ~/.cache/opencode/models.json.new ~/.cache/opencode/models.json; " +
+  "rm -f ~/.cache/opencode/models.json.new; true)";
+
 export function buildOpencodeConfigWriteCommand(encodedConfig: string): string {
   if (!/^[A-Za-z0-9+/=]+$/.test(encodedConfig)) {
     throw new Error("opencode config must be base64 encoded");
   }
   return (
     `mkdir -p ~/.config/opencode ~/work && chmod 700 ~/.config ~/.config/opencode && ` +
+    `${OPENCODE_CATALOG_WARM_COMMAND} && ` +
     `printf %s '${encodedConfig}' | base64 -d > ~/.config/opencode/opencode.json && ` +
     `chmod 600 ~/.config/opencode/opencode.json && ` +
     `rm -f -- ~/work/opencode.json`
@@ -105,7 +122,13 @@ export async function prepareOpencodeSandboxConfig(
   baseConfig?: Record<string, unknown>,
 ): Promise<PreparedOpenCodeConfig | null> {
   const gw = toolGatewayConfig();
-  const providerOptions = opencodeProviderGatewayOptions(ctx);
+  // A provider PROVIDER_ACCOUNTS withholds from this run's user gets no token,
+  // and a retained config loses the entry an earlier turn may have left.
+  const withheld = new Set<string>();
+  for (const provider of restrictedProviders().keys()) {
+    if (!(await providerOfferedToUser(provider, ctx.userId))) withheld.add(provider);
+  }
+  const providerOptions = opencodeProviderGatewayOptions(ctx, withheld);
   // GUI automation is provided by the trusted knowledge computer_* tools, so any
   // stale browser MCP entry in retained configuration is removed.
   const browser = null;
@@ -184,6 +207,7 @@ export async function prepareOpencodeSandboxConfig(
         options,
       );
     }
+    for (const provider of withheld) delete providers[provider];
     if (Object.keys(providerOptions).length > 0) cfg.provider = providers;
     console.log(
       `[opencode] sandbox gateways prepared for run ${ctx.runId} ` +

@@ -309,11 +309,15 @@ export function claudeProviderGatewayEnvironment(model?: string): Record<string,
 /** OpenCode providers are pre-wired so a warm thread can switch models. */
 export function opencodeProviderGatewayOptions(
   ctx: EngineRunContext,
+  /** Providers PROVIDER_ACCOUNTS withholds from this run's user: no token is minted for them. */
+  withheld: ReadonlySet<string> = new Set(),
 ): Partial<Record<ProviderId, OpenCodeProviderOptions>> {
-  const anthropicToken = mintResidentThreadToken(ctx, "opencode", "anthropic");
-  const openaiToken = mintResidentThreadToken(ctx, "opencode", "openai");
-  const openrouterToken = mintResidentThreadToken(ctx, "opencode", "openrouter");
-  const cerebrasToken = mintResidentThreadToken(ctx, "opencode", "cerebras");
+  const mint = (provider: ProviderId) => withheld.has(provider) ? null : mintResidentThreadToken(ctx, "opencode", provider);
+  const anthropicToken = mint("anthropic");
+  const openaiToken = mint("openai");
+  const openrouterToken = mint("openrouter");
+  const cerebrasToken = mint("cerebras");
+  const zenToken = mint("opencode");
   // OpenCode passes provider options directly to the AI SDK; provider baseURLs
   // include `/v1` for the SDK-specific endpoint suffixes. Claude Code's
   // ANTHROPIC_BASE_URL seam differs and appends `/v1/messages` itself.
@@ -321,6 +325,7 @@ export function opencodeProviderGatewayOptions(
   const openaiBase = providerGatewayEndpoint("openai", true);
   const openrouterBase = providerGatewayEndpoint("openrouter", true);
   const cerebrasBase = providerGatewayEndpoint("cerebras", true);
+  const zenBase = providerGatewayEndpoint("opencode", true);
   return {
     ...(anthropicToken && anthropicBase
       ? { anthropic: { baseURL: anthropicBase, apiKey: anthropicToken } }
@@ -333,6 +338,11 @@ export function opencodeProviderGatewayOptions(
       : {}),
     ...(cerebrasToken && cerebrasBase
       ? { cerebras: { baseURL: cerebrasBase, apiKey: cerebrasToken } }
+      : {}),
+    // OpenCode's own Zen provider (the free lane's second source) rides the
+    // same gateway seam; its runtime adapter is OpenAI-compatible.
+    ...(zenToken && zenBase
+      ? { opencode: { baseURL: zenBase, apiKey: zenToken } }
       : {}),
   };
 }
@@ -372,7 +382,7 @@ export function codexProviderConfigToml(
     'approval_policy = "never"',
     "",
     "[model_providers.skynet]",
-    'name = "useAgent provider gateway"',
+    'name = "UseAgent provider gateway"',
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     "requires_openai_auth = false",
@@ -403,6 +413,8 @@ export function codexProviderConfigToml(
 export async function writePrivateFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
+  /** Shell steps that run after the writes in the same command. */
+  after: readonly string[] = [],
 ): Promise<void> {
   const compatibilityAliases: Readonly<Record<string, { legacy: string; relativeTarget: string }>> = {
     [CANONICAL_OPENAI_TOKEN_FILE]: {
@@ -451,6 +463,7 @@ export async function writePrivateFiles(
       "mkdir -p $HOME/.claude $HOME/.codex",
       ...leafChecks,
       ...writes,
+      ...after,
     ].join(" && "),
     undefined,
     undefined,
@@ -543,10 +556,12 @@ export async function prepareProviderGatewaySandbox(
       { path: CLAUDE_SETTINGS_FILE, content: JSON.stringify(managedSettings) },
       { path: CLAUDE_MCP_CONFIG_FILE, content: claudeMcpConfig(toolDescriptor) },
     ];
-    await (options.rootOwnedClaudeCapability
-      ? writeClaudeCapabilityFiles(sandbox, files)
-      : writeUserClaudeCapabilityFiles(sandbox, files));
-    await writePrivateFiles(sandbox, [{ path: SANDBOX_MARKER, content: generation }]);
+    await Promise.all([
+      options.rootOwnedClaudeCapability
+        ? writeClaudeCapabilityFiles(sandbox, files)
+        : writeUserClaudeCapabilityFiles(sandbox, files),
+      writePrivateFiles(sandbox, [{ path: SANDBOX_MARKER, content: generation }]),
+    ]);
     return;
   }
 
@@ -557,21 +572,17 @@ export async function prepareProviderGatewaySandbox(
     toolDescriptor ? toCodexToolGatewayConfig(toolDescriptor) : undefined,
   );
   if (!token || !config) throw new Error("provider gateway could not mint Codex capability");
-  await writePrivateFiles(sandbox, [
-    { path: OPENAI_TOKEN_FILE, content: token },
-    { path: "$HOME/.codex/config.toml", content: config },
-    { path: SANDBOX_MARKER, content: generation },
-  ]);
-  // Never let a snapshot or prior dev turn's host login override command-backed auth.
-  const removal = await sandbox.process.executeCommand(
-    "rm -f $HOME/.codex/auth.json",
-    undefined,
-    undefined,
-    10,
+  // Never let a snapshot or prior dev turn's host login override command-backed
+  // auth: the removal rides the same command as the writes, one round trip.
+  await writePrivateFiles(
+    sandbox,
+    [
+      { path: OPENAI_TOKEN_FILE, content: token },
+      { path: "$HOME/.codex/config.toml", content: config },
+      { path: SANDBOX_MARKER, content: generation },
+    ],
+    ["rm -f $HOME/.codex/auth.json"],
   );
-  if ((removal.exitCode ?? 1) !== 0) {
-    throw new Error("failed to remove legacy Codex authentication");
-  }
 }
 
 /** Old warm sandboxes may still contain raw provider env; never reuse them. */

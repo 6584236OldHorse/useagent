@@ -55,6 +55,47 @@ export interface ResumeFrame {
   readonly epoch: string | null;
 }
 
+/** One native frame a client retained, as the pair the hold digest is built from. */
+export interface NativeHoldEntry {
+  readonly eventId: string;
+  readonly seq: number;
+}
+
+/** The most native cursors one thread-stream connection carries: a server reads at most this
+ *  many `nativeAfter` entries, so a client sends no more (the rest of its sealed runs replay
+ *  from the start, as they would without a cursor). */
+export const NATIVE_CURSOR_LIMIT = 200;
+
+/** A digest of what a client holds of one run's native lane: the set of (eventId, seq)
+ *  pairs it retained, order-independent, so the server can tell in one comparison whether
+ *  its own rows at or below the client's cursor are exactly that set. A frame committed
+ *  below the cursor after the hold was taken changes it (a new id), and so does a revision
+ *  that moved a frame to another seq. Two 32-bit FNV-1a passes, the first over the sorted
+ *  `eventId:seq` lines and the second over the same text reversed, each finished with a
+ *  Murmur3-style bit mix: a plain FNV-1a low bit is only the parity of the input's low
+ *  bits, the same in any order, so without the mix the two halves would agree there.
+ *  16 hex characters. Not a cryptographic hash: two different holds can digest alike,
+ *  and a hold that collides keeps colliding until it changes, so the failure is one
+ *  client missing a frame of that run until its hold changes or it opens the thread
+ *  afresh; nothing here is an integrity guarantee. */
+export function nativeHoldDigest(frames: Iterable<NativeHoldEntry>): string {
+  const text = Array.from(frames, (frame) => `${frame.eventId}:${frame.seq}`).sort().join("\n");
+  const pass = (basis: number, input: string): string => {
+    let hash = basis;
+    for (let i = 0; i < input.length; i++) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= hash >>> 16;
+    hash = Math.imul(hash, 0x85ebca6b);
+    hash ^= hash >>> 13;
+    hash = Math.imul(hash, 0xc2b2ae35);
+    hash ^= hash >>> 16;
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  };
+  return pass(0x811c9dc5, text) + pass(0x050c5d1f, [...text].reverse().join(""));
+}
+
 /** A decoded thread frame. `native`/`run`/`step`/`delta`/`snapshot` carry raw product
  *  payloads the useAgent hook still projects natively; the client library validates +
  *  owns only the canonical lane. `unknown` is a forward-compatible catch-all: an

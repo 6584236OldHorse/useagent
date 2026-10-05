@@ -56,6 +56,8 @@ export interface TimingSpanPayload {
   startedAt: number; // epoch ms
   endedAt: number; // epoch ms
   durMs: number;
+  /** For a repeated stage: how many times it ran; `durMs` is their total. */
+  count?: number;
 }
 
 export interface TimingMarkPayload {
@@ -130,6 +132,8 @@ export interface RunStageTimer {
   begin(stage: string): TimingSpanEnd;
   /** Record an instantaneous milestone. */
   mark(stage: string): void;
+  /** Add one run of a repeated stage; its one row carries the count and total ms so far. */
+  add(stage: string, durMs: number): void;
 }
 
 /** Ergonomic per-run timer over the module helpers. Monotonic durations via
@@ -142,6 +146,7 @@ export function createRunTimer(
   const wallOrigin = Date.now();
   const monoOrigin = performance.now();
   const now = (): number => wallOrigin + Math.round(performance.now() - monoOrigin);
+  const totals = new Map<string, { startedAt: number; count: number; durMs: number }>();
   return {
     begin(stage) {
       const startedAt = now();
@@ -154,6 +159,20 @@ export function createRunTimer(
     },
     mark(stage) {
       recordStageMark(runId, threadId, stage, now(), sink);
+    },
+    add(stage, durMs) {
+      const endedAt = now();
+      const total = totals.get(stage) ?? { startedAt: endedAt - Math.round(durMs), count: 0, durMs: 0 };
+      total.count += 1;
+      total.durMs += durMs;
+      totals.set(stage, total);
+      sink({
+        id: `${runId}:timing:${stage}`,
+        runId,
+        threadId,
+        eventType: TIMING_SPAN,
+        payload: { stage, startedAt: total.startedAt, endedAt, durMs: Math.round(total.durMs), count: total.count },
+      });
     },
   };
 }
@@ -203,6 +222,8 @@ export interface TimingTableRow {
   startedAt: number;
   endedAt: number | null;
   durMs: number | null;
+  /** How many times a repeated stage ran (`durMs` is their total); null otherwise. */
+  count: number | null;
 }
 
 export interface TimingTable {
@@ -257,6 +278,7 @@ export function deriveTimingTable(
         startedAt: p.startedAt,
         endedAt: p.endedAt,
         durMs: typeof p.durMs === "number" ? p.durMs : p.endedAt - p.startedAt,
+        count: typeof p.count === "number" ? p.count : null,
       });
     } else if (row.eventType === TIMING_MARK) {
       if (typeof p.at !== "number") continue;
@@ -267,6 +289,7 @@ export function deriveTimingTable(
         startedAt: p.at,
         endedAt: null,
         durMs: null,
+        count: null,
       });
       if (p.stage === "dispatch") dispatchAt = p.at;
       else if (p.stage === "first_reasoning_delta") firstReasoningAt = p.at;

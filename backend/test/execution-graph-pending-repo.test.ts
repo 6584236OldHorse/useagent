@@ -10,7 +10,7 @@ import {
   runs,
 } from "../src/db/schema";
 import {
-  executionGraphSealBlockers,
+  executionGraphGaps,
   executionGraphStructureHash,
   executionGraphRecoveryDiagnostics,
   EXECUTION_GRAPH_RECOVERY_MAX_ATTEMPTS,
@@ -205,7 +205,7 @@ describe("execution graph pending observation repository", () => {
       structuralMismatchSourceSeq: 4,
       structuralMismatchCode: "applied_structure_changed",
     });
-    expect(await executionGraphSealBlockers(orgId, runId, testDb)).toEqual([
+    expect(await executionGraphGaps(orgId, runId, testDb)).toEqual([
       expect.objectContaining({ id: mismatch.row.id }),
     ]);
   });
@@ -325,6 +325,6 @@ describe("execution graph pending observation repository", () => {
       exhaustedCount: 1,
       oldestUnresolvedAt: expect.any(Date),
     });
-    expect(await executionGraphSealBlockers(orgId, runId, testDb)).toHaveLength(1);
+    expect(await executionGraphGaps(orgId, runId, testDb)).toHaveLength(1);
   });
 });

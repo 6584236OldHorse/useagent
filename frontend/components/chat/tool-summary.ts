@@ -379,3 +379,16 @@ export function summarizeToolStep(step: ApiStep): ToolSummary {
     objectMono: titled || Boolean(trace.base || trace.monoTarget),
   };
 }
+
+/** How many entries a directory listing returned: the non-empty output lines,
+ *  minus the root line a tree listing opens with (`src/gateway/`). Null when
+ *  the step produced no readable output. */
+export function listingEntryCount(step: ApiStep): number | null {
+  const text = unwrapToolOutput(deriveTrace(step).detail);
+  if (!text) return null;
+  const lines = text.split("\n").filter((line) => line.trim());
+  // A tree listing opens with its root ("src/") over indented entries; a flat
+  // listing whose first entry happens to be a directory keeps that entry.
+  const root = lines[0]?.trimEnd().endsWith("/") && /^\s/.test(lines[1] ?? "") ? 1 : 0;
+  return lines.length - root;
+}

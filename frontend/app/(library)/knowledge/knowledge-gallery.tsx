@@ -221,7 +221,7 @@ export function KnowledgeGallery({
             <h1 className="text-title-2-medium text-text-primary">Knowledge</h1>
           </div>
           <p className="mt-1.5 text-body-2-regular text-text-secondary">
-            Facts and conventions useAgent remembers across runs
+            Facts and conventions UseAgent remembers across runs
           </p>
         </div>
         <AddKnowledgeModal folders={folderOptions} onIngested={refetch} />
@@ -302,7 +302,7 @@ export function KnowledgeGallery({
             <BackendUnreachable className="mt-10" onRetry={refetch} />
           ) : (
             <p className="mt-10 text-body-2-regular text-text-secondary">
-              No knowledge yet. Add your first fact to teach useAgent.
+              No knowledge yet. Add your first fact to teach UseAgent.
             </p>
           )
         ) : (

@@ -23,6 +23,14 @@ export interface SlackUserProfile {
   readonly image: string | null;
 }
 
+/** A conversation as conversations.info describes it: the kind from its flags
+ *  and, for a channel or private channel, its name. Both null when Slack answered
+ *  that it will not describe it (no scope, no such channel). */
+export interface SlackChannelInfo {
+  readonly kind: "dm" | "group_dm" | "channel" | "private_channel" | null;
+  readonly name: string | null;
+}
+
 export type DeliveryResult =
   | { ok: true; ts?: string }
   | { ok: false; class: "rate_limited"; retryAfterMs: number; message: string }
@@ -52,7 +60,15 @@ export interface SlackClient {
   /** A workspace member's profile (users.info): name, avatar, and the email when
    *  the users:read.email scope was granted. Optional so recording stubs need not
    *  provide it; a missing method means the profile is unknown. */
-  userInfo?(args: { user: string }): Promise<SlackUserProfile | null>;
+  userInfo?(args: { user: string; signal?: AbortSignal }): Promise<SlackUserProfile | null>;
+  /** The permanent link to one message (chat.getPermalink; no extra scope). Optional
+   *  like userInfo; a missing method or a failed call means no link is known. */
+  getPermalink?(args: { channel: string; messageTs: string; signal?: AbortSignal }): Promise<string | null>;
+  /** What a conversation is (conversations.info: its flags and, for channels,
+   *  its name; needs channels:read or groups:read). Optional like userInfo. Null
+   *  means Slack could not be asked this time; a settled answer with no name means
+   *  Slack will keep refusing (no scope, or no such channel) and nothing is owed. */
+  channelInfo?(args: { channel: string; signal?: AbortSignal }): Promise<SlackChannelInfo | null>;
   /**
    * Upload a file into a thread. Ported from the QM bot (files.uploadV2,
    * a reference implementation src/slack/attachments.ts:189) and a reference bot (files_upload_v2,
@@ -78,12 +94,15 @@ export interface SlackClient {
     status: SlackSessionStatus;
   }): Promise<DeliveryResult>;
   /** Free-text working status on an assistant thread (assistant.threads.setStatus):
-   * renders as "<App> <status>" with the native shimmer. An empty status clears
-   * it. Documented for DM assistant threads only. */
+   * renders as "<App> <status>" with the native shimmer, rotating through
+   * `loadingMessages` when given. An empty status clears it. Slack's
+   * compatibility bridge maps a non-empty status to a processing session and
+   * "" to active, so this is the ONE status family a thread uses. */
   setThreadStatus(args: {
     channel: string;
     threadTs: string;
     status: string;
+    loadingMessages?: readonly string[];
   }): Promise<DeliveryResult>;
   /** Start a Slack-native streaming reply. Blocks are intentionally not
    * accepted here; Slack only allows blocks at stopStream. The recipient ids
@@ -125,6 +144,8 @@ const PERMANENT_ERRORS = new Set([
   "not_authed",
   "restricted_action",
   "invalid_arguments",
+  // The message is gone (a deleted card): only a fresh post can recover.
+  "message_not_found",
   // AI-app surfaces: these signal the feature/surface is unavailable or the
   // stream can no longer be written - a retry will never succeed.
   "feature_disabled",
@@ -191,7 +212,7 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
       call("chat.postMessage", {
         channel,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
         ...(threadTs ? { thread_ts: threadTs } : {}),
         unfurl_links: false,
         unfurl_media: false,
@@ -201,23 +222,29 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         ts,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     addReaction: ({ channel, timestamp, name }) =>
       call("reactions.add", { channel, timestamp, name }),
-    userInfo: async ({ user }) => {
+    userInfo: async ({ user, signal }) => {
       try {
         const res = await fetch(`${config.apiUrl}users.info?user=${encodeURIComponent(user)}`, {
           headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
         });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          user?: { real_name?: string; name?: string; profile?: { email?: string; image_192?: string; image_72?: string } };
+          user?: {
+            real_name?: string;
+            name?: string;
+            profile?: { display_name?: string; email?: string; image_192?: string; image_72?: string };
+          };
         };
         if (!data.ok || !data.user) return null;
         const profile = data.user.profile ?? {};
+        // The name a member chose to be shown as, then the full name, then the handle.
         return {
-          name: data.user.real_name?.trim() || data.user.name?.trim() || user,
+          name: profile.display_name?.trim() || data.user.real_name?.trim() || data.user.name?.trim() || user,
           email: profile.email?.trim().toLowerCase() || null,
           image: profile.image_192 ?? profile.image_72 ?? null,
         };
@@ -231,11 +258,12 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         thread_ts: threadTs,
         status,
       }),
-    setThreadStatus: ({ channel, threadTs, status }) =>
+    setThreadStatus: ({ channel, threadTs, status, loadingMessages }) =>
       call("assistant.threads.setStatus", {
         channel_id: channel,
         thread_ts: threadTs,
         status,
+        ...(status && loadingMessages?.length ? { loading_messages: loadingMessages } : {}),
       }),
     startStream: ({ channel, threadTs, taskDisplayMode, chunks, recipientTeamId, recipientUserId }) =>
       call("chat.startStream", {
@@ -258,8 +286,8 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         thread_ts: threadTs,
         ts: messageTs,
-        chunks,
-        ...(blocks ? { blocks } : {}),
+        ...(chunks.length ? { chunks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     uploadFile: async ({ channel, threadTs, filename, title, initialComment, bytes }) => {
       const auth = `Bearer ${config.botToken}`;
@@ -313,6 +341,46 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         return c.ok ? { ok: true } : classify(c.error ?? String(compRes.status));
       } catch (err) {
         return { ok: false, class: "transient", message: (err as Error).message };
+      }
+    },
+    getPermalink: async ({ channel, messageTs, signal }) => {
+      try {
+        const query = new URLSearchParams({ channel, message_ts: messageTs });
+        const res = await fetch(`${config.apiUrl}chat.getPermalink?${query}`, {
+          headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
+        });
+        const data = (await res.json().catch(() => ({}))) as { ok?: boolean; permalink?: string };
+        return data.ok && typeof data.permalink === "string" ? data.permalink : null;
+      } catch {
+        return null;
+      }
+    },
+    channelInfo: async ({ channel, signal }) => {
+      try {
+        const res = await fetch(`${config.apiUrl}conversations.info?channel=${encodeURIComponent(channel)}`, {
+          headers: { authorization: `Bearer ${config.botToken}` },
+          signal,
+        });
+        if (res.status === 429) return null;
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: string;
+          channel?: { name?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean };
+        };
+        if (data.ok && data.channel) {
+          const c = data.channel;
+          const kind = c.is_im ? "dm" : c.is_mpim ? "group_dm" : c.is_private ? "private_channel" : "channel";
+          const named = kind === "channel" || kind === "private_channel";
+          return { kind, name: (named && c.name?.trim()) || null };
+        }
+        // Slack answered and will keep answering the same way: the token has no
+        // scope for this kind of conversation, or there is no such channel.
+        return data.error === "missing_scope" || data.error === "channel_not_found"
+          ? { kind: null, name: null }
+          : null;
+      } catch {
+        return null;
       }
     },
   };

@@ -58,3 +58,17 @@ export function relativeTimeShort(
   const long = relativeTime(value, now);
   return long === "just now" ? "now" : long.replace(" ago", "");
 }
+
+/** Precise elapsed time for a work log: "180ms", "4.3s", "1m 8.5s", "1h 2m". Null when
+ *  there is nothing to report (missing, zero or negative). */
+export function formatElapsed(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  // Round to tenths before choosing the bucket, so 59,999 ms is "1m", never "60.0s".
+  const tenths = Math.round(ms / 100);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  const minutes = Math.floor(tenths / 600);
+  if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const rest = tenths - minutes * 600;
+  return rest === 0 ? `${minutes}m` : `${minutes}m ${(rest / 10).toFixed(1)}s`;
+}

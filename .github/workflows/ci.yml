@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - main
+      - v2
     paths-ignore:
       - "docs-site/**"
   pull_request:
@@ -88,6 +89,22 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The release controller refuses to promote an added migration without the
+      # expansion-safe marker; catch it at review instead of at deploy time.
+      - name: Check new migrations carry the expansion-safe marker
+        run: |
+          set -euo pipefail
+          base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1)
+          missing=0
+          for f in $(git diff --name-only --diff-filter=A "$base" HEAD -- 'backend/drizzle/*.sql'); do
+            if ! grep -qE '^\s*--\s*fast-deploy:\s*expansion-safe\s*$' "$f"; then
+              echo "::error file=$f::new migration lacks '-- fast-deploy: expansion-safe'; the production promote will refuse it"
+              missing=1
+            fi
+          done
+          exit $missing
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}

@@ -73,7 +73,7 @@ export const openRouterLlm: WikiLlm = async (messages, opts) => {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
         "HTTP-Referer": "https://github.com/useagenthq/useagent",
-        "X-Title": "useAgent Wiki Generator",
+        "X-Title": "UseAgent Wiki Generator",
       },
       body: JSON.stringify({
         model: wikiModel(),

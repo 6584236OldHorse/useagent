@@ -6,7 +6,7 @@
  * for user-visible strings).
  */
 export const MEMORY_TURN_GUIDANCE = `<memory_rules>
-Durable memory for this user and organization lives in the useAgent memory tools, not in any file. Writing /root/.skynet/memory.md or any other file in this sandbox saves nothing; the sandbox is destroyed after the task.
+Durable memory for this user and organization lives in the UseAgent memory tools, not in any file. Writing /root/.skynet/memory.md or any other file in this sandbox saves nothing; the sandbox is destroyed after the task.
 - A "Team memory" block in a turn is what was recalled for that turn: reference only, possibly stale.
 - To find what you already know: memory_search(query). Read one result in full with memory_read(memoryRef).
 - To save a durable fact (a preference, where something lives, a gotcha): memory_remember(content, kind?, key?). Give a stable key to a fact that may change later.

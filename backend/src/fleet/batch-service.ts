@@ -3,6 +3,8 @@ import { db, type Executor } from "../db/client";
 import { ENGINE_IDS, type EngineId } from "../db/schema";
 import { insertCommandWithRun } from "../commands/repo";
 import { assertRunAdmissionOpen } from "../commands/admission";
+import { assertSpendAllowance } from "../runs/spend";
+import { assertSandboxMinutes } from "../runs/sandbox-minutes";
 import { runIntentFingerprint } from "../commands/fingerprint";
 import type { RunCommandIntent, RunCommandInput } from "../commands/types";
 import {
@@ -16,6 +18,7 @@ import {
   defaultModelForEngine,
   isModelAllowedForEngine,
 } from "../runs/model-policy";
+import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
@@ -137,6 +140,7 @@ export function validateFleetBatchBody(body: unknown): FleetBatchValidationResul
 export async function resolveFleetBatchTasks(
   orgId: string,
   tasks: readonly FleetBatchTaskInput[],
+  actorId: string | null = null,
 ): Promise<FleetBatchResolveResult> {
   const resolved: ResolvedFleetBatchTask[] = [];
   for (const [index, task] of tasks.entries()) {
@@ -150,7 +154,7 @@ export async function resolveFleetBatchTasks(
     }
     const engine = engineResolution.engine;
     const model = task.model ?? defaultModelForEngine(engine);
-    if (!isModelAllowedForEngine(engine, model)) {
+    if (!isModelAllowedForEngine(engine, model) || !(await modelOfferedToUser(engine, model, actorId))) {
       return { ok: false, status: 400, body: { error: "model_not_allowed", engine, model, index } };
     }
     if (!modelProviderReadyForEngine(engine, model)) {
@@ -273,6 +277,8 @@ export async function acceptFleetBatch(input: {
     if (replay) return { created: false, batch: replay } as const;
 
     await assertRunAdmissionOpen(tx);
+    await assertSpendAllowance(input.orgId, input.actorId, tx);
+    await assertSandboxMinutes(input.orgId, input.actorId, tx);
     const runIds = input.tasks.map(() => crypto.randomUUID());
     for (const [index, task] of input.tasks.entries()) {
       const run = acceptedRun(task, runIds[index]!);

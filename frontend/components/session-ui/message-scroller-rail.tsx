@@ -46,12 +46,11 @@ export function pickActiveTurnIndex(visible: ReadonlySet<number>, fallback: numb
   return min === -1 ? fallback : min;
 }
 
-export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+export function jumpToTurn(
+  container: Pick<HTMLElement, "scrollTop" | "getBoundingClientRect">,
+  turn: Pick<HTMLElement, "getBoundingClientRect">,
+): void {
+  container.scrollTop += turn.getBoundingClientRect().top - container.getBoundingClientRect().top - 8;
 }
 
 /**
@@ -111,10 +110,7 @@ export function MessageScrollerRail({
     if (!container || id === undefined) return;
     const el = container.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(id)}"]`);
     if (!el) return;
-    const top =
-      container.scrollTop +
-      (el.getBoundingClientRect().top - container.getBoundingClientRect().top);
-    container.scrollTo({ top: top - 8, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    jumpToTurn(container, el);
   };
 
   return (

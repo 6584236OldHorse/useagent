@@ -410,7 +410,7 @@ export function translateOpenCode(
         } else suppressed = `${et} without a complete artifact descriptor`;
       }
       else if (et === "secrets.injected") produced.push(push(f.eventId, f.provider, { kind: "session.metadata", metadata: { secretsInjected: true } }, ident));
-      else produced.push(push(f.eventId, f.provider, { kind: "harness.warning", message: "unmapped useAgent event", rawEventType: et, rawPayload: f.payload }, ident));
+      else produced.push(push(f.eventId, f.provider, { kind: "harness.warning", message: "unmapped UseAgent event", rawEventType: et, rawPayload: f.payload }, ident));
     } else if (et === "question.asked") {
       const questionId = str(p?.id);
       const rawQuestions = Array.isArray(p?.questions) ? p.questions : [];
@@ -467,6 +467,48 @@ export function translateOpenCode(
           status: rejected ? "rejected" : "answered",
         }, ident));
       } else suppressed = "question resolution without requestID";
+    } else if (et === "t3.message.started") {
+      const messageId = f.native.messageId;
+      if (f.native.sessionId && messageId && typeof p?.role === "string" && typeof p?.turnId === "string") {
+        produced.push(push(f.eventId, f.provider, {
+          kind: "message.started",
+          messageId,
+          role: p.role,
+          turnId: p.turnId,
+        }, { ...ident, nativeParentSessionId: f.native.parentSessionId }));
+      } else suppressed = "malformed t3 message anchor";
+    } else if (et === "t3.message.updated") {
+      const messageId = f.native.messageId;
+      if (
+        f.native.sessionId &&
+        messageId &&
+        typeof p?.role === "string" &&
+        typeof p?.turnId === "string" &&
+        typeof p?.text === "string" &&
+        typeof p?.revision === "string" &&
+        Number.isInteger(p?.segment) &&
+        Number.isInteger(p?.segmentCount) &&
+        (p?.segment as number) >= 0 &&
+        (p?.segmentCount as number) > 0 &&
+        (p?.segment as number) < (p?.segmentCount as number) &&
+        typeof p?.final === "boolean" &&
+        typeof p?.streaming === "boolean"
+      ) {
+        produced.push(push(f.eventId, f.provider, {
+          kind: "message.delta",
+          messageId,
+          text: p.text,
+          role: p.role,
+          turnId: p.turnId,
+          snapshot: {
+            revision: p.revision,
+            segment: p.segment as number,
+            segmentCount: p.segmentCount as number,
+            final: p.final,
+            streaming: p.streaming,
+          },
+        }, { ...ident, nativeParentSessionId: f.native.parentSessionId }));
+      } else suppressed = "malformed t3 message snapshot segment";
     } else if (et.startsWith("t3.activity.")) {
       const activity = p;
       const activityKind = t3ActivityKind(et, activity);

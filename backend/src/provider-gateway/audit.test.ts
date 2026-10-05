@@ -124,6 +124,48 @@ describe("provider gateway durable audit", () => {
     );
   });
 
+  test("token counts neither spend nor hit the request cap", async () => {
+    const runId = `run-${crypto.randomUUID()}`;
+    runIds.push(runId);
+    await db.insert(runs).values({
+      id: runId,
+      orgId: "org-a",
+      userId: "user-a",
+      prompt: "counted",
+      model: "claude-sonnet-5",
+      engine: "claude",
+      status: "running",
+      threadId: runId,
+    });
+    const limits = {
+      maxRequestsPerRun: 1,
+      maxConcurrentPerRun: 4,
+      maxOutputTokens: 100,
+      upstreamTimeoutMs: 60_000,
+    };
+    const start = (path: string) =>
+      beginProviderGatewayAudit(
+        {
+          id: `audit-${crypto.randomUUID()}`,
+          runId,
+          orgId: "org-a",
+          provider: "anthropic",
+          path,
+          model: "claude-sonnet-5",
+          requestedOutputTokens: 0,
+        },
+        limits,
+      );
+
+    await start("/v1/messages/count_tokens");
+    await start("/v1/messages/count_tokens");
+    await start("/v1/messages");
+    await start("/v1/messages/count_tokens");
+    await expect(start("/v1/messages")).rejects.toEqual(
+      new ProviderGatewayAdmissionError("request_budget_exhausted"),
+    );
+  });
+
   test("does not count unused per-request output ceilings as consumed tokens", async () => {
     const runId = `run-${crypto.randomUUID()}`;
     runIds.push(runId);

@@ -57,6 +57,84 @@ export interface ChildFidelity {
   readonly usage: ChildUsage | null;
 }
 
+/** How full the conversation's context window is, from the newest step-finish
+ *  usage of the parent session (children carry their own). Missing on runtimes
+ *  that report no usage. */
+export interface ThreadContext {
+  /** Tokens the last model call carried: fresh input, cache reads and writes, output. */
+  readonly used: number;
+  /** The cache-read share of `used`. */
+  readonly cached: number;
+  /** The model's context window in tokens, when the runtime reported it. */
+  readonly window: number | null;
+  /** The call's buckets as the frame carried them, for the usage card's segments;
+   *  a bucket the runtime did not report reads 0. */
+  readonly input: number;
+  readonly output: number;
+  readonly reasoning: number;
+  readonly cacheWrite: number;
+}
+
+const readNumber = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+export function deriveThreadContext(
+  frames: readonly NativeFrame[],
+  childSessionIds: ReadonlySet<string>,
+): ThreadContext | null {
+  let latest: { seq: number; context: ThreadContext } | null = null;
+  for (const frame of frames) {
+    if (frame.eventType !== "part.step-finish") continue;
+    if (frame.native.parentSessionId) continue;
+    if (frame.native.sessionId && childSessionIds.has(frame.native.sessionId)) continue;
+    if (latest && frame.seq <= latest.seq) continue;
+    const payload = asRecord(frame.payload);
+    const tokens = payload ? asRecord(payload.tokens) : null;
+    if (!tokens) continue;
+    const cache = asRecord(tokens.cache);
+    const cached = readNumber(cache?.read) ?? 0;
+    const input = readNumber(tokens.input) ?? 0;
+    const output = readNumber(tokens.output) ?? 0;
+    const reasoning = readNumber(tokens.reasoning) ?? 0;
+    const cacheWrite = readNumber(cache?.write) ?? 0;
+    const used = readNumber(tokens.total) ?? input + cached + cacheWrite + output;
+    if (used <= 0) continue;
+    latest = {
+      seq: frame.seq,
+      context: {
+        used,
+        cached,
+        window: readNumber(payload?.contextWindow),
+        input,
+        output,
+        reasoning,
+        cacheWrite,
+      },
+    };
+  }
+  return latest?.context ?? null;
+}
+
+/** The newest turn's context that is the parent's own: gateway child sessions
+ *  measure their own window, so their turns are skipped. */
+export function latestThreadContext(
+  turns: readonly {
+    readonly run: { readonly child_session?: unknown };
+    readonly native?: {
+      readonly nativeFrames: readonly NativeFrame[];
+      readonly childSessionIds: ReadonlySet<string>;
+    };
+  }[],
+): ThreadContext | null {
+  for (const turn of turns.toReversed()) {
+    if (turn.run.child_session) continue;
+    const native = turn.native;
+    const context = native ? deriveThreadContext(native.nativeFrames, native.childSessionIds) : null;
+    if (context) return context;
+  }
+  return null;
+}
+
 const TASK_CHILD_ID = /<task\s+id="([^"]+)"/;
 const TASK_RESULT = /<task_result>\s*([\s\S]*?)\s*<\/task_result>/;
 

@@ -5,7 +5,7 @@ import {
   ProviderGatewayAdmissionError,
 } from "./audit";
 import { resolveProviderCredentialForRun } from "./credentials";
-import { providerForEngine, type ProviderId } from "./provider";
+import { openCodeZenModelId, providerForEngine, type ProviderId } from "./provider";
 import { providerRequestLimits } from "./limits";
 import { applyProviderBodyPolicy, type OutputLimitField } from "./request-policy";
 import {
@@ -17,8 +17,11 @@ import { verifyProviderToken, type ProviderTokenClaims } from "./token";
 import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 import { applyOpenRouterProviderRouting } from "./provider-routing";
 import { fetchProviderUpstream, providerGatewayMaxRetries } from "./retry";
+import { rejectedMemberKeyResponse } from "./rejected-key";
+import type { markGatewayProviderApiKeyRejected } from "./api-key-credentials";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+export const REQUEST_CAP_MESSAGE = "This run hit the deployment's request cap";
 
 export interface ProviderRouteDeps {
   readonly verifyToken?: typeof verifyProviderToken;
@@ -28,6 +31,7 @@ export interface ProviderRouteDeps {
   readonly fetchUpstream?: FetchLike;
   readonly beginAudit?: typeof beginProviderGatewayAudit;
   readonly finishAudit?: typeof finishProviderGatewayAudit;
+  readonly markRejectedKey?: typeof markGatewayProviderApiKeyRejected;
 }
 
 type FetchLike = (
@@ -46,6 +50,7 @@ const UPSTREAM_ORIGINS: Record<ProviderId, string> = {
   openai: "https://api.openai.com",
   openrouter: "https://openrouter.ai/api",
   cerebras: "https://api.cerebras.ai",
+  opencode: "https://opencode.ai/zen",
 };
 
 export function providerUpstreamOrigin(
@@ -129,6 +134,13 @@ function normalizeCerebrasModelForUpstream(run: GatewayRun, body: string): strin
   if (run.engine !== "opencode" || !run.model.startsWith("cerebras/") || !body) return body;
   const parsed = JSON.parse(body) as Record<string, unknown>;
   if (parsed.model === run.model) parsed.model = run.model.slice("cerebras/".length);
+  return JSON.stringify(parsed);
+}
+
+function normalizeZenModelForUpstream(run: GatewayRun, body: string): string {
+  if (run.engine !== "opencode" || !run.model.startsWith("opencode/") || !body) return body;
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  if (parsed.model === run.model) parsed.model = openCodeZenModelId(run.model);
   return JSON.stringify(parsed);
 }
 
@@ -270,6 +282,7 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
         rawBody,
         target.outputLimitField,
         limits.maxOutputTokens,
+        target.provider,
       );
       if (!policy.ok) {
         const status = policy.error === "invalid_json" ? 400 : 403;
@@ -284,6 +297,8 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
       upstreamBody = normalizeOpenAIModelForUpstream(run, upstreamBody);
     } else if (target.provider === "cerebras") {
       upstreamBody = normalizeCerebrasModelForUpstream(run, upstreamBody);
+    } else if (target.provider === "opencode") {
+      upstreamBody = normalizeZenModelForUpstream(run, upstreamBody);
     }
 
     const resolved = await resolveCredential({
@@ -319,10 +334,15 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
       );
     } catch (error) {
       if (error instanceof ProviderGatewayAdmissionError) {
-        const headers = error.reason === "concurrency_exhausted"
-          ? { "retry-after": "1" }
-          : undefined;
-        return c.json({ error: error.reason }, 429, headers);
+        if (error.reason === "request_budget_exhausted") {
+          // Not a 429: the engine would retry until it gave up as "no progress".
+          // A 400 in the shape both API families read ends the turn with this text.
+          return c.json({
+            type: "error",
+            error: { type: "invalid_request_error", code: "request_cap_reached", message: REQUEST_CAP_MESSAGE },
+          }, 400);
+        }
+        return c.json({ error: error.reason }, 429, { "retry-after": "1" });
       }
       console.error(
         `[provider-gateway] audit start failed for run ${run.id}:`,
@@ -355,6 +375,15 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
           },
         },
       );
+      // A member's key the provider rejected: mark it for reconnect and hand
+      // the engine the remedy instead of the provider's text.
+      const rejected = resolved.source === "user_connection" && run.userId
+        ? await rejectedMemberKeyResponse(
+            upstream,
+            { orgId: claims.orgId, userId: run.userId, provider: target.provider, value: credential },
+            deps.markRejectedKey,
+          )
+        : null;
       const completeAudit = () => {
         void finishAudit({
           id: auditId,
@@ -368,6 +397,10 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
           );
         });
       };
+      if (rejected) {
+        completeAudit();
+        return rejected;
+      }
       return new Response(responseBodyWithRelease(upstream.body, completeAudit), {
         status: upstream.status,
         headers: responseHeaders(upstream.headers),
@@ -413,6 +446,10 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
   routes.post(
     "/cerebras/v1/chat/completions",
     proxy({ provider: "cerebras", upstreamPath: "/v1/chat/completions", outputLimitField: "max_tokens" }),
+  );
+  routes.post(
+    "/opencode/v1/chat/completions",
+    proxy({ provider: "opencode", upstreamPath: "/v1/chat/completions", outputLimitField: "max_tokens" }),
   );
   return routes;
 }

@@ -100,3 +100,19 @@ describe("collapsed application sidebar", () => {
     expect(loadingHtml).not.toContain("Guest");
   });
 });
+
+describe("brand row", () => {
+  test("the word sits close to the mark when expanded; the collapsed rail keeps the mark alone", () => {
+    // The mark's 300-unit box carries about 5px of its own whitespace on each
+    // side at size-8, so the row's own gap is 6px (gap-1.5), not 10px.
+    const expanded = renderSidebar(<AppSidebarFrame>Navigation</AppSidebarFrame>, true);
+    const row = expanded.match(/<a[^>]*aria-label="UseAgent new thread"[^>]*>/)?.[0] ?? "";
+    expect(row).toContain("gap-1.5");
+    expect(row).not.toContain("gap-2.5");
+    expect(expanded).toContain(">UseAgent<");
+    const collapsed = renderCollapsed(<AppSidebarFrame>Navigation</AppSidebarFrame>);
+    const rail = collapsed.match(/<a[^>]*aria-label="UseAgent new thread"[^>]*>/)?.[0] ?? "";
+    expect(rail).toContain("justify-center px-0");
+    expect(collapsed).not.toContain(">UseAgent<");
+  });
+});

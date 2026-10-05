@@ -18,6 +18,8 @@ The backend is the control plane for useAgent. It listens on `:3201` by default 
 | Artifacts and uploads | [`src/artifacts/*.ts`](src/artifacts), [`src/uploads/*.ts`](src/uploads) |
 | GitHub, Slack, email connectors | [`src/github/*.ts`](src/github), [`src/slack/*.ts`](src/slack), [`src/connectors/email/*.ts`](src/connectors/email) |
 
+In Slack, a message that starts with `(aside)` or `!aside` is for the people in the thread and the bot ignores it. `mute` as a reply in a thread the bot roots makes it ignore that thread (one reaction confirms it); `unmute` lifts it.
+
 ## Request Lifecycle
 
 1. The frontend posts a run to `POST /api/runs`.
@@ -215,22 +217,50 @@ The important variables are:
 - `FRONTEND_ORIGIN=http://localhost:3400` for local browser auth and CORS.
 - `BETTER_AUTH_URL=http://localhost:3201` for auth redirects and
   `BETTER_AUTH_SECRET` for session signing. Set `GOOGLE_CLIENT_ID` and
-  `GOOGLE_CLIENT_SECRET` for Google sign-in. Production accepts existing users
-  only; their email/password sign-in remains available while Google is optional.
+  `GOOGLE_CLIENT_SECRET` for Google sign-in. Without `SIGNUP_OPEN` (below)
+  production accepts existing users only; their email/password sign-in remains
+  available while Google is optional.
+- `SIGNUP_OPEN=1` opens email/password sign-up behind a mailed confirmation
+  (needs `CONNECTOR_EMAIL_HOST` and `CONNECTOR_EMAIL_FROM`); `SIGNUP_ALLOWED_DOMAINS`
+  and `SIGNUP_INVITE_CODE` narrow it.
 - `ENABLED_ENGINES` to opt extra engines into the backend picker.
+- `LAB_ACCOUNTS=owner@example.com,second@example.com` lists the accounts that may
+  open the component lab (`/lab`) in production; unset, nobody can. Development
+  mode keeps it open.
+- `OPERATOR_ACCOUNTS=owner@example.com` lists the accounts that run the deployment.
+  Only they see Settings > Infrastructure (the managed sandbox vendor, the
+  provider preference, the Daytona and Box accounts), reach the routes behind it
+  (`/api/operator/*`, `/api/sandbox-preference`, the Daytona and Box provider
+  connections) and read a vendor name on a run; everyone else gets 404 there and
+  reads "Cloud". Unset, nobody does. Stored connections and preferences keep
+  applying to runs. Development mode keeps it open. These accounts are also
+  exempt from the sandbox minutes cap and from `ORG_CREATE_LIMIT_PER_USER`
+  (default 2 organisations created per person), in every mode.
+- `PROVIDER_ACCOUNTS=cerebras:owner@example.com,second@example.com;openai:third@example.com`
+  offers a model provider only to the listed accounts. A provider named there
+  leaves every catalog, refuses runs like an unknown model, has no Settings card
+  and gets no gateway token for anyone else; a provider not named is open to all.
 - `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.
 - `GITHUB_TOKEN` or `GITHUB_APP_*` for repository access.
-- `FREE_MODEL_QUALIFIER_ENABLED=1` starts the durable, low-priority OpenRouter
-  full-agent qualifier. It is off by default and also requires
-  `FREE_MODEL_QUALIFIER_ORG_ID`; deployment admission closure suppresses probes.
-- `FREE_MODEL_REGISTRY_READ_ENABLED=1` makes the synchronous OpenCode catalog
-  read the last atomically published DB generation. It is independently off by
-  default, so qualification can run in shadow mode before runtime cutover.
-
-## Deploy and Terraform
-
+- The Free model lane (OpenRouter `:free` variants for OpenCode) is free on the
+  member's own OpenRouter key: a member connects it in Settings and free
+  models cost them nothing; the deployment's keys never serve a member's run
+  or chat turn (Chat runs on the member's key or the organisation's stored
+  `OPENROUTER_API_KEY` secret, and `CHAT=off` hides it).
+  The lane qualifies itself: at boot and every 15 minutes the backend
+  discovers the public catalog and runs short low-priority probe runs (at most
+  96 a day, one at a time, never while deployment admission is closed) and
+  advertises the last generation it published. Probe runs belong to
+  `FREE_MODEL_QUALIFIER_ORG_ID`, else the deployment's primary organization
+  (`USEAGENT_PRIMARY_ORG_ID`), and spend that organization's stored OpenRouter
+  key; without one the lane discovers but does not probe.
+  `FREE_MODEL_QUALIFIER=off` is the kill switch (the lane then stays at its
+  last generation). OpenCode Zen's free models join the lane once
+  `OPENCODE_API_KEY` and `PROVIDER_HEALTH_OPENCODE=verified` are set; Zen's
+  free marker is the lane's own, so that account must hold no credit balance
+  with auto-reload off.
 - the provisioning scripts provisions one backend, a separate restricted gateway service, Cube, memory, and systemd wiring. Production sets `REQUIRE_SINGLE_BACKEND=true` because ambient org invalidation is process-local.
 - `infra/self-host/README.md` documents the Terraform scope. It only manages Cloudflare DNS.
 

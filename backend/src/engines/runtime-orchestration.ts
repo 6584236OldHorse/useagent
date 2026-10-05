@@ -13,6 +13,7 @@ import {
   type ProviderQuestionRequest,
 } from "./provider-question";
 import { approvalEventId, runtimeApprovalRequest } from "./runtime-approval";
+import { runtimeUsageProviderEvent } from "./runtime-usage-frame";
 import {
   firstSemanticT3ToolName,
   t3SummaryToolIdentity,
@@ -20,7 +21,14 @@ import {
 } from "@useagent/agent-harness";
 import { toolServerDisplayName } from "@useagent/agent-harness/canonical";
 import { runtimeStepIo } from "./runtime-step-io";
-export { buildRuntimeSessionStopCommand } from "./runtime-session-stop";
+import { recordedRuntimeActivity } from "./runtime-v2-view";
+import {
+  buildV2MessageDispatch,
+  buildV2ProjectCreate,
+  buildV2RunInterrupt,
+  buildV2ThreadCreate,
+  type RuntimeCommand,
+} from "./runtime-v2-wire";
 export type RuntimeEngineId = Extract<EngineId, "codex" | "claude" | "opencode">;
 export type RuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";
 export interface RuntimeMessage {
@@ -292,6 +300,7 @@ export interface RuntimeThreadSnapshot {
   readonly snapshotSequence: number;
   readonly thread: {
     readonly id: string;
+    readonly runtimeMode?: RuntimeMode; // stored on the thread; what the runtime applies to its turns
     readonly latestTurn: null | {
       readonly turnId: string;
       readonly state: "running" | "interrupted" | "completed" | "error";
@@ -299,16 +308,22 @@ export interface RuntimeThreadSnapshot {
       readonly startedAt?: string | null;
       readonly completedAt?: string | null;
       readonly assistantMessageId: string | null;
+      /** The message that started the run; the plane's own are `skynet-message-*`. */
+      readonly userMessageId?: string;
+      /** The runtime's reason when the run failed. */
+      readonly error?: string | null;
     };
     readonly messages: readonly RuntimeMessage[];
     readonly activities: readonly RuntimeActivity[];
     readonly session: null | {
       readonly status: string;
       readonly lastError: string | null;
+      readonly activeTurnId?: string | null;
+      readonly providerSessionId?: string;
     };
   };
 }
-const PROVIDER_INSTANCE: Record<RuntimeEngineId, string> = {
+export const PROVIDER_INSTANCE: Record<RuntimeEngineId, string> = {
   codex: "codex",
   claude: "claudeAgent",
   opencode: "opencode",
@@ -323,6 +338,14 @@ const DEFAULT_MODEL: Record<RuntimeEngineId, string> = {
 export function runtimeModelId(engine: RuntimeEngineId, requested?: string): string {
   const selected = requested?.trim() || DEFAULT_MODEL[engine];
   return engine === "opencode" ? openCodeRuntimeModelId(selected) : selected;
+}
+
+/** Reasoning effort rides the model selection options: Codex reads `reasoningEffort`
+ *  (its app-server turn's effort), Claude Code reads `effort`; OpenCode has none. */
+function runtimeModelSelection(engine: RuntimeEngineId, ctx: Pick<EngineRunContext, "model" | "reasoningEffort">) {
+  const optionId = engine === "codex" ? "reasoningEffort" : engine === "claude" ? "effort" : null;
+  const options = optionId && ctx.reasoningEffort ? [{ id: optionId, value: ctx.reasoningEffort }] : [];
+  return { instanceId: PROVIDER_INSTANCE[engine], model: runtimeModelId(engine, ctx.model), options };
 }
 
 function stableId(prefix: string, value: string): string {
@@ -348,107 +371,73 @@ export function runtimeThreadId(ctx: Pick<EngineRunContext, "threadId" | "runId"
   return stableId("skynet-thread", ctx.threadId ?? ctx.runId);
 }
 export const runtimeUserMessageId = (runId: string): string => stableId("skynet-message", runId);
+/** The plane's own messages; a run started by any other message is not the plane's. */
+export const isRuntimePlaneMessageId = (messageId: string | undefined): boolean =>
+  typeof messageId === "string" && messageId.startsWith("skynet-message-");
+
 export function buildRuntimeProjectCreateCommand(
   ctx: Pick<EngineRunContext, "threadId" | "runId">,
   workspaceRoot: string,
-  createdAt: string,
-): Readonly<Record<string, unknown>> {
-  const projectId = runtimeProjectId(ctx);
-  return {
-    type: "project.create",
+): RuntimeCommand {
+  return buildV2ProjectCreate({
     commandId: stableId("skynet-project-create", ctx.runId),
-    projectId,
-    title: `useAgent ${ctx.threadId ?? ctx.runId}`,
+    projectId: runtimeProjectId(ctx),
+    title: `UseAgent ${ctx.threadId ?? ctx.runId}`,
     workspaceRoot,
-    createdAt,
-  };
+  });
 }
 
 export function buildRuntimeThreadCreateCommand(
-  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model">,
+  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model" | "reasoningEffort">,
   engine: RuntimeEngineId,
-  createdAt: string,
   runtimeMode: RuntimeMode = "full-access",
-): Readonly<Record<string, unknown>> {
-  const modelSelection = {
-    instanceId: PROVIDER_INSTANCE[engine],
-    model: runtimeModelId(engine, ctx.model),
-    options: [],
-  };
+): RuntimeCommand & { readonly threadId: string } {
+  const threadId = runtimeThreadId(ctx);
   return {
-    type: "thread.create",
-    commandId: stableId("skynet-thread-create", ctx.runId),
-    threadId: runtimeThreadId(ctx),
-    projectId: runtimeProjectId(ctx),
-    title: `useAgent ${ctx.threadId ?? ctx.runId}`,
-    modelSelection,
-    runtimeMode,
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    createdAt,
+    ...buildV2ThreadCreate({
+      commandId: stableId("skynet-thread-create", ctx.runId),
+      threadId,
+      projectId: runtimeProjectId(ctx),
+      title: `UseAgent ${ctx.threadId ?? ctx.runId}`,
+      modelSelection: runtimeModelSelection(engine, ctx),
+      runtimeMode,
+    }),
+    threadId,
   };
 }
 
+/** The run's message; the runtime runs it with the mode stored on the thread. */
 export function buildRuntimeTurnStartCommand(
-  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model">,
+  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model" | "reasoningEffort">,
   engine: RuntimeEngineId,
   prompt: string,
-  createdAt: string,
-  createThread: boolean,
-  runtimeMode: RuntimeMode = "full-access",
-): Readonly<Record<string, unknown>> {
-  const projectId = runtimeProjectId(ctx);
+): RuntimeCommand & { readonly threadId: string } {
   const threadId = runtimeThreadId(ctx);
-  const modelSelection = {
-    instanceId: PROVIDER_INSTANCE[engine],
-    model: runtimeModelId(engine, ctx.model),
-    options: [],
-  };
   return {
-    type: "thread.turn.start",
-    commandId: stableId("skynet-turn", ctx.runId),
-    threadId,
-    message: {
+    ...buildV2MessageDispatch({
+      commandId: stableId("skynet-turn", ctx.runId),
+      threadId,
       messageId: runtimeUserMessageId(ctx.runId),
-      role: "user",
       text: prompt,
-      attachments: [],
-    },
-    modelSelection,
-    runtimeMode,
-    interactionMode: "default",
-    ...(createThread
-      ? {
-          bootstrap: {
-            createThread: {
-              projectId,
-              title: `useAgent ${ctx.threadId ?? ctx.runId}`,
-              modelSelection,
-              runtimeMode,
-              interactionMode: "default",
-              branch: null,
-              worktreePath: null,
-              createdAt,
-            },
-          },
-        }
-      : {}),
-    createdAt,
+      modelSelection: runtimeModelSelection(engine, ctx),
+    }),
+    threadId,
   };
 }
 
 export function buildRuntimeTurnInterruptCommand(
   threadId: string,
-  turnId?: string,
-  createdAt = new Date().toISOString(),
-): Readonly<Record<string, unknown>> {
+  runId: string,
+  reason?: string,
+): RuntimeCommand & { readonly threadId: string } {
   return {
-    type: "thread.turn.interrupt",
-    commandId: stableId("skynet-turn-interrupt", crypto.randomUUID()),
+    ...buildV2RunInterrupt({
+      commandId: stableId("skynet-turn-interrupt", crypto.randomUUID()),
+      threadId,
+      runId,
+      ...(reason ? { reason } : {}),
+    }),
     threadId,
-    ...(turnId ? { turnId } : {}),
-    createdAt,
   };
 }
 
@@ -723,9 +712,10 @@ export function runtimeQuestionRequest(
 export function runtimeActivityProviderEvent(
   ctx: Pick<EngineRunContext, "runId" | "threadId">,
   sessionId: string,
-  activity: RuntimeActivity,
+  source: RuntimeActivity,
   redact: Pick<SecretRedactor, "text" | "unknown">,
 ): ProviderEventInput {
+  const activity = recordedRuntimeActivity(source, redact);
   const question = runtimeQuestionRequest(activity, sessionId);
   const approval = runtimeApprovalRequest(activity, sessionId);
   const payload = record(activity.payload);
@@ -749,7 +739,7 @@ export function runtimeActivityProviderEvent(
     : activity.kind === "user-input.resolved" && requestId
       ? "question.replied"
       : `t3.activity.${activity.kind}`;
-  return {
+  return runtimeUsageProviderEvent(ctx, sessionId, activity, redact) ?? {
     id: approval
       ? approvalEventId(ctx.runId, approval.id, "requested")
       : activity.kind === "approval.resolved" && requestId
@@ -790,9 +780,10 @@ export function runtimeTurnSettled(snapshot: RuntimeThreadSnapshot): boolean {
 }
 
 export function runtimeTurnError(snapshot: RuntimeThreadSnapshot): string | null {
-  if (snapshot.thread.latestTurn?.state === "interrupted") {
-    return snapshot.thread.session?.lastError ?? "The provider turn was interrupted";
+  const turn = snapshot.thread.latestTurn;
+  if (turn?.state === "interrupted") {
+    return turn.error ?? snapshot.thread.session?.lastError ?? "The provider turn was interrupted";
   }
-  if (snapshot.thread.latestTurn?.state !== "error") return null;
-  return snapshot.thread.session?.lastError ?? "The provider turn failed";
+  if (turn?.state !== "error") return null;
+  return turn.error ?? snapshot.thread.session?.lastError ?? "The provider turn failed";
 }

@@ -358,6 +358,36 @@ describe("recallScopedMemory (layered L0-L3) degrades honestly", () => {
     expect(recall.truncated).toBe(false);
   });
 
+  test("one deadline bounds the whole recall, both scene phases included", async () => {
+    enableMemory();
+    const answerAfter = (ms: number, body: unknown, signal?: AbortSignal | null) =>
+      new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response(JSON.stringify(body))), ms);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        });
+      });
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/v3/scenario/ls") {
+        return answerAfter(600, { code: 0, data: { entries: [{ path: "scene/q" }] } }, init?.signal);
+      }
+      if (path === "/v3/scenario/read") {
+        return answerAfter(5_000, { code: 0, data: { content: "late scene" } }, init?.signal);
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }));
+    }) as unknown as typeof fetch;
+
+    const started = Date.now();
+    const recall = await recallScopedMemory("q", [pool], { timeoutMs: 1_000 });
+
+    // Each phase used to get the full timeout (600 ms + 1000 ms); now they share it.
+    expect(Date.now() - started).toBeLessThan(1_300);
+    expect(recall.rendered).not.toContain("late scene");
+    expect(recall.degraded).toBe(false);
+  });
+
   test("keeps L0, L1, L2, L3 rendered and cited in provider-neutral layer order", async () => {
     enableMemory();
     stubLayeredRecall({

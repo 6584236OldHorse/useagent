@@ -32,3 +32,48 @@ export async function backendFetch(
   handleReleaseMismatch(response, browserInit);
   return response;
 }
+
+/**
+ * A browser upload with progress: the same credentials and release header as
+ * `backendFetch`, over XMLHttpRequest because fetch reports no upload progress.
+ * `onProgress` receives the share of bytes sent, 0 to 100.
+ */
+export function backendUpload(
+  path: string,
+  body: FormData,
+  onProgress: (percent: number) => void,
+): Promise<Response> {
+  const init = withClientReleaseHeader(path, { method: "POST" });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.withCredentials = true;
+    new Headers(init?.headers).forEach((value, name) => {
+      xhr.setRequestHeader(name, value);
+    });
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onerror = () => reject(new Error(`upload failed (${path})`));
+    xhr.onabort = xhr.onerror;
+    xhr.onload = () => {
+      const headers = new Headers();
+      for (const line of xhr.getAllResponseHeaders().split(/\r?\n/)) {
+        const at = line.indexOf(":");
+        if (at > 0) headers.append(line.slice(0, at).trim(), line.slice(at + 1).trim());
+      }
+      const response = new Response(xhr.status === 204 ? null : xhr.responseText, {
+        status: xhr.status,
+        headers,
+      });
+      try {
+        handleReleaseMismatch(response, init);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      resolve(response);
+    };
+    xhr.send(body);
+  });
+}

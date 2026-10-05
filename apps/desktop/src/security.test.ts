@@ -47,12 +47,21 @@ describe("desktop security boundaries", () => {
     expect(desktopContentPolicy("mainFrame", 200, {
       "content-type": ["image/svg+xml"],
     }, true).policy).toContain("script-src 'none'");
-    expect(desktopContentPolicy("subFrame", 200, {}, true)).toEqual({
+    expect(desktopContentPolicy("script", 200, {}, true)).toEqual({
       policy: "object-src 'none'; base-uri 'self'",
       block: false,
     });
     expect(desktopContentPolicy("mainFrame", 302, {}, true).block).toBe(false);
     expect(desktopContentPolicy("mainFrame", 200, headers, false).policy).toContain(" 'unsafe-eval'");
+  });
+
+  test("every subframe but a PDF runs in an opaque origin, away from the preload bridge", () => {
+    const sandboxed = "object-src 'none'; base-uri 'self'; sandbox allow-scripts allow-forms allow-popups allow-downloads";
+    expect(desktopContentPolicy("subFrame", 200, { "content-type": ["text/html"] }, true)).toEqual({ policy: sandboxed, block: false });
+    expect(desktopContentPolicy("subFrame", 200, {}, true).policy).toBe(sandboxed);
+    expect(sandboxed).not.toContain("allow-same-origin");
+    expect(desktopContentPolicy("subFrame", 200, { "Content-Type": ["application/pdf"] }, true).policy).toBe("object-src 'none'; base-uri 'self'");
+    expect(desktopContentPolicy("subFrame", 200, { "content-type": ["application/pdfx"] }, true).policy).toBe(sandboxed);
   });
 
   test("turns only the canceled security load into an actionable startup error", () => {

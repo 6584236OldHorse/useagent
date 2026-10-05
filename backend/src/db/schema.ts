@@ -2,6 +2,7 @@
 // ./schema/*; this file re-exports EVERYTHING so `../db/schema` stays the single
 // import path for every consumer and drizzle-kit sees the whole schema.
 export * from "./schema/runs";
+export * from "./schema/run-feedback";
 export * from "./schema/commands";
 export * from "./schema/provider-events";
 export * from "./schema/approvals";
@@ -13,6 +14,7 @@ export * from "./schema/api-keys";
 export * from "./schema/integrations";
 export * from "./schema/provider-connections";
 export * from "./schema/slack";
+export * from "./schema/slack-identity";
 export * from "./schema/artifacts";
 export * from "./schema/uploads";
 export * from "./schema/memory";
@@ -32,6 +34,10 @@ export * from "./schema/sandbox-labels";
 export * from "./schema/bots";
 export * from "./schema/bot-handoffs";
 export * from "./schema/runners";
+export * from "./schema/spend";
+export * from "./schema/sandbox-minutes";
+export * from "./schema/session-command-catalogs";
+export * from "./schema/runtime-artifact-verifications";
 
 // Re-export the better-auth tables so drizzle-kit sees the whole schema and
 // the drizzle adapter can resolve every model.

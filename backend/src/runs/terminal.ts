@@ -6,22 +6,24 @@ import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-ori
 import { getCustomerRunForOrg } from "./repo";
 import { resolvePreviewSandbox } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
+import { withoutSandboxVendor } from "../sandboxes/provider";
 import { createTerminalChunkDecoder } from "./terminal-decode";
 import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
 import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
+import { watchThreadSandbox } from "../engines/sandbox-runtime";
 
 /** The notice line the pane recognizes as a declared capability gap (no reconnect loop). */
-export const TERMINAL_UNAVAILABLE_NOTICE = "[useAgent] terminal unavailable:";
+export const TERMINAL_UNAVAILABLE_NOTICE = "[UseAgent] terminal unavailable:";
 
 export function terminalFailureNotice(error: unknown): string {
-  const message = errorMessage(error);
+  const message = withoutSandboxVendor(errorMessage(error));
   if (error instanceof PersonalSandboxConnectionUnavailableError || isSandboxTerminalUnavailableError(error)) {
     return `\r\n\x1b[2m${TERMINAL_UNAVAILABLE_NOTICE} ${message}\x1b[0m\r\n`;
   }
   if (/not found|no live sandbox/i.test(message)) {
-    return "\r\n\x1b[2m[useAgent] no live sandbox yet\x1b[0m\r\n";
+    return "\r\n\x1b[2m[UseAgent] no live sandbox yet\x1b[0m\r\n";
   }
-  return `\r\n\x1b[31m[useAgent] ${message}\x1b[0m\r\n`;
+  return `\r\n\x1b[31m[UseAgent] ${message}\x1b[0m\r\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ terminalRoutes.get(
     const orgId = c.get("orgId");
     let pty: PtyLike | null = null;
     let closed = false;
+    let unwatch = () => {};
 
     return {
       onOpen: (_evt, ws) => {
@@ -78,7 +81,7 @@ terminalRoutes.get(
             const sandboxId = sandbox.id;
             const state = (sandbox as { state?: string }).state;
             if (state === "stopped" || state === "paused" || state === "archived") {
-              send("\r\n\x1b[2m[useAgent] waking sandbox…\x1b[0m\r\n");
+              send("\r\n\x1b[2m[UseAgent] waking sandbox…\x1b[0m\r\n");
               await sandbox.start();
             }
 
@@ -105,7 +108,8 @@ terminalRoutes.get(
               await handle.disconnect().catch(() => {});
               return;
             }
-            send("\x1b[2m[useAgent] connected to sandbox " + sandboxId.slice(0, 8) + "\x1b[0m\r\n");
+            unwatch = watchThreadSandbox(run.threadId);
+            send("\x1b[2m[UseAgent] connected to sandbox " + sandboxId.slice(0, 8) + "\x1b[0m\r\n");
             await pty.sendInput("cd ~/work 2>/dev/null || cd ~; printf '\\033[2J\\033[H'\n");
           } catch (err) {
             // Missing sandboxes may wake on a later run. Revoked credentials
@@ -141,6 +145,7 @@ terminalRoutes.get(
 
       onClose: () => {
         closed = true;
+        unwatch();
         const h = pty;
         pty = null;
         if (h) {

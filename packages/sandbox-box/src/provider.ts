@@ -165,7 +165,7 @@ const BOX_CLI = "box";
 export function boxCliProblem(which: (binary: string) => string | null = (binary) => Bun.which(binary)): string | null {
   return which(BOX_CLI)
     ? null
-    : "Box terminals need the Box CLI (box) installed on the useAgent server; commands and files still work";
+    : "Box terminals need the Box CLI (box) installed on the UseAgent server; commands and files still work";
 }
 
 export function boxPtyLoginArgv(apiKey: string): string[] {

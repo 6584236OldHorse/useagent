@@ -1,13 +1,16 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { catalogAccount, providerOfferedTo, providerOfferedToUser } from "../provider-gateway/provider-accounts";
 import {
   cancelManagedCodexChatGptLogin,
   readManagedCodexChatGptStatus,
+  readManagedCodexRateLimits,
   revokeManagedCodexChatGptLogin,
   startManagedCodexChatGptLogin,
   type CodexAppServerLoginStartResult,
   type CodexChatGptStatus,
+  type CodexRateLimits,
 } from "./codex-app-server";
 import {
   getCurrentUserProviderConnection,
@@ -18,7 +21,8 @@ import {
 } from "./service";
 import { type SandboxCredentialInput, isSandboxCredentialError } from "@useagent/sandbox-contract";
 import { sandboxPlugin } from "../sandboxes/plugins";
-import type { ComputerProviderKind } from "../sandboxes/binding";
+import { COMPUTER_PROVIDER_KINDS, type ComputerProviderKind } from "../sandboxes/binding";
+import { operatorOnly, requestFromOperator } from "../operator/access";
 import {
   isProviderConnectionAuthMethod,
   isProviderConnectionProvider,
@@ -36,6 +40,9 @@ export interface CodexChatGptOAuthLifecycle {
   status(input: {
     scope: { orgId: string; userId: string };
   }): Promise<CodexChatGptStatus>;
+  limits(input: {
+    scope: { orgId: string; userId: string };
+  }): Promise<CodexRateLimits | null>;
   cancel(input: {
     scope: { orgId: string; userId: string };
     loginId: string;
@@ -48,6 +55,7 @@ export interface CodexChatGptOAuthLifecycle {
 const defaultCodexChatGptOAuthLifecycle: CodexChatGptOAuthLifecycle = {
   start: startManagedCodexChatGptLogin,
   status: readManagedCodexChatGptStatus,
+  limits: readManagedCodexRateLimits,
   cancel: cancelManagedCodexChatGptLogin,
   revoke: revokeManagedCodexChatGptLogin,
 };
@@ -69,6 +77,15 @@ export function createProviderConnectionsRoutes(input: {
 
   providerConnectionsRoutes.use("*", orgScope);
 
+  // Sandbox vendor accounts (Daytona, Box) are the operator's business: for
+  // anyone else those routes do not exist and the list leaves them out. A
+  // stored connection keeps running its owner's work either way.
+  const computerKinds: readonly string[] = COMPUTER_PROVIDER_KINDS;
+  const operatorOnlyComputers: MiddlewareHandler<AppEnv> = (c, next) =>
+    computerKinds.includes(c.req.param("provider") ?? "") ? operatorOnly(c, next) : next();
+  providerConnectionsRoutes.use("/:provider", operatorOnlyComputers);
+  providerConnectionsRoutes.use("/:provider/*", operatorOnlyComputers);
+
   function requireUserScope(c: Context<AppEnv>) {
     const userId = c.get("userId");
     if (!userId) return null;
@@ -78,8 +95,16 @@ export function createProviderConnectionsRoutes(input: {
   providerConnectionsRoutes.get("/", async (c) => {
     const scope = requireUserScope(c);
     if (!scope) return c.json({ error: "user_required" }, 403);
+    // A provider PROVIDER_ACCOUNTS withholds from this account has no card here.
     const connections = await listCurrentUserProviderConnections(scope);
-    return c.json({ connections });
+    const operator = await requestFromOperator(c);
+    const account = await catalogAccount(scope.userId);
+    return c.json({
+      connections: connections.filter(
+        (item) =>
+          (operator || !computerKinds.includes(item.provider)) && providerOfferedTo(item.provider, account),
+      ),
+    });
   });
 
   providerConnectionsRoutes.post("/openai/chatgpt-oauth/start", async (c) => {
@@ -96,6 +121,15 @@ export function createProviderConnectionsRoutes(input: {
     if (!scope) return c.json({ error: "user_required" }, 403);
     const status = await codexChatGptOAuth.status({ scope });
     return c.json({ status });
+  });
+
+  // The subscription's rolling usage windows for the Usage card; null when
+  // no ChatGPT account is signed in for this user.
+  providerConnectionsRoutes.get("/openai/chatgpt-oauth/limits", async (c) => {
+    const scope = requireUserScope(c);
+    if (!scope) return c.json({ error: "user_required" }, 403);
+    const limits = await codexChatGptOAuth.limits({ scope });
+    return c.json({ limits });
   });
 
   providerConnectionsRoutes.post("/openai/chatgpt-oauth/cancel", async (c) => {
@@ -126,6 +160,9 @@ export function createProviderConnectionsRoutes(input: {
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
     }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
+    }
     const authMethod = c.req.query("authMethod");
     let parsedAuthMethod: ProviderConnectionAuthMethod | undefined;
     if (authMethod !== undefined) {
@@ -149,6 +186,9 @@ export function createProviderConnectionsRoutes(input: {
     const provider = c.req.param("provider");
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
+    }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
     }
 
     let body: Record<string, unknown>;
@@ -199,6 +239,9 @@ export function createProviderConnectionsRoutes(input: {
     const provider = c.req.param("provider");
     if (!isProviderConnectionProvider(provider)) {
       return c.json({ error: "unknown provider" }, 400);
+    }
+    if (!(await providerOfferedToUser(provider, c.get("userId")))) {
+      return c.json({ error: "provider connection not found" }, 404);
     }
     const authMethod = c.req.query("authMethod");
     let parsedAuthMethod: ProviderConnectionAuthMethod | undefined;

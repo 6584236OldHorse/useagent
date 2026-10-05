@@ -8,11 +8,13 @@ import {
   type ThreadRelationshipView,
 } from "./thread-relationship-repo";
 import { acceptThreadFollowup } from "./thread-followups";
+import { isPermissionMode, PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { productChildThreadsEnabled, threadRelationshipsEnabled } from "./thread-relationship-switch";
 import { pumpThread } from "../worker";
 import { runQueueView } from "../fleet/view";
 import { RunPromptTooLargeError } from "../commands/prompt-policy";
 import { RunAdmissionClosedError } from "../commands/admission";
+import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { FleetQueueLimitError } from "../fleet/intake";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/client";
@@ -28,6 +30,7 @@ import { UploadClaimError } from "../uploads/repo";
 import { loadCanonicalExecutionEvents } from "./canonical-events";
 import { strictOrgSecretRedactor } from "../secrets/store";
 import { listArtifactsForOrg } from "../artifacts/repo";
+import { SpendAllowanceExceededError } from "./spend";
 
 const CONTINUE_REFERENCE_LIMIT = 4;
 const CONTINUE_RESULT_MAX_CHARS = 1_000;
@@ -217,26 +220,33 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
   const context = JSON.stringify(redact.unknown(
     events.length > 0 ? transcriptContext : { transcript: [], durable_fallback: fallbackContext },
   ));
-  const prefix = "Continue this work in a new durable useAgent child session. This is captured context, not a claim that the native execution itself was resumed.\n\n";
+  const prefix = "Continue this work in a new durable UseAgent child session. This is captured context, not a claim that the native execution itself was resumed.\n\n";
   const emptyContext = "No canonical transcript was captured; inspect the parent task and continue from its durable result.";
   let bounded = context.slice(0, CHILD_CONTEXT_MAX_CHARS - prefix.length);
   while (Buffer.byteLength(prefix + bounded, "utf8") > CHILD_CONTEXT_MAX_BYTES) bounded = bounded.slice(0, -1);
   const prompt = prefix + (bounded || emptyContext);
-  const outcome = await createChildSession({
-    orgId: c.get("orgId"),
-    actorId: c.get("userId"),
-    parentRunId: source.run.id,
-    threadId: source.run.threadId,
-    title,
-    prompt,
-    engine: source.run.engine,
-    model: source.run.model,
-    repos: source.run.repos,
-    memoryScope: source.run.memoryScope,
-    idempotencyKey,
-    relationshipKind: "continued_from_native",
-    sourceExecutionId: source.execution.id,
-  });
+  let outcome: Awaited<ReturnType<typeof createChildSession>>;
+  try {
+    outcome = await createChildSession({
+      orgId: c.get("orgId"),
+      actorId: c.get("userId"),
+      parentRunId: source.run.id,
+      threadId: source.run.threadId,
+      title,
+      prompt,
+      engine: source.run.engine,
+      model: source.run.model,
+      repos: source.run.repos,
+      memoryScope: source.run.memoryScope,
+      idempotencyKey,
+      relationshipKind: "continued_from_native",
+      sourceExecutionId: source.execution.id,
+    });
+  } catch (error) {
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    throw error;
+  }
   if (outcome.status === "conflict") return c.json({ error: "idempotency_key_reused" }, 409);
   return c.json({
     id: outcome.child.id,
@@ -260,12 +270,15 @@ routes.post("/:threadId/messages", async (c) => {
   try { body = JSON.parse(raw); } catch { return c.json({ error: "invalid_json" }, 400); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "invalid_body" }, 400);
   const record = body as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "text" && key !== "attachments")) return c.json({ error: "invalid_body" }, 400);
+  if (Object.keys(record).some((key) => key !== "text" && key !== "attachments" && key !== "permission_mode")) return c.json({ error: "invalid_body" }, 400);
   const text = typeof record.text === "string" ? record.text.trim() : "";
   const attachments = record.attachments === undefined ? [] : record.attachments;
+  // The chip's choice for this turn; absent keeps the thread's current mode.
+  const permissionMode = record.permission_mode === undefined ? undefined : record.permission_mode;
   if (
     !text || !Array.isArray(attachments) || attachments.length > 10 ||
-    attachments.some((id) => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))
+    attachments.some((id) => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) ||
+    (permissionMode !== undefined && !isPermissionMode(permissionMode))
   ) {
     return c.json({ error: "invalid_body" }, 400);
   }
@@ -278,6 +291,7 @@ routes.post("/:threadId/messages", async (c) => {
       text,
       attachmentIds,
       idempotencyKey,
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
     });
     if (accepted.status === "not_found") return c.json({ error: "not_found" }, 404);
     if (accepted.status === "stale_parent") return c.json({ error: "stale_parent_run" }, 409);
@@ -290,8 +304,11 @@ routes.post("/:threadId/messages", async (c) => {
   } catch (error) {
     if (error instanceof RunPromptTooLargeError) return c.json({ error: error.code }, 413);
     if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
-    if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof RunAdmissionClosedError) return c.json(error.body, 503);
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     if (error instanceof FleetQueueLimitError) return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
+    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
     throw error;
   }
 });

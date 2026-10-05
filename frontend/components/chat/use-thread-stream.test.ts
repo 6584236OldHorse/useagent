@@ -3,7 +3,9 @@
 // is covered by thread-connection.test.ts + the browser proof; these lock the two
 // pure decisions the hook is built on.
 
+import { NATIVE_CURSOR_LIMIT, nativeHoldDigest } from "@useagent/agent-client";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { NATIVE_SCHEMA_VERSION } from "./native-events";
 import { createThreadStore } from "./thread-store";
 import type { ApiRun, RunStatus } from "./types";
 import {
@@ -113,7 +115,7 @@ describe("resume cursor (what the store already holds)", () => {
   test("an empty store carries no cursor and the plain stream URL", () => {
     const store = createThreadStore();
     const cursor = resumeCursor(store.getSnapshot());
-    expect(cursor).toEqual({ canonicalAfter: 0, canonicalId: null });
+    expect(cursor).toEqual({ canonicalAfter: 0, canonicalId: null, nativeAfter: new Map() });
     expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events");
   });
 
@@ -127,9 +129,47 @@ describe("resume cursor (what the store already holds)", () => {
       } as never);
     }
     const cursor = resumeCursor(store.getSnapshot());
-    expect(cursor).toEqual({ canonicalAfter: 12, canonicalId: "B-12" });
-    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?canonicalAfter=12&canonicalId=B-12&epoch=boot-1");
+    expect(cursor).toEqual({ canonicalAfter: 12, canonicalId: "B-12", nativeAfter: new Map() });
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?epoch=boot-1&canonicalAfter=12&canonicalId=B-12");
     expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
+  });
+
+  test("a sealed run's newest native seq travels as its cursor; a live run's never does", () => {
+    const store = createThreadStore();
+    store.applySnapshot([makeRun("A", "completed"), makeRun("B", "running", "A")]);
+    const frame = (runId: string, seq: number) => ({
+      schemaVersion: NATIVE_SCHEMA_VERSION, eventId: `${runId}-n${seq}`, seq, provider: "opencode", eventType: "part.text",
+      native: { sessionId: "ses", parentSessionId: null, messageId: `${runId}-m`, partId: `${runId}-p${seq}`, callId: null },
+      payload: { text: "x" },
+    });
+    for (const seq of [0, 1, 2]) store.applyNative("A", frame("A", seq));
+    store.applyNative("B", frame("B", 0));
+    // Nothing sealed yet: no native cursor for either run, so the URL carries no cursor.
+    expect(resumeCursor(store.getSnapshot()).nativeAfter).toEqual(new Map());
+    expect(threadEventsUrl("A", resumeCursor(store.getSnapshot()), "boot-1")).toBe("/api/runs/A/thread-events");
+    store.markCanonicalComplete("A");
+    const cursor = resumeCursor(store.getSnapshot());
+    // The digest of the held (eventId, seq) pairs travels with the cursor.
+    const digest = nativeHoldDigest([0, 1, 2].map((seq) => ({ eventId: `A-n${seq}`, seq })));
+    expect(cursor.nativeAfter).toEqual(new Map([["A", { seq: 2, digest }]]));
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe(`/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2%3A${digest}`);
+    // Without the epoch that minted the store's rows, no cursor of either lane is sent.
+    expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
+  });
+
+  test("no more native cursors travel than the server reads", () => {
+    const store = createThreadStore();
+    const runs = Array.from({ length: NATIVE_CURSOR_LIMIT + 1 }, (_, i) => makeRun(`R${i}`, "completed", i === 0 ? null : "R0"));
+    store.applySnapshot(runs);
+    for (const run of runs) {
+      store.applyNative(run.id, {
+        schemaVersion: NATIVE_SCHEMA_VERSION, eventId: `${run.id}-n0`, seq: 0, provider: "opencode", eventType: "part.text",
+        native: { sessionId: "ses", parentSessionId: null, messageId: `${run.id}-m`, partId: `${run.id}-p0`, callId: null },
+        payload: { text: "x" },
+      });
+      store.markCanonicalComplete(run.id);
+    }
+    expect(resumeCursor(store.getSnapshot()).nativeAfter.size).toBe(NATIVE_CURSOR_LIMIT);
   });
 });
 

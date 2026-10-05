@@ -740,6 +740,31 @@ describe("durable admission — cancellation + fan-out ceiling", () => {
     expect((await reservationSnapshot(orgId)).globalActiveSandboxes).toBe(0);
   });
 
+  test("a queued-only cancel leaves a run that started meanwhile alone and records nothing", async () => {
+    stopFleetReconciler();
+    process.env.FLEET_GLOBAL_MAX_ACTIVE_SANDBOXES = "0";
+    const orgId = track(`org-${uid("cancel-started")}`);
+    const runId = await accept(orgId);
+    await pumpThread(runId);
+    expect((await getAdmission(runId))?.state).toBe("queued");
+
+    // Still queued: the queued-only cancel is the plain cancel.
+    const queuedOnly = await acceptRunCancel({ orgId, actorId: null, runId, onlyQueued: true });
+    expect(queuedOnly.status).toBe("accepted");
+    expect((await getRun(runId))?.status).toBe("failed");
+
+    // Dispatch wins the race for a second run: it starts between the click and the request.
+    const startedId = await accept(orgId);
+    await pumpThread(startedId);
+    await setRunStatus(startedId, "running");
+    const refused = await acceptRunCancel({ orgId, actorId: null, runId: startedId, onlyQueued: true });
+    expect(refused).toEqual({ status: "started", runStatus: "running" });
+    expect((await getRun(startedId))?.status).toBe("running");
+    // Nothing was recorded: a later plain Stop is a fresh cancel, never a replay.
+    const stop = await acceptRunCancel({ orgId, actorId: null, runId: startedId });
+    expect(stop.status).toBe("accepted");
+  });
+
   test("the durable per-org queue ceiling returns 429 (server-side fan-out authority)", async () => {
     // Force everything to queue so the open-admission count climbs to the ceiling.
     process.env.FLEET_GLOBAL_MAX_ACTIVE_SANDBOXES = "0";
@@ -788,6 +813,9 @@ describe("durable admission — cancellation + fan-out ceiling", () => {
   test("invalid resource requests fail terminally instead of queueing forever", async () => {
     const previous = process.env.FLEET_SANDBOX_CPU_MILLICORES;
     process.env.FLEET_SANDBOX_CPU_MILLICORES = "999999";
+    // Larger than any host: the preload opens the host budget wide, so pin the
+    // budget this request must exceed (afterEach restores the preload value).
+    process.env.FLEET_HOST_CPU_MILLICORES = "12000";
     const orgId = track(`org-${uid("invalid-resource")}`);
     const runId = await accept(orgId);
     await pumpThread(runId);

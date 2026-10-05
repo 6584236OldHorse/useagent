@@ -206,7 +206,7 @@ export function ReviewWorkspace() {
             icon={RiGithubLine}
             tone='neutral'
             title='GitHub not connected'
-            body='Connect a GitHub account or install the useAgent app to review your organization pull requests here.'
+            body='Connect a GitHub account or install the UseAgent app to review your organization pull requests here.'
           />
         ) : null}
 

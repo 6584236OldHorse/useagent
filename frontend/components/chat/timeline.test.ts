@@ -208,7 +208,7 @@ describe("canonical context markers", () => {
     });
   });
 
-  test("an UNKNOWN useAgent eventType is ignored (renders safely as nothing)", () => {
+  test("an UNKNOWN UseAgent eventType is ignored (renders safely as nothing)", () => {
     const s = turnStore();
     s.ingestNative(skynetFrame("weird_run-1", 0, "policy.denied.future", { foo: 1 }), 0);
     expect(buildTimeline(s.getSnapshot(), false)!.some((n) => n.kind === "marker")).toBe(false);

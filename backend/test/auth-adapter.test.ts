@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import server from "../src/index";
 import { BASE, ORIGIN } from "./helpers";
 import { isPublicApiPath } from "../src/middleware/org";
+import { previewViewPrefix } from "../src/runs/preview-capability";
 
 // The universal auth adapter (index.ts) org-scopes every /api/* path EXCEPT the
 // prefixes isPublicApiPath() allows. The security property under test is
@@ -97,6 +98,27 @@ describe("adapter end-to-end through the real app", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { secrets?: unknown[] };
     expect(Array.isArray(body.secrets)).toBe(true);
+  });
+
+  test("a sandbox preview view answers only its capability, never the session or the dev org", async () => {
+    const view = previewViewPrefix("/api/port-proxy", {
+      orgId: "org-preview", userId: "user-preview", threadId: "thread-preview", port: 3000, kind: "port",
+    });
+    // The opaque page's JSON POST preflight is answered for the page, not the app origin.
+    const preflight = await server.fetch(new Request(`${BASE}${view}/api/todos`, {
+      method: "OPTIONS",
+      headers: { origin: "null", "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+    }));
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+    expect(preflight.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(preflight.headers.get("access-control-allow-headers")).toBe("content-type");
+    // A forged view is refused even where an anonymous session would fall back to the dev org.
+    const forged = await server.fetch(new Request(`${BASE}/api/port-proxy/thread-preview/view/v1.forged.sig/`));
+    expect(forged.status).toBe(401);
+    // An opaque-origin page cannot ride the session on any other route.
+    const session = await server.fetch(new Request(`${BASE}/api/secrets`, { headers: { origin: "null" } }));
+    expect(session.status).toBe(403);
   });
 
   test("the approval mint route is mounted behind org auth", async () => {

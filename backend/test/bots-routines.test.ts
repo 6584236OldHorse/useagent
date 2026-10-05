@@ -299,6 +299,10 @@ describe("bot routines", () => {
       const fired = await json<{ runId: string }>(`/api/bots/${bot.id}/routines/${created.body.routine.id}/run-now`, { method: "POST", cookies });
       expect(fired.status).toBe(202);
       runId = fired.body.runId;
+      // The request usually spawns inline, but a reconciler that wins the
+      // queued-to-dispatched claim spawns a moment after the response; the
+      // invariant is what the bot row held AT the spawn, not who dispatched it.
+      await waitFor(async () => observed.has(runId), { timeoutMs: 5_000 });
       expect(await observed.get(runId)).toBe(runId);
     } finally {
       bus.off(RUN_SPAWNED, onSpawn);

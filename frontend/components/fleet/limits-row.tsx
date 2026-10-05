@@ -9,6 +9,7 @@ import { cx } from "@/utils/cx";
 import { compactNumber, formatDuration } from "@/utils/format";
 import type { CapacityData, FleetData, MachineStats, ModelBurn } from "./fleet-data";
 import { Panel } from "./panel";
+import { EASE_OUT } from "@/lib/motion";
 
 /**
  * The "Limits" card, on the agent-limits block recipe (stacked meter bar +
@@ -19,7 +20,7 @@ import { Panel } from "./panel";
  * omitted rather than faked; every percentage is a share of today's real burn.
  */
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+const EASE = EASE_OUT;
 
 /** Thin rounded meter track; children are the fill segments (block recipe). */
 function Bar({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -154,21 +155,14 @@ function MachineRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-/** Machine · snapshot: the org's live Daytona footprint (no caps, so no bars). */
+/** Sandboxes: the org's live sandbox footprint (no caps, so no bars). The
+ *  snapshot id the API carries is an operator detail and is not shown. */
 function MachineSection({ machine }: { machine: MachineStats | null }) {
   const sandboxes = machine?.sandboxes ?? null;
   return (
     <div className="flex flex-col">
       <div className="flex min-w-0 items-center gap-2 py-1">
-        <span className="shrink-0 text-body-medium text-text-secondary">Machine</span>
-        {machine && (
-          <span
-            title={machine.snapshot}
-            className="inline-flex h-5 min-w-0 shrink items-center truncate rounded-full border border-border-button-default px-1.5 font-mono text-[10px] font-medium tracking-tight text-text-tertiary"
-          >
-            {machine.snapshot}
-          </span>
-        )}
+        <span className="shrink-0 text-body-medium text-text-secondary">Sandboxes</span>
       </div>
       {sandboxes == null ? (
         <p className="mt-1 text-body-2-regular text-text-tertiary">Live sandbox count updating…</p>

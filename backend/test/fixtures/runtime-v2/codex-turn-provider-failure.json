@@ -1,0 +1,1286 @@
+{
+ "source": "Recorded 2026-10-03 from the V2 runtime spike build (upstream v0.0.46 nightly with the useagent fork, ~/output/t3-v2/boot/rt): a Codex turn with no credentials, so the provider retries then fails.",
+ "threadId": "skynet-thread-probe",
+ "userMessageId": "skynet-message-probe",
+ "subscribeThreadValues": [
+  {
+   "kind": "snapshot",
+   "snapshotSequence": 2,
+   "projection": {
+    "thread": {
+     "createdBy": "user",
+     "creationSource": "web",
+     "id": "skynet-thread-probe",
+     "projectId": "skynet-project-probe",
+     "title": "UseAgent probe",
+     "providerInstanceId": "codex",
+     "modelSelection": {
+      "instanceId": "codex",
+      "model": "gpt-5.6-luna",
+      "options": []
+     },
+     "runtimeMode": "full-access",
+     "interactionMode": "default",
+     "branch": null,
+     "worktreePath": null,
+     "activeProviderThreadId": null,
+     "lineage": {
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "rootThreadId": "skynet-thread-probe"
+     },
+     "forkedFrom": null,
+     "createdAt": "2026-10-03T16:52:17.183Z",
+     "updatedAt": "2026-10-03T16:52:17.183Z",
+     "archivedAt": null,
+     "settledOverride": null,
+     "settledAt": null,
+     "snoozedUntil": null,
+     "snoozedAt": null,
+     "lastVisitedAt": null,
+     "deletedAt": null
+    },
+    "runs": [],
+    "attempts": [],
+    "nodes": [],
+    "subagents": [],
+    "providerSessions": [],
+    "providerThreads": [],
+    "providerTurns": [],
+    "runtimeRequests": [],
+    "messages": [],
+    "plans": [],
+    "turnItems": [],
+    "checkpointScopes": [],
+    "checkpoints": [],
+    "contextHandoffs": [],
+    "contextTransfers": [],
+    "visibleTurnItems": [],
+    "updatedAt": "2026-10-03T16:52:17.183Z"
+   },
+   "historyCursor": null,
+   "hasMoreHistory": false,
+   "latestLocalTurnOrdinal": null,
+   "payloadBudgetExceeded": false
+  },
+  {
+   "kind": "synchronized"
+  },
+  {
+   "kind": "event",
+   "sequence": 3,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:09ad8e3c-d2f8-4c18-a690-aece1174a828",
+    "threadId": "skynet-thread-probe",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "provider-thread.updated",
+    "payload": {
+     "id": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "driver": "codex",
+     "providerInstanceId": "codex",
+     "providerSessionId": "provider-session:provider-instance:codex:shared",
+     "appThreadId": "skynet-thread-probe",
+     "ownerNodeId": null,
+     "nativeThreadRef": null,
+     "nativeConversationHeadRef": null,
+     "status": "not_loaded",
+     "firstRunOrdinal": 1,
+     "lastRunOrdinal": 1,
+     "handoffIds": [],
+     "forkedFrom": null,
+     "pendingBackgroundTasks": [],
+     "contextUsage": null,
+     "nativeMetadata": null,
+     "createdAt": "2026-10-03T16:52:17.222Z",
+     "updatedAt": "2026-10-03T16:52:17.222Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 4,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:0f2eee16-f2ec-435a-b2e1-1a75c24725e9",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "run.created",
+    "payload": {
+     "id": "run:thread:skynet-thread-probe:ordinal:1",
+     "threadId": "skynet-thread-probe",
+     "ordinal": 1,
+     "providerInstanceId": "codex",
+     "modelSelection": {
+      "instanceId": "codex",
+      "model": "gpt-5.6-luna",
+      "options": []
+     },
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "userMessageId": "skynet-message-probe",
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "activeAttemptId": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "status": "starting",
+     "queuePosition": null,
+     "requestedAt": "2026-10-03T16:52:17.222Z",
+     "startedAt": null,
+     "completedAt": null,
+     "checkpointId": null,
+     "contextHandoffId": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 5,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:9276baa5-457d-4338-84fd-cdd8f99ec75d",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "run-attempt.created",
+    "payload": {
+     "id": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "attemptOrdinal": 1,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerInstanceId": "codex",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "reason": "initial",
+     "status": "pending",
+     "startedAt": null,
+     "completedAt": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 6,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:0b1d4ded-aba0-4c1a-af1a-2809cb16f109",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "node.updated",
+    "payload": {
+     "id": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "parentNodeId": null,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "kind": "root_turn",
+     "status": "pending",
+     "countsForRun": true,
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "nativeItemRef": null,
+     "runtimeRequestId": null,
+     "checkpointScopeId": "checkpoint-scope:thread:skynet-thread-probe:name:root",
+     "startedAt": null,
+     "completedAt": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 7,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:09c2e7ed-a842-4099-a32f-19b9aa81e294",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "checkpoint-scope.created",
+    "payload": {
+     "id": "checkpoint-scope:thread:skynet-thread-probe:name:root",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "parentScopeId": null,
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "kind": "root_run",
+     "ordinalWithinParent": 0,
+     "advancesAppRunCount": true,
+     "cwd": "/work",
+     "createdAt": "2026-10-03T16:52:17.222Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 8,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:30dd9cfe-d781-447e-b9b1-48c22aa9e37c",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "message.updated",
+    "payload": {
+     "createdBy": "user",
+     "creationSource": "web",
+     "id": "skynet-message-probe",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "role": "user",
+     "text": "Say hello in one word.",
+     "attachments": [],
+     "streaming": false,
+     "createdAt": "2026-10-03T16:52:17.222Z",
+     "updatedAt": "2026-10-03T16:52:17.222Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 9,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:command:skynet-turn-probe:840a4be6-dd08-4816-a681-ee2acecb660a",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.222Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:message:skynet-message-probe",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000001,
+     "status": "completed",
+     "title": null,
+     "startedAt": "2026-10-03T16:52:17.222Z",
+     "completedAt": "2026-10-03T16:52:17.222Z",
+     "updatedAt": "2026-10-03T16:52:17.222Z",
+     "createdBy": "user",
+     "creationSource": "web",
+     "type": "user_message",
+     "messageId": "skynet-message-probe",
+     "inputIntent": "turn_start",
+     "text": "Say hello in one word.",
+     "attachments": []
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 10,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:20bcb0bf-5880-411d-9211-f2070441da42",
+    "threadId": "skynet-thread-probe",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.235Z",
+    "type": "provider-session.attached",
+    "payload": {
+     "id": "provider-session:provider-instance:codex:shared",
+     "driver": "codex",
+     "providerInstanceId": "codex",
+     "status": "ready",
+     "cwd": "/work",
+     "model": "gpt-5.6-luna",
+     "capabilities": {
+      "sessions": {
+       "supportsMultipleProviderThreadsPerSession": true,
+       "supportsModelSwitchInSession": true,
+       "supportsProviderSwitchingViaHandoff": true,
+       "supportsRuntimeModeSwitchInSession": true,
+       "pendingRequestsSurviveRestart": false
+      },
+      "threads": {
+       "canCreateEmptyThread": true,
+       "canReadThreadSnapshot": true,
+       "canRollbackThread": true,
+       "canForkThread": true,
+       "canForkFromTurn": true,
+       "canForkFromSubagentThread": true,
+       "exposesNativeThreadId": true
+      },
+      "turns": {
+       "exposesNativeTurnId": true,
+       "emitsTurnStarted": true,
+       "emitsTurnCompleted": true,
+       "supportsInterrupt": true,
+       "supportsActiveSteering": true,
+       "supportsSteeringByInterruptRestart": true,
+       "supportsQueuedMessages": true,
+       "terminalStatusQuality": "strong"
+      },
+      "streaming": {
+       "streamsAssistantText": true,
+       "streamsReasoning": true,
+       "streamsToolOutput": true,
+       "streamsPlanText": true,
+       "emitsMessageCompleted": true
+      },
+      "tools": {
+       "exposesToolItemIds": true,
+       "emitsToolStarted": true,
+       "emitsToolCompleted": true,
+       "emitsToolOutput": true,
+       "supportsMcpTools": true,
+       "supportsDynamicToolCallbacks": true
+      },
+      "approvals": {
+       "supportsCommandApproval": true,
+       "supportsFileReadApproval": true,
+       "supportsFileChangeApproval": true,
+       "supportsApplyPatchApproval": true,
+       "approvalsHaveNativeRequestIds": true,
+       "approvalCallbacksAreLiveOnly": true,
+       "approvalsCanOriginateFromSubagents": true
+      },
+      "planning": {
+       "emitsPlanUpdated": true,
+       "emitsTodoList": true,
+       "emitsProposedPlan": true,
+       "supportsStructuredQuestions": true,
+       "planDeltasHaveItemIds": true
+      },
+      "subagents": {
+       "supportsSubagents": true,
+       "exposesSubagentThreadIds": true,
+       "emitsSubagentLifecycle": true,
+       "canWaitForSubagents": true,
+       "canCloseSubagents": true,
+       "canForkSubagentThread": true
+      },
+      "context": {
+       "acceptsSystemContext": true,
+       "acceptsDeveloperContext": true,
+       "acceptsSyntheticUserContext": true,
+       "canGenerateSummaries": true,
+       "canConsumeHandoffSummaries": true,
+       "supportsDeltaHandoff": true,
+       "supportsFullThreadHandoff": true,
+       "maxRecommendedHandoffChars": null
+      },
+      "checkpointing": {
+       "appCanCheckpointFilesystem": true,
+       "supportsNestedCheckpointScopes": true,
+       "providerCanRollbackConversation": true,
+       "providerRollbackReturnsSnapshot": true,
+       "providerCanReadConversationSnapshot": true
+      },
+      "identity": {
+       "nativeThreadIds": "strong",
+       "nativeTurnIds": "strong",
+       "nativeItemIds": "strong",
+       "nativeRequestIds": "strong"
+      },
+      "runtimePolicy": {
+       "enforcement": "native"
+      }
+     },
+     "createdAt": "2026-10-03T16:52:17.235Z",
+     "updatedAt": "2026-10-03T16:52:17.235Z",
+     "lastError": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 11,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:0670fca0-522a-43da-b0a4-d48068fd88eb",
+    "threadId": "skynet-thread-probe",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.288Z",
+    "type": "provider-session.updated",
+    "payload": {
+     "id": "provider-session:provider-instance:codex:shared",
+     "driver": "codex",
+     "providerInstanceId": "codex",
+     "status": "ready",
+     "cwd": "/work",
+     "model": "gpt-5.6-luna",
+     "capabilities": {
+      "sessions": {
+       "supportsMultipleProviderThreadsPerSession": true,
+       "supportsModelSwitchInSession": true,
+       "supportsProviderSwitchingViaHandoff": true,
+       "supportsRuntimeModeSwitchInSession": true,
+       "pendingRequestsSurviveRestart": false
+      },
+      "threads": {
+       "canCreateEmptyThread": true,
+       "canReadThreadSnapshot": true,
+       "canRollbackThread": true,
+       "canForkThread": true,
+       "canForkFromTurn": true,
+       "canForkFromSubagentThread": true,
+       "exposesNativeThreadId": true
+      },
+      "turns": {
+       "exposesNativeTurnId": true,
+       "emitsTurnStarted": true,
+       "emitsTurnCompleted": true,
+       "supportsInterrupt": true,
+       "supportsActiveSteering": true,
+       "supportsSteeringByInterruptRestart": true,
+       "supportsQueuedMessages": true,
+       "terminalStatusQuality": "strong"
+      },
+      "streaming": {
+       "streamsAssistantText": true,
+       "streamsReasoning": true,
+       "streamsToolOutput": true,
+       "streamsPlanText": true,
+       "emitsMessageCompleted": true
+      },
+      "tools": {
+       "exposesToolItemIds": true,
+       "emitsToolStarted": true,
+       "emitsToolCompleted": true,
+       "emitsToolOutput": true,
+       "supportsMcpTools": true,
+       "supportsDynamicToolCallbacks": true
+      },
+      "approvals": {
+       "supportsCommandApproval": true,
+       "supportsFileReadApproval": true,
+       "supportsFileChangeApproval": true,
+       "supportsApplyPatchApproval": true,
+       "approvalsHaveNativeRequestIds": true,
+       "approvalCallbacksAreLiveOnly": true,
+       "approvalsCanOriginateFromSubagents": true
+      },
+      "planning": {
+       "emitsPlanUpdated": true,
+       "emitsTodoList": true,
+       "emitsProposedPlan": true,
+       "supportsStructuredQuestions": true,
+       "planDeltasHaveItemIds": true
+      },
+      "subagents": {
+       "supportsSubagents": true,
+       "exposesSubagentThreadIds": true,
+       "emitsSubagentLifecycle": true,
+       "canWaitForSubagents": true,
+       "canCloseSubagents": true,
+       "canForkSubagentThread": true
+      },
+      "context": {
+       "acceptsSystemContext": true,
+       "acceptsDeveloperContext": true,
+       "acceptsSyntheticUserContext": true,
+       "canGenerateSummaries": true,
+       "canConsumeHandoffSummaries": true,
+       "supportsDeltaHandoff": true,
+       "supportsFullThreadHandoff": true,
+       "maxRecommendedHandoffChars": null
+      },
+      "checkpointing": {
+       "appCanCheckpointFilesystem": true,
+       "supportsNestedCheckpointScopes": true,
+       "providerCanRollbackConversation": true,
+       "providerRollbackReturnsSnapshot": true,
+       "providerCanReadConversationSnapshot": true
+      },
+      "identity": {
+       "nativeThreadIds": "strong",
+       "nativeTurnIds": "strong",
+       "nativeItemIds": "strong",
+       "nativeRequestIds": "strong"
+      },
+      "runtimePolicy": {
+       "enforcement": "native"
+      }
+     },
+     "createdAt": "2026-10-03T16:52:17.235Z",
+     "updatedAt": "2026-10-03T16:52:17.235Z",
+     "lastError": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 12,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:3900edb2-8829-46fb-b884-d6ce4e7a984e",
+    "threadId": "skynet-thread-probe",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.288Z",
+    "type": "provider-thread.updated",
+    "payload": {
+     "id": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "driver": "codex",
+     "providerInstanceId": "codex",
+     "providerSessionId": "provider-session:provider-instance:codex:shared",
+     "appThreadId": "skynet-thread-probe",
+     "ownerNodeId": null,
+     "nativeThreadRef": {
+      "driver": "codex",
+      "nativeId": "01a102ae-4300-7343-9903-caaeab8ed371",
+      "strength": "strong"
+     },
+     "nativeConversationHeadRef": null,
+     "status": "active",
+     "firstRunOrdinal": 1,
+     "lastRunOrdinal": 1,
+     "handoffIds": [],
+     "forkedFrom": null,
+     "pendingBackgroundTasks": [],
+     "contextUsage": null,
+     "nativeMetadata": null,
+     "createdAt": "2026-10-03T16:52:17.222Z",
+     "updatedAt": "2026-10-03T16:52:17.288Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 13,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:48cff9f9-c9bc-4c44-9244-595afdd892bf",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.288Z",
+    "type": "run.updated",
+    "payload": {
+     "id": "run:thread:skynet-thread-probe:ordinal:1",
+     "threadId": "skynet-thread-probe",
+     "ordinal": 1,
+     "providerInstanceId": "codex",
+     "modelSelection": {
+      "instanceId": "codex",
+      "model": "gpt-5.6-luna",
+      "options": []
+     },
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "userMessageId": "skynet-message-probe",
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "activeAttemptId": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "status": "running",
+     "queuePosition": null,
+     "requestedAt": "2026-10-03T16:52:17.222Z",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": null,
+     "checkpointId": null,
+     "contextHandoffId": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 14,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:29958474-fe8b-42a8-ad65-73dccd58b7e2",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.288Z",
+    "type": "run-attempt.updated",
+    "payload": {
+     "id": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "nativeThreadId": "01a102ae-4300-7343-9903-caaeab8ed371",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "attemptOrdinal": 1,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerInstanceId": "codex",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "reason": "initial",
+     "status": "running",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 15,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:a1342e8b-7d3d-4a6f-8069-acfe1a37326f",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.288Z",
+    "type": "node.updated",
+    "payload": {
+     "id": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "parentNodeId": null,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "kind": "root_turn",
+     "status": "running",
+     "countsForRun": true,
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "nativeItemRef": null,
+     "runtimeRequestId": null,
+     "checkpointScopeId": "checkpoint-scope:thread:skynet-thread-probe:name:root",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 16,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:02395ee5-3e8a-4467-a019-a96792a3e179",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.312Z",
+    "type": "provider-turn.updated",
+    "payload": {
+     "id": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "runAttemptId": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "nativeTurnRef": {
+      "driver": "codex",
+      "nativeId": "01a102ae-431c-71a2-b65e-2305f3dfe012",
+      "strength": "strong"
+     },
+     "ordinal": 1,
+     "status": "running",
+     "startedAt": "2026-10-03T16:52:17.310Z",
+     "completedAt": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 17,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:1ca181a1-918b-48c5-b145-c98cf7dc7a0d",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:17.984Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:17.983Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: wss://api.openai.com/v1/responses, cf-ray: redactedDEL",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 2,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 18,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:6dbb926f-b708-4696-a792-83fca82bf7b0",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:18.500Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:18.499Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: wss://api.openai.com/v1/responses, cf-ray: redactedDEL",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 3,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 19,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:4446e4dc-7c7e-4115-b068-e45fa009deb4",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:19.548Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:19.548Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: wss://api.openai.com/v1/responses, cf-ray: redactedDEL",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 4,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 20,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:e5ac0268-8e43-4e34-9d45-9c29fd14b1e1",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:21.320Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:21.320Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: wss://api.openai.com/v1/responses, cf-ray: redactedDEL",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 5,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 21,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:923ccc8b-f4e1-47ef-972c-3dda4e55c1d9",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:25.315Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:25.315Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 1,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 22,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:6684c1b4-7e4d-484c-af32-c6c49f043284",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:25.984Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:25.983Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 2,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 23,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:3a375c3f-0b12-4a5f-9647-e6299ded0d87",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:26.869Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:26.869Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 3,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 24,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:9d9a0d2b-d428-459c-a14f-da7561e3b4e2",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:28.482Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:28.481Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 4,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 25,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:618ef1dd-ac06-49a8-a5d1-f5d671302599",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:30.444Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "running",
+     "title": "Provider retry",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": null,
+     "updatedAt": "2026-10-03T16:52:30.444Z",
+     "type": "error",
+     "failure": {
+      "class": "transport_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "responseStreamDisconnected",
+      "retryable": true
+     },
+     "retry": {
+      "attempt": 5,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 26,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:aec090b2-c77d-4c1f-a8ad-9743ecdcb97e",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.029Z",
+    "type": "provider-turn.updated",
+    "payload": {
+     "id": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "runAttemptId": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "nativeTurnRef": {
+      "driver": "codex",
+      "nativeId": "01a102ae-431c-71a2-b65e-2305f3dfe012",
+      "strength": "strong"
+     },
+     "ordinal": 1,
+     "status": "failed",
+     "startedAt": "2026-10-03T16:52:17.310Z",
+     "completedAt": "2026-10-03T16:52:34.000Z",
+     "turnTokenUsage": {
+      "usageScope": "main_agent",
+      "hasSubagents": false,
+      "usageStatus": "unavailable"
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 27,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:provider-session:provider-session%3Aprovider-instance%3Acodex%3Ashared:1c844276-81d0-463c-b807-1acb64c7160d",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "driver": "codex",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.030Z",
+    "type": "turn-item.updated",
+    "payload": {
+     "id": "turn-item:provider:codex:native-item:terminal-failure%3Aprovider-turn%3Aprovider%3Acodex%3Anative-turn%3A01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": "provider-turn:provider:codex:native-turn:01a102ae-431c-71a2-b65e-2305f3dfe012",
+     "nativeItemRef": null,
+     "parentItemId": null,
+     "ordinal": 1000002,
+     "status": "failed",
+     "title": "Provider error",
+     "startedAt": "2026-10-03T16:52:17.983Z",
+     "completedAt": "2026-10-03T16:52:34.030Z",
+     "updatedAt": "2026-10-03T16:52:34.030Z",
+     "type": "error",
+     "failure": {
+      "class": "provider_error",
+      "message": "unexpected status 401 Unauthorized: Missing bearer [REDACTED] basic [REDACTED] in header, url: https://api.openai.com/v1/responses, cf-ray: redactedDEL, request id: req_redacted",
+      "code": "httpConnectionFailed",
+      "retryable": null
+     },
+     "retry": {
+      "attempt": 5,
+      "maxAttempts": 5,
+      "retryDelayMs": null
+     }
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 28,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:4ee9c0e8-e284-4e48-95ca-16a46c6fbb15",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.031Z",
+    "type": "run-attempt.updated",
+    "payload": {
+     "id": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "nativeThreadId": "01a102ae-4300-7343-9903-caaeab8ed371",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "attemptOrdinal": 1,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "providerInstanceId": "codex",
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "reason": "initial",
+     "status": "failed",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": "2026-10-03T16:52:34.031Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 29,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:2fc89801-f75d-4c32-a937-b2f6359d2438",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.031Z",
+    "type": "run.updated",
+    "payload": {
+     "id": "run:thread:skynet-thread-probe:ordinal:1",
+     "threadId": "skynet-thread-probe",
+     "ordinal": 1,
+     "providerInstanceId": "codex",
+     "modelSelection": {
+      "instanceId": "codex",
+      "model": "gpt-5.6-luna",
+      "options": []
+     },
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "userMessageId": "skynet-message-probe",
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "activeAttemptId": "run-attempt:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:attempt:1",
+     "status": "failed",
+     "queuePosition": null,
+     "requestedAt": "2026-10-03T16:52:17.222Z",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": "2026-10-03T16:52:34.031Z",
+     "checkpointId": null,
+     "contextHandoffId": null
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 30,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:b0fc0a72-9325-40ed-911e-9a62c8e42360",
+    "threadId": "skynet-thread-probe",
+    "runId": "run:thread:skynet-thread-probe:ordinal:1",
+    "nodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.031Z",
+    "type": "node.updated",
+    "payload": {
+     "id": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "threadId": "skynet-thread-probe",
+     "runId": "run:thread:skynet-thread-probe:ordinal:1",
+     "parentNodeId": null,
+     "rootNodeId": "node:run:run%3Athread%3Askynet-thread-probe%3Aordinal%3A1:root",
+     "kind": "root_turn",
+     "status": "failed",
+     "countsForRun": true,
+     "providerThreadId": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "providerTurnId": null,
+     "nativeItemRef": null,
+     "runtimeRequestId": null,
+     "checkpointScopeId": "checkpoint-scope:thread:skynet-thread-probe:name:root",
+     "startedAt": "2026-10-03T16:52:17.288Z",
+     "completedAt": "2026-10-03T16:52:34.031Z"
+    }
+   }
+  },
+  {
+   "kind": "event",
+   "sequence": 31,
+   "event": {
+    "id": "event:thread:skynet-thread-probe:b271e2e6-2375-4d92-b9a6-2047ea1df112",
+    "threadId": "skynet-thread-probe",
+    "providerInstanceId": "codex",
+    "occurredAt": "2026-10-03T16:52:34.031Z",
+    "type": "provider-thread.updated",
+    "payload": {
+     "id": "provider-thread:provider:codex:native-thread:pending%3Arun%3Athread%3Askynet-thread-probe%3Aordinal%3A1",
+     "driver": "codex",
+     "providerInstanceId": "codex",
+     "providerSessionId": "provider-session:provider-instance:codex:shared",
+     "appThreadId": "skynet-thread-probe",
+     "ownerNodeId": null,
+     "nativeThreadRef": {
+      "driver": "codex",
+      "nativeId": "01a102ae-4300-7343-9903-caaeab8ed371",
+      "strength": "strong"
+     },
+     "nativeConversationHeadRef": null,
+     "status": "idle",
+     "firstRunOrdinal": 1,
+     "lastRunOrdinal": 1,
+     "handoffIds": [],
+     "forkedFrom": null,
+     "pendingBackgroundTasks": [],
+     "contextUsage": null,
+     "nativeMetadata": null,
+     "createdAt": "2026-10-03T16:52:17.222Z",
+     "updatedAt": "2026-10-03T16:52:34.031Z"
+    }
+   }
+  }
+ ],
+ "dispatchReceiptFrame": {
+  "_tag": "Exit",
+  "requestId": 1,
+  "exit": {
+   "_tag": "Success",
+   "value": {
+    "sequence": 2
+   }
+  }
+ },
+ "dispatchRefusalFrame": {
+  "_tag": "Exit",
+  "requestId": 3,
+  "exit": {
+   "_tag": "Failure",
+   "cause": [
+    {
+     "_tag": "Fail",
+     "error": {
+      "_tag": "OrchestrationV2DispatchCommandError",
+      "commandId": "skynet-session-detach-probe-6f9a9b2a-862b-43db-afa8-0bd9f3564790",
+      "commandType": "provider-session.detach",
+      "message": "Provider session ps-nope does not belong to thread skynet-thread-probe.",
+      "detail": "Provider session ps-nope does not belong to thread skynet-thread-probe.",
+      "cause": {
+       "name": "OrchestratorDispatchError",
+       "message": "Failed to dispatch orchestration command provider-session.detach (skynet-session-detach-probe-6f9a9b2a-862b-43db-afa8-0bd9f3564790).",
+       "cause": "Provider session ps-nope does not belong to thread skynet-thread-probe."
+      }
+     }
+    }
+   ]
+  }
+ }
+}

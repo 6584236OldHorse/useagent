@@ -38,7 +38,12 @@ export function createNativeBridgeStepProjector(
         // Pi announces one call twice (the assistant message's toolCall block and
         // the execution start); one row per call id, the first announcement wins.
         if (emitted.has(body.toolCallId)) return;
-        const step = toolStep(body.name, inputRecord(redact.unknown(body.input)), undefined, undefined);
+        const row = toolStep(body.name, inputRecord(redact.unknown(body.input)), undefined, undefined);
+        // The call id rides on the row, so a reader matches it to the frame naming the call.
+        const step = {
+          ...row,
+          code_json: { ...(row.code_json as Record<string, unknown>), native: { callID: body.toolCallId } },
+        };
         const pending = chain.then(async () => ({
           id: await ctx.emit(step),
           code: step.code_json as Record<string, unknown>,

@@ -23,7 +23,9 @@ const FRONTEND_ROOT = resolve(import.meta.dir, "..", "..");
 const MAX_LINES = 800;
 const EM_DASH = String.fromCharCode(0x2014); // U+2014, built so this file authors no em dash glyph
 
-const SKIP_DIRS = new Set(["node_modules", ".next", "dist"]);
+// Build output is never source: `.next-build` (what `bun run build` writes, with
+// standalone copies of first-party files under it) is skipped like the dev `.next`.
+const SKIP_DIRS = new Set(["node_modules", ".next", ".next-build", "dist"]);
 
 /** Every first-party .ts/.tsx under frontend/, excluding vendored trees
  *  (vendor/, the AlignUI kit components/ui/), build output and .d.ts shims.
@@ -143,9 +145,9 @@ function lineCount(text: string): number {
 // Recorded baselines for the files that are ALREADY over the 800-line cap. A
 // number here may only SHRINK; new files get no baseline and are capped at 800.
 const FRONTEND_SIZE_BASELINE: Record<string, number> = {
-  "app/(library)/agent/artifacts/[id]/artifact-editor-surfaces.tsx": 1083,
+  "app/(library)/agent/artifacts/[id]/artifact-editor-surfaces.tsx": 1076,
   "components/agent-ui/rich-approval-card.tsx": 880,
-  "components/chat/session-view.tsx": 1086,
+  "components/chat/session-view.tsx": 1001,
 };
 
 describe("file-size ratchet (frontend)", () => {

@@ -1,31 +1,34 @@
 /**
  * Pure card-builder tests: no I/O, no Slack, fixtures only. Asserts the Block Kit
- * SHAPE (header/status/model/repo/+N/button-url) and the length-cap truncation so
- * a long title or answer can never get the whole card rejected as invalid_blocks.
+ * SHAPE of the thread card (one task_card with status/title/details/output, then
+ * the url button) and the title derivation, so a long title or a mention can
+ * never get the card rejected as invalid_blocks or leak a raw Slack id.
  */
 import { describe, expect, test } from "bun:test";
 import type { RepoRef } from "../github/repo-ref";
 import {
   buildRunCard,
+  cardStatusFor,
   deriveTitle,
-  phaseForStatus,
   sessionUrl,
+  stripMentions,
   type RunCardInput,
 } from "./card";
 
 const ref = (repo: string, branch: string | null = null): RepoRef => ({ repo, branch });
 
-/** Find the first section/context/actions block; typed loosely for assertions. */
-function firstOfType(blocks: unknown[], type: string): any {
-  return (blocks as any[]).find((b) => b?.type === type);
+/** The task_card block; typed loosely for assertions. */
+function taskCard(blocks: unknown[]): any {
+  return (blocks as any[]).find((b) => b?.type === "task_card");
 }
-function allOfType(blocks: unknown[], type: string): any[] {
-  return (blocks as any[]).filter((b) => b?.type === type);
+/** The plain text inside a single-section rich_text object. */
+function plain(rich: any): string {
+  return rich.elements[0].elements[0].text;
 }
 
 const base: RunCardInput = {
   title: "Add a dark mode toggle",
-  phase: "queued",
+  status: "in_progress",
   model: "claude-opus-5",
   repoSpecs: [],
   webUrl: "https://app.example.com/session/thread-1",
@@ -39,167 +42,110 @@ describe("sessionUrl", () => {
 });
 
 describe("deriveTitle", () => {
-  test("takes the first non-empty line", () => {
+  test("takes the first sentence of the first non-empty line", () => {
     expect(deriveTitle("\n\n  Build the thing  \nand more")).toBe("Build the thing");
+    expect(deriveTitle("Add a dark mode toggle to settings. Ask me if the palette is unclear.")).toBe(
+      "Add a dark mode toggle to settings",
+    );
+    expect(deriveTitle("Is the deploy green? Check staging too.")).toBe("Is the deploy green?");
   });
-  test("truncates a very long single line and adds an ellipsis", () => {
+  test("a greeting too short to stand alone keeps the whole line", () => {
+    expect(deriveTitle("Hi! Please add a dark mode toggle")).toBe("Hi! Please add a dark mode toggle");
+  });
+  test("caps a long line short and adds an ellipsis", () => {
     const title = deriveTitle("x".repeat(500));
-    expect(title.length).toBeLessThanOrEqual(148);
+    expect(title.length).toBeLessThanOrEqual(64);
     expect(title.endsWith("…")).toBe(true);
   });
+  test("mention markup never reaches a title: labels stay, raw ids go", () => {
+    expect(deriveTitle("<@U05RJACQ25B> ask <@U0DANA|dana> in <#C0GEN|general> <!here> about the plan")).toBe(
+      "ask @dana in #general @here about the plan",
+    );
+  });
+  test("the cap never leaves a lone surrogate before the ellipsis", () => {
+    const title = deriveTitle(`${"a".repeat(62)}😀ZZ`);
+    expect(title.isWellFormed()).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(64);
+    expect(title.endsWith("…")).toBe(true);
+    expect(taskCard(buildRunCard({ ...base, title: `${"t".repeat(146)}😀ZZ` }).blocks).title.isWellFormed()).toBe(true);
+  });
+
   test("falls back to 'Run' for an empty prompt", () => {
     expect(deriveTitle("   \n  ")).toBe("Run");
+    expect(deriveTitle("<@U05RJACQ25B>")).toBe("Run");
   });
 });
 
-describe("phaseForStatus", () => {
-  test("maps run statuses onto card phases", () => {
-    expect(phaseForStatus("completed")).toBe("completed");
-    expect(phaseForStatus("failed")).toBe("failed");
-    expect(phaseForStatus("running")).toBe("running");
-    expect(phaseForStatus("queued")).toBe("queued");
+describe("stripMentions", () => {
+  test("labels stay, broadcasts keep their word, bare ids and the rest go", () => {
+    expect(
+      stripMentions("<@U1|dana> <#C1|general> <!channel> <!subteam^S1|@eng> <@U2> <#C2> <!date^1^{date}|x> done"),
+    ).toBe("@dana #general @channel @eng done");
+  });
+});
+
+describe("cardStatusFor", () => {
+  test("a turn spins until it settles as a tick or an error glyph", () => {
+    expect(cardStatusFor("queued")).toBe("in_progress");
+    expect(cardStatusFor("running")).toBe("in_progress");
+    expect(cardStatusFor("completed")).toBe("complete");
+    expect(cardStatusFor("failed")).toBe("error");
   });
 });
 
 describe("buildRunCard shape", () => {
-  test("header carries the status emoji + label + title", () => {
+  test("one task_card on the short title, then the button - nothing else", () => {
     const { blocks } = buildRunCard(base);
-    const header = firstOfType(blocks, "section");
-    expect(header.text.type).toBe("mrkdwn");
-    expect(header.text.text).toContain(":hourglass_flowing_sand:");
-    expect(header.text.text).toContain("Queued");
-    expect(header.text.text).toContain("Add a dark mode toggle");
+    expect((blocks as any[]).map((b) => b.type)).toEqual(["task_card", "actions"]);
+    expect(taskCard(blocks)).toMatchObject({ task_id: "thread", title: "Add a dark mode toggle", status: "in_progress" });
+    // No phase label, no Model row, no working line, no divider, no answer.
+    expect(JSON.stringify(blocks)).not.toContain("Model:");
+    expect(JSON.stringify(blocks)).not.toContain("Running");
   });
 
-  test("running phase shows the gear + a working step context line", () => {
-    const { blocks } = buildRunCard({ ...base, phase: "running", workingStep: "editing app.tsx" });
-    const header = firstOfType(blocks, "section");
-    expect(header.text.text).toContain(":gear:");
-    const contexts = allOfType(blocks, "context");
-    // model row + working row.
-    expect(contexts.length).toBe(2);
-    expect(contexts[1].elements[0].text).toContain("working: editing app.tsx");
-  });
-
-  test("context row carries the model", () => {
-    const { blocks } = buildRunCard(base);
-    const context = firstOfType(blocks, "context");
-    expect(context.elements[0].text).toContain("claude-opus-5");
-  });
-
-  test("one repo renders 'owner/repo · branch' (no +N)", () => {
-    const { blocks } = buildRunCard({ ...base, repoSpecs: [ref("loop/backend", "main")] });
-    const context = firstOfType(blocks, "context");
-    expect(context.elements[0].text).toContain("loop/backend · main");
-    expect(context.elements[0].text).not.toContain("more");
-  });
-
-  test("multiple repos render the first + '+N more'", () => {
+  test("details fold the model, the first repo with its branch and +N more behind the chevron", () => {
     const { blocks } = buildRunCard({
       ...base,
-      repoSpecs: [ref("loop/backend"), ref("loop/frontend"), ref("loop/infra", "deploy")],
+      repoSpecs: [ref("loop/backend", "main"), ref("loop/frontend"), ref("loop/infra", "deploy")],
     });
-    const context = firstOfType(blocks, "context");
-    expect(context.elements[0].text).toContain("loop/backend");
-    expect(context.elements[0].text).toContain("+2 more");
+    const details = taskCard(blocks).details;
+    expect(details.type).toBe("rich_text");
+    expect(plain(details)).toBe("claude-opus-5 · loop/backend · main  +2 more");
   });
 
-  test("no repos: the context row omits the repo segment", () => {
-    const { blocks } = buildRunCard(base);
-    const context = firstOfType(blocks, "context");
-    expect(context.elements[0].text).not.toContain("Repo:");
+  test("no repos: the details are the model alone", () => {
+    expect(plain(taskCard(buildRunCard(base).blocks).details)).toBe("claude-opus-5");
   });
 
-  test("the actions block has an 'Open in useAgent' url button", () => {
+  test("the output is the current verb while a turn runs and absent once it settles", () => {
+    expect(plain(taskCard(buildRunCard({ ...base, output: "Searched the web" }).blocks).output)).toBe("Searched the web");
+    expect(taskCard(buildRunCard({ ...base, status: "complete" }).blocks).output).toBeUndefined();
+    expect(taskCard(buildRunCard({ ...base, output: "  " }).blocks).output).toBeUndefined();
+  });
+
+  test("the status is the card's own glyph", () => {
+    expect(taskCard(buildRunCard({ ...base, status: "complete" }).blocks).status).toBe("complete");
+    expect(taskCard(buildRunCard({ ...base, status: "error" }).blocks).status).toBe("error");
+  });
+
+  test("the actions block has an 'Open in UseAgent' url button", () => {
     const { blocks } = buildRunCard(base);
-    const actions = firstOfType(blocks, "actions");
-    const button = actions.elements[0];
+    const button = (blocks as any[])[1].elements[0];
     expect(button.type).toBe("button");
-    expect(button.text.text).toBe("Open in useAgent");
+    expect(button.text.text).toBe("Open in UseAgent");
     expect(button.action_id).toBe("open_in_useagent");
     expect(button.url).toBe("https://app.example.com/session/thread-1");
   });
 
-  test("a non-terminal card carries NO answer section", () => {
-    const { blocks } = buildRunCard(base);
-    // Only header (section) + context + actions; no divider/answer section.
-    expect(allOfType(blocks, "divider")).toHaveLength(0);
-    expect(allOfType(blocks, "section")).toHaveLength(1);
+  test("the notification text is the title alone, with no em dash", () => {
+    const { text } = buildRunCard({ ...base, status: "complete", repoSpecs: [ref("a/b")] });
+    expect(text).toBe("Add a dark mode toggle");
+    expect(text).not.toContain("—");
   });
 
-  test("a completed card appends the answer as an mrkdwn section (markdown converted)", () => {
-    const { blocks, text } = buildRunCard({
-      ...base,
-      phase: "completed",
-      answer: "**Done** with the toggle",
-    });
-    expect(allOfType(blocks, "divider")).toHaveLength(1);
-    const sections = allOfType(blocks, "section");
-    const answer = sections[sections.length - 1];
-    // toSlackMrkdwn converts **bold** -> *bold*.
-    expect(answer.text.text).toContain("*Done*");
-    // The fallback text mirrors the answer.
-    expect(text).toContain("*Done*");
-  });
-
-  test("a completed card with no answer says 'Done.'", () => {
-    const { blocks, text } = buildRunCard({ ...base, phase: "completed" });
-    const sections = allOfType(blocks, "section");
-    expect(sections[sections.length - 1].text.text).toBe("Done.");
-    expect(text).toBe("Done.");
-  });
-
-  test("a failed card warns with the reason", () => {
-    const { blocks, text } = buildRunCard({ ...base, phase: "failed", answer: "boom" });
-    const sections = allOfType(blocks, "section");
-    expect(sections[sections.length - 1].text.text).toContain(":warning: Run failed: boom");
-    expect(text).toContain(":warning: Run failed: boom");
-  });
-
-  test("a very long answer is truncated under the section cap", () => {
-    const { blocks } = buildRunCard({ ...base, phase: "completed", answer: "z".repeat(10_000) });
-    const sections = allOfType(blocks, "section");
-    const answer = sections[sections.length - 1];
-    expect(answer.text.text.length).toBeLessThanOrEqual(2900);
-    expect(answer.text.text.endsWith("…")).toBe(true);
-  });
-
-  test("a title with mrkdwn control chars cannot break the header layout", () => {
-    const { blocks } = buildRunCard({ ...base, title: "fix *bold* and _under_" });
-    const header = firstOfType(blocks, "section");
-    // The chrome escapes the raw control chars (zero-width-joined), so the header
-    // does not contain a naked "*bold*" that would render as formatting.
-    expect(header.text.text).not.toContain("*bold*");
-  });
-
-  test("the header title is a bold mrkdwn link to the web session", () => {
-    const { blocks } = buildRunCard(base);
-    const header = firstOfType(blocks, "section");
-    expect(header.text.text).toContain("<https://app.example.com/session/thread-1|Add a dark mode toggle>");
-    // Bold wraps the whole header line (emoji + label + linked title).
-    expect(header.text.text.startsWith("*")).toBe(true);
-    expect(header.text.text.endsWith("*")).toBe(true);
-  });
-
-  test("link-breaking chars in a title cannot escape the link label", () => {
-    const { blocks } = buildRunCard({ ...base, title: "a>b|c" });
-    const header = firstOfType(blocks, "section");
-    expect(header.text.text).toContain("<https://app.example.com/session/thread-1|a b c>");
-  });
-
-  test("omitAnswer keeps a terminal card chrome-only (the stream body has the reply)", () => {
-    const { blocks } = buildRunCard({ ...base, phase: "completed", answer: "the reply", omitAnswer: true });
-    expect(allOfType(blocks, "divider")).toHaveLength(0);
-    expect(allOfType(blocks, "section")).toHaveLength(1); // header only
-    const actions = firstOfType(blocks, "actions");
-    expect(actions.elements[0].text.text).toBe("Open in useAgent");
-  });
-
-  test("the fallback text for a non-terminal card summarizes status + title + model", () => {
-    const { text } = buildRunCard({ ...base, phase: "queued", repoSpecs: [ref("a/b")] });
-    expect(text).toContain("Queued: Add a dark mode toggle");
-    expect(text).toContain("claude-opus-5");
-    expect(text).toContain("a/b");
-    expect(text).not.toContain("—"); // no em dashes in user-visible strings
+  test("a very long title is capped under the plain-text limit", () => {
+    const card = taskCard(buildRunCard({ ...base, title: "t".repeat(400) }).blocks);
+    expect(card.title.length).toBeLessThanOrEqual(148);
+    expect(card.title.endsWith("…")).toBe(true);
   });
 });

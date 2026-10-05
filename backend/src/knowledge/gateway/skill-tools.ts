@@ -21,8 +21,9 @@ export const SKILL_TOOLS = [
     name: "skills_list",
     description:
       "List this organization's available skills and playbooks with their descriptions. " +
-      "Use this before a non-trivial or recurring workflow, choose by semantic fit, then " +
-      "call skill_activate with the selected id. The gateway performs no keyword routing.",
+      "Use this when no skill_catalog entry in your context fits a non-trivial or recurring " +
+      "workflow, choose by semantic fit, then call skill_activate with the selected id. " +
+      "The gateway performs no keyword routing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -44,13 +45,13 @@ export const SKILL_TOOLS = [
   {
     name: "skill_activate",
     description:
-      "Activate the current immutable revision of one skill or playbook from skills_list " +
+      "Activate the current immutable revision of one skill or playbook from skill_catalog or skills_list " +
       "for this running turn. Returns its full authoritative instructions and records the " +
       "load in the timeline. Call this before following the procedure or using a tool guarded by it.",
     inputSchema: {
       type: "object",
       properties: {
-        skillId: { type: "string", description: "Exact skill id returned by skills_list." },
+        skillId: { type: "string", description: "Exact skill id from skill_catalog or skills_list." },
       },
       required: ["skillId"],
       additionalProperties: false,
@@ -71,11 +72,11 @@ async function listSkills(
   const cursor = boundedCatalogCursor(args.cursor);
   const limit = boundedCatalogLimit(args.limit);
   const entries = await listSkillCatalogForOrg(claims.orgId);
-  const { skills, text, nextCursor } = formatSkillCatalogPage(entries, { cursor, limit });
-  return {
-    content: [{ type: "text", text }],
-    structuredContent: { skills, nextCursor },
-  };
+  // One copy: MCP clients that read structuredContent (Codex) would otherwise send the
+  // model the page twice, so the text alone carries every entry and the next cursor.
+  const { text, nextCursor } = formatSkillCatalogPage(entries, { cursor, limit });
+  const more = nextCursor === null ? "" : `\n\nMore entries: call skills_list with cursor ${nextCursor}.`;
+  return { content: [{ type: "text", text: text + more }] };
 }
 
 async function activateSkill(

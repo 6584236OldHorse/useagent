@@ -1,18 +1,33 @@
+import type { PermissionMode, RunLocation } from "@useagent/agent-client/wire";
 import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
+import type { SandboxHandle } from "../sandboxes/provider";
 import type {
   HarnessSession,
   ProviderSessionBinding,
 } from "@useagent/agent-harness/canonical";
 
+import type { PreambleHashes } from "./turn-prompt";
+
 export {
   AGENT_OPERATING_RULES,
   AGENT_SKILL_DISCOVERY_RULES,
   AGENT_WORKFLOW_ROUTING_RULES,
+  composeRunTurnPrompt,
   composeTurnPrompt,
 } from "./turn-prompt";
+
+/** The worker's gathered prompt context for one turn. */
+export interface PendingTurnContext {
+  readonly parts: Pick<
+    EngineRunContext,
+    "bootstrapContext" | "unseenTurnsContext" | "turnContext" | "resourceContext" | "skillCatalogContext" | "botContext"
+  >;
+  /** Durably record what was recalled; called just before the prompt is composed. */
+  recordRetrieval(): Promise<void>;
+}
 
 // ---------------------------------------------------------------------------
 // The pluggable engine layer. Every harness (Claude Agent SDK, Codex CLI,
@@ -55,6 +70,10 @@ export interface EngineRunContext {
    *  session — a resumed session already holds this history natively. Empty for a
    *  root run. Compose via {@link composeTurnPrompt}, never by hand. */
   bootstrapContext: string;
+  /** Prior thread turns that failed before any engine ran, injected ONLY into a
+   *  RESUMED session (its native history lacks them; a fresh session gets them
+   *  through bootstrapContext). "" or absent when there are none. */
+  unseenTurnsContext?: string;
   /** Fresh per-turn reference material (team memory today, knowledge later),
    *  already framed as reference-only (never instructions). Injected on EVERY
    *  turn — fresh AND resumed — so a continuing conversation still sees newly
@@ -89,6 +108,17 @@ export interface EngineRunContext {
   inputFiles?: readonly RunInputFile[];
   /** Structured, control-plane-authored file references for this turn. */
   inputContext?: string;
+  /** Set when a fresh sandbox replaced the one the thread used before; composed
+   *  right after {@link turnContext}. */
+  workspaceNotice?: string;
+  /** Prompt-only context the worker gathers while the sandbox is prepared.
+   *  {@link composeRunTurnPrompt} awaits it and fills the fields above; absent
+   *  when they are already final. A gathering error rejects it. */
+  pendingTurnContext?: Promise<PendingTurnContext>;
+  /** Preamble hashes the resumed session last received (stored with its run). */
+  priorPreamble?: PreambleHashes | null;
+  /** Preamble hashes this turn leaves the session holding, stored on delivery. */
+  deliveredPreamble?: PreambleHashes | null;
   /** Isolated working directory (already created) — the ONLY place an engine
    *  may touch the filesystem. Never the repo itself. */
   workdir: string;
@@ -102,6 +132,10 @@ export interface EngineRunContext {
    *  no identity → the adapter skips gateway wiring (fail closed). */
   orgId?: string | null;
   userId?: string | null;
+  /** Where the thread asked to run (the run row's run_location): "local" binds
+   *  the person's connected machine and never falls back; anything else is the
+   *  hosted provider. */
+  runLocation?: RunLocation | null;
   /** Server-owned run origin. Product fan-out policy is never injected into
    * internal eval/canary turns. */
   origin?: string | null;
@@ -109,6 +143,9 @@ export interface EngineRunContext {
    *  Adapters map it to their provider format and fall back to their own
    *  default when absent/unsupported. */
   model?: string;
+  /** The run's reasoning effort where the engine has the seam (Codex, Claude
+   *  Code); absent runs on the runtime's default. See runs/reasoning-effort.ts. */
+  reasoningEffort?: string;
   /** The GitHub repos this thread works in (each "owner/name"); [] for a bare
    *  workdir. Set on EVERY run in the thread (inherited from the root run) so an
    *  adapter can ensure each clone exists in the workspace before the turn —
@@ -126,6 +163,11 @@ export interface EngineRunContext {
   providerSession?: ProviderSessionBinding;
   /** Durable operator-only fence for the exact sandbox binding this run may use. */
   expectedSandbox?: ExpectedSandboxBinding | null;
+  /** The permission policy the run was started with (see engines/permission-mode.ts):
+   *  the mode the resident runtime is steered with, and for "read-only" the
+   *  refusal of every command and file change. Absent only for legacy callers,
+   *  which take the operator's configured posture. */
+  permissionMode?: PermissionMode;
   /** Set ONLY when this run is a VALIDATED native provider command (its name was checked
    *  against the active session catalog at acceptance). When present, the run's `prompt` is
    *  already the exact `/name args` bytes and {@link composeTurnPrompt} delivers it verbatim
@@ -146,6 +188,12 @@ export interface EngineRunContext {
   /** Persist the complete provider session atomically with its legacy native-id
    * mirror before dispatch. */
   saveProviderSession?(session: HarnessSession, authEpoch?: string | null): Promise<void>;
+  /** Persist the sandbox-clock output baseline after setup, before execution. */
+  prepareOutputCapture?(sandbox: SandboxHandle, workdir: string): Promise<void>;
+  /** Delivery evidence, separate from session authority: called once the engine
+   *  runtime ACCEPTED the composed prompt (the steer returned ok), never on
+   *  session binding alone. */
+  markPromptDelivered?(): Promise<void>;
   /** Aborted when the run exceeds its timeout; adapters must wire this to their
    *  subprocess / SDK call so a runaway engine is actually killed. */
   signal: AbortSignal;
@@ -179,6 +227,7 @@ export interface EngineRunContext {
   timing?: {
     begin(stage: string): TimingSpanEnd;
     mark(stage: string): void;
+    add?(stage: string, durMs: number): void;
   };
 }
 

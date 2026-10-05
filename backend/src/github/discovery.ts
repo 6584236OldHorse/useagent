@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { cloneRepoAtHead, resolveRemoteHeadSha } from "../wiki-gen/clone";
+import { cloneRepoAtHead, EmptyRepositoryError, resolveRemoteHeadSha } from "../wiki-gen/clone";
 import type { GithubRepositoryAccess } from "./auth";
 import { errorMessage } from "../util/error-message";
 
@@ -60,7 +60,7 @@ export type FetchedSkillFile =
 export class DiscoveryError extends Error {
   constructor(
     message: string,
-    readonly kind: "bad_request" | "not_configured" | "upstream",
+    readonly kind: "bad_request" | "not_configured" | "upstream" | "empty_repository",
   ) {
     super(message);
     this.name = "DiscoveryError";
@@ -162,6 +162,7 @@ export async function resolveRepoHeadSha(
   try {
     return await resolveRemoteHeadSha(repo, access);
   } catch (e) {
+    if (e instanceof EmptyRepositoryError) throw new DiscoveryError(e.message, "empty_repository");
     throw new DiscoveryError(errorMessage(e), "upstream");
   }
 }

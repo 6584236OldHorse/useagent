@@ -1,48 +1,30 @@
-import type { EngineAdapter, EngineRunContext } from "./types";
-import { composeTurnPrompt } from "./types";
+import type { EngineAdapter } from "./types";
+import { composeRunTurnPrompt } from "./types";
 import { setTimeout as delay } from "node:timers/promises";
-import { acquireThreadSandbox } from "./thread-sandbox";
 import {
-  awaitRuntimeProviderReady,
+  prefetchRuntimeProviderBridge,
   prepareRuntimeProviderBridge,
   prepareStableRuntimeProvider,
-  type RuntimeProviderReadiness,
   type RuntimeProviderBridgeLease,
 } from "./runtime-provider-bridge";
 import {
-  buildRuntimeEnvironmentRequestCommand,
-  decodeRuntimeEnvironmentCommandOutput,
   invalidateRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeEnvironmentAccessValidated,
+  type RuntimeEnvironmentRequest,
 } from "./runtime-environment-client";
 import { awaitCodexProviderReady } from "./codex-subscription-runtime";
+import { ensureRuntimeProviderReadyForTurn } from "./runtime-provider-barrier";
 import {
-  followRuntimeThreadSnapshots,
-  subscribeRuntimeThread,
-} from "./runtime-event-stream";
-import {
-  activityStep,
-  assistantText,
-  hasOpenRuntimeToolCall,
-  runtimeActivityProviderEvent,
-  runtimeActivityRevision,
-  runtimeActivityStepKey,
-  shouldProjectRuntimeActivity,
   runtimeThreadId,
-  runtimeTurnError,
-  runtimeTurnSettled,
+  runtimeUserMessageId,
   type RuntimeEngineId,
-  type RuntimeMode,
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
+import { configuredRuntimeMode, runtimeModeFor } from "./permission-mode";
+import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
-import { createSecretRedactor } from "../secrets/redact";
-import {
-  sandboxProviderKind,
-  type SandboxHandle,
-} from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
-import { recordProviderEvent } from "../runs/provider-events";
 import type { ProviderDriver } from "@useagent/agent-harness/control";
 import { sessionCapabilities } from "./capabilities";
 import {
@@ -50,57 +32,64 @@ import {
   recordProviderSessionStarted,
 } from "./provider-turn";
 import {
+  recordRuntimeCommandCatalog,
+  runtimeCommandDispatchRejection,
+} from "./runtime-command-catalog";
+import {
   restartRuntimeEnvironment,
   RUNTIME_CUBE_WARM_POOL_NAME,
-  runtimeFirstActivityTimeoutMs,
-  runtimeNoProgressTimeoutMs,
-  runtimeGeneration,
   RUNTIME_GENERATION,
   RUNTIME_GENERATION_LABEL,
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
-import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
-import { activityRevisions, createTurnProjector, type TurnProjector } from "./turn-projector";
-import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
+import { NoProgressError } from "./turn-no-progress";
+import { activityRevisions, createTurnProjector } from "./turn-projector";
+import { continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
-import { operatorEnv } from "./runtime-env";
+import { runtimeRunSnapshot } from "./runtime-snapshot";
 import { prepareSandboxTurn } from "./sandbox-turn-preparation";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
-import { reloadRetainedOpenCodeSession } from "./runtime-session-stop";
-import { awaitRuntimeOperation } from "./runtime-operation";
+import { reloadRetainedSession } from "./runtime-session-stop";
+import { readCodexConfigChange, stampCodexConfig } from "./runtime-codex-config-stamp";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
 } from "./runtime-startup-recovery.js";
+import { applyPendingCodexProviderConfiguration } from "./runtime-codex-plan-config";
+import { waitForRuntimeCompact } from "./runtime-compact-completion";
+import { readThreadSnapshot, runtimeTurnWaitDependencies, waitForRuntimeTurn } from "./runtime-turn-wait";
 export {
-  reloadRetainedOpenCodeSession,
-  type OpenCodeSessionReloadDependencies,
+  reloadRetainedSession,
+  type SessionReloadDependencies,
 } from "./runtime-session-stop";
+export {
+  createRuntimeTerminalSessionCleanup,
+  drainRuntimeTerminalOutput,
+  readRuntimeTerminalSnapshot,
+  waitForRuntimeTurn,
+} from "./runtime-turn-wait";
 
-export function runtimeSessionHasAuthoritativeHistory(
-  resumed: boolean,
+/**
+ * Whether the runtime thread carries the conversation's history itself. A
+ * thread that already has runs does (native resume, or the runtime's own
+ * handoff when the session or engine changed), so the plane's history goes
+ * only into a fresh thread: the first turn, or after the sandbox was recreated.
+ */
+export function runtimeThreadHasAuthoritativeHistory(
+  snapshot: RuntimeThreadSnapshot,
   lease: Pick<RuntimeProviderBridgeLease, "authPath" | "hasCurrentEpochThreadBinding">,
 ): boolean {
-  return resumed && (
+  return snapshot.thread.latestTurn !== null && (
     lease.authPath !== "subscription" || lease.hasCurrentEpochThreadBinding
   );
 }
 
-const RUNTIME_POLL_INTERVAL_MS = 125;
-// T3 can publish root idle just before the final assistant projection. Re-read
-// for two seconds so that ordering gap is tolerated without accepting no output.
-// The final message lands a moment after the runtime signals completion; a loaded sandbox needs more than a couple of seconds.
-const RUNTIME_TERMINAL_OUTPUT_DRAIN_MS = 15_000;
-const RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS = 2;
-const RUNTIME_TERMINAL_CLEANUP_MS = 250;
 export { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR } from "./turn-recovery";
 export { projectRuntimeAssistantText } from "./turn-projector";
 // Codex subscription writes its per-run relay config into the sandbox's T3
 // settings.json, which T3 applies through an asynchronous settings-watch
 // reconcile. Wait for the reconcile to publish the remote instance before
 // steering; if it does not land in time, fall back to a deterministic restart.
-/** How often a running turn pushes out the sandbox's own lifetime clock (providers with an absolute deadline). */
-const SANDBOX_KEEPALIVE_MS = 5 * 60_000;
 const CODEX_BARRIER_DEADLINE_MS = 5_000;
 const CODEX_VERIFY_DEADLINE_MS = 8_000;
 // T3's authoritative Claude health check includes a 4s CLI version probe and
@@ -109,350 +98,16 @@ const CODEX_VERIFY_DEADLINE_MS = 8_000;
 const CLAUDE_BARRIER_DEADLINE_MS = 35_000;
 const CLAUDE_VERIFY_DEADLINE_MS = 35_000;
 
-interface RuntimeProviderBarrierDependencies {
-  readonly awaitReady: typeof awaitRuntimeProviderReady;
-  readonly restart: typeof restartRuntimeEnvironment;
-  readonly invalidateAccess: typeof invalidateRuntimeEnvironmentAccess;
-  /** Whether the runtime server is up at all. Absent in tests means "up". */
-  readonly healthy?: typeof runtimeEnvironmentHealthy;
-}
-
-const runtimeProviderBarrierDependencies: RuntimeProviderBarrierDependencies = {
-  awaitReady: awaitRuntimeProviderReady,
-  restart: restartRuntimeEnvironment,
-  invalidateAccess: invalidateRuntimeEnvironmentAccess,
-  healthy: runtimeEnvironmentHealthy,
-};
-
-export async function ensureRuntimeProviderReadyForTurn(input: {
-  readonly sandbox: SandboxHandle;
-  readonly signal: AbortSignal;
-  readonly readiness: RuntimeProviderReadiness;
-  readonly barrierDeadlineMs: number;
-  readonly verifyDeadlineMs: number;
-  readonly providerLabel: string;
-  readonly dependencies?: RuntimeProviderBarrierDependencies;
-}): Promise<void> {
-  const dependencies = input.dependencies ?? runtimeProviderBarrierDependencies;
-  // A sandbox whose runtime is down cannot fill its status cache no matter how
-  // long the barrier waits. Boot straight away instead of burning the whole
-  // barrier deadline first; the boot reads the settings written just before it.
-  // The baked image usually has the runtime up already; it then takes the
-  // settings through its settings watch, and the barrier below covers that.
-  const up = dependencies.healthy ? await dependencies.healthy(input.sandbox) : true;
-  if (
-    up &&
-    (await dependencies.awaitReady(
-      input.sandbox,
-      input.signal,
-      input.barrierDeadlineMs,
-      input.readiness,
-    ))
-  ) {
-    return;
-  }
-  input.signal.throwIfAborted();
-  await dependencies.restart(input.sandbox, input.signal);
-  dependencies.invalidateAccess(input.sandbox);
-  input.signal.throwIfAborted();
-  if (
-    !(await dependencies.awaitReady(
-      input.sandbox,
-      input.signal,
-      input.verifyDeadlineMs,
-      input.readiness,
-    ))
-  ) {
-    input.signal.throwIfAborted();
-    throw new Error(`${input.providerLabel} runtime did not become ready after restart`);
-  }
-}
-
 interface RuntimeShellSnapshot {
   readonly projects: readonly { readonly id: string }[];
   readonly threads: readonly { readonly id: string }[];
 }
 
-export function runtimeRunSnapshot(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): string {
-  if (sandboxProviderKind(env) === "cube") {
-    const runtimeTemplate = operatorEnv(
-      env,
-      "RUNTIME_CUBE_TEMPLATE_ID",
-      "T3_CUBE_TEMPLATE_ID",
-    )?.trim();
-    const generation = runtimeGeneration(env);
-    if (generation !== runtimeGeneration({}) && !runtimeTemplate) {
-      throw new Error(
-        `Runtime generation ${generation} requires a dedicated RUNTIME_CUBE_TEMPLATE_ID; refusing to relabel CUBE_TEMPLATE_ID`,
-      );
-    }
-    const template = runtimeTemplate || env.CUBE_TEMPLATE_ID?.trim();
-    if (!template) {
-      throw new Error(
-        "RUNTIME_CUBE_TEMPLATE_ID (legacy T3_CUBE_TEMPLATE_ID) is required for the Cube runtime adapter",
-      );
-    }
-    return template;
-  }
-  if (sandboxProviderKind(env) === "box") {
-    // The baked native snapshot (bun, the runtime, every provider driver, Pi,
-    // the document toolchain) wins over the generic Box template; "" is Box's
-    // base image, which installs all of that on every fresh run.
-    return (
-      operatorEnv(env, "RUNTIME_BOX_SNAPSHOT", "T3_BOX_SNAPSHOT")?.trim() ||
-      env.BOX_SNAPSHOT?.trim() ||
-      ""
-    );
-  }
-  return (
-    operatorEnv(env, "RUNTIME_DAYTONA_SNAPSHOT", "T3_DAYTONA_SNAPSHOT")?.trim() ||
-    env.DAYTONA_SNAPSHOT?.trim() ||
-    "skynet-agent-v17"
-  );
-}
+const SHELL_REQUEST = { method: "GET", path: "/api/orchestration/shell" } as const satisfies RuntimeEnvironmentRequest;
 
-export function configuredRuntimeMode(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): RuntimeMode {
-  const mode = operatorEnv(env, "RUNTIME_MODE", "T3_RUNTIME_MODE")?.trim() || "full-access";
-  if (
-    mode !== "approval-required" &&
-    mode !== "auto-accept-edits" &&
-    mode !== "auto" &&
-    mode !== "full-access"
-  ) {
-    throw new Error(
-      "RUNTIME_MODE (legacy T3_RUNTIME_MODE) must be approval-required, auto-accept-edits, auto, or full-access",
-    );
-  }
-  return mode;
-}
+export { runtimeRunSnapshot };
 
-async function readThreadSnapshot(
-  ctx: EngineRunContext,
-  sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  signal: AbortSignal = ctx.signal,
-): Promise<RuntimeThreadSnapshot> {
-  return await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
-    sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(runtimeThreadId(ctx))}`,
-    },
-    signal,
-  );
-}
-
-export async function drainRuntimeTerminalOutput(input: {
-  readonly initialText: string;
-  readonly fallbackText: string;
-  readonly signal: AbortSignal;
-  readonly readAndApplySnapshot: (signal: AbortSignal) => Promise<string>;
-  readonly deadlineSignal?: AbortSignal;
-}): Promise<string> {
-  let text = input.initialText;
-  const deadlineSignal = input.deadlineSignal ?? AbortSignal.timeout(RUNTIME_TERMINAL_OUTPUT_DRAIN_MS);
-  const drainSignal = AbortSignal.any([input.signal, deadlineSignal]);
-
-  while (!text.trim()) {
-    try {
-      input.signal.throwIfAborted();
-      await delay(RUNTIME_POLL_INTERVAL_MS, undefined, { signal: drainSignal });
-      text = await input.readAndApplySnapshot(drainSignal);
-      input.signal.throwIfAborted();
-      if (text.trim()) return text;
-      deadlineSignal.throwIfAborted();
-    } catch (error) {
-      if (input.signal.aborted) throw input.signal.reason;
-      if (deadlineSignal.aborted) {
-        if (input.fallbackText.trim()) return input.fallbackText;
-        throw new Error(RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR);
-      }
-      throw error;
-    }
-  }
-  input.signal.throwIfAborted();
-  return text;
-}
-
-export function createRuntimeTerminalSessionCleanup(
-  sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  sessionId: string,
-  options: {
-    readonly deadlineSignal?: AbortSignal;
-    readonly warn?: (message: string, context: Record<string, string>) => void;
-  } = {},
-): () => Promise<void> {
-  let inFlight: Promise<void> | null = null;
-  let warned = false;
-  return () => {
-    if (inFlight) return inFlight;
-    const deadline = options.deadlineSignal ?? AbortSignal.timeout(RUNTIME_TERMINAL_CLEANUP_MS);
-    const operation: Promise<void> = awaitRuntimeOperation(
-      sandbox.process.deleteSession(sessionId), deadline, async () => {},
-    ).then(() => {}).catch((error) => {
-        if (warned) return;
-        warned = true;
-        (options.warn ?? ((message, context) => console.warn(message, context)))(
-          "[runtime-terminal-drain] session cleanup failed",
-          { sessionId, error: error instanceof Error ? error.message : String(error) },
-        );
-      });
-    inFlight = operation.finally(() => {
-      inFlight = null;
-    });
-    return inFlight!;
-  };
-}
-
-export async function readRuntimeTerminalSnapshot(
-  ctx: EngineRunContext,
-  sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  signal: AbortSignal,
-): Promise<RuntimeThreadSnapshot> {
-  const sessionId = `useagent-terminal-drain-${crypto.randomUUID()}`;
-  const cleanup = createRuntimeTerminalSessionCleanup(sandbox, sessionId);
-  try {
-    await awaitRuntimeOperation(sandbox.process.createSession(sessionId), signal, cleanup);
-    const result = await awaitRuntimeOperation(
-      sandbox.process.executeSessionCommand(sessionId, {
-        command: buildRuntimeEnvironmentRequestCommand({
-          method: "GET",
-          path: `/api/orchestration/threads/${encodeURIComponent(runtimeThreadId(ctx))}`,
-        }),
-        runAsync: false,
-      }, RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS),
-      signal,
-      cleanup,
-    );
-    const response = decodeRuntimeEnvironmentCommandOutput(
-      result.output ?? `${result.stdout ?? ""}${result.stderr ?? ""}`,
-    );
-    if ((result.exitCode ?? 1) !== 0 || response.status === undefined || response.status >= 400) {
-      throw new Error("The provider runtime terminal snapshot request failed");
-    }
-    return JSON.parse(response.body) as RuntimeThreadSnapshot;
-  } finally {
-    await cleanup();
-  }
-}
-
-interface RuntimeTurnWaitDependencies {
-  readonly readThreadSnapshot: typeof readThreadSnapshot;
-  readonly subscribeRuntimeThread: typeof subscribeRuntimeThread;
-}
-
-const runtimeTurnWaitDependencies: RuntimeTurnWaitDependencies = {
-  readThreadSnapshot,
-  subscribeRuntimeThread,
-};
-
-export async function waitForRuntimeTurn(
-  ctx: EngineRunContext,
-  sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
-  preExistingActivities: ReadonlyMap<string, string>,
-  priorSnapshot: RuntimeThreadSnapshot,
-  redact: ReturnType<typeof createSecretRedactor>,
-  dependencies: RuntimeTurnWaitDependencies = runtimeTurnWaitDependencies,
-  engine: RuntimeEngineId | null = null,
-  projector: TurnProjector = createTurnProjector({ ctx, redact, engine, seen: preExistingActivities }),
-): Promise<string> {
-  // Single owner of the turn-stream no-progress bound: a provider retry storm
-  // (only runtime.warning activities, no tool/text progress) must terminate
-  // the run with the real provider reason instead of running forever.
-  const watchdog = createNoProgressWatchdog(runtimeNoProgressTimeoutMs(), redact.text);
-  // A long-running tool emits no new activity revisions while it executes, so
-  // the event stream goes silent even though the turn is making real progress.
-  // While the latest snapshot shows an open tool call, tick the watchdog on a
-  // timer; provider stalls (no tool running, no text) stay fully guarded.
-  let toolInFlight = false;
-  const toolHeartbeat = setInterval(() => {
-    if (toolInFlight) {
-      watchdog.observeProgress();
-      ctx.reportActivity?.();
-    }
-  }, 15_000);
-  toolHeartbeat.unref?.();
-  // A provider that stops sandboxes at an absolute deadline has its clock pushed
-  // out for as long as the turn runs; the turn, not the sandbox lifetime, decides when it ends.
-  const keepAlive = setInterval(() => {
-    void sandbox.keepAlive?.().catch(() => {});
-  }, SANDBOX_KEEPALIVE_MS);
-  keepAlive.unref?.();
-  const threadId = runtimeThreadId(ctx);
-  const priorTurnId = priorSnapshot.thread.latestTurn?.turnId ?? null;
-  let currentTurnObserved = false;
-  const firstActivityDeadline = new AbortController();
-  const firstActivityTimer = setTimeout(
-    () => firstActivityDeadline.abort(),
-    runtimeFirstActivityTimeoutMs(),
-  );
-  firstActivityTimer.unref?.();
-  const streamSignal = AbortSignal.any([
-    ctx.signal,
-    watchdog.signal,
-    firstActivityDeadline.signal,
-  ]);
-  const applySnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
-    const applied = await projector.apply(snapshot, (activity) => watchdog.observeActivity(activity));
-    toolInFlight = applied.toolInFlight;
-    if (applied.delta) watchdog.observeProgress();
-    if (applied.error) throw new RuntimeTurnFailedError(applied.error);
-    return !applied.settled;
-  };
-  const acceptSnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
-    const latestTurnId = snapshot.thread.latestTurn?.turnId ?? null;
-    if (!currentTurnObserved) {
-      if (latestTurnId === null || latestTurnId === priorTurnId) return true;
-      currentTurnObserved = true;
-      clearTimeout(firstActivityTimer);
-    }
-    return await applySnapshot(snapshot);
-  };
-
-  // Snapshot mode lets T3 attach live delivery before it reads the authoritative
-  // projection, closing the dispatch-to-subscribe race without an initial REST
-  // poll. Event-only bursts schedule at most one authoritative refresh at a time.
-  let streamError: unknown;
-  try {
-    await followRuntimeThreadSnapshots({
-      sandbox,
-      threadId,
-      initialSequence: priorSnapshot.snapshotSequence,
-      signal: streamSignal,
-      readSnapshot: (signal) => dependencies.readThreadSnapshot(ctx, sandbox, signal),
-      applySnapshot: acceptSnapshot,
-      subscribe: dependencies.subscribeRuntimeThread,
-    });
-  } catch (error) {
-    streamError = error;
-  } finally {
-    clearTimeout(firstActivityTimer);
-    clearInterval(toolHeartbeat);
-    clearInterval(keepAlive);
-    watchdog.dispose();
-  }
-  if (watchdog.signal.aborted) throw watchdog.signal.reason;
-  ctx.signal.throwIfAborted();
-  if (firstActivityDeadline.signal.aborted && !currentTurnObserved) {
-    throw new RuntimeFirstActivityTimeoutError(runtimeFirstActivityTimeoutMs());
-  }
-  if (streamError) throw streamError;
-  if (!currentTurnObserved) {
-    throw new Error("Provider thread subscription ended before the dispatched turn was observed");
-  }
-  return await drainRuntimeTerminalOutput({
-    initialText: projector.finalText,
-    fallbackText: projector.publishedText,
-    signal: ctx.signal,
-    readAndApplySnapshot: async (drainSignal) => {
-      await applySnapshot(await readRuntimeTerminalSnapshot(ctx, sandbox, drainSignal));
-      return projector.finalText;
-    },
-  });
-}
+export { configuredRuntimeMode } from "./permission-mode";
 
 export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriver): EngineAdapter {
   return {
@@ -467,6 +122,12 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         label: "Preparing runtime and integrations…",
         chip: `runtime:${engine}`,
       });
+      let stableProviderPendingRevision: string | null = null;
+      // A runtime this process already talks to lists the same projects and
+      // threads before and after the provider bridge, so its shell is read
+      // alongside the bridge; a barrier below that restarts it reads again.
+      let earlyShell: Promise<RuntimeShellSnapshot | null> | null = null;
+      let runtimeTouched = false;
       const prepared = await prepareSandboxTurn(ctx, {
         snapshot: runtimeRunSnapshot(),
         chip: `runtime:${engine}`,
@@ -481,10 +142,13 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           : undefined,
         // Frozen timing prefix: hosted cutover canaries read these values.
         timingPrefix: "t3",
-        prepareStableProvider(sandbox) {
-          return prepareStableRuntimeProvider(sandbox, ctx, engine);
+        async prepareStableProvider(sandbox) {
+          stableProviderPendingRevision = await prepareStableRuntimeProvider(sandbox, ctx, engine);
         },
         async prepareProvider(sandbox, workdir, binding, preparation) {
+          if (runtimeEnvironmentAccessValidated(sandbox)) {
+            earlyShell = requestRuntimeEnvironment<RuntimeShellSnapshot>(sandbox, SHELL_REQUEST, ctx.signal).catch(() => null);
+          }
           return await prepareRuntimeProviderBridge(
             sandbox,
             ctx,
@@ -492,17 +156,50 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             workdir,
             preparation.stableProviderPrepared,
             binding,
+            stableProviderPendingRevision,
           );
         },
         closeProvider: (state) => state.close(),
+        prefetchProvider: (sandbox) => prefetchRuntimeProviderBridge(sandbox, engine),
       });
       const { sandbox, workdir, redact } = prepared;
       const providerBridgeLease: RuntimeProviderBridgeLease = prepared.providerState;
+      // This sandbox's Codex reads config.toml (the tool gateway's bearer) only
+      // when its session starts. Whether the thread's session predates the file
+      // the bridge just wrote is read alongside the barriers and the shell read.
+      // Hosted Codex reconnects its tools on the relay's kept session instead.
+      const codexConfigChange = engine === "codex" && providerBridgeLease.authPath !== "subscription"
+        ? readCodexConfigChange(sandbox, runtimeThreadId(ctx))
+        : null;
+      codexConfigChange?.catch(() => {});
       const controlMetadata = ctx.expectedSandbox
         ? { expectedSandbox: ctx.expectedSandbox, threadId: ctx.threadId ?? ctx.runId }
         : undefined;
 
       try {
+        // A warm T3 process may still own a Codex app-server launched from the
+        // previous stable settings. When the host changes those settings,
+        // restart once before session lookup so T3 boots the new argv and then
+        // resumes the retained native thread from its persisted cursor.
+        if (
+          engine === "codex" &&
+          providerBridgeLease.authPath !== "subscription" &&
+          providerBridgeLease.pendingProviderConfigurationRevision
+        ) {
+          runtimeTouched = true;
+          const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
+          try {
+            await applyPendingCodexProviderConfiguration({
+              sandbox,
+              signal: ctx.signal,
+              revision: providerBridgeLease.pendingProviderConfigurationRevision,
+              timing: ctx.timing,
+            });
+          } finally {
+            endBarrier?.();
+          }
+        }
+
         // Claude also patches T3 settings.json above. The explicit provider
         // instance carries a unique display marker, so the cache probe proves
         // T3 applied the gateway-backed wrapper rather than merely observing
@@ -510,28 +207,28 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         if (providerBridgeLease.readiness) {
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
-            await ensureRuntimeProviderReadyForTurn({
+            runtimeTouched = (await ensureRuntimeProviderReadyForTurn({
               sandbox,
               signal: ctx.signal,
               readiness: providerBridgeLease.readiness,
               barrierDeadlineMs: CLAUDE_BARRIER_DEADLINE_MS,
               verifyDeadlineMs: CLAUDE_VERIFY_DEADLINE_MS,
               providerLabel: "Claude",
-            });
+            })) || runtimeTouched;
           } finally {
             endBarrier?.();
           }
         }
 
-        // Codex subscription patches its per-run relay config into the sandbox's
-        // T3 settings.json above (provider_bridge). T3 only applies settings via
+        // A new Codex subscription session patches its relay config into T3's
+        // settings.json above (provider_bridge; a kept one changes nothing). T3 applies settings via
         // an asynchronous settings-watch reconcile, so a turn dispatched before
         // that reconcile binds to the pre-reconcile, relay-less codex instance and
         // falls back to a local, unauthenticated app-server (no first activity).
         // Scoped to subscription Codex. Provider-gateway Codex does not create
         // a per-run instance, and Claude has its own marker barrier above. The
         // no-first-activity watchdog below remains the final safety net.
-        if (providerBridgeLease?.authPath === "subscription") {
+        if (providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused) {
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             // A sandbox whose runtime is down cannot publish the status cache,
@@ -552,6 +249,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               // reads the relay config synchronously and builds the remote instance
               // from the start, then verify once before steering. Honest error if
               // the runtime never reports ready.
+              runtimeTouched = true;
               await restartRuntimeEnvironment(sandbox, ctx.signal, ctx.timing);
               invalidateRuntimeEnvironmentAccess(sandbox);
               if (
@@ -566,28 +264,37 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         }
 
         const endShell = ctx.timing?.begin("t3.shell");
-        const shell = await requestRuntimeEnvironment<RuntimeShellSnapshot>(
-          sandbox,
-          { method: "GET", path: "/api/orchestration/shell" },
-          ctx.signal,
-        );
+        const shell = (!runtimeTouched && await earlyShell) ||
+          await requestRuntimeEnvironment<RuntimeShellSnapshot>(sandbox, SHELL_REQUEST, ctx.signal);
         endShell?.();
         const threadId = runtimeThreadId(ctx);
         const threadExists = shell.threads.some((thread) => thread.id === threadId);
+        // A read-only turn never resumes a thread that may hold a session grant.
+        await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });
         if (engine === "opencode") {
-          await reloadRetainedOpenCodeSession({
+          const limitsApplied = await reloadRetainedSession({
             sandbox,
             signal: ctx.signal,
             threadId,
             threadExists,
-            modelLimitsChanged: providerBridgeLease.modelLimitsChanged,
-            modelLimitsRevision: providerBridgeLease.modelLimitsRevision,
-            modelLimitsChangedAt: providerBridgeLease.modelLimitsChangedAt,
+            change: "OpenCode model limits",
+            changed: providerBridgeLease.modelLimitsChanged,
+            revision: providerBridgeLease.modelLimitsRevision,
           });
-          await providerBridgeLease.ackModelLimitsReload();
+          // A declined stop leaves the refresh owed, so the next turn tries again.
+          if (limitsApplied) await providerBridgeLease.ackModelLimitsReload();
+        } else if (codexConfigChange) {
+          const configRevision = await codexConfigChange;
+          if (configRevision && await reloadRetainedSession({
+            sandbox, signal: ctx.signal, threadId, threadExists,
+            change: "Codex configuration", changed: true, revision: configRevision,
+          })) {
+            await stampCodexConfig(sandbox, threadId, configRevision);
+          }
         }
         const createdAt = new Date().toISOString();
-        const runtimeMode = configuredRuntimeMode();
+        // The run's own policy; the operator posture only covers runs created without one.
+        const runtimeMode = runtimeModeFor(ctx.permissionMode ?? configuredRuntimeMode());
         const negotiatedCapabilities = sessionCapabilities(engine, {
           desktop: false,
           knowledgeTools: true,
@@ -608,7 +315,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           generation: T3_SESSION_GENERATION,
           authEpoch: providerBridgeLease.authEpoch,
           priorSessionId: threadExists ? threadId : undefined,
-          startMetadata: { workspaceRoot: workdir, runtimeMode, createdAt },
+          startMetadata: { workspaceRoot: workdir, runtimeMode, createdAt, shell },
           persistSession: async (providerSession) => {
             if (!ctx.saveProviderSession) {
               throw new Error("Session persistence is unavailable");
@@ -617,18 +324,28 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           },
         });
         const session = established.session;
+        // The session's native command list, recorded with the session so the
+        // reply composer's typed commands and Compact authorize against it. Best
+        // effort and independent of the snapshot read below, so the two overlap.
+        const commandCatalog = recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         // `start()` may adopt a thread the runtime already projected even when
         // the durable provider lifecycle is fresh. Always capture its current
         // turn before steering so an initialization greeting cannot be mistaken
         // for the response to this run.
-        const priorSnapshot = await readThreadSnapshot(ctx, sandbox);
+        // The runtime runs a turn with the mode stored on its THREAD, so a run
+        // whose mode differs from the thread's (a reply that changed it) sets the
+        // thread's mode and proceeds only once the runtime reports it.
+        const priorSnapshot = await ensureRuntimeThreadMode({
+          sandbox,
+          threadId,
+          runtimeMode,
+          snapshot: await readThreadSnapshot(ctx, sandbox),
+          signal: ctx.signal,
+        });
 
-        // HTTP orchestration dispatch validates thread.turn.start against an
-        // already-projected thread. ProviderDriver.start creates it explicitly instead of
-        // relying on the websocket-only bootstrap normalization path.
-        const prompt = composeTurnPrompt(
+        const prompt = await composeRunTurnPrompt(
           ctx,
-          runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease),
+          runtimeThreadHasAuthoritativeHistory(priorSnapshot, providerBridgeLease),
           executionCapabilities,
         );
         await recordProviderSessionStarted(ctx, session, {
@@ -636,7 +353,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           source: engine,
           resumed: established.resumed,
         });
-        let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model };
+        await commandCatalog;
+        let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
         let attempt = 1;
@@ -648,38 +366,54 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         try {
           for (;;) {
             const createdAt = turnRequestedAt;
-            ctx.timing?.mark("dispatch");
-            const endDispatch = ctx.timing?.begin("t3.dispatch_request");
-            const steerResult = await driver.steer({
-              runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),
-              threadId: ctx.threadId ?? ctx.runId,
-              session,
-              input: turnInput,
-              metadata: controlMetadata
-                ? { runtimeMode, createdAt, ...controlMetadata }
-                : { runtimeMode, createdAt },
-              signal: ctx.signal,
-            });
-            endDispatch?.();
-            if (steerResult.status !== "ok") {
-              throw new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
+            if (ctx.commandName) {
+              const command = {
+                name: ctx.commandName, provider: ctx.commandProvider ?? null,
+                sessionId: ctx.commandSessionId ?? null, catalogRevision: ctx.commandCatalogRevision ?? null,
+              };
+              const rejection = await runtimeCommandDispatchRejection({ ctx, sandbox, engine, session, command });
+              if (rejection) throw new Error(`Native command dispatch rejected: ${rejection}`);
             }
-            await ctx.emit({ kind: "task", label: "Waiting for provider activity…", chip: `runtime:${engine}` });
+            ctx.timing?.mark("dispatch");
+            // The turn is dispatched on the socket already following its thread,
+            // so nothing it starts can happen before the plane is listening.
+            let steerFailure: Error | null = null;
+            const start = async () => {
+              const endDispatch = ctx.timing?.begin("t3.dispatch_request");
+              const steerResult = await driver.steer({
+                runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),
+                threadId: ctx.threadId ?? ctx.runId,
+                session,
+                input: turnInput,
+                metadata: controlMetadata
+                  ? { runtimeMode, createdAt, ...controlMetadata }
+                  : { runtimeMode, createdAt },
+                signal: ctx.signal,
+              });
+              endDispatch?.();
+              if (steerResult.status !== "ok") {
+                steerFailure = new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
+                throw steerFailure;
+              }
+              // Delivery evidence, separate from session authority: only an accepted
+              // steer proves this prompt, and the history it carried, reached the engine.
+              await ctx.markPromptDelivered?.();
+              await ctx.emit({ kind: "task", label: "Waiting for provider activity…", chip: `runtime:${engine}` });
+            };
             try {
-              const summary = await waitForRuntimeTurn(
-                ctx,
-                sandbox,
-                projector.seen(),
-                turnBase,
-                redact,
-                runtimeTurnWaitDependencies,
-                engine,
-                projector,
-              );
+              const summary = ctx.commandName === "compact"
+                ? await waitForRuntimeCompact(
+                    ctx, sandbox, turnBase, redact, runtimeUserMessageId(ctx.runId), runtimeTurnWaitDependencies, start,
+                  )
+                : await waitForRuntimeTurn(
+                    ctx, sandbox, projector.seen(), turnBase, redact, runtimeTurnWaitDependencies, engine, projector, start,
+                  );
               await ctx.emit({ kind: "done", label: "Done", chip: null });
               ctx.setSummary(summary, Date.now() - startedAt);
               break;
             } catch (error) {
+              if (error === steerFailure) throw error;
+              if (ctx.commandName === "compact") throw error;
               if (
                 providerBridgeLease.authPath === "subscription" &&
                 (error instanceof RuntimeFirstActivityTimeoutError || ctx.signal.aborted)
@@ -728,12 +462,17 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               turnBase = settledSnapshot;
               turnRequestedAt = new Date().toISOString();
               projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen(), steps: projector.steps() });
-              turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
+              turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
             }
           }
+          // The runtime rewrites its snapshot when the provider's command list
+          // changes (a command this turn created, a refreshed provider); read it
+          // again once the turn settled so the next reply composes against the
+          // current catalog. An unchanged list records nothing.
+          await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         } finally {
           endTurn?.();
-          if (ctx.signal.aborted && !skipQueuedCancel) {
+          if (ctx.signal.aborted && !skipQueuedCancel && ctx.commandName !== "compact") {
             const cancelResult = await driver.cancel(
               session,
               "turn aborted",

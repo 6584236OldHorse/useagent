@@ -7,7 +7,8 @@ import { cn } from "@/utils/cn";
  * row is recognisable before its label is read. Named by shape; the shapes
  * are the vendors' own marks: the knot (OpenAI), the starburst (Claude)
  * and the spark (Google Gemini) from the simple-icons set (CC0), the terminal
- * block (OpenCode) and the quad (Pi) from abhishek.it. All draw in
+ * block (OpenCode) and the quad (Pi) from abhishek.it. The pinwheel (Slack,
+ * simple-icons, CC0) marks the connector a thread arrived through. All draw in
  * currentColor so they take the row's icon colour like every other icon.
  */
 
@@ -62,6 +63,16 @@ export function QuadMark({ className, "aria-hidden": ariaHidden = true }: MarkPr
   );
 }
 
+/** The four-pill pinwheel. */
+export function PinwheelMark({ className, "aria-hidden": ariaHidden = true }: MarkProps) {
+  return (
+    // biome-ignore lint/a11y/noSvgWithoutTitle: presentational vendor mark, labelled by its row
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden={ariaHidden} className={cn("size-4", className)}>
+      <path d={'M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z'} />
+    </svg>
+  );
+}
+
 const MODEL_VENDOR_MARKS: Record<string, IconComponent> = {
   openai: KnotMark,
   anthropic: StarburstMark,
@@ -94,4 +105,21 @@ const ENGINE_MARKS: Record<string, IconComponent> = {
 /** The mark for an engine id; unknown engines get a neutral glyph. */
 export function engineMarkFor(engineId: string): IconComponent {
   return ENGINE_MARKS[engineId] ?? RiCpuLine;
+}
+
+const CONNECTOR_MARKS: Record<string, IconComponent> = {
+  slack: PinwheelMark,
+};
+const CONNECTOR_LABELS: Record<string, string> = {
+  slack: "Slack",
+};
+
+/** The mark for the connector a turn arrived through; unknown connectors get a neutral glyph. */
+export function connectorMarkFor(source: string): IconComponent {
+  return Object.hasOwn(CONNECTOR_MARKS, source) ? CONNECTOR_MARKS[source] : RiChat1Line;
+}
+
+/** The connector's name as people know it; an unknown id reads as itself. */
+export function connectorLabel(source: string): string {
+  return Object.hasOwn(CONNECTOR_LABELS, source) ? CONNECTOR_LABELS[source] : source;
 }

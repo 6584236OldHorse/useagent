@@ -131,7 +131,7 @@ export const kindChipColor: Record<
 
 /** User-facing label for a persisted knowledge folder key. */
 export function knowledgeFolderLabel(folder: string): string {
-  return folder === "skynet-app" || folder === "useagent-app" ? "useAgent" : folder;
+  return folder === "skynet-app" || folder === "useagent-app" ? "UseAgent" : folder;
 }
 
 /** Row-safe display copy that leaves the stored item and folder key unchanged. */

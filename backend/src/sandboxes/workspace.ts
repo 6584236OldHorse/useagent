@@ -1,5 +1,4 @@
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
-import { posix } from "node:path";
 import { resolveSandboxBindingForSandbox } from "./binding";
 import { isSandboxProviderKind, SANDBOX_PROVIDER_KINDS } from "./plugins";
 import { sandboxRuntimeLayout } from "./provider";
@@ -11,8 +10,9 @@ const INSPECTION_SCREENSHOT_DIRECTORIES = new Set([
 ]);
 
 export function requiresScreenshotProofPurpose(path: string): boolean {
-  return INSPECTION_SCREENSHOT_DIRECTORIES.has(posix.dirname(path))
-    && /^screenshot-\d+\.png$/.test(posix.basename(path));
+  return [...INSPECTION_SCREENSHOT_DIRECTORIES].some((directory) =>
+    path.startsWith(`${directory}/`)
+  );
 }
 
 export async function resolveAttachedSandboxWorkspaceRoot(input: {

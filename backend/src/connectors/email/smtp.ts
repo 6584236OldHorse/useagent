@@ -23,9 +23,13 @@ export interface SmtpConfig {
 
 export interface SmtpMessage {
   from: string;
+  /** Display name for the From header; the envelope sender stays the bare address. */
+  fromName?: string;
   to: string[];
   subject: string;
   text: string;
+  /** Optional HTML alternative; the plain text is always sent alongside it. */
+  html?: string;
 }
 
 export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void> {
@@ -149,17 +153,30 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
 
     write("DATA");
     await expect(354);
+    const from = msg.fromName ? `"${msg.fromName.replace(/["\r\n]/g, "")}" <${msg.from}>` : msg.from;
+    const boundary = `=_useagent_${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     const headers = [
-      `From: ${msg.from}`,
+      `From: ${from}`,
       `To: ${msg.to.join(", ")}`,
       `Subject: ${msg.subject}`,
       "MIME-Version: 1.0",
-      'Content-Type: text/plain; charset="utf-8"',
+      msg.html ? `Content-Type: multipart/alternative; boundary="${boundary}"` : 'Content-Type: text/plain; charset="utf-8"',
     ].join("\r\n");
+    const raw = msg.html
+      ? [
+          `--${boundary}`,
+          'Content-Type: text/plain; charset="utf-8"',
+          "",
+          msg.text,
+          `--${boundary}`,
+          'Content-Type: text/html; charset="utf-8"',
+          "",
+          msg.html,
+          `--${boundary}--`,
+        ].join("\n")
+      : msg.text;
     // CRLF newlines + dot-stuffing (a line starting with "." is escaped to "..").
-    const body = msg.text
-      .replace(/\r?\n/g, "\r\n")
-      .replace(/(^|\r\n)\./g, "$1..");
+    const body = raw.replace(/\r?\n/g, "\r\n").replace(/(^|\r\n)\./g, "$1..");
     write(`${headers}\r\n\r\n${body}\r\n.`);
     await expect(250);
 

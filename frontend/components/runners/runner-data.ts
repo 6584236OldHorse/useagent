@@ -1,3 +1,5 @@
+import type { RunLocation } from "@useagent/agent-client/wire";
+
 export const RUNNER_STATUSES = ["enrolled", "online", "offline", "revoked"] as const;
 export type RunnerStatus = (typeof RUNNER_STATUSES)[number];
 
@@ -114,16 +116,56 @@ export function markRunnerRevoked(runners: readonly Runner[], id: string): Runne
   return runners.map((runner) => (runner.id === id ? { ...runner, status: "revoked" } : runner));
 }
 
+/** How a sandbox provider kind reads to a person. The E2B-protocol plugin (id
+ *  cube) reads as whatever the deployment points at, so callers that know the
+ *  config's label pass it in `names`; this map is the fallback. */
+export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  daytona: "Daytona",
+  cube: "Cube",
+  box: "Box",
+  local: "Local machine",
+};
+
+/** Whether a run executes on the person's own machine: a local sandbox id,
+ *  the local provider (a released sandbox keeps its provider after its id is
+ *  cleared), or Local asked for before any sandbox or provider is recorded.
+ *  Everything else is hosted: a recorded hosted provider outranks the ask, and
+ *  a thread that asked for nothing runs in the cloud. */
+export function runOnMachine(
+  sandboxId: string | null,
+  sandboxProvider: unknown,
+  runLocation: RunLocation | null | undefined = null,
+): boolean {
+  return (
+    localRunnerId(sandboxId) !== null ||
+    sandboxProvider === "local" ||
+    (!sandboxId && !sandboxProvider && runLocation === "local")
+  );
+}
+
+/** Where a run executes, in the composer's two words: the machine's enrolled
+ *  name for a run on the person's machine ("This Mac" until the runner list
+ *  names it) and "Cloud" for anything hosted; the vendor never appears here. */
 export function runnerLocationLabel(
   sandboxId: string | null,
   sandboxProvider: unknown,
   runners: readonly Runner[],
+  runLocation: RunLocation | null | undefined = null,
 ): string {
   const runnerId = localRunnerId(sandboxId);
-  if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
+  if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "This Mac";
+  return runOnMachine(sandboxId, sandboxProvider, runLocation) ? "This Mac" : "Cloud";
+}
+
+/** The vendor behind a hosted sandbox, kept for a title only: the deployment's
+ *  own label when the caller passes it in `names`, else the plugin's name. */
+export function sandboxVendorLabel(
+  sandboxProvider: unknown,
+  names: Readonly<Record<string, string>> = PROVIDER_NAMES,
+): string | null {
   return typeof sandboxProvider === "string" && sandboxProvider.trim()
-    ? sandboxProvider
-    : "Unknown runtime";
+    ? (names[sandboxProvider] ?? sandboxProvider)
+    : null;
 }
 
 export function runnerLoginAvailable(
@@ -147,8 +189,8 @@ export function runnerLoginAvailable(
   );
 }
 
-/** Whether this user's own machine is online and allowed to run their work; the
- *  plane sends new threads there ahead of the cloud. */
+/** Whether this user's own machine is online and allowed to run their work; a
+ *  new thread goes there only when the person chooses Local. */
 export function runnerRunsUserWork(
   policy: RunnerPolicy | null,
   runners: readonly Runner[],

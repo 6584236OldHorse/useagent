@@ -25,7 +25,7 @@ afterEach(() => {
 
 /** A control plane that speaks the link protocol over Bun's WebSocket server. */
 function fakePlane(options: FakePlaneOptions = {}) {
-  const state = { connections: 0, hellos: [] as unknown[], heartbeats: 0, digests: [] as Array<string | null>, muxes: [] as Mux[] };
+  const state = { connections: 0, hellos: [] as unknown[], heartbeats: 0, digests: [] as Array<string | null>, muxes: [] as Mux[], events: [] as unknown[] };
   const server = Bun.serve<{ mux: Mux | null; authorized: boolean }>({
     port: 0,
     hostname: "127.0.0.1",
@@ -51,6 +51,9 @@ function fakePlane(options: FakePlaneOptions = {}) {
           onHeartbeat: (frame) => {
             state.heartbeats += 1;
             state.digests.push(frame.imageDigest);
+          },
+          onEvent: (frame) => {
+            state.events.push(frame);
           },
         });
         ws.data.mux = mux;
@@ -163,6 +166,19 @@ describe("link client", () => {
     expect(welcomes[0]?.image.ref).toBe(WELCOME.image.ref);
     expect(states.some((s) => s.startsWith("online:"))).toBe(true);
     expect(await planeMux!.rpc("sandbox.list", { a: 1 })).toEqual({ method: "sandbox.list", params: { a: 1 } });
+    link.stop();
+    expect((await run).reason).toBe("stopped");
+  });
+
+  test("an event reaches the plane once the link is up, and is dropped while it is not", async () => {
+    const plane = fakePlane();
+    const { link } = client(plane.url);
+    link.event("image.pull", { progress: 0.1 });
+    const run = link.run();
+    await until(() => plane.state.heartbeats >= 1);
+    link.event("image.pull", { progress: 0.5, detail: "layer 2/4" });
+    await until(() => plane.state.events.length === 1);
+    expect(plane.state.events[0]).toEqual({ t: "event", sandboxId: null, kind: "image.pull", detail: { progress: 0.5, detail: "layer 2/4" } });
     link.stop();
     expect((await run).reason).toBe("stopped");
   });

@@ -8,7 +8,9 @@ import type { SlackOutboxEnqueue } from "./types";
 // delivery.ts; this only reads/writes rows.
 // ---------------------------------------------------------------------------
 
-const PAYLOAD_CAP = 48_000;
+/** Serialized size a stored row may reach; reply rows are sized against it by
+ *  their callers so that nothing is ever shed. */
+export const PAYLOAD_CAP = 48_000;
 /** Appended to the last kept chunk when trailing chunks had to be dropped. */
 const TRUNCATION_MARKER = "\n\n_(truncated; full reply in the app)_";
 
@@ -43,7 +45,8 @@ function sameString(left: Record<string, unknown>, right: Record<string, unknown
 }
 
 /** Resolve semantic ties that can share the same database timestamp. A clear
- * status must follow its working status, and immutable artifact revisions must
+ * status must follow its working status, an answer's tail must follow its
+ * closed stream (tails in part order), and immutable artifact revisions must
  * reach Slack oldest-first. Other row kinds retain the stable id fallback. */
 function semanticClaimOrder(left: ClaimedRow, right: ClaimedRow): number {
   const leftPayload = payloadRecord(left);
@@ -52,6 +55,10 @@ function semanticClaimOrder(left: ClaimedRow, right: ClaimedRow): number {
     const leftUserMirror = left.kind === "post_message" && leftPayload.messageRole === "user_mirror";
     const rightUserMirror = right.kind === "post_message" && rightPayload.messageRole === "user_mirror";
     if (leftUserMirror !== rightUserMirror) return leftUserMirror ? -1 : 1;
+    const leftTail = left.kind === "post_message" && leftPayload.messageRole === "reply_tail";
+    const rightTail = right.kind === "post_message" && rightPayload.messageRole === "reply_tail";
+    if (leftTail !== rightTail) return leftTail ? 1 : -1;
+    if (leftTail && rightTail) return Number(leftPayload.part) - Number(rightPayload.part);
   }
   if (
     left.kind === "set_thread_status" && right.kind === "set_thread_status" &&
@@ -108,8 +115,10 @@ export async function enqueue(
   // arrays under `chunks` - those are size-capped at build time and must never
   // enter the string shedder. The Block Kit `blocks` are already length-capped
   // by the pure card builder, so only the free-text answer can overflow.
+  // An EMPTY `chunks` array (a stop with nothing to close) is not a text chunk
+  // field: the shedder must move on to the fallback chunks it carries.
   const textChunks = (value: unknown): value is string[] =>
-    Array.isArray(value) && value.every((c) => typeof c === "string");
+    Array.isArray(value) && value.length > 0 && value.every((c) => typeof c === "string");
   const chunkField = textChunks(bounded.chunks)
     ? "chunks"
     : textChunks(bounded.fallbackChunks)
@@ -223,15 +232,16 @@ export async function markRetry(
     .where(eq(slackOutbox.id, id));
 }
 
-/** Return a claimed result row to pending without consuming a delivery attempt
- * while its same-run user mirror is still in flight. */
-export async function deferForDependency(id: string, nextAttemptAt: Date): Promise<void> {
+/** Return a claimed row to pending without consuming a delivery attempt: its
+ * dependency is still in flight, or the card it revises was updated too
+ * recently. */
+export async function deferForDependency(id: string, nextAttemptAt: Date, reason = "waiting_for_user_mirror"): Promise<void> {
   await db
     .update(slackOutbox)
     .set({
       state: "pending",
       nextAttemptAt,
-      lastError: "waiting_for_user_mirror",
+      lastError: reason,
       errorClass: null,
       updatedAt: new Date(),
     })
@@ -370,4 +380,14 @@ export async function getByKey(idempotencyKey: string): Promise<SlackOutboxRow |
     .where(eq(slackOutbox.idempotencyKey, idempotencyKey))
     .limit(1);
   return row ?? null;
+}
+
+/** Whether an outbox entry was durably recorded under `idempotencyKey`. */
+export async function outboxEntryExists(idempotencyKey: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: slackOutbox.id })
+    .from(slackOutbox)
+    .where(eq(slackOutbox.idempotencyKey, idempotencyKey))
+    .limit(1);
+  return row !== undefined;
 }

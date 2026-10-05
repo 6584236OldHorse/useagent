@@ -6,7 +6,7 @@
 // gate (6.4): an unverified completion enqueues an intent but produces NO
 // procedure candidate. DB-backed (useAgent_test).
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { artifacts, knowledgeDrafts, learningOutbox, steps } from "../src/db/schema";
@@ -55,6 +55,15 @@ async function seedVerifiedProcedure(runId: string): Promise<void> {
 afterEach(async () => {
   // Keep the shared dev DB tidy between tests (rows are org-scoped test runs).
   await db.delete(learningOutbox).where(eq(learningOutbox.orgId, ORG));
+});
+
+
+// Every test here counts what ONE worker pass builds, skips, retries or
+// dead-letters. Due rows left behind by other test files (any finalized run
+// enqueues an intent) are claimed by the same pass and skew those counts, so
+// each test starts from an empty outbox. The rows a test needs, it makes.
+beforeEach(async () => {
+  await db.delete(learningOutbox);
 });
 
 describe("learning outbox — enqueue is inside finalizeRun's terminal transaction", () => {

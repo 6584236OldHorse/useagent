@@ -8,9 +8,14 @@ import type { SandboxCreateOptions, SandboxHandle, SandboxProvider } from "./pro
 
 // Frozen VALUE: operator env var name already set in production host config.
 const CUBE_RUNTIME_WARM_POOL_SIZE_ENV = "CUBE_T3_WARM_POOL_SIZE";
+const DEFAULT_CUBE_RUNTIME_WARM_POOL_SIZE = 3;
 export const DEFAULT_CUBE_WARM_POOL_NAME = "default";
 const WARM_TIMEOUT_MS = 120_000;
 const CLAIM_PROBE_TIMEOUT_SECONDS = 5;
+// A refill is a create plus the runtime warmup, about as long as the cold
+// create and warmup a run pays without a member, so a claim that finds the pool
+// empty waits this long for a member already being made.
+const CLAIM_REFILL_WAIT_MS = 20_000;
 const INITIAL_RETRY_DELAY_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 60_000;
 type RetryMode = "refill" | "reconcile";
@@ -25,20 +30,14 @@ class CleanupDeleteError extends Error {
   }
 }
 
-function configuredPoolSize(
-  name: string,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): number | null {
-  const raw = env[name]?.trim();
-  if (!raw) return null;
-  const size = Number(raw);
-  return Number.isInteger(size) && size > 0 ? size : null;
-}
-
+/** Runtime pool target: three members unless the operator sets another size; 0 turns the pool off. */
 export function cubeRuntimeWarmPoolSize(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): number | null {
-  return configuredPoolSize(CUBE_RUNTIME_WARM_POOL_SIZE_ENV, env);
+  const raw = env[CUBE_RUNTIME_WARM_POOL_SIZE_ENV]?.trim();
+  if (!raw) return DEFAULT_CUBE_RUNTIME_WARM_POOL_SIZE;
+  const size = Number(raw);
+  return Number.isInteger(size) && size > 0 ? size : null;
 }
 
 export interface CubeWarmPoolOptions {
@@ -52,6 +51,8 @@ export interface CubeWarmPoolOptions {
   readonly initialRetryDelayMs?: number;
   readonly maxRetryDelayMs?: number;
   readonly refillAfterClaim?: boolean;
+  /** How long a claim on an empty pool waits for a refill already in flight. */
+  readonly claimWaitMs?: number;
   readonly protectedSandboxIds?: () => Promise<ReadonlySet<string>>;
   readonly logger?: Pick<typeof console, "log" | "warn">;
 }
@@ -78,10 +79,13 @@ export class CubeWarmPool {
   private readonly initialRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
   private readonly refillAfterClaim: boolean;
+  private readonly claimWaitMs: number;
   private readonly protectedSandboxIds: () => Promise<ReadonlySet<string>>;
   private readonly logger: Pick<typeof console, "log" | "warn">;
   private readonly ready: SandboxHandle[] = [];
   private creating = 0;
+  /** Claims waiting on an in-flight refill; never more than the refills in flight. */
+  private waiting = 0;
   private failures = 0;
   private retryDelayMs = INITIAL_RETRY_DELAY_MS;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,6 +106,7 @@ export class CubeWarmPool {
       options.maxRetryDelayMs ?? MAX_RETRY_DELAY_MS,
     );
     this.refillAfterClaim = options.refillAfterClaim ?? true;
+    this.claimWaitMs = Math.max(0, options.claimWaitMs ?? CLAIM_REFILL_WAIT_MS);
     this.protectedSandboxIds = options.protectedSandboxIds ?? durablyBoundSandboxIds;
     this.retryDelayMs = this.initialRetryDelayMs;
     this.logger = options.logger ?? console;
@@ -124,6 +129,7 @@ export class CubeWarmPool {
   async claim(): Promise<SandboxHandle | null> {
     if (!this.started) return null;
     while (this.started) {
+      if (this.ready.length === 0) await this.waitForInFlightRefill();
       const candidate = this.ready.shift();
       if (!candidate) return null;
 
@@ -161,7 +167,6 @@ export class CubeWarmPool {
           throw deleteError;
         }
         if (this.refillAfterClaim) this.refill();
-        await this.waitForInFlightRefill();
       }
     }
     return null;
@@ -227,10 +232,17 @@ export class CubeWarmPool {
     this.retryTimer.unref?.();
   }
 
+  /** Wait, bounded, for a member a refill in flight will deliver; a claim with no refill left for it returns at once. */
   private async waitForInFlightRefill(): Promise<void> {
-    const deadline = Date.now() + 1_000;
-    while (this.started && this.ready.length === 0 && this.creating > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    if (this.waiting >= this.creating) return;
+    this.waiting += 1;
+    try {
+      const deadline = Date.now() + this.claimWaitMs;
+      while (this.started && this.ready.length === 0 && this.creating > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    } finally {
+      this.waiting -= 1;
     }
   }
 
@@ -306,9 +318,24 @@ export class CubeWarmPool {
       if (!desktop.available) {
         throw new Error(desktop.reason ?? "desktop computer-use surface unavailable");
       }
-      return;
+    } else {
+      await this.warmRuntime(sandbox, signal);
     }
-    await this.warmRuntime(sandbox, signal);
+    await this.park(sandbox);
+  }
+
+  /** An idle member waits paused where the provider can pause, so it stops billing; claim's lookup resumes it. */
+  private async park(sandbox: SandboxHandle): Promise<void> {
+    if (!this.provider.pause) return;
+    try {
+      await this.provider.pause(sandbox.id);
+    } catch (error) {
+      // A member that stays running is still a good member, only a dearer one.
+      this.logger.warn(
+        `[cube-warm-pool:${this.name}] could not pause ${sandbox.id.slice(0, 8)}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
   private async deleteForCleanup(sandbox: SandboxHandle, context: string): Promise<void> {

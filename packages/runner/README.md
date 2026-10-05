@@ -34,7 +34,7 @@ change on stdout: `{"state":"starting|pulling|online|offline|error","detail":...
   names the file (`USEAGENT_LOGIN_CODEX=...`). Hard links flow refreshed tokens
   back; the Claude credential is written back to the keychain when a sandbox
   stops.
-- `src/image.ts`: pull the image the plane names, verify its digest, keep it.
+- `src/image.ts`: pull the image the plane names, verify its digest, keep it. The service runs that pull at the welcome and again on demand when a create finds the image missing (one pull per image at a time, bounded wait, the pull outlives the wait).
 
 ## Build
 

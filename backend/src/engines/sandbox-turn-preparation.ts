@@ -16,7 +16,8 @@ import {
   recordSecretsInjected,
 } from "../secrets/inject";
 import { createSecretRedactor } from "../secrets/redact";
-import { resolveRuntimeWorkspaceRoot } from "./runtime-environment";
+import { buildRuntimeIdentityPreflightCommand, resolveRuntimeWorkspaceRoot } from "./runtime-environment";
+import { dropPrefetchedSandboxResults, prefetchSandboxCommand } from "../sandboxes/command-prefetch";
 import { buildRootTraversalAccessCommand } from "./runtime-user-permissions";
 
 export interface SandboxTurnPreparationOptions<T> {
@@ -58,6 +59,9 @@ export interface SandboxTurnPreparationOptions<T> {
     preparation: { readonly stableProviderPrepared: boolean },
   ) => Promise<T>;
   readonly closeProvider?: (state: T) => Promise<void>;
+  /** A retained sandbox is up: issue the provider's read-only warm-turn checks
+   * now, for its preparation steps to take instead of running them in turn. */
+  readonly prefetchProvider?: (sandbox: SandboxHandle) => void;
 }
 
 export interface PreparedSandboxTurn<T> {
@@ -81,12 +85,27 @@ export async function prepareSandboxTurn<T>(
   const secretInjection = await composeSecretEnv(ctx, { excludeNames: PROVIDER_SECRET_NAMES });
   const redact = createSecretRedactor(secretInjection.redactionValues);
   const endSandbox = ctx.timing?.begin(`${options.timingPrefix}.sandbox_acquire`);
+  // A retained sandbox's warm checks start while acquisition checks its
+  // credentials; whatever this turn does not take is dropped when it ends.
+  let warmed: SandboxHandle | null = null;
   const lease = await dependencies.acquireThreadSandbox(ctx, {
     snapshot: options.snapshot,
     chip: options.chip,
     warmPool: options.warmPool,
     labels: options.labels,
     requiredLabels: options.requiredLabels,
+    onRetainedStarted(sandbox, binding) {
+      warmed = sandbox;
+      dropPrefetchedSandboxResults(sandbox);
+      // A fenced provider keeps every sandbox write, even this mkdir, after its fence.
+      if (!options.prepareSandbox) {
+        prefetchSandboxCommand(sandbox, buildRuntimeIdentityPreflightCommand(sandboxRuntimeLayout(binding.kind)), 10);
+      }
+      options.prefetchProvider?.(sandbox);
+    },
+  }).catch((error: unknown) => {
+    if (warmed) dropPrefetchedSandboxResults(warmed);
+    throw error;
   });
   endSandbox?.();
 
@@ -201,7 +220,13 @@ export async function prepareSandboxTurn<T>(
       providerPrepared = true;
       return state;
     });
+    const recordOutputBaseline = async () => {
+      if (ctx.prepareOutputCapture) {
+        await stage("output_baseline", () => ctx.prepareOutputCapture!(sandbox, workdir));
+      }
+    };
     let resolvedProviderState: T;
+    let outputBaselineRecorded = false;
     if (
       options.providerAfterResources ||
       (!lease.reused && options.prepareStableProvider)
@@ -210,16 +235,22 @@ export async function prepareSandboxTurn<T>(
       ctx.signal.throwIfAborted();
       resolvedProviderState = await prepareProvider();
     } else {
+      // A provider that overlaps resources writes nothing under the workspace,
+      // so the output baseline follows the resources, not the provider.
       const providerOperation = prepareProvider();
-      const resourcesOperation = prepareResources();
+      const resourcesOperation = prepareResources().then(recordOutputBaseline);
       try {
         [resolvedProviderState] = await Promise.all([providerOperation, resourcesOperation]);
       } catch (error) {
         await Promise.allSettled([providerOperation, resourcesOperation]);
         throw error;
       }
+      outputBaselineRecorded = true;
     }
     await stage("secrets_marker", () => recordSecretsInjected(ctx, secretInjection));
+    // Resources-first providers may re-own the workspace (a recursive chown
+    // touches every file), so their baseline is taken after them.
+    if (!outputBaselineRecorded) await recordOutputBaseline();
     return {
       sandbox,
       workdir,
@@ -231,6 +262,7 @@ export async function prepareSandboxTurn<T>(
     await close().catch(() => {});
     throw error;
   } finally {
+    dropPrefetchedSandboxResults(lease.sandbox);
     endPrepare?.();
   }
 }

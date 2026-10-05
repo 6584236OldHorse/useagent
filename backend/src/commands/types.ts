@@ -1,3 +1,4 @@
+import type { PermissionMode, RunLocation } from "@useagent/agent-client/wire";
 import type { EngineId, MemoryScope } from "../db/schema";
 import type { ExplicitRunResource, RunResource } from "../resources/types";
 import type { ThreadRelationshipKind } from "../db/schema";
@@ -18,6 +19,8 @@ export interface RunCommandIntent {
   /** Normalized caller-supplied selectors. Null means the caller delegated to
    * the server/parent default; later config changes must not alter a replay. */
   readonly model: string | null;
+  /** The requested reasoning effort, validated at acceptance; absent inherits. */
+  readonly reasoningEffort?: string | null;
   readonly engine: EngineId | null;
   readonly parentRunId: string | null;
   /** Only repositories explicitly selected by the caller. Inherited and
@@ -28,6 +31,12 @@ export interface RunCommandIntent {
    * for Slack), not provider-generated staging metadata. */
   readonly attachmentIds: readonly string[];
   readonly memoryScope: MemoryScope | null;
+  /** The caller's explicit permission mode; null (or absent, for legacy callers)
+   * means it delegated to the parent's mode or the operator's posture. */
+  readonly permissionMode?: PermissionMode | null;
+  /** Where the root run was asked to execute (agent-client wire RunLocation);
+   * null or absent means the caller made no choice, which is the cloud. */
+  readonly runLocation?: RunLocation | null;
   /** The requested skill pin. A null version means "current" was requested;
    * the resolved immutable version is persisted on the run separately. */
   readonly skillId: string | null;
@@ -89,6 +98,8 @@ export interface RunCommandInput {
     readonly id: string;
     readonly prompt: string;
     readonly model: string;
+    /** Resolved reasoning effort (explicit or inherited), null for the runtime's default. */
+    readonly reasoningEffort?: string | null;
     readonly engine: EngineId;
     readonly parentRunId: string | null;
     readonly threadId: string;
@@ -110,6 +121,13 @@ export interface RunCommandInput {
     /** Team-memory pool for the run — resolved at the boundary (explicit choice,
      *  parent inheritance, or the "org" default). Never taken from the sandbox. */
     readonly memoryScope: MemoryScope;
+    /** The run's permission policy (engines/permission-mode.ts). Product lanes
+     *  resolve it; a lane that omits it takes the operator's configured posture. */
+    readonly permissionMode?: PermissionMode;
+    /** Where the thread runs (RunLocation). A root run carries the choice, or
+     *  null for the cloud; a reply leaves it unset and the insert copies the
+     *  thread's under the lifecycle lock. */
+    readonly runLocation?: RunLocation | null;
     /** Pinned skill revision reference for this run, or null. Part of the run's
      *  identity (the same prompt WITH a skill is a different turn). The content
      *  hash is stored for provenance but derives from (skillId, version). */

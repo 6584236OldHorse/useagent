@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { DelegationStoppedError, hasRunCancelIntent } from "./cancel";
 import { db, type Executor } from "../db/client";
 import { bots, commands, runs, type CommandState } from "../db/schema";
-import { createRun } from "../runs/repo";
+import { createRun, getLatestThreadRun } from "../runs/repo";
 import type { RunCommandInput } from "./types";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { claimUploadsForRun, UploadClaimError } from "../uploads/repo";
@@ -85,11 +85,22 @@ export async function insertCommandWithRun(
   exec: Executor = db,
 ): Promise<void> {
   const insert = async (tx: Executor): Promise<void> => {
+    // A reply that carries no choice keeps the thread's current mode, read here
+    // under the thread lifecycle lock this acceptance holds, so a narrowing reply
+    // that committed meanwhile is never undone by an earlier, stale read. The
+    // same read copies the thread's run location onto the reply: the root's
+    // choice rides every turn, so a turn whose retained sandbox is gone still
+    // asks for the place the thread was started on.
+    const latest = cmd.run.parentRunId && (cmd.run.permissionMode === undefined || cmd.run.runLocation === undefined)
+      ? await getLatestThreadRun(cmd.orgId, cmd.run.threadId, tx) : null;
+    const permissionMode = cmd.run.permissionMode ?? latest?.permissionMode;
+    const runLocation = cmd.run.runLocation === undefined ? latest?.runLocation ?? null : cmd.run.runLocation;
     await createRun(
       {
         id: cmd.run.id,
         prompt: cmd.run.prompt,
         model: cmd.run.model,
+        reasoningEffort: cmd.run.reasoningEffort ?? null,
         engine: cmd.run.engine,
         orgId: cmd.orgId,
         userId: cmd.actorId,
@@ -98,6 +109,8 @@ export async function insertCommandWithRun(
         repos: cmd.run.repos,
         resolvedResources: cmd.run.resolvedResources,
         memoryScope: cmd.run.memoryScope,
+        permissionMode,
+        runLocation,
         skillId: cmd.run.skillId,
         skillVersion: cmd.run.skillVersion,
         skillContentHash: cmd.run.skillContentHash,

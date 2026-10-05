@@ -34,6 +34,22 @@ test("renders one synthetic session through the real timeline + chrome renderers
   expect(html).toContain('data-session-ui="file-diff-view"');
   expect(html).toContain('data-session-ui="agent-panel-row"');
   expect(html).toContain('data-testid="todo-list"'); // plan / todo card
+  // The work-log pill over the rows: Worked, a listing counted, the failed grep
+  // chipped, timed steps with their durations.
+  expect(html).toContain(">Worked<");
+  expect(html).toContain(">3 entries<");
+  expect(html).toContain('data-testid="trace-row-error"');
+  expect(html).toContain('data-testid="trace-row-duration"');
+  // Subagent rows: one folded, one opened with its summary behind More.
+  expect(html.match(/data-testid="subagent-fold-row"/g)).toHaveLength(2);
+  expect(html).toContain('data-testid="subagent-summary"');
+  expect(html).toContain(">More<");
+  // The shell panels: chat tabs, the Bookmarks drop target, the Details rail.
+  expect(html).toContain('data-testid="chat-tabs"');
+  expect(html).toContain('data-testid="sidebar-bookmarks"');
+  expect(html).toContain('data-testid="session-details"');
+  expect(html).toContain('data-testid="details-plan"');
+  expect(html).toContain('data-testid="usage-input"');
 
   // The left index is navigable.
   expect(html).toContain('aria-label="Covered types"');

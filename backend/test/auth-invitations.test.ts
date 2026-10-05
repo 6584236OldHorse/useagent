@@ -3,15 +3,20 @@ import { like } from "drizzle-orm";
 
 await import("./helpers");
 const { db } = await import("../src/db/client");
-const { env } = await import("../src/env");
+const { env, invitationMailConfig } = await import("../src/env");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
+  CONFIRMATION_TTL_MS,
+  confirmationLinks,
+  confirmationToken,
   deliverInvitation,
+  deliverVerification,
   headerSafe,
   invitationLink,
-  invitationMailConfig,
   invitationMessage,
   invitedSignupAllowed,
+  readConfirmationToken,
+  verificationMessage,
 } = await import("../src/auth-invitations");
 
 const prefix = `invite-${crypto.randomUUID()}`;
@@ -58,10 +63,13 @@ describe("invitation mail configuration", () => {
       link: "https://app.example.test/accept-invitation/inv1",
       expiresAt: new Date("2026-09-20T10:00:00Z"),
     });
-    expect(message.subject).toBe("Dana invited you to Acme on useAgent");
+    expect(message.subject).toBe("Dana invited you to Acme on UseAgent");
     expect(message.text).toContain("join Acme as an admin");
     expect(message.text).toContain("https://app.example.test/accept-invitation/inv1");
     expect(message.text).toContain("until 2026-09-20");
+    expect(message.html).toContain('href="https://app.example.test/accept-invitation/inv1"');
+    expect(message.html).toContain(">Accept invitation<");
+    expect(message.html).toContain(">UseAgent<");
   });
 
   test("a name cannot smuggle a mail header", () => {
@@ -73,8 +81,37 @@ describe("invitation mail configuration", () => {
       link: "https://app.example.test/accept-invitation/inv1",
       expiresAt: new Date("2026-09-20T10:00:00Z"),
     });
-    expect(message.subject).toBe("A teammate invited you to Acme X-Note: injected on useAgent");
+    expect(message.subject).toBe("A teammate invited you to Acme X-Note: injected on UseAgent");
     expect(message.subject).not.toMatch(/[\r\n]/);
+  });
+
+  test("a typed name is plain words in the mail: no markup, no link, not a paragraph", () => {
+    const message = invitationMessage({
+      organization: "Claim your refund at https://pay.example.com/<b>now</b>",
+      inviter: "billing@pay.example.com",
+      role: "member",
+      link: "https://app.example.test/accept-invitation/inv1",
+      expiresAt: new Date("2026-09-20T10:00:00Z"),
+    });
+    for (const body of [message.text, message.html]) {
+      expect(body).not.toContain("pay.example.com");
+      expect(body).not.toContain("https://pay");
+      expect(body).not.toContain("billing@pay");
+    }
+    expect(message.html).not.toContain("<b>");
+    expect(message.html).toContain("&lt;b&gt;");
+    expect(message.html.match(/<a /g)).toHaveLength(2); // the accept button and its spelled-out link
+    expect(message.subject).toBe(
+      "billing@pay.example.com invited you to Claim your refund at https://pay.example.com/<b>now</b> on UseAgent",
+    );
+    const long = invitationMessage({
+      organization: "x".repeat(500),
+      inviter: "Dana",
+      role: "member",
+      link: "https://app.example.test/accept-invitation/inv1",
+      expiresAt: new Date("2026-09-20T10:00:00Z"),
+    });
+    expect(long.text).not.toContain("x".repeat(61));
   });
 
   test("delivers through the given transport, or only logs the link without one", async () => {
@@ -96,7 +133,48 @@ describe("invitation mail configuration", () => {
     };
     expect(await deliverInvitation(data, config, send as never)).toBe("sent");
     // A blank inviter name falls back to the inviter's email.
-    expect(sent).toEqual([{ to: ["new@example.test"], subject: "dana@example.test invited you to Acme on useAgent", from: "hello@example.test" }]);
+    expect(sent).toEqual([{ to: ["new@example.test"], subject: "dana@example.test invited you to Acme on UseAgent", from: "hello@example.test" }]);
+  });
+});
+
+describe("sign-up verification mail", () => {
+  test("the token names one registration, expires, and cannot be forged or retargeted", () => {
+    const token = confirmationToken({ id: "user 1", email: "New@Example.test" }, "secret", 1_000);
+    expect(readConfirmationToken(token, "secret", 2_000)).toEqual({ id: "user 1", email: "new@example.test" });
+    expect(readConfirmationToken(token, "secret", 1_000 + CONFIRMATION_TTL_MS + 1)).toBe("expired");
+    expect(readConfirmationToken(token, "other-secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken(`${token}x`, "secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken("", "secret", 2_000)).toBe("invalid");
+    const [payload, signature] = token.split(".");
+    const other = Buffer.from(JSON.stringify({ id: "user 2", email: "new@example.test", until: 9e15 })).toString("base64url");
+    expect(readConfirmationToken(`${other}.${signature}`, "secret", 2_000)).toBe("invalid");
+    expect(readConfirmationToken(`${payload}.`, "secret", 2_000)).toBe("invalid");
+    expect(confirmationLinks(token, "https://app.example.test")).toEqual({
+      confirm: `https://app.example.test/api/auth/confirm-signup?token=${encodeURIComponent(token)}`,
+      decline: `https://app.example.test/api/auth/decline-signup?token=${encodeURIComponent(token)}`,
+    });
+  });
+
+  test("the mail says who chose the password and how to cancel, and needs a transport", async () => {
+    const links = confirmationLinks("t.s", "https://app.example.test");
+    const message = verificationMessage(links);
+    expect(message.subject).toBe("Confirm your UseAgent sign-up");
+    expect(message.text).toContain(links.confirm);
+    expect(message.text).toContain(links.decline);
+    expect(message.text).toContain("chosen by whoever filled in the form");
+    expect(message.text).toContain("cancel the sign-up here instead");
+    expect(message.html).toContain(`href="${links.confirm}"`);
+    expect(message.html).toContain(`href="${links.decline}"`);
+    expect(message.html).toContain(">Confirm email<");
+    await expect(deliverVerification("new@example.test", links, null)).rejects.toThrow("no mail transport");
+    const sent: Array<{ to: string[]; subject: string; from: string }> = [];
+    const config = { host: "smtp.example.test", port: 465, secure: true, from: "hello@example.test" };
+    const send = async (cfg: { timeoutMs?: number }, msg: { to: string[]; subject: string; from: string }) => {
+      expect(cfg.timeoutMs).toBe(20_000);
+      sent.push({ to: msg.to, subject: msg.subject, from: msg.from });
+    };
+    await deliverVerification("new@example.test", links, config, send as never);
+    expect(sent).toEqual([{ to: ["new@example.test"], subject: "Confirm your UseAgent sign-up", from: "hello@example.test" }]);
   });
 });
 

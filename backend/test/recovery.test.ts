@@ -1,14 +1,16 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { providerEvents } from "../src/db/schema";
+import { providerEvents, reconcileQueue, runs } from "../src/db/schema";
 import { acceptRunCommand } from "../src/commands";
 import { settleCommandForRun } from "../src/commands/dispatch";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../src/commands/cancel";
 import {
   INCOMPATIBLE_PROVIDER_SESSION_SUMMARY,
+  ingestReconciliationEvents,
   recoverStaleRuns,
   runDueReconciles,
+  UNRECOVERABLE_SUMMARY,
   type ReconcileProbe,
 } from "../src/runs/recovery";
 import { finalizeRun } from "../src/runs/finalize";
@@ -30,6 +32,56 @@ import { piProviderDriver } from "../src/engines/pi-provider-driver";
 import type { EngineId, RunStatus } from "../src/db/schema";
 import { waitFor } from "./helpers"; // side-effect: imports src/index → migrate + seed
 import { enqueueReconcile } from "../src/runs/reconcile-queue";
+import { createSecretRedactor } from "../src/secrets/redact";
+import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
+
+test("reconciliation cannot append narration after settlement even while its lease is held", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({ id: runId, prompt: "late narration", model: "test-model", engine: "mock",
+    orgId: DEV_ORG_ID, userId: DEV_USER_ID, parentRunId: null, threadId: runId });
+  await setRunStatus(runId, "completed");
+  const events = [{ id: `pe_${runId}_message`, runScopedId: true, provider: "t3",
+    eventType: "t3.message.updated", sessionId: "root", messageId: "message", payload: { text: "late" } }];
+  await expect(ingestReconciliationEvents({ runId, threadId: runId }, createSecretRedactor([]), events, true,
+    async () => true)).rejects.toThrow("reconcile claim lost");
+  const rows = await db.select().from(providerEvents).where(eq(providerEvents.runId, runId));
+  expect(rows).toHaveLength(0);
+});
+
+test("concurrent settlement and recovery capture use run-before-claim lock order", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({ id: runId, prompt: "capture settlement race", model: "test-model", engine: "mock",
+    orgId: DEV_ORG_ID, userId: DEV_USER_ID, parentRunId: null, threadId: runId });
+  await enqueueReconcile({ runId, threadId: runId, sandboxId: "qa", sessionId: "qa",
+    sinceAt: new Date(), nextAttemptAt: new Date(Date.now() + 60_000), deadline: new Date(Date.now() + 120_000) });
+  let locked!: () => void;
+  const runLocked = new Promise<void>((resolve) => { locked = resolve; });
+  let release!: () => void;
+  const proceed = new Promise<void>((resolve) => { release = resolve; });
+  const settlement = db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    await tx.select().from(runs).where(eq(runs.id, runId)).for("update");
+    locked();
+    await proceed;
+    // Same lock order as finalizeOwned: run row, then reconcile claim.
+    await tx.delete(reconcileQueue).where(eq(reconcileQueue.runId, runId));
+    await tx.update(runs).set({ status: "completed" }).where(eq(runs.id, runId));
+  });
+  await runLocked;
+  const capture = ingestReconciliationEvents({ runId, threadId: runId }, createSecretRedactor([]), [{
+    id: `pe_${runId}_race`, runScopedId: true, provider: "t3", eventType: "t3.message.updated",
+    sessionId: "qa", messageId: "qa", payload: { text: "late" },
+  }], true, async (tx) => {
+    const rows = await tx.select().from(reconcileQueue).where(eq(reconcileQueue.runId, runId)).for("update");
+    return rows.length > 0;
+  }).then(() => "captured", (error: Error) => error.message);
+  // Let capture contend with the already held run row before finalization proceeds.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  release();
+  await settlement;
+  expect(await capture).toContain("reconcile claim lost");
+  expect(await db.select().from(providerEvents).where(eq(providerEvents.runId, runId))).toHaveLength(0);
+}, 5_000);
 
 // Boot recovery of the durable command lane, driven with a deterministic fake
 // harness probe. Covers the crash matrix: reconcile an in-flight run, free a
@@ -144,7 +196,9 @@ describe("command-lane restart recovery", () => {
     expect((await getRun(runId))?.status).toBe("failed");
   });
 
-  test("a failed Pi restart cleanup keeps the run and command fenced", async () => {
+  test("a run whose recovery throws is failed honestly and boot recovery carries on past it", async () => {
+    // A Pi cleanup against a gone sandbox used to throw out of recovery and exit
+    // the process, replaying the same command on every restart.
     const runId = crypto.randomUUID();
     await seed({
       runId,
@@ -154,28 +208,35 @@ describe("command-lane restart recovery", () => {
       runStatus: "running",
       commandState: "dispatched",
       session: "/sessions/pi.jsonl",
-      sandbox: "pi-sandbox",
+      sandbox: "pi-gone-sandbox",
     });
-    let probed = false;
+    const healthy = crypto.randomUUID();
+    await seed({ runId: healthy, threadId: healthy, parentRunId: null, engine: "opencode", runStatus: "running",
+      commandState: "dispatched", session: "ses_done", sandbox: "sb", withStep: true });
+    let probedPi = false;
 
-    await expect(recoverStaleRuns(
-      async () => {
-        probed = true;
-        return { status: "failed", summary: "must not finalize" };
-      },
-      async () => {
-        throw new Error("remote delete failed");
-      },
-    )).rejects.toThrow("remote delete failed");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await recoverStaleRuns(
+        async (handle, checkpoint) => {
+          if (handle.sandboxId === "pi-gone-sandbox") probedPi = true;
+          return fakeReconcile(handle, checkpoint);
+        },
+        async ({ sandboxId }) => {
+          if (sandboxId === "pi-gone-sandbox") throw new Error("sandbox not found");
+        },
+      );
+    } finally {
+      logged.mockRestore();
+    }
 
-    expect(probed).toBe(false);
-    expect((await getRun(runId))?.status).toBe("running");
+    expect(probedPi).toBe(false);
+    expect(await getRun(runId)).toMatchObject({ status: "failed", summary: UNRECOVERABLE_SUMMARY });
     const [command] = (await db.execute(
       sql`select state from commands where run_id=${runId} and kind='run.create'`,
     )) as unknown as [{ state: string }];
-    expect(command.state).toBe("dispatched");
-    await finalizeRun(runId, "failed", "test cleanup", 0);
-    await settleCommandForRun(runId);
+    expect(command.state).toBe("completed");
+    expect(await getRun(healthy)).toMatchObject({ status: "completed", summary: "the real answer" });
   });
 
   test("a failed Pi background cleanup cannot expire and free the interrupted run", async () => {
@@ -216,6 +277,27 @@ describe("command-lane restart recovery", () => {
     expect((await getRun(runId))?.status).toBe("running");
     await finalizeRun(runId, "failed", "test cleanup", 0);
     await settleCommandForRun(runId);
+  });
+
+  test("dropping a parked row for a run another lane settled frees its thread for the next turn", async () => {
+    // A Stop with no live worker settled the run but not its command; the drop
+    // path used to delete the parked row and leave the thread wedged.
+    const A = crypto.randomUUID();
+    const threadId = A;
+    await seed({ runId: A, threadId, parentRunId: null, engine: "mock", runStatus: "running", commandState: "dispatched" });
+    const B = await seed({ threadId, parentRunId: A, engine: "mock", runStatus: "queued", commandState: "queued" });
+    await enqueueReconcile({ runId: A, threadId, sandboxId: "sb", sessionId: "ses", sinceAt: new Date(0),
+      nextAttemptAt: new Date(Date.now() - 1_000), deadline: new Date(Date.now() + 60_000) });
+    await finalizeRun(A, "failed", "settled by another lane", 0);
+
+    const result = await runDueReconciles(async () => ({ status: "unreachable" }));
+
+    expect(result.dropped).toBeGreaterThanOrEqual(1);
+    const [command] = (await db.execute(
+      sql`select state from commands where run_id=${A} and kind='run.create'`,
+    )) as unknown as [{ state: string }];
+    expect(command.state).toBe("completed");
+    await waitFor(() => isDone(B));
   });
 
   test("a durable cancel settles the interrupted run and unblocks its queued replacement", async () => {

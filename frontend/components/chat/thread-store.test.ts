@@ -6,6 +6,7 @@
 // and duplicate replay/live frames produce no visible duplicates.
 
 import { describe, expect, test } from "bun:test";
+import type { StoredCanonicalEvent } from "./canonical-timeline";
 import type { NativeFrame } from "./native-events";
 import { nativeOf } from "./native-ids";
 import { createThreadStore } from "./thread-store";
@@ -347,5 +348,44 @@ describe("canonical completion: degraded seal", () => {
     const b = s.getSnapshot().byId.get("B")!;
     expect(b.canonicalComplete).toBe(true);
     expect(b.canonicalDegraded).toBe(false);
+  });
+});
+
+describe("execution summary scoping", () => {
+  const childStarted = (runId: string, childId: string): StoredCanonicalEvent =>
+    ({
+      schemaVersion: 1,
+      eventId: `child-${childId}`,
+      seq: 1,
+      runId,
+      threadId: "thread-1",
+      ts: 1_000,
+      identity: { provider: "codex", nativeSessionId: "parent" },
+      deliverySeq: 1,
+      revision: 1,
+      kind: "child.started",
+      childId,
+      title: childId,
+    }) as unknown as StoredCanonicalEvent;
+
+  test("a text or reasoning delta keeps a run's scoped summary identity; a new child changes it", () => {
+    const s = createThreadStore({ executionSummaryEnabled: true, rootThreadId: "thread-1" });
+    s.applySnapshot([makeRun("A", { status: "running" }), makeRun("B", { status: "running" })]);
+    s.applyCanonical(childStarted("A", "agent-a"));
+    const before = s.getSnapshot().byId.get("A")?.executionSummary;
+    const emptyBefore = s.getSnapshot().byId.get("B")?.executionSummary;
+    expect(before?.children).toHaveLength(1);
+    expect(emptyBefore?.children).toHaveLength(0);
+
+    s.applyDelta("A", "hello ");
+    s.applyDelta("A", "let me think", "reasoning");
+    s.applyDelta("B", "world");
+    expect(s.getSnapshot().byId.get("A")?.executionSummary).toBe(before);
+    expect(s.getSnapshot().byId.get("B")?.executionSummary).toBe(emptyBefore);
+
+    s.applyCanonical({ ...childStarted("A", "agent-b"), deliverySeq: 2, seq: 2 } as StoredCanonicalEvent);
+    const after = s.getSnapshot().byId.get("A")?.executionSummary;
+    expect(after).not.toBe(before);
+    expect(after?.children).toHaveLength(2);
   });
 });

@@ -161,6 +161,8 @@ function withCacheBust(url: string, nonce: number): string {
  * concurrency (409 -> reload latest, never a silent overwrite). Shared by the
  * full-page editor and the session side-pane so there is ONE state model. */
 export interface WorkpieceEditorController {
+  /** The artifact this editor edits, for per-artifact viewer preferences. */
+  readonly artifactId: string;
   readonly workpiece: ArtifactWorkpieceDescriptor<ArtifactWorkpieceKind> | null;
   readonly actionContract: ReturnType<typeof artifactActionContractFor>;
   readonly mode: ArtifactEditorMode;
@@ -467,6 +469,7 @@ export function useWorkpieceEditor(
   );
 
   return {
+    artifactId: artifact.id,
     workpiece,
     actionContract,
     mode,

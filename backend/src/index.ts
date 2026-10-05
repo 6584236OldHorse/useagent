@@ -15,11 +15,13 @@ import {
   env,
   githubConfigured,
   memoryConfig,
+  primaryOrgId,
   slackConfig,
 } from "./env";
 import { isPublicApiPath, orgScope } from "./middleware/org";
 import { bearerAuth } from "./middleware/bearer";
 import { chatRoutes } from "./chat/routes";
+import { labRoutes } from "./lab/routes";
 import { botsRoutes } from "./bots/routes";
 import { toolGatewayConfig } from "./knowledge/gateway/config";
 import { knowledgeRoutes } from "./knowledge/routes";
@@ -30,7 +32,12 @@ import { createOperatorRoutes } from "./runs/operator-routes";
 import { reposRoutes } from "./github/routes";
 import { pullsRoutes } from "./github/pulls-routes";
 import { desktopProxyRoutes } from "./runs/desktop-proxy";
+import { parsePreviewViewPath } from "./runs/preview-capability";
 import { fleetRoutes } from "./runs/fleet-routes";
+import { spendRoutes } from "./runs/spend-routes";
+import { spendAllowanceDefaultUsd } from "./runs/spend";
+import { sandboxMinutesRoutes } from "./runs/sandbox-minutes-routes";
+import { sandboxPreferenceRoutes } from "./sandboxes/preference-routes";
 import { portProxyRoutes } from "./runs/port-proxy";
 import { recoverStaleRuns, startReconcileLoop } from "./runs/recovery";
 import {
@@ -39,7 +46,9 @@ import {
 } from "./fleet/reconciler";
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
+import { registerRunResendRoute } from "./runs/resend-route";
 import { terminalRoutes } from "./runs/terminal";
+import { runFeedbackRoutes } from "./runs/feedback-routes";
 import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
 import { runnerBridgeRoutes } from "./runners/bridge";
 import { runnerRoutes } from "./runners/routes";
@@ -52,12 +61,7 @@ import { startCaptureDelivery } from "./memory/capture-outbox";
 import { resetStuckLearning, startLearningOutbox } from "./learning/learning-outbox";
 import { sandboxProvider, sandboxProviderApiKey, sandboxProviderKind } from "./sandboxes/provider";
 import { userComputersEnabled } from "./sandboxes/binding";
-
-/** Where the managed sandboxes run, for the settings page; only the E2B-protocol plugin has a configurable host. */
-function managedSandboxHost(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
-  if (sandboxProviderKind(env) !== "cube") return null;
-  return env.CUBE_SANDBOX_DOMAIN?.trim().toLowerCase() || null;
-}
+import { operatorRoutes } from "./operator/routes";
 import { botsEnabled } from "./bots/rollout";
 import {
   resetStuckCanonicalization,
@@ -87,11 +91,14 @@ import {
 import { prewarmRuntimeEnvironmentAccess } from "./engines/runtime-environment-client";
 import { operatorEnv } from "./engines/runtime-env";
 import { prewarmRuntimeProviderBridge } from "./engines/runtime-provider-bridge";
+import { prewarmCodexServices } from "./engines/codex-subscription-runtime";
+import { engineAuthMode } from "./runs/engine-auth-mode";
 import { providerConnectionsRoutes } from "./provider-connections/routes";
 import { integrationRoutes } from "./integrations/routes";
 import { codexSubscriptionRelayRoutes } from "./provider-connections/codex-subscription-relay";
 import { wikiGenRoutes } from "./wiki-gen/routes";
 import { cleanupRepositoryScratch } from "./wiki-gen/clone";
+import { startFreeModelLanePruner } from "./runs/free-model-lane-prune";
 import {
   configuredEngineReadiness,
   configuredUserFacingEngines,
@@ -99,31 +106,33 @@ import {
   engineModelsForReadyEngines,
   readyUserFacingEngines,
 } from "./runs/engine-readiness";
-import {
-  forceRefreshFreeModelLane,
-  freeModelLane,
-  freeModelLaneCache,
-  freeModelRegistryReadEnabled,
-  refreshFreeModelLane,
-} from "./runs/free-model-lane";
+import { freeModelLane, freeModelLaneCache } from "./runs/free-model-lane";
 import {
   freeModelQualifierEnabled,
   hydrateFreeModelLaneFromRegistry,
+  QUALIFIER_ADMISSION_WAIT_MS,
+  respondToManualRefresh,
   startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
+  type FreeModelQualifier,
 } from "./runs/free-model-qualifier-worker";
 import {
   createInternalOpenCodeQualificationDriver,
 } from "./runs/free-model-qualification-driver";
 import { acceptInternalRunCommand } from "./commands/service";
+import { latestProviderGatewayOutcome } from "./provider-gateway/audit";
+import { resolveProviderCredential } from "./provider-gateway/credentials";
 import { acceptRunCancel } from "./commands/cancel";
 import {
   deploymentInflightSnapshot,
   getRunAdmission,
+  getRunAdmissionWithin,
   setRunAdmission,
 } from "./commands/admission";
 import { getRunWithSteps } from "./runs/repo";
+import { resolveSession } from "./auth/session";
 import { deploymentProvidedProviders } from "./provider-gateway/provider";
+import { catalogAccount, modelOfferedTo, providersOfferedTo, restrictedProviders } from "./provider-gateway/provider-accounts";
 import { uploadRoutes } from "./uploads/routes";
 import { startUploadCleanup } from "./uploads/cleanup";
 import { internalAutomationRoutes } from "./schedules/internal-routes";
@@ -145,10 +154,13 @@ import { configureProductChildPump } from "./runs/child-session-pump";
 import { assertThreadRelationshipConfig, productChildThreadsEnabled, threadRelationshipsEnabled } from "./runs/thread-relationship-switch";
 import { repairEligiblePublicRootThreadRelationships } from "./runs/thread-relationship-repo";
 import { artifactStorageHealth, assertArtifactStorageWritable } from "./artifacts/storage";
+import { installProcessFaultHandlers } from "./process-faults";
 
 // Acquire the per-database singleton before ANY shared-state mutation. In strict
 // production mode an unavailable/contended lock fails boot closed, so a duplicate
 // process cannot migrate or recover another backend's database first.
+// Only as the process entry: suites import this module in-process and keep bun test's own reporting.
+if (import.meta.main) installProcessFaultHandlers();
 assertThreadRelationshipConfig();
 const singleBackendHeld = await enforceSingleBackend();
 // Artifact bytes must be writable before any run can publish; a missing mount
@@ -182,10 +194,12 @@ if (threadRelationshipsEnabled()) {
 // fail boot closed in READ rather than silently serving an unindexed scan.
 await ensureCanonicalExecutionTranscriptIndexForBoot();
 
-// Default OFF. When explicitly enabled, hydrate the synchronous model-policy
-// cache from the last atomically published DB generation before serving config.
+// Hydrate the synchronous model-policy cache from the last published Free-lane
+// generation before serving config; the hydrator then follows it every minute.
 await hydrateFreeModelLaneFromRegistry();
 startFreeModelRegistryHydrator();
+// Drop Free-lane models OpenRouter stopped serving, hourly, with or without the qualifier.
+startFreeModelLanePruner();
 configureProductChildPump(pumpThread);
 
 // Reconcile the restricted gateway role's grants on EVERY boot: a migration
@@ -260,17 +274,16 @@ if (learningReset > 0)
 const app = new Hono<AppEnv>();
 
 // CORS for the frontend, with credentials so cookie sessions flow when the
-// browser calls the backend directly (the Next dev proxy is same-origin).
-app.use(
-  "/api/*",
-  cors({
-    origin: env.FRONTEND_ORIGIN,
-    credentials: true,
-    allowHeaders: ["Content-Type", "Authorization", "x-useagent-client-release", "x-skynet-client-release"],
-    exposeHeaders: ["x-useagent-release-fingerprint", "x-useagent-api-compat", "x-skynet-release-fingerprint", "x-skynet-api-compat"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  }),
-);
+// browser calls the backend directly (the Next dev proxy is same-origin). A
+// sandbox preview view answers its opaque-origin page itself (preview-capability.ts).
+const frontendCors = cors({
+  origin: env.FRONTEND_ORIGIN,
+  credentials: true,
+  allowHeaders: ["Content-Type", "Authorization", "x-useagent-client-release", "x-skynet-client-release"],
+  exposeHeaders: ["x-useagent-release-fingerprint", "x-useagent-api-compat", "x-skynet-release-fingerprint", "x-skynet-api-compat"],
+  allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+});
+app.use("/api/*", (c, next) => (parsePreviewViewPath(c.req.path) ? next() : frontendCors(c, next)));
 
 app.use("/api/*", async (c, next) => {
   const release = currentReleaseFingerprint();
@@ -360,20 +373,21 @@ app.route(
 // lets the UI reflect that unauthenticated dev access is currently open.
 // `capabilities` are honest config-gated booleans (a name is NOT a secret) so
 // surfaces like /agent/plugins can show what is actually wired vs not.
-app.get("/api/config", (c) => {
-  // Kick the TTL-gated single-flight Free-lane catalog refresh
-  // (stale-while-revalidate): this manifest request serves the current lane
-  // instantly; a fresh catalog result lands for subsequent requests. The
-  // refresh never rejects, so it can never fail /api/config.
-  if (!freeModelRegistryReadEnabled()) void refreshFreeModelLane();
+app.get("/api/config", async (c) => {
   // Configured engines stay discoverable even while a provider needs attention;
   // the additive readiness map explains why without weakening the fail-closed
   // POST /api/runs dispatch gate. mock/daytona/claude-sdk remain internal aliases.
   const engines = readyUserFacingEngines();
   const configuredEngines = configuredUserFacingEngines();
   const engineReadiness = configuredEngineReadiness();
-  const models = engineModelsForReadyEngines();
-  const configuredModels = engineModelsForConfiguredEngines();
+  // This route is public, so the reader is whoever the session says, or nobody:
+  // a provider PROVIDER_ACCOUNTS restricts shows only to the accounts it lists.
+  const account = restrictedProviders().size > 0
+    ? (await resolveSession(c.req.raw.headers).catch(() => null))?.user.email ?? null
+    : null;
+  const offered = new Set<string>(providersOfferedTo(account));
+  const models = engineModelsForReadyEngines(process.env, account);
+  const configuredModels = engineModelsForConfiguredEngines(process.env, account);
   return c.json({
     auth: "better-auth",
     allowDevOrg: allowDevOrg(),
@@ -383,12 +397,14 @@ app.get("/api/config", (c) => {
     engineReadiness,
     models,
     configuredModels,
-    // The host the managed sandboxes live on (the E2B-protocol plugin serves several).
-    sandbox: { provider: sandboxProviderKind(), host: managedSandboxHost(), userComputers: userComputersEnabled() },
+    // Which vendor the sandboxes come from is the operator's business and is
+    // served by /api/operator/sandbox; everyone else reads "Cloud".
+    sandbox: { userComputers: userComputersEnabled() },
     // What a runner must speak and boot to lend this deployment a machine.
     runner: runnerConfigBlock(),
-    // Per model provider: served from this deployment's own key (a name, never a value).
-    providers: deploymentProvidedProviders(),
+    // Per model provider this reader is offered: served from this deployment's own key (a name, never a value).
+    providers: Object.fromEntries(Object.entries(deploymentProvidedProviders()).filter(([provider]) => offered.has(provider))),
+    offeredProviders: [...offered],
     // The product tool families a gateway process advertises follow this
     // answer, so a gateway booted with different flags cannot silently drop
     // child-session or bot-handoff tools (knowledge/gateway/product-flags).
@@ -408,53 +424,41 @@ app.get("/api/config", (c) => {
 
 // Manual Free-lane refresh (the picker's "Refresh free models" affordance).
 // Org-session authed by the universal adapter (NOT in the public allowlist).
-// Busts the catalog TTL while keeping single-flight plus a process-global
-// cool-down that is at least as strict as a per-org bound (the catalog is
-// org-independent, so one refresh serves every org). Returns the refreshed
-// manifest so the picker can swap its list in place.
+// Runs a qualifier tick now: the catalog is discovered before this responds
+// (bounded: a tick held behind the admission lock answers 202 pending), the
+// probe runs it queues finish in the background and publish on their own. A
+// process-global cool-down protects OpenRouter and the probe budget (the lane
+// is deployment-wide, so one refresh serves every org). Always returns the
+// current manifest so the picker can swap its list in place.
+let freeModelQualifier: FreeModelQualifier | null = null;
 app.post("/api/config/models/refresh", async (c) => {
-  if (freeModelRegistryReadEnabled()) {
-    return c.json({
-      error: "managed_by_qualifier",
-      free: freeModelLane(),
-      models: engineModelsForReadyEngines(),
-      configuredModels: engineModelsForConfiguredEngines(),
-    }, 409);
-  }
-  const attempt = forceRefreshFreeModelLane();
-  if (!attempt.admitted) {
-    return c.json({ error: "rate_limited", retry_after_ms: attempt.retryAfterMs }, 429);
-  }
-  const outcome = await attempt.done;
-  if (!outcome.updated) {
-    return c.json({
-      refreshed: false,
-      stale: true,
-      reason: outcome.reason,
-      free: freeModelLane(),
-      models: engineModelsForReadyEngines(),
-      configuredModels: engineModelsForConfiguredEngines(),
-    }, 502);
-  }
+  const response = await respondToManualRefresh(freeModelQualifier);
+  const account = await catalogAccount(c.get("userId"));
   return c.json({
-    refreshed: true,
-    stale: false,
-    free: freeModelLane(),
-    models: engineModelsForReadyEngines(),
-    configuredModels: engineModelsForConfiguredEngines(),
-  });
+    ...response.body,
+    free: freeModelLane().filter((model) => modelOfferedTo("opencode", model, account)),
+    models: engineModelsForReadyEngines(process.env, account),
+    configuredModels: engineModelsForConfiguredEngines(process.env, account),
+  }, response.status);
 });
 
 // Better Auth owns login, sessions, and organization membership.
-app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
+app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a
 // model completion directly (OpenRouter), augmented with read-only retrieval
 // (org knowledge + published wiki + team memory). Org-scoped; inert without
 // OPENROUTER_API_KEY (503). Distinct from /api/runs (which spins sandboxes).
 app.route("/api/chat", chatRoutes);
+app.route("/api/lab", labRoutes);
+app.route("/api/operator", operatorRoutes);
 
+registerRunResendRoute(runsRoutes); // Lives outside runs/routes.ts, which is at its size cap.
 app.route("/api/runs", runsRoutes);
+app.route("/api/spend", spendRoutes);
+spendAllowanceDefaultUsd(); // boot-time validation of SPEND_ALLOWANCE_USD against the ledger ceiling (logged once)
+app.route("/api/sandbox-minutes", sandboxMinutesRoutes);
+app.route("/api/sandbox-preference", sandboxPreferenceRoutes);
 app.route("/api/capabilities", capabilityCatalogRoutes);
 // Session-authenticated human approval minting. This stays on the product API;
 // the sandbox-reachable gateway can only consume the resulting exact capability.
@@ -468,6 +472,8 @@ app.route("/api/uploads", uploadRoutes);
 // Interactive terminal WS bridge (browser xterm ⇄ sandbox PTY). Mounted before
 // nothing — separate router so the SSE/step routes stay untouched.
 app.route("/api/runs", terminalRoutes);
+// In-app feedback on a run: stored, then a Slack notice through the outbox.
+app.route("/api/runs", runFeedbackRoutes);
 // Same-origin bridge to a thread's opencode server for the embedded "Live" tab
 // (frontend/public/opencode-app). Injects the Daytona preview token, streams
 // SSE through untouched.
@@ -542,35 +548,45 @@ app.route("/api/commands", commandsRoutes);
 // Automations default disabled, so nothing auto-fires until a human turns it on.
 startScheduler();
 
-// Durable full-agent Free-model qualification, independently default OFF from
-// the DB-read switch. Admission is checked every tick and before every probe,
-// so deployment drain/close cannot start qualification traffic.
+// Durable full-agent Free-model qualification: on by default, FREE_MODEL_QUALIFIER=off
+// is the kill switch. Discovery runs every tick; probe runs need an organization
+// to own them (FREE_MODEL_QUALIFIER_ORG_ID, else the deployment's primary
+// organization) and are low priority. Admission is checked every tick and
+// before every probe, so deployment drain/close cannot start qualification traffic.
 if (freeModelQualifierEnabled()) {
-  const qualifierOrgId = process.env.FREE_MODEL_QUALIFIER_ORG_ID?.trim();
-  if (!qualifierOrgId) throw new Error("FREE_MODEL_QUALIFIER_ORG_ID is required");
-  const driver = createInternalOpenCodeQualificationDriver(
-    { orgId: qualifierOrgId },
-    {
-      accept: acceptInternalRunCommand,
-      pump: pumpThread,
-      read: getRunWithSteps,
-      cancel: async (orgId, runId) => {
-        const outcome = await acceptRunCancel({ orgId, actorId: null, runId });
-        if (outcome.status === "accepted" || outcome.status === "already") {
-          signalCancel(runId, "Model qualification timed out");
-          await pumpThread(outcome.threadId);
-        }
-      },
-      admission: getRunAdmission,
-    },
-  );
-  startFreeModelQualifierWorker({
+  const qualifierOrgId = process.env.FREE_MODEL_QUALIFIER_ORG_ID?.trim() || primaryOrgId();
+  if (!qualifierOrgId) {
+    console.warn(
+      "[free-model-qualifier] no organization owns qualification runs (set USEAGENT_PRIMARY_ORG_ID); discovery only",
+    );
+  }
+  const driver = qualifierOrgId
+    ? createInternalOpenCodeQualificationDriver(
+        { orgId: qualifierOrgId },
+        {
+          accept: acceptInternalRunCommand,
+          pump: pumpThread,
+          read: getRunWithSteps,
+          cancel: async (orgId, runId) => {
+            const outcome = await acceptRunCancel({ orgId, actorId: null, runId });
+            if (outcome.status === "accepted" || outcome.status === "already") {
+              signalCancel(runId, "Model qualification timed out");
+              await pumpThread(outcome.threadId);
+            }
+          },
+          admission: () => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS),
+          lastUpstream: latestProviderGatewayOutcome,
+        },
+      )
+    : null;
+  freeModelQualifier = startFreeModelQualifierWorker({
     driver,
-    adoptPublishedLane: (state) => {
-      if (freeModelRegistryReadEnabled()) {
-        freeModelLaneCache.adoptRegistryLane(state.currentModelIds, { allowEmpty: true });
-      }
-    },
+    // Probe runs spend the probe organization's own stored OpenRouter key, never
+    // the deployment's; without one the lane discovers but does not probe.
+    probeCredential: qualifierOrgId
+      ? async () => (await resolveProviderCredential(qualifierOrgId, "openrouter")) !== null
+      : undefined,
+    adoptPublishedLane: (state) => freeModelLaneCache.adoptRegistryLane(state.currentModelIds),
   });
 }
 
@@ -653,6 +669,13 @@ if (sandboxProviderKind() === "cube" && cubeRuntimePoolTarget && cubeRuntimeTemp
       const runtimePrewarmEnv = { ...process.env, RUNTIME_ENVIRONMENT_ENABLED: "true" };
       await prewarmRuntimeProviderBridge(sandbox, runtimePrewarmEnv);
       await prewarmRuntimeEnvironmentAccess(sandbox, signal);
+      // A new thread's first subscription Codex turn finds its services up; a
+      // failure here only leaves them to that turn, as without the pool.
+      if (engineAuthMode("codex") !== "provider_gateway") {
+        await prewarmCodexServices(sandbox).catch((error: unknown) => {
+          console.warn(`[cube-warm-pool:${RUNTIME_CUBE_WARM_POOL_NAME}] Codex services not pre-warmed`, error);
+        });
+      }
     },
   });
   console.log(

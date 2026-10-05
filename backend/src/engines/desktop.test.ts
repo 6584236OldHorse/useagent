@@ -18,6 +18,12 @@ import {
   ensureSandboxDesktopView,
   desktopUnavailableStep,
 } from "./desktop";
+import {
+  BROWSER_MANAGED_POLICY,
+  BROWSER_POLICY_DIRECTORIES,
+  BROWSER_PRIVACY_FLAGS,
+  buildBrowserLaunchScript,
+} from "./desktop-workstation";
 
 function relayFileSystem(): SandboxFileSystem {
   const files = new Map<string, Buffer>();
@@ -425,5 +431,52 @@ describe("desktopUnavailableStep", () => {
       chip: "opencode",
       label: "Desktop and computer-use tools are not attached to this run",
     });
+  });
+});
+
+describe("desktop browser background traffic", () => {
+  test("every Chrome the desktop starts runs without its background traffic to Google", () => {
+    const launch = buildBrowserLaunchScript();
+    for (const flag of [
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-sync",
+      "--no-pings",
+      "--metrics-recording-only",
+      "--disable-domain-reliability",
+      "--gcm-checkin-url=http://127.0.0.1:9/checkin",
+      "--gcm-registration-url=http://127.0.0.1:9/register",
+      "--gcm-mcs-endpoint=https://127.0.0.1:9",
+      "--gaia-url=http://127.0.0.1:9",
+    ] as const) {
+      expect(BROWSER_PRIVACY_FLAGS).toContain(flag);
+      expect(launch).toContain(` ${flag} `);
+    }
+    // One --disable-features switch: Chrome keeps only the last one it is given.
+    expect(launch.match(/--disable-features=/g)).toHaveLength(1);
+    expect(launch).toMatch(/--disable-features=DnsOverHttps,[^ ]*,AimServerRequestOnStartupEnabled[, ]/);
+  });
+
+  test("the launcher writes the managed policy for Chromium and Chrome before any browser starts", () => {
+    const command = buildDesktopLaunchCommand();
+    const policyAt = command.indexOf("/etc/chromium/policies/managed/useagent.json");
+    expect(policyAt).toBeGreaterThan(-1);
+    expect(policyAt).toBeLessThan(command.indexOf('sh "$HOME/.skynet/browser-launch.sh" &'));
+    for (const directory of BROWSER_POLICY_DIRECTORIES) {
+      const written = new RegExp(`printf '%s' '([^']+)' >${directory}/useagent\\.json`).exec(command);
+      expect(written).not.toBeNull();
+      expect(JSON.parse(written![1]!)).toEqual(BROWSER_MANAGED_POLICY);
+    }
+    expect(BROWSER_MANAGED_POLICY).toMatchObject({
+      MetricsReportingEnabled: false,
+      SafeBrowsingProtectionLevel: 1,
+      ComponentUpdatesEnabled: false,
+      SyncDisabled: true,
+      DnsOverHttpsMode: "off",
+      BrowserNetworkTimeQueriesEnabled: false,
+    });
+    // A failed write never stops the desktop.
+    expect(command).toContain("2>/dev/null || true");
+    expect(Bun.spawnSync(["sh", "-n", "-c", command]).exitCode).toBe(0);
   });
 });

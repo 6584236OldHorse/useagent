@@ -5,6 +5,7 @@ import { db } from "../db/client";
 import { member } from "../db/schema";
 import { allowDevOrg } from "../env";
 import type { AppEnv } from "../http";
+import { parsePreviewViewPath } from "../runs/preview-capability";
 import { firstOrgForUser, getDevContext } from "../seed";
 
 /**
@@ -68,6 +69,9 @@ const PUBLIC_API_PREFIXES = [
  *  unit-testable: any path not covered here is treated as protected. */
 export function isPublicApiPath(path: string): boolean {
   if (PUBLIC_API_EXACT.has(path)) return true;
+  // A sandbox preview page runs in an opaque origin that carries no session;
+  // the signed capability in its path authenticates it instead.
+  if (parsePreviewViewPath(path)) return true;
   return PUBLIC_API_PREFIXES.some((p) => path.startsWith(p));
 }
 
@@ -96,6 +100,9 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
   // adapter be the fail-closed default while per-router `.use(orgScope)` guards
   // stay in place as defense-in-depth without paying twice.
   if (c.get("orgId")) return next();
+  // A sandboxed (opaque-origin) page, such as sandbox-served preview content,
+  // sends `Origin: null`. The product session never authorizes it.
+  if (c.req.header("origin") === "null") return c.json({ error: "forbidden_origin" }, 403);
 
   let session: IdentitySession | null = null;
   try {
@@ -117,6 +124,7 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
     }
     c.set("orgId", orgId);
     c.set("userId", userId);
+    c.set("identitySource", "session");
     return next();
   }
 
@@ -128,6 +136,7 @@ export const orgScope = createMiddleware<AppEnv>(async (c, next) => {
   const dev = getDevContext();
   c.set("orgId", dev.orgId);
   c.set("userId", dev.userId);
+  c.set("identitySource", "dev");
   return next();
 });
 

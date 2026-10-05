@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { and, eq, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { artifacts, providerEvents, slackOutbox, slackThreads } from "../src/db/schema";
 import { acceptRunCommand } from "../src/commands";
-import { finalizeRun } from "../src/runs/finalize";
+import { finalizeRun, setFamilyLivenessBarrierForTest } from "../src/runs/finalize";
 import { recoverStaleRuns, type ReconcileProbe } from "../src/runs/recovery";
 import { recordProviderEventIfAbsent } from "../src/runs/provider-events";
 import {
@@ -38,7 +38,7 @@ import "./helpers"; // side-effect: imports src/index → migrate + seed
 // covered by slack-outbox.test.ts + slack.test.ts.
 
 const ORG = "org-skynet-dev";
-const TEAM = "T-SKYNET-DEV";
+const TEAM = "T-SKYNET-DURABLE";
 
 /** Root a Slack thread on a fresh run (channel/threadTs are the thread identity). */
 async function slackRootRun(prompt: string): Promise<{ runId: string; channel: string; ts: string }> {
@@ -51,6 +51,15 @@ async function slackRootRun(prompt: string): Promise<{ runId: string; channel: s
   return { runId, channel, ts };
 }
 
+// This suite proves what finalization ENQUEUES and never drains it: the relay
+// is not always running when it does, so its rows would otherwise sit pending
+// and be claimed ahead of a later suite's own rows (a single delivery pass
+// claims twenty). The team id is this suite's alone, so the rows keyed on it
+// are too: remove them on the way out.
+afterAll(async () => {
+  await db.delete(slackOutbox).where(like(slackOutbox.idempotencyKey, `%:${TEAM}:%`));
+});
+
 describe("slack reply durability at finalization (GAP 3)", () => {
   test("a completed Slack run commits its reply row transactionally (no watcher/relay)", async () => {
     const { runId, channel, ts } = await slackRootRun("do the thing");
@@ -61,7 +70,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(row!.kind).toBe("stop_stream");
     const payload = JSON.parse(row!.payload) as {
       channel: string;
-      fallbackChunks: string[];
+      closingMarkdown?: string;
+      text: string;
       threadTs?: string;
       runId: string;
       teamId: string;
@@ -70,11 +80,15 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(payload.teamId).toBe(TEAM);
     expect(payload.threadTs).toBe(ts);
     expect(payload.runId).toBe(runId);
-    expect(payload.fallbackChunks).toEqual(["here is the result"]); // completed → the summary
-    const status = await getSlackOutbox(`slack-status:final:${TEAM}:${runId}`);
+    // completed → the summary, stored once as markdown; its plain form is
+    // derived at delivery (the notification text is its first chunk).
+    expect(payload.closingMarkdown).toBe("here is the result");
+    expect(payload.text).toBe("here is the result");
+    // The working shimmer clears durably with the reply (the one status family a thread uses).
+    const status = await getSlackOutbox(`slack-thread-status:final:${TEAM}:${runId}`);
     expect(status).not.toBeNull();
-    expect(status!.kind).toBe("set_session_status");
-    expect((JSON.parse(status!.payload) as { status: string }).status).toBe("active");
+    expect(status!.kind).toBe("set_thread_status");
+    expect((JSON.parse(status!.payload) as { status: string }).status).toBe("");
   });
 
   test("a FAILED Slack run replies with a warning notice", async () => {
@@ -82,7 +96,9 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     await finalizeRun(runId, "failed", "boom", 0);
     const row = await getSlackOutbox(`slack-reply:${TEAM}:${runId}`);
     expect(row).not.toBeNull();
-    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual([":warning: Run failed: boom"]);
+    const failed = JSON.parse(row!.payload) as { closingMarkdown?: string; text: string };
+    expect(failed.closingMarkdown).toBe("**Run failed**: boom");
+    expect(failed.text).toBe("*Run failed*: boom");
   });
 
   test("a non-Slack run enqueues NO reply", async () => {
@@ -305,6 +321,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
       threadTs: root.ts,
     });
 
+    // The root's own turn is over; only then does the family card settle.
+    await setRunStatus(root.runId, "completed");
     await finalizeRun(childId, "completed", "Interaction design finished", 100);
 
     const reply = await getSlackOutbox(`slack-reply:${TEAM}:${childId}`);
@@ -312,14 +330,178 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     const payload = JSON.parse(reply?.payload ?? "{}") as {
       channel?: string;
       threadTs?: string;
-      fallbackChunks?: string[];
+      closingMarkdown?: string;
       blocks?: unknown[];
     };
     expect(payload.channel).toBe(root.channel);
     expect(payload.threadTs).toBe(root.ts);
-    expect(payload.fallbackChunks).toEqual(["Interaction design finished"]);
-    expect(JSON.stringify(payload.blocks)).toContain(`/session/${childId}`);
-    expect(JSON.stringify(payload.blocks)).toContain("Calendar interaction design");
+    expect(payload.closingMarkdown).toBe("Interaction design finished");
+    // The thread card settles from the family ROOT, never from the child: the
+    // parent's title, session link and identity stay on the shared card.
+    const cardRow = await getSlackOutbox(`slack-card:final:${TEAM}:${childId}`);
+    const card = JSON.parse(cardRow?.payload ?? "{}") as { rootRunId?: string; blocks?: any[] };
+    expect(card.rootRunId).toBe(root.runId);
+    expect(card.blocks?.[0]).toMatchObject({ type: "task_card", title: "Coordinate children", status: "complete" });
+    expect(card.blocks?.[1]?.elements?.[0]?.url).toContain(`/session/${root.runId}`);
+    expect(JSON.stringify(card.blocks)).not.toContain(childId);
+    expect(JSON.stringify(card.blocks)).not.toContain("Calendar interaction design");
+  });
+
+  test("a finishing child keeps the family card spinning while a sibling is still queued", async () => {
+    const root = await slackRootRun("coordinate siblings");
+    await insertThreadRelationship({
+      orgId: ORG,
+      threadId: root.runId,
+      parentThreadId: null,
+      familyThreadId: root.runId,
+      kind: "root",
+      title: "Coordinate siblings",
+      sourceRunId: root.runId,
+    });
+    const child = async (prompt: string, title: string) => {
+      const id = crypto.randomUUID();
+      await insertCommandWithRun({
+        commandId: crypto.randomUUID(),
+        idempotencyKey: null,
+        orgId: ORG,
+        actorId: null,
+        payloadFingerprint: "b".repeat(64),
+        payload: "{}",
+        origin: null,
+        priority: 0,
+        run: {
+          id,
+          prompt,
+          model: "claude-opus-5",
+          engine: "mock",
+          parentRunId: null,
+          threadId: id,
+          repos: [],
+          resolvedResources: [],
+          attachmentIds: [],
+          memoryScope: "org",
+          skillId: null,
+          skillVersion: null,
+          skillContentHash: null,
+          commandName: null,
+          commandProvider: null,
+          commandSessionId: null,
+          commandCatalogRevision: null,
+        },
+        threadRelationship: {
+          parentThreadId: root.runId,
+          familyThreadId: root.runId,
+          kind: "delegated",
+          title,
+          sourceRunId: root.runId,
+          sourceExecutionId: null,
+        },
+      });
+      return id;
+    };
+    const first = await child("Design the calendar", "Calendar design");
+    const second = await child("Design the inbox", "Inbox design");
+    await setRunStatus(root.runId, "completed");
+    const cardStatus = async (runId: string) => {
+      const row = await getSlackOutbox(`slack-card:final:${TEAM}:${runId}`);
+      return (JSON.parse(row?.payload ?? "{}") as { blocks?: Array<{ status?: string; output?: unknown }> }).blocks?.[0];
+    };
+
+    await finalizeRun(first, "completed", "Calendar done", 100);
+    // The sibling is still queued: the shared card keeps spinning, its verb cleared.
+    expect(await cardStatus(first)).toMatchObject({ status: "in_progress" });
+    expect((await cardStatus(first))?.output).toBeUndefined();
+
+    await finalizeRun(second, "completed", "Inbox done", 100);
+    expect(await cardStatus(second)).toMatchObject({ status: "complete" });
+  });
+
+  test("two sibling children finalizing at once still settle the family card", async () => {
+    const root = await slackRootRun("coordinate at once");
+    await insertThreadRelationship({
+      orgId: ORG,
+      threadId: root.runId,
+      parentThreadId: null,
+      familyThreadId: root.runId,
+      kind: "root",
+      title: "Coordinate at once",
+      sourceRunId: root.runId,
+    });
+    const child = async (prompt: string, title: string) => {
+      const id = crypto.randomUUID();
+      await insertCommandWithRun({
+        commandId: crypto.randomUUID(),
+        idempotencyKey: null,
+        orgId: ORG,
+        actorId: null,
+        payloadFingerprint: "c".repeat(64),
+        payload: "{}",
+        origin: null,
+        priority: 0,
+        run: {
+          id,
+          prompt,
+          model: "claude-opus-5",
+          engine: "mock",
+          parentRunId: null,
+          threadId: id,
+          repos: [],
+          resolvedResources: [],
+          attachmentIds: [],
+          memoryScope: "org",
+          skillId: null,
+          skillVersion: null,
+          skillContentHash: null,
+          commandName: null,
+          commandProvider: null,
+          commandSessionId: null,
+          commandCatalogRevision: null,
+        },
+        threadRelationship: {
+          parentThreadId: root.runId,
+          familyThreadId: root.runId,
+          kind: "delegated",
+          title,
+          sourceRunId: root.runId,
+          sourceExecutionId: null,
+        },
+      });
+      await setRunStatus(id, "running");
+      return id;
+    };
+    const first = await child("Design the calendar", "Calendar design");
+    const second = await child("Design the inbox", "Inbox design");
+    await setRunStatus(root.runId, "completed");
+
+    // Both finalize concurrently and are HELD at the contested point: each
+    // has written its own terminal state, uncommitted, and is about to read
+    // family liveness. Released together, the root's row lock serializes
+    // them, so the second sees the first's committed state and settles the
+    // card; without the lock both would read the other as running.
+    let arrived = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setFamilyLivenessBarrierForTest(async () => {
+      arrived += 1;
+      if (arrived === 2) release();
+      await gate;
+    });
+    try {
+      await Promise.all([
+        finalizeRun(first, "completed", "Calendar done", 100),
+        finalizeRun(second, "completed", "Inbox done", 100),
+      ]);
+    } finally {
+      setFamilyLivenessBarrierForTest(null);
+    }
+    expect(arrived).toBe(2);
+    const revisions = await Promise.all([first, second].map(async (id) => {
+      const row = await getSlackOutbox(`slack-card:final:${TEAM}:${id}`);
+      const payload = JSON.parse(row?.payload ?? "{}") as { revision?: number; blocks?: Array<{ status?: string }> };
+      return { revision: payload.revision ?? 0, status: payload.blocks?.[0]?.status };
+    }));
+    const last = revisions.toSorted((a, b) => a.revision - b.revision).at(-1);
+    expect(last?.status).toBe("complete");
   });
 
   test("reply enqueue is idempotent across re-finalization (crash-retry safe)", async () => {
@@ -367,6 +549,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
 
     const row = await getSlackOutbox(`slack-reply:${TEAM}:${runId}`);
     expect(row).not.toBeNull();
-    expect((JSON.parse(row!.payload) as { fallbackChunks: string[] }).fallbackChunks).toEqual(["reconciled reply"]);
+    const reconciled = JSON.parse(row!.payload) as { closingMarkdown?: string; text: string };
+    expect(reconciled.closingMarkdown).toBe("reconciled reply");
+    expect(reconciled.text).toBe("reconciled reply");
   });
 });

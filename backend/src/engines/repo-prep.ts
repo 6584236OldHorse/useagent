@@ -170,10 +170,10 @@ export async function ensureRepoClone(
 
   // Refuse to touch a destination we do not own: never delete unrelated workspace content.
   if (idState.includes("state:foreign")) {
-    throw new Error(`refusing to prepare ${repo}: ${dir} holds a different git repository not created by useAgent`);
+    throw new Error(`refusing to prepare ${repo}: ${dir} holds a different git repository not created by UseAgent`);
   }
   if (idState.includes("state:occupied")) {
-    throw new Error(`refusing to prepare ${repo}: ${dir} holds existing content not created by useAgent`);
+    throw new Error(`refusing to prepare ${repo}: ${dir} holds existing content not created by UseAgent`);
   }
   if (!runtimeLayout.runsAsRoot && idState.includes("state:owned-stale")) {
     throw new Error(

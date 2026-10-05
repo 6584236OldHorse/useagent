@@ -36,6 +36,7 @@ const summary = {
   repo: null,
   repos: [],
   repo_specs: [],
+  connector: null,
   created_at: "2026-08-24T00:00:00.000Z",
   updated_at: "2026-08-24T00:00:00.000Z",
   latest_run_id: "run-2",
@@ -57,6 +58,7 @@ const run = {
   repo: summary.repo,
   repos: summary.repos,
   repo_specs: summary.repo_specs,
+  connector: summary.connector,
   created_at: summary.created_at,
   updated_at: summary.updated_at,
   org_id: "org-1",
@@ -87,6 +89,33 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiStep(step)).toEqual(step);
   });
 
+  test("keeps a reported permission mode and rejects an unknown one", () => {
+    const guarded = { ...run, permission_mode: "read-only" as const };
+    expect(decodeApiRun(guarded)).toEqual(guarded);
+    expect(decodeApiRun({ ...run, permission_mode: "yolo" })).toBeNull();
+  });
+
+  test("keeps a reported run location, an explicit null included, and drops an unknown one", () => {
+    const local = { ...run, run_location: "local" as const };
+    expect(decodeApiRun(local)).toEqual(local);
+    const none = { ...run, run_location: null };
+    expect(decodeApiRun(none)).toEqual(none);
+    expect(decodeApiRun({ ...run, run_location: "laptop" })).toEqual(run);
+  });
+
+  test("keeps the run's thread sequence and rejects a non-numeric one", () => {
+    const sequenced = { ...run, thread_seq: 7 };
+    expect(decodeApiRun(sequenced)).toEqual(sequenced);
+    expect(decodeApiRun({ ...run, thread_seq: "7" })).toBeNull();
+  });
+
+  test("keeps the run's sandbox provider, null included, and drops a malformed one", () => {
+    const located = { ...run, sandbox_provider: "daytona" };
+    expect(decodeApiRun(located)).toEqual(located);
+    expect(decodeApiRun({ ...run, sandbox_provider: null })).toEqual({ ...run, sandbox_provider: null });
+    expect(decodeApiRun({ ...run, sandbox_provider: 7 })).toEqual(run);
+  });
+
   test("decodes the exact durable lifecycle projection", () => {
     const lifecycle = {
       id: "run-1",
@@ -96,6 +125,22 @@ describe("run/step wire boundary decoders", () => {
     } satisfies ApiRunLifecycle;
     expect(decodeApiRunLifecycle(lifecycle)).toEqual(lifecycle);
     expect(decodeApiRunLifecycle({ ...lifecycle, cancelled: undefined })).toBeNull();
+  });
+
+  test("decodes the connector a turn arrived through and never drops a row over it", () => {
+    const connector = {
+      source: "slack",
+      sender_name: "Sundar",
+      sender_avatar_url: "https://avatars.example/sundar-192.png",
+      permalink: "https://example.slack.com/archives/C1/p1700000000000100",
+    };
+    expect(decodeApiRun({ ...run, connector })?.connector).toEqual(connector);
+    expect(decodeApiRunSummary({ ...summary, connector })?.connector).toEqual(connector);
+    const { connector: _absent, ...older } = run;
+    expect(decodeApiRun(older)?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: { source: "" } })?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: { source: "slack", sender_name: 7 } })?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: "slack" })?.id).toBe(run.id);
   });
 
   test("synthesizes latest projection fields for legacy compact run rows", () => {

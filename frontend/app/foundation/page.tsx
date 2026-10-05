@@ -63,7 +63,7 @@ export default function Home() {
           <div className='flex items-center gap-3'>
             <AsteriskMark className='size-8 text-text-primary' />
             <div className='flex flex-col'>
-              <span className='text-title-3-medium text-text-primary'>useAgent</span>
+              <span className='text-title-3-medium text-text-primary'>UseAgent</span>
               <span className='text-mono-label text-text-tertiary'>
                 multi-harness agent platform
               </span>
@@ -79,7 +79,7 @@ export default function Home() {
             Component foundation
           </h1>
           <p className='text-body-regular text-text-secondary'>
-            Base components on Tailwind v4, wired to the useAgent brand layer.
+            Base components on Tailwind v4, wired to the UseAgent brand layer.
             This page proves the foundation renders in both themes.
           </p>
         </div>

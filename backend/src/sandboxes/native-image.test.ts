@@ -7,11 +7,15 @@ import {
   desktopToolchainCommand,
   isNativeImageName,
   nativeImageName,
+  nativeImageNameOf,
   nativeImageSteps,
   renderNativeImageDockerfile,
   type NativeImageInputs,
+  type NativeImageStep,
 } from "./native-image";
-import type { SandboxRuntimeLayout } from "./provider";
+import { NATIVE_RUNTIME_ARTIFACT } from "../engines/native-runtime-artifact";
+import { SANDBOX_PROVIDER_KINDS } from "./plugins";
+import { sandboxRuntimeLayout, type SandboxRuntimeLayout } from "./provider";
 
 const BOX_LAYOUT: SandboxRuntimeLayout = {
   home: "/home/user",
@@ -48,6 +52,31 @@ describe("native image name", () => {
     expect(nativeImageName(inputs({ claudeEnvironment: {} }))).not.toBe(name);
   });
 
+  test("covers every step's command and every file's bytes, for every provider layout", () => {
+    const renderings = [nativeImageSteps(CUBE_LAYOUT, inputs()), nativeImageSteps(BOX_LAYOUT, inputs())];
+    const name = nativeImageNameOf(renderings);
+    expect(nativeImageNameOf([nativeImageSteps(CUBE_LAYOUT, inputs()), nativeImageSteps(BOX_LAYOUT, inputs())])).toBe(name);
+    const changed = (r: number, s: number, change: (step: NativeImageStep) => NativeImageStep) =>
+      nativeImageNameOf(renderings.with(r, renderings[r]!.with(s, change(renderings[r]![s]!))));
+    let files = 0;
+    renderings.forEach((steps, r) => steps.forEach((step, s) => {
+      expect(changed(r, s, (it) => ({ ...it, command: `${it.command}\n` }))).not.toBe(name);
+      step.files.forEach((file, f) => {
+        files++;
+        const bytes = Buffer.concat([file.bytes, Buffer.from(" ")]);
+        expect(changed(r, s, (it) => ({ ...it, files: it.files.with(f, { ...file, bytes }) }))).not.toBe(name);
+      });
+    }));
+    // The desktop launcher and relay are among them (a launcher-only change once kept its name).
+    expect(renderings[0]!.find((step) => step.name === "desktop")!.files).toHaveLength(2);
+    expect(files).toBeGreaterThan(10);
+  });
+
+  test("is the name of this deployment's renderings for every provider kind", () => {
+    const layouts = SANDBOX_PROVIDER_KINDS.map((kind) => nativeImageSteps(sandboxRuntimeLayout(kind), inputs()));
+    expect(nativeImageName(inputs())).toBe(nativeImageNameOf(layouts));
+  });
+
   test("rejects other snapshot names", () => {
     expect(isNativeImageName("useagent-opencode-1-18-7")).toBe(false);
     expect(isNativeImageName("")).toBe(false);
@@ -56,6 +85,28 @@ describe("native image name", () => {
 });
 
 describe("native image steps", () => {
+  test("the runtime step keeps only the pinned runtime, whichever way it ends", async () => {
+    const home = await mkdtemp(join(tmpdir(), "useagent-runtime-prune-"));
+    try {
+      const command = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "native-runtime")!.command;
+      const prune = command.split("\n").at(-1)!;
+      expect(prune).toContain(`! -name '${NATIVE_RUNTIME_ARTIFACT.sourceCommit}'`);
+      // The early exit (runtime already in the base image) prunes too.
+      expect(command.split("\n").find((line) => line.startsWith("if "))).toContain(`${prune}; exit 0; fi`);
+      const parent = join(home, ".local/share/useagent/native-runtime");
+      for (const dir of [NATIVE_RUNTIME_ARTIFACT.sourceCommit, "524d46b26f5ac85c82cd41e20f6c709d9f08db9b", "90dc3ebbb74b0e85f41c4cb3105a9f8994ce0bfa", ".stage-old"]) {
+        await Bun.write(join(parent, dir, "bin/t3"), "#!/bin/sh\n");
+      }
+      // Run against a scratch copy of the layout's runtime parent.
+      expect(Bun.spawnSync(["sh", "-c", prune.replace("/root/.local/share/useagent/native-runtime", parent)]).exitCode).toBe(0);
+      expect(await Array.fromAsync(new Bun.Glob("*").scan({ cwd: parent, onlyFiles: false, dot: true }))).toEqual([
+        NATIVE_RUNTIME_ARTIFACT.sourceCommit,
+      ]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test("the desktop step's configuration survives the shell round trip", async () => {
     const root = await mkdtemp(join(tmpdir(), "useagent-desktop-"));
     const home = join(root, "home");
@@ -82,7 +133,8 @@ ${command.replace(/\nif .*; then exit 0; fi\n/, "\n").split("\n").filter((line) 
     expect(defaults).toContain("picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'");
     expect(await Bun.file(join(root, `${home}/.config/pcmanfm/useagent/desktop-items-0.conf`)).text()).toContain("wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp");
     const browser = await Bun.file(join(root, `${home}/Desktop/browser.desktop`)).text();
-    expect(browser).toContain("$(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox");
+    // The icon runs the desktop's own browser launch: its sandbox flags, profile and background-traffic lockdown.
+    expect(browser).toContain('Exec=sh -c "exec sh $HOME/.skynet/browser-launch.sh"');
     expect(await Bun.file(join(root, `${home}/Desktop/files.desktop`)).text()).toContain("Exec=pcmanfm %U");
     await rm(root, { recursive: true, force: true });
   });
@@ -177,6 +229,15 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
     expect(cube.command).not.toContain("sudo");
     const piOnCube = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "pi")!;
     expect(piOnCube.files[0]!.path).toBe("/opt/useagent/pi-runtime/manifest/package.json");
+  });
+
+  test("let the desktop user start Xorg without root rights when the sandbox runs unprivileged", () => {
+    // With root rights the server's shared-memory segments belong to root and the user's x11vnc
+    // dies on MIT-SHM BadAccess, so the stream never opens (proved on the local image).
+    const box = nativeImageSteps(BOX_LAYOUT, inputs()).find((step) => step.name === "desktop")!;
+    const cube = nativeImageSteps(CUBE_LAYOUT, inputs()).find((step) => step.name === "desktop")!;
+    expect(box.command).toContain("allowed_users=anybody\nneeds_root_rights=no\n");
+    expect(cube.command).toContain("allowed_users=anybody\nneeds_root_rights=yes\n");
   });
 });
 

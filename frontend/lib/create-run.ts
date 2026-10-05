@@ -1,3 +1,4 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import { backendFetch } from "./backend-fetch";
 import { taskSounds } from "./task-sounds-player";
 
@@ -54,9 +55,22 @@ export async function createRun(body: unknown, idempotencyKey = crypto.randomUUI
   return sounded(postAcceptedCommand("/api/runs", body, idempotencyKey), idempotencyKey);
 }
 
+/** Send a failed run's prompt again as a new turn in its thread. */
+export async function resendRun(runId: string, idempotencyKey = crypto.randomUUID()) {
+  return sounded(
+    postAcceptedCommand(`/api/runs/${encodeURIComponent(runId)}/resend`, {}, idempotencyKey),
+    idempotencyKey,
+  );
+}
+
 export async function createThreadMessage(
   threadId: string,
-  body: { readonly text: string; readonly attachments?: readonly string[] },
+  body: {
+    readonly text: string;
+    readonly attachments?: readonly string[];
+    /** The chip's choice; absent keeps the thread's current mode. */
+    readonly permission_mode?: PermissionMode;
+  },
   idempotencyKey = crypto.randomUUID(),
 ) {
   return sounded(
@@ -86,8 +100,11 @@ export async function runCreateFailureMessage(
   response: Response,
   fallback = "Couldn't start the thread. Check Settings and try again.",
 ): Promise<string> {
-  const payload = (await response.json().catch(() => null)) as { message?: unknown } | null;
-  return typeof payload?.message === "string" && payload.message.trim()
-    ? payload.message.trim()
-    : fallback;
+  const payload = (await response.json().catch(() => null)) as
+    | { message?: unknown; reason?: unknown }
+    | null;
+  const text = [payload?.message, payload?.reason].find(
+    (value): value is string => typeof value === "string" && value.trim() !== "",
+  );
+  return text ? text.trim() : fallback;
 }

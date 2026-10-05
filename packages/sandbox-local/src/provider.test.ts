@@ -3,7 +3,7 @@ import type { LocalSandboxInfo } from "@useagent/runner-protocol";
 import { SandboxNotFoundError, memorySandboxLabelStore } from "@useagent/sandbox-contract";
 import { type FakeLink, fakeLink, fakeLinkDirectory } from "./fake-link";
 import { localProviderConfig } from "./plugin";
-import { LocalProvider, RunnerOfflineError } from "./provider";
+import { LocalProvider, RunnerOfflineError, SandboxImageUnavailableError } from "./provider";
 
 const IMAGE = { ref: "ghcr.io/useagenthq/sandbox:test", digest: "sha256:" + "a".repeat(64) };
 const ENV = { SANDBOX_IMAGE_REF: IMAGE.ref, SANDBOX_IMAGE_DIGEST: IMAGE.digest, SANDBOX_CPU: "2", SANDBOX_MEMORY_GIB: "4" };
@@ -263,5 +263,42 @@ describe("local process and file system", () => {
     far!.end();
     await pty.disconnect();
     expect(await pty.waitForTermination()).toEqual({});
+  });
+});
+
+describe("sandbox image on the machine", () => {
+  test("a machine that could not make the image present fails the create with what the person should do", async () => {
+    const refusing = (code: string, message: string) =>
+      runner({
+        onCall: async (method) => {
+          if (method === "sandbox.create") throw Object.assign(new Error(message), { code });
+          return null;
+        },
+      });
+    const provider = (link: FakeLink) => new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([link]) });
+    const missing = await provider(refusing("image_missing", "the sandbox image is still downloading on this machine (42%) after 5 min")).create().catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(SandboxImageUnavailableError);
+    expect((missing as Error).message).toBe("Update the desktop app to get the new sandbox image: the sandbox image is still downloading on this machine (42%) after 5 min");
+    const stalled = await provider(refusing("image_pull_stalled", "the sandbox image pull made no progress in 5 min; on a Mac this is usually the one-time keychain prompt waiting for an answer")).create().catch((e: unknown) => e);
+    expect((stalled as SandboxImageUnavailableError).code).toBe("image_pull_stalled");
+    expect((stalled as Error).message).toBe("Check the desktop app on the machine: the sandbox image pull made no progress in 5 min; on a Mac this is usually the one-time keychain prompt waiting for an answer");
+    // Any other refusal keeps the machine's own words.
+    const limit = await provider(refusing("refused", "this machine is at its limit of 2 running sandboxes")).create().catch((e: unknown) => e);
+    expect(limit).not.toBeInstanceOf(SandboxImageUnavailableError);
+    expect((limit as Error).message).toBe("this machine is at its limit of 2 running sandboxes");
+  });
+});
+
+describe("sandbox image on a machine running an older runner", () => {
+  test("the outright digest refusal of a runner without on-demand pulls maps to the same action", async () => {
+    const link = runner({
+      onCall: async (method) => {
+        if (method === "sandbox.create") throw Object.assign(new Error(`image ${IMAGE.ref} is not at digest ${IMAGE.digest} on this machine`), { code: "refused" });
+        return null;
+      },
+    });
+    const error = await new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([link]) }).create().catch((e: unknown) => e);
+    expect((error as SandboxImageUnavailableError).code).toBe("image_missing");
+    expect((error as Error).message).toBe(`Update the desktop app to get the new sandbox image: image ${IMAGE.ref} is not at digest ${IMAGE.digest} on this machine`);
   });
 });

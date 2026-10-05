@@ -20,6 +20,16 @@ describe("provider credential gate", () => {
     expect(asked).toEqual([{ orgId: "org-a", userId: "user-a", provider: "anthropic", model: "claude-opus-5" }]);
   });
 
+  test("a blocked credential read is cut by the run's own signal", async () => {
+    const stopped = new AbortController();
+    stopped.abort(new Error("Stopped by user"));
+    await expect(assertRunProviderCredential(
+      "claude",
+      { orgId: "org-a", userId: "user-a", model: "claude-opus-5", signal: stopped.signal },
+      { env, resolve: () => new Promise(() => {}) },
+    )).rejects.toThrow("Stopped by user");
+  });
+
   test("a connected key lets the run proceed", async () => {
     await expect(assertRunProviderCredential(
       "opencode",

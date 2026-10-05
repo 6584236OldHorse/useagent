@@ -63,7 +63,7 @@ async function cancelResponseReader(
   }
 }
 
-async function responseBodyPrefix(response: Response): Promise<string> {
+export async function responseBodyPrefix(response: Response): Promise<string> {
   const reader = response.clone().body?.getReader();
   if (!reader) return "";
 

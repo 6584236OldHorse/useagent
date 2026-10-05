@@ -3,6 +3,7 @@
  * `process.env` with dev-friendly defaults so the server boots with zero setup.
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { ENGINE_IDS, type EngineId } from "./db/schema";
 import {
   authSecretMaterial,
@@ -36,13 +37,120 @@ export function allowDevOrg(): boolean {
   return devModeEnabled();
 }
 
-/** Self-service account creation is a development convenience only. A production
- * process always fails closed even if USEAGENT_DEV_MODE was accidentally left on. */
+/** Whether accounts can be created by the people who want them: the deployment
+ * opened sign-up (below), or this is development. A production process without
+ * the switch always fails closed even if USEAGENT_DEV_MODE was accidentally left on. */
 export function selfSignupEnabled(
   source: Record<string, string | undefined> = process.env,
 ): boolean {
+  if (openSignupConfig(source)) return true;
   if ((source.NODE_ENV ?? "development") === "production") return false;
   return runtimeDevModeEnabled(source);
+}
+
+export interface OpenSignupConfig {
+  /** Email domains admitted, lowercased without the "@"; empty means any. */
+  readonly domains: readonly string[];
+  /** A shared code typed on the sign-up card; empty means none is asked for. */
+  readonly inviteCode: string;
+}
+
+export function signupSwitchOn(source: Record<string, string | undefined> = process.env): boolean {
+  const value = source.SIGNUP_OPEN?.trim();
+  return value === "1" || value === "true";
+}
+
+/**
+ * Open sign-up: `SIGNUP_OPEN=1` lets anyone create an account with an email
+ * address and a password, in any environment, narrowed by
+ * `SIGNUP_ALLOWED_DOMAINS` (a comma list) and `SIGNUP_INVITE_CODE`. Unset is the
+ * closed deployment. The switch needs the account mail transport
+ * ({@link invitationMailConfig}): an address is verified by mail before its
+ * first sign-in, and without mail the switch stays inert, because an invite
+ * code proves possession of the code, not of the address.
+ */
+export function openSignupConfig(
+  source: Record<string, string | undefined> = process.env,
+): OpenSignupConfig | null {
+  if (!signupSwitchOn(source) || !invitationMailConfig(source)) return null;
+  return {
+    domains: (source.SIGNUP_ALLOWED_DOMAINS ?? "")
+      .split(",")
+      .map((domain) => domain.trim().toLowerCase().replace(/^@/, ""))
+      .filter(Boolean),
+    inviteCode: source.SIGNUP_INVITE_CODE?.trim() ?? "",
+  };
+}
+
+export const SIGNUP_DISABLED_MESSAGE = "Account creation is disabled";
+
+/** Equal secrets, in time that depends neither on where they differ nor on
+ *  their lengths: both sides are hashed first. */
+export function sameSecret(given: string, expected: string): boolean {
+  return timingSafeEqual(createHash("sha256").update(given).digest(), createHash("sha256").update(expected).digest());
+}
+
+/** Why this address may not open an account by itself, or null when it may.
+ *  The open rules narrow by domain and invite code, except for an address a
+ *  pending invitation names: an invitation is an explicit admission, and the
+ *  mailed confirmation still proves the mailbox. Without the switch the
+ *  development rule stands. The answer never depends on whether an account
+ *  exists, so it can be given before anything is looked up. */
+export function signupRefusal(
+  email: string,
+  inviteCode: unknown,
+  source: Record<string, string | undefined> = process.env,
+  invited = false,
+): string | null {
+  const open = openSignupConfig(source);
+  if (!open) return selfSignupEnabled(source) ? null : SIGNUP_DISABLED_MESSAGE;
+  if (invited) return null;
+  const domain = email.trim().toLowerCase().split("@")[1] ?? "";
+  if (open.domains.length && !open.domains.includes(domain)) {
+    return `Sign-up is limited to ${open.domains.map((name) => `@${name}`).join(", ")} addresses`;
+  }
+  if (open.inviteCode && !(typeof inviteCode === "string" && sameSecret(inviteCode.trim(), open.inviteCode))) {
+    return "That invite code is not valid";
+  }
+  return null;
+}
+
+export interface InvitationMailConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly secure: boolean;
+  readonly user?: string;
+  readonly pass?: string;
+  readonly from: string;
+}
+
+/**
+ * Account mail (invitations, sign-up verification) reuses the connector's SMTP
+ * settings (host, port, login, from) without its recipient allow-list, since
+ * such mail goes to a new address by definition. The SMTP client speaks
+ * implicit TLS, so the default port is 465. Null means no delivery: invitations
+ * are shown as a link instead, and sign-up cannot open.
+ */
+export function invitationMailConfig(
+  source: Record<string, string | undefined> = process.env,
+): InvitationMailConfig | null {
+  const host = source.CONNECTOR_EMAIL_HOST?.trim();
+  const from = source.CONNECTOR_EMAIL_FROM?.trim();
+  if (!host || !from) return null;
+  const port = Number(source.CONNECTOR_EMAIL_PORT ?? 465);
+  if (!Number.isInteger(port) || port <= 0) return null;
+  return {
+    host,
+    port,
+    secure: source.CONNECTOR_EMAIL_SECURE === "true" || port === 465,
+    user: source.CONNECTOR_EMAIL_USER?.trim() || undefined,
+    pass: source.CONNECTOR_EMAIL_PASS || undefined,
+    from,
+  };
+}
+
+export function invitationMailEnabled(): boolean {
+  return invitationMailConfig() !== null;
 }
 
 /** Origins allowed to submit Better Auth requests. Browser aliases remain
@@ -335,9 +443,24 @@ export function githubConfigured(): boolean {
 export function githubTenantOrgId(): string | null {
   return (
     process.env.GITHUB_TENANT_ORG_ID?.trim() ||
+    primaryOrgId() ||
+    (allowDevOrg() ? "org-skynet-dev" : null)
+  );
+}
+
+/**
+ * The organization an operator named as the deployment's own: it owns
+ * deployment-wide work with no tenant of its own (free-model qualification
+ * runs, the shared GitHub connection above). The host bootstrap sets
+ * `USEAGENT_PRIMARY_ORG_ID`; older installs carry it in `SLACK_DEFAULT_ORG_ID`.
+ * Null on a machine nobody configured, so a developer's backend never spends
+ * sandbox time on deployment chores.
+ */
+export function primaryOrgId(): string | null {
+  return (
     process.env.USEAGENT_PRIMARY_ORG_ID?.trim() ||
     process.env.SLACK_DEFAULT_ORG_ID?.trim() ||
-    (allowDevOrg() ? "org-skynet-dev" : null)
+    null
   );
 }
 
@@ -416,6 +539,20 @@ export function slackEnabled(): boolean {
 
 export function legacySlackEnabled(): boolean {
   return Boolean(slackConfig()?.legacyBotToken);
+}
+
+/**
+ * Where in-app run feedback is posted (runs/feedback-routes.ts): the channel
+ * `FEEDBACK_SLACK_CHANNEL` in the workspace `FEEDBACK_SLACK_TEAM_ID` (default:
+ * the legacy single workspace). Needs the Slack adapter. Null = feedback is
+ * stored but no Slack notice is sent.
+ */
+export function feedbackSlackConfig(): { channel: string; teamId: string } | null {
+  const channel = process.env.FEEDBACK_SLACK_CHANNEL?.trim();
+  const slack = slackConfig();
+  if (!channel || !slack) return null;
+  const teamId = process.env.FEEDBACK_SLACK_TEAM_ID?.trim() || slack.legacyTeamId;
+  return teamId ? { channel, teamId } : null;
 }
 
 /**

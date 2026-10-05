@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { captureLossForRun } from "../src/runs/capture-loss";
 import {
   CaptureFenceError,
+  drainProviderEvents,
   providerEventExists,
   recordProviderEvent,
+  recordProviderEvents,
   recordProviderEventIfAbsent,
   type ProviderEventInput,
 } from "../src/runs/provider-events";
@@ -11,6 +13,47 @@ import { getNativeFramesSince, subscribeNative } from "../src/runs/native-events
 import { createRun } from "../src/runs/repo";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import "./helpers";
+
+test("root message revisions roll back together and retain their first ordering anchor", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({ id: runId, prompt: "atomic narration", model: "test-model", engine: "mock",
+    orgId: DEV_ORG_ID, userId: DEV_USER_ID, parentRunId: null, threadId: runId });
+  const base = { runId, threadId: runId, provider: "t3", nativeSessionId: "root", nativeMessageId: "message" };
+  const anchor = { ...base, id: `${runId}:start`, eventType: "t3.message.started", payload: { role: "assistant", turnId: "turn" } };
+  const first = { ...base, id: `${runId}:0`, eventType: "t3.message.updated", payload: { text: "before", revision: "before" } };
+  await recordProviderEvents([anchor, first], { required: true });
+  const prior = await getNativeFramesSince(runId, -1);
+  const seen: string[] = [];
+  const unsubscribe = subscribeNative(runId, (frame) => seen.push(frame.eventId));
+  try {
+    await expect(recordProviderEvents([
+      anchor, { ...first, payload: { text: "partial", revision: "after" } },
+      { ...base, id: `${runId}:1`, eventType: null as never },
+    ], { required: true })).rejects.toThrow();
+    expect(seen).toEqual([]);
+    expect(await getNativeFramesSince(runId, -1)).toEqual(prior);
+    await recordProviderEvents([anchor, { ...first, payload: { text: "after", revision: "after" } }], { required: true });
+    const next = await getNativeFramesSince(runId, -1);
+    expect(next.find((frame) => frame.eventId === anchor.id)?.seq).toBe(prior[0]?.seq);
+    expect(seen).toEqual([first.id]);
+    expect(next.find((frame) => frame.eventId === first.id)?.payload).toEqual({ text: "after", revision: "after" });
+  } finally { unsubscribe(); }
+});
+
+test("a sealed run rejects an entire message batch before publishing", async () => {
+  const runId = crypto.randomUUID();
+  const seen: string[] = [];
+  const unsubscribe = subscribeNative(runId, (frame) => seen.push(frame.eventId));
+  try {
+    await expect(recordProviderEvents([0, 1].map((segment) => ({
+      id: `${runId}:${segment}`, runId, threadId: runId, provider: "t3", eventType: "t3.message.updated",
+      payload: { text: "must not land", segment },
+    })), { fence: async () => false })).rejects.toBeInstanceOf(CaptureFenceError);
+    expect(seen).toEqual([]);
+    expect(await providerEventExists(`${runId}:0`)).toBe(false);
+    expect(await providerEventExists(`${runId}:1`)).toBe(false);
+  } finally { unsubscribe(); }
+});
 
 test("a stale fence rejects once without recording capture loss", async () => {
   const runId = crypto.randomUUID();
@@ -179,6 +222,102 @@ test("immutable provider events fail required, repair on retry, and publish only
     const durable = await getNativeFramesSince(runId, -1);
     expect(durable).toHaveLength(1);
     expect(durable[0]?.payload).toEqual({ revision: 1 });
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("an aborted immutable event queued behind an earlier event never writes later", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({
+    id: runId,
+    prompt: "aborted queued immutable event",
+    model: "test-model",
+    engine: "mock",
+    orgId: DEV_ORG_ID,
+    userId: DEV_USER_ID,
+    parentRunId: null,
+    threadId: runId,
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const blocking = recordProviderEvent({
+    id: `${runId}:blocking`,
+    runId,
+    threadId: runId,
+    provider: "test",
+    eventType: "session.started",
+    payload: {},
+  }, {
+    fence: async () => {
+      markStarted();
+      await released;
+      return true;
+    },
+  });
+  await started;
+
+  const controller = new AbortController();
+  let fenceCalls = 0;
+  const eventId = `${runId}:artifact.created`;
+  const queued = recordProviderEventIfAbsent({
+    id: eventId,
+    runId,
+    threadId: runId,
+    provider: "skynet",
+    eventType: "artifact.created",
+    payload: {},
+  }, {
+    signal: controller.signal,
+    beforeCommit: async () => { fenceCalls++; },
+  });
+  controller.abort(new Error("publication deadline"));
+  await expect(queued).rejects.toThrow("publication deadline");
+
+  release();
+  await blocking;
+  await drainProviderEvents(runId);
+  expect(fenceCalls).toBe(0);
+  expect(await providerEventExists(eventId)).toBe(false);
+});
+
+test("a valid immutable event fence records and publishes the event once", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({
+    id: runId,
+    prompt: "valid immutable event fence",
+    model: "test-model",
+    engine: "mock",
+    orgId: DEV_ORG_ID,
+    userId: DEV_USER_ID,
+    parentRunId: null,
+    threadId: runId,
+  });
+  const eventId = `${runId}:artifact.revised`;
+  const input: ProviderEventInput = {
+    id: eventId,
+    runId,
+    threadId: runId,
+    provider: "skynet",
+    eventType: "artifact.revised",
+    payload: { revision: 1 },
+  };
+  const seen: string[] = [];
+  const unsubscribe = subscribeNative(runId, (frame) => seen.push(frame.eventId));
+  let fenceCalls = 0;
+  const beforeCommit = async () => { fenceCalls++; };
+
+  try {
+    const results = await Promise.all([
+      recordProviderEventIfAbsent(input, { beforeCommit }),
+      recordProviderEventIfAbsent(input, { beforeCommit }),
+    ]);
+    expect(results.sort()).toEqual([false, true]);
+    expect(fenceCalls).toBe(2);
+    expect(await providerEventExists(eventId)).toBe(true);
+    expect(seen).toEqual([eventId]);
   } finally {
     unsubscribe();
   }

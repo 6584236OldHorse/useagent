@@ -32,7 +32,7 @@ export const AUTOMATION_APPROVAL_REQUIRED_TOOL_NAMES: ReadonlySet<string> = new 
 const APPROVAL_CAPABILITY_SCHEMA = {
   type: "string",
   description:
-    "Opaque, short-lived, one-shot capability minted by the authenticated useAgent backend for this exact tool and argument object after user approval.",
+    "Opaque, short-lived, one-shot capability minted by the authenticated UseAgent backend for this exact tool and argument object after user approval.",
 } as const;
 
 export const AUTOMATION_TOOLS: readonly GatewayToolDescriptor[] = AUTOMATION_TOOL_CATALOG.map((tool) => {
@@ -245,7 +245,13 @@ async function runAutomationNow(
   // command worker and authentication root. The execution graph is needed only
   // for this explicit mutating call.
   const { fireScheduleForOrg } = await import("../../schedules/service");
-  const runId = await fireScheduleForOrg(schedule, "manual");
+  let runId: string;
+  try {
+    runId = await fireScheduleForOrg(schedule, "manual");
+  } catch (error) {
+    if (error instanceof ScheduleServiceError) return serviceError(error);
+    throw error;
+  }
   return textResult(`Started automation ${schedule.name} now as run ${runId}.`, {
     run_id: runId,
     automation_id: schedule.id,
@@ -299,7 +305,7 @@ export async function executeAutomationToolLocal(
     );
     if (!approved) {
       return errorResult(
-        `A valid server-minted one-shot approval capability is required for ${name}. A run can never mint its own: call approval_request with this tool name and the exact argument object, tell the user to approve it in the useAgent session view, poll approval_poll for the returned approvalCapability, then retry ${name} with it.`,
+        `A valid server-minted one-shot approval capability is required for ${name}. A run can never mint its own: call approval_request with this tool name and the exact argument object, tell the user to approve it in the UseAgent session view, poll approval_poll for the returned approvalCapability, then retry ${name} with it.`,
         { error: "approval_required" },
       );
     }
@@ -314,7 +320,7 @@ export async function executeAutomationToolLocal(
     );
   }
   if (name === "automation_schema") {
-    return textResult(`useAgent automation contract ${APPROVAL_AUTOMATION_CONTRACT.version}.`, {
+    return textResult(`UseAgent automation contract ${APPROVAL_AUTOMATION_CONTRACT.version}.`, {
       schema: APPROVAL_AUTOMATION_CONTRACT,
     });
   }

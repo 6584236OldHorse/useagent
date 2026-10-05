@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveChildFidelity,
+  deriveThreadContext,
+  latestThreadContext,
   NATIVE_SCHEMA_VERSION,
   type NativeFrame,
   parseNativeFrame,
@@ -305,5 +307,102 @@ describe("deriveChildFidelity", () => {
       },
     ]);
     expect(fidelity.size).toBe(0);
+  });
+});
+
+describe("deriveThreadContext", () => {
+  const finish = (over: Record<string, unknown>) =>
+    parsed({ eventType: "part.step-finish", ...over });
+
+  test("reads the newest parent step-finish and skips children", () => {
+    const frames = [
+      finish({
+        eventId: "u1",
+        seq: 1,
+        native: { sessionId: "ses_root" },
+        payload: {
+          tokens: { input: 100, output: 20, cache: { read: 400, write: 10 } },
+          contextWindow: 1000,
+        },
+      }),
+      finish({
+        eventId: "u2",
+        seq: 2,
+        native: { sessionId: "ses_child" },
+        payload: { tokens: { input: 9_999, output: 1 } },
+      }),
+      finish({
+        eventId: "u3",
+        seq: 3,
+        native: { sessionId: "ses_other", parentSessionId: "ses_root" },
+        payload: { tokens: { input: 8_888, output: 1 } },
+      }),
+    ];
+    expect(deriveThreadContext(frames, new Set(["ses_child"]))).toEqual({
+      used: 530,
+      cached: 400,
+      window: 1000,
+      input: 100,
+      output: 20,
+      reasoning: 0,
+      cacheWrite: 10,
+    });
+  });
+
+  test("prefers a reported total and tolerates a missing window", () => {
+    const frames = [
+      finish({
+        eventId: "u1",
+        seq: 1,
+        native: { sessionId: "ses_root" },
+        payload: { tokens: { input: 1, output: 1, total: 700 } },
+      }),
+    ];
+    expect(deriveThreadContext(frames, new Set())).toEqual({
+      used: 700,
+      cached: 0,
+      window: null,
+      input: 1,
+      output: 1,
+      reasoning: 0,
+      cacheWrite: 0,
+    });
+    expect(deriveThreadContext([parsed({ eventType: "part.text" })], new Set())).toBeNull();
+  });
+
+  test("reads the runtime lane's context-window frame with Codex app-server numbers", () => {
+    // The frame backend/test/runtime-usage-frame.test.ts proves the runtime
+    // projector stores for a recorded Codex thread/tokenUsage/updated notification.
+    const frame = finish({
+      eventId: "pe_run-1_t3_evt-usage-3",
+      seq: 3,
+      provider: "t3",
+      native: {
+        sessionId: "skynet-thread-thread-1",
+        parentSessionId: null,
+        messageId: null,
+        partId: "evt-usage-3",
+        callId: null,
+      },
+      payload: {
+        tokens: { input: 18336, output: 21, reasoning: 0, cache: { read: 17152 }, total: 18357 },
+        contextWindow: 258400,
+        activity: { id: "evt-usage-3", kind: "context-window.updated" },
+      },
+    });
+    const context = {
+      used: 18357,
+      cached: 17152,
+      window: 258400,
+      input: 18336,
+      output: 21,
+      reasoning: 0,
+      cacheWrite: 0,
+    };
+    expect(deriveThreadContext([frame], new Set())).toEqual(context);
+    // The composer's own entry point sees the same ring for the thread's turn.
+    expect(latestThreadContext([
+      { run: {}, native: { nativeFrames: [frame], childSessionIds: new Set() } },
+    ])).toEqual(context);
   });
 });

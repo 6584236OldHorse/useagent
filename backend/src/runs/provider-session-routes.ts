@@ -90,6 +90,7 @@ export function registerProviderSessionRoutes(routes: Hono<AppEnv>): void {
         decision: body.decision,
         signal: c.req.raw.signal,
         expectedSandbox: run.expectedSandbox ?? await getThreadExpectedSandbox(c.get("orgId"), run.threadId),
+        permissionMode: run.permissionMode,
       });
       return c.json({ ok: true, already_answered: result.alreadyAnswered });
     } catch (error) {

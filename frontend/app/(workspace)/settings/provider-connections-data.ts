@@ -50,6 +50,39 @@ export interface CodexChatGptStatus {
   requiresOpenaiAuth: boolean;
 }
 
+/** One rolling usage window of the ChatGPT subscription behind the Codex engine. */
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  /** Unix seconds when the window resets. */
+  resetsAt: number | null;
+}
+
+export interface CodexRateLimits {
+  planType: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+}
+
+function safeRateLimitWindow(value: unknown): CodexRateLimitWindow | null {
+  if (!isRecord(value) || typeof value.usedPercent !== "number") return null;
+  return {
+    usedPercent: value.usedPercent,
+    windowDurationMins:
+      typeof value.windowDurationMins === "number" ? value.windowDurationMins : null,
+    resetsAt: typeof value.resetsAt === "number" ? value.resetsAt : null,
+  };
+}
+
+export function safeCodexRateLimits(value: unknown): CodexRateLimits | null {
+  if (!isRecord(value)) return null;
+  return {
+    planType: typeof value.planType === "string" ? value.planType : null,
+    primary: safeRateLimitWindow(value.primary),
+    secondary: safeRateLimitWindow(value.secondary),
+  };
+}
+
 export interface ProviderConnectionView {
   provider: ProviderConnectionProvider;
   apiKey: ProviderConnectionMeta | null;
@@ -166,10 +199,20 @@ export const PROVIDER_LABELS: Record<
   },
 };
 
+/** One row per provider this account is offered: every provider unless the
+ *  server's manifest names the offered ones (a restricted provider has no row). */
+export function offeredConnectionProviders(
+  offered: readonly string[] | null | undefined,
+): ProviderConnectionProvider[] {
+  if (!offered) return [...MODEL_PROVIDER_CONNECTION_PROVIDERS];
+  return MODEL_PROVIDER_CONNECTION_PROVIDERS.filter((provider) => offered.includes(provider));
+}
+
 export function providerConnectionViews(
   connections: ProviderConnectionMeta[],
+  offered: readonly string[] | null = null,
 ): ProviderConnectionView[] {
-  return MODEL_PROVIDER_CONNECTION_PROVIDERS.map((provider) => {
+  return offeredConnectionProviders(offered).map((provider) => {
     const providerConnections = connections.filter((item) => item.provider === provider);
     return {
       provider,
@@ -197,6 +240,17 @@ export function providerStatusConnection(
 export function accountLabel(connection: ProviderConnectionMeta | null): string {
   if (!connection) return "No account metadata";
   return connection.metadata.email ?? connection.metadata.planType ?? "Account metadata saved";
+}
+
+/** Why a stored API key stopped serving runs: the provider rejected it, and
+ *  only a new key brings it back. */
+export function rejectedKeyNotice(
+  connection: ProviderConnectionMeta | null,
+  providerName: string,
+): string | null {
+  return connection?.authMethod === "api_key" && connection.status === "reauth_required"
+    ? `${providerName} rejected this key (expired or revoked). Save a new key to reconnect.`
+    : null;
 }
 
 export function statusLabel(connection: ProviderConnectionMeta | null): string {

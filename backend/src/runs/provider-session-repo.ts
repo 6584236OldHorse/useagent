@@ -5,6 +5,7 @@ import {
 import { and, desc, eq, isNotNull, isNull, ne } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { runs } from "../db/schema";
+import type { PreambleHashes } from "../engines/turn-prompt";
 
 type RunRecord = typeof runs.$inferSelect;
 
@@ -50,7 +51,16 @@ export async function setRunEngineSession(
 export interface ThreadProviderSessionState {
   readonly binding: ProviderSessionBinding | null;
   readonly legacySessionId: string | null;
+  /** The preamble that session held after its last delivered prompt. */
+  readonly preambleHashes: PreambleHashes | null;
 }
+
+const preambleHashesOf = (value: unknown): PreambleHashes | null => {
+  const hashes = value as Partial<PreambleHashes> | null;
+  return typeof hashes?.rules === "string" && typeof hashes.catalog === "string"
+    ? { rules: hashes.rules, catalog: hashes.catalog, ...(typeof hashes.bots === "string" ? { bots: hashes.bots } : {}) }
+    : null;
+};
 
 /** Most recent same-engine provider session in a thread, excluding the turn
  * being admitted. A thread may mix engines; native sessions never transfer. */
@@ -64,6 +74,7 @@ export async function getThreadProviderSessionState(
     .select({
       binding: runs.providerSession,
       legacySessionId: runs.engineSessionId,
+      preambleHashes: runs.preambleHashes,
     })
     .from(runs)
     .where(
@@ -80,6 +91,7 @@ export async function getThreadProviderSessionState(
   return {
     binding: parseProviderSessionBinding(row?.binding),
     legacySessionId: row?.legacySessionId ?? null,
+    preambleHashes: preambleHashesOf(row?.preambleHashes),
   };
 }
 

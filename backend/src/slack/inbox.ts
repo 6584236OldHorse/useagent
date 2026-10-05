@@ -24,6 +24,15 @@ const DEFER_BASE_MS = 1_000;
 const DEFER_MAX_MS = 60_000;
 const DEFER_MAX_COUNT = 20;
 const DEFER_EXPIRE_MS = 30 * 60 * 1000;
+/** A deployment holds admission closed for as long as in-flight runs take
+ *  (deploy/compose/promotion.ts), and the person was told the request starts
+ *  when service resumes: it waits out the whole closure and never expires. */
+const DEPLOYMENT_DEFER_POLICY = {
+  baseMs: DEFER_BASE_MS,
+  maxMs: DEFER_MAX_MS,
+  maxCount: Number.POSITIVE_INFINITY,
+  expireMs: Number.POSITIVE_INFINITY,
+};
 const ROOT_PROBATION_BASE_MS = 250;
 const ROOT_PROBATION_MAX_MS = 5_000;
 const ROOT_PROBATION_MAX_COUNT = 12;
@@ -67,7 +76,9 @@ export interface SlackInboxClaim {
 }
 
 export type SlackInboxOutcome =
-  | { readonly status: "completed" }
+  /** `noop` names a permanent no-op (a refusal, an unsupported event): the row
+   *  settles with a `permanent_noop:` marker so duplicate delivery never reopens it. */
+  | { readonly status: "completed"; readonly noop?: string }
   | { readonly status: "retryable_unavailable"; readonly error: string }
   | { readonly status: "waiting_for_root" }
   | { readonly status: "permanent"; readonly error: string };
@@ -435,8 +446,11 @@ async function checkpointStagedAttachmentIds(
   await updateClaim(row, { payload });
 }
 
-async function completeClaim(row: ClaimedSlackInboxEvent): Promise<void> {
-  await updateClaim(row, { state: "completed", error: null });
+async function completeClaim(row: ClaimedSlackInboxEvent, noop?: string): Promise<void> {
+  await updateClaim(row, {
+    state: "completed",
+    error: noop ? `permanent_noop:${noop}`.slice(0, 500) : null,
+  });
 }
 
 async function failClaim(row: ClaimedSlackInboxEvent, error: string): Promise<void> {
@@ -563,10 +577,15 @@ export async function processSlackInbox(handler: SlackInboxHandler): Promise<Sla
       });
       if (await heartbeat.stop()) throw new StaleSlackInboxClaimError();
       if (outcome.status === "completed") {
-        await completeClaim(row);
+        await completeClaim(row, outcome.noop);
         completed++;
       } else if (outcome.status === "retryable_unavailable") {
-        const deferred = await deferClaim(row, payload, outcome.error);
+        const deferred = await deferClaim(
+          row,
+          payload,
+          outcome.error,
+          outcome.error === "run_admission_closed" ? DEPLOYMENT_DEFER_POLICY : undefined,
+        );
         if (deferred === "expired") {
           await failClaim(row, `deferred_expired:${outcome.error}`);
           failed++;

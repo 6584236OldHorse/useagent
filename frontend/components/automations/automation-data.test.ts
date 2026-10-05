@@ -32,7 +32,8 @@ describe("automation presentation", () => {
 
   test("keeps legacy engine ids displayable without making them selectable", () => {
     expect(engineLabel("claude-sdk")).toBe("Claude SDK");
-    expect(engineLabel("daytona")).toBe("Daytona");
+    // The legacy engine id reads as a place, never as the vendor it was named after.
+    expect(engineLabel("daytona")).toBe("Cloud");
     expect(engineLabel("acp")).toBe("ACP");
     expect(automationEngineOptions(["claude-sdk", "daytona", "acp"])).toEqual([]);
   });

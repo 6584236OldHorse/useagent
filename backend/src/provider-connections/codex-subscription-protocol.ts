@@ -8,9 +8,13 @@ const CLIENT_METHODS = new Set([
   "config/mcpServer/reload",
   "mcpServerStatus/list",
   "turn/start",
+  "turn/steer",
   "turn/interrupt",
   "thread/read",
   "thread/rollback",
+  "thread/compact/start",
+  "thread/backgroundTerminals/list",
+  "thread/backgroundTerminals/terminate",
 ]);
 
 // Sandbox-originated (client) frames stay tightly bounded; frames from OUR
@@ -58,7 +62,8 @@ interface PendingServerFrame {
 }
 
 export class CodexSubscriptionProtocol {
-  readonly #binding: CodexSubscriptionRelayBinding;
+  /** The binding of the run the relay currently serves; it throws when none is active. */
+  readonly #binding: () => CodexSubscriptionRelayBinding;
   readonly #dependencies: ProtocolDependencies;
   readonly #pendingClientRequests = new Map<JsonRpcId, {
     readonly method: string;
@@ -73,7 +78,7 @@ export class CodexSubscriptionProtocol {
   #pendingServerBytes = 0;
   #nextServerFrameOrder = 0;
 
-  constructor(binding: CodexSubscriptionRelayBinding, dependencies: ProtocolDependencies) {
+  constructor(binding: () => CodexSubscriptionRelayBinding, dependencies: ProtocolDependencies) {
     this.#binding = binding;
     this.#dependencies = dependencies;
   }
@@ -101,38 +106,49 @@ export class CodexSubscriptionProtocol {
     let method = frame.method;
     let outbound = raw;
     let expectedThreadId: string | null = null;
+    const envelopeWith = (nextMethod: string, params: Record<string, unknown>) => {
+      const envelope = JSON.parse(raw) as Record<string, unknown>;
+      envelope.method = nextMethod;
+      envelope.params = params;
+      return JSON.stringify(envelope);
+    };
     if (method === "thread/start") {
-      const values = frame.params ?? {};
-      assertModelAndCwd(values, this.#binding);
-      assertHostOwnedThreadFields(values);
+      const { values, changed } = hostOwnedThreadParams(frame.params, this.#binding());
       const bound = await this.#dependencies.loadThreadBinding();
       if (bound) {
         method = "thread/resume";
         expectedThreadId = bound;
-        const envelope = JSON.parse(raw) as Record<string, unknown>;
-        envelope.method = method;
-        envelope.params = { ...values, threadId: bound };
-        outbound = JSON.stringify(envelope);
+        outbound = envelopeWith(method, { ...values, threadId: bound });
+      } else if (changed) {
+        outbound = envelopeWith(method, values);
       }
     } else if (method === "thread/resume") {
-      const values = frame.params ?? {};
-      assertModelAndCwd(values, this.#binding);
-      assertHostOwnedThreadFields(values);
+      const { values, changed } = hostOwnedThreadParams(frame.params, this.#binding());
       const bound = await this.#dependencies.loadThreadBinding();
       if (bound) {
         if (values.threadId !== bound) {
           throw new Error("Codex resume thread binding mismatch");
         }
         expectedThreadId = bound;
+        if (changed) outbound = envelopeWith(method, values);
       } else {
         method = "thread/start";
-        const envelope = JSON.parse(raw) as Record<string, unknown>;
         const startParams = { ...values };
         delete startParams.threadId;
-        envelope.method = method;
-        envelope.params = startParams;
-        outbound = JSON.stringify(envelope);
+        delete startParams.excludeTurns;
+        outbound = envelopeWith(method, startParams);
       }
+    } else if (method === "turn/start" && frame.params?.environments === undefined) {
+      // The pinned runtime's Codex client encodes turn/start without the
+      // `environments` field, so the host names the run's own environment. One
+      // the runtime does send is still checked against the binding below.
+      const binding = this.#binding();
+      const values = {
+        ...frame.params,
+        environments: [{ environmentId: binding.environmentId, cwd: binding.cwd, runtimeWorkspaceRoots: [binding.cwd] }],
+      };
+      await this.#assertBoundRequest(method, values);
+      outbound = envelopeWith(method, values);
     } else {
       await this.#assertBoundRequest(method, frame.params);
     }
@@ -141,6 +157,18 @@ export class CodexSubscriptionProtocol {
       this.#pendingClientRequests.set(frame.id, { method, expectedThreadId });
     }
     return outbound;
+  }
+
+  /** The response the relay gives itself to a request it must not forward, or
+   * null. Unsubscribing the thread would unload it from the kept session's
+   * app-server, which still serves the thread's next runs, so the runtime is
+   * told it unsubscribed and the app-server keeps it. */
+  async answerLocally(raw: string): Promise<string | null> {
+    const frame = parseCodexSubscriptionFrame(raw, "client");
+    if (frame.method !== "thread/unsubscribe") return null;
+    if (frame.id === undefined) throw new Error("Codex unsubscribe request id is required");
+    await this.#assertKnownThread(frame.params?.threadId);
+    return JSON.stringify({ id: frame.id, result: { status: "unsubscribed" } });
   }
 
   /** Validate one host app-server frame and return only frames this relay may
@@ -247,8 +275,7 @@ export class CodexSubscriptionProtocol {
       // "thread/start" is validated (and rewritten to a resume when the thread
       // is already bound) inline in acceptClientFrame - it never reaches here.
       case "thread/resume": {
-        assertModelAndCwd(values, this.#binding);
-        assertHostOwnedThreadFields(values);
+        hostOwnedThreadParams(values, this.#binding());
         const expected = await this.#dependencies.loadThreadBinding();
         if (!expected || values.threadId !== expected) {
           throw new Error("Codex resume thread binding mismatch");
@@ -256,17 +283,31 @@ export class CodexSubscriptionProtocol {
         return;
       }
       case "turn/start":
-        if (values.model !== this.#binding.model) throw new Error("model binding mismatch");
-        if (values.cwd !== undefined && values.cwd !== this.#binding.cwd) {
+        if (values.model !== this.#binding().model) throw new Error("model binding mismatch");
+        if (values.cwd !== undefined && values.cwd !== this.#binding().cwd) {
           throw new Error("workspace binding mismatch");
         }
-        assertTurnEnvironments(values.environments, this.#binding);
+        assertTurnEnvironments(values.environments, this.#binding());
         await this.#assertKnownThread(values.threadId);
+        return;
+      case "turn/steer":
+        await this.#assertKnownThread(values.threadId);
+        if (typeof values.expectedTurnId !== "string" || this.#activeTurns.get(values.expectedTurnId) !== values.threadId) {
+          throw new Error("Codex steer turn binding mismatch");
+        }
+        return;
+      case "thread/backgroundTerminals/terminate":
+        await this.#assertKnownThread(values.threadId);
+        if (typeof values.processId !== "string" || values.processId.length === 0) {
+          throw new Error("Codex background terminal id is required");
+        }
         return;
       case "mcpServerStatus/list":
       case "turn/interrupt":
       case "thread/read":
       case "thread/rollback":
+      case "thread/compact/start":
+      case "thread/backgroundTerminals/list":
         await this.#assertKnownThread(values.threadId);
         return;
     }
@@ -561,13 +602,35 @@ function assertModelAndCwd(
   if (params.cwd !== binding.cwd) throw new Error("workspace binding mismatch");
 }
 
-function assertHostOwnedThreadFields(params: JsonObject): void {
-  if (params.config !== undefined && params.config !== null) {
-    throw new Error("Codex thread config is host-owned");
+/** Thread-open params as the host allows them: the active run's model and
+ * workspace where the runtime left them out (a mismatch is still refused), no
+ * runtime-supplied config (the host configures Codex through launch arguments)
+ * and no model provider override. */
+function hostOwnedThreadParams(
+  params: JsonObject | undefined,
+  binding: CodexSubscriptionRelayBinding,
+): { readonly values: Record<string, unknown>; readonly changed: boolean } {
+  const values: Record<string, unknown> = { ...(params ?? {}) };
+  let changed = false;
+  if (values.model === undefined || values.model === null) {
+    values.model = binding.model;
+    changed = true;
   }
-  if (params.modelProvider !== undefined && params.modelProvider !== null) {
+  if (values.cwd === undefined || values.cwd === null) {
+    values.cwd = binding.cwd;
+    changed = true;
+  }
+  assertModelAndCwd(values, binding);
+  if (values.modelProvider !== undefined && values.modelProvider !== null) {
     throw new Error("Codex model provider is host-owned");
   }
+  if (values.config !== undefined) {
+    const keys = values.config && typeof values.config === "object" ? Object.keys(values.config).length : 0;
+    console.log(`[codex-relay] stripped runtime-supplied thread config (${keys} keys)`);
+    delete values.config;
+    changed = true;
+  }
+  return { values, changed };
 }
 
 function assertTurnEnvironments(

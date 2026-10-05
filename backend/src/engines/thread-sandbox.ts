@@ -1,6 +1,7 @@
 import { SandboxNotFoundError } from "@useagent/sandbox-contract";
 import { getThreadSandbox, setRunSandbox } from "../runs/repo";
-import { type SandboxHandle } from "../sandboxes/provider";
+import { sandboxProviderKind, type SandboxHandle } from "../sandboxes/provider";
+import { runtimeRunSnapshot } from "./runtime-snapshot";
 import { claimCubeWarmSandbox } from "../sandboxes/cube-warm-pool";
 import {
   providerGatewaySandboxIsCurrent,
@@ -39,6 +40,24 @@ export interface ThreadSandboxOptions {
   readonly requiredLabels?: Readonly<Record<string, string>>;
   /** Filled by acquisition from deployment policy before retained reuse. */
   readonly minimumResources?: ReturnType<typeof resolveSandboxResourceTarget>;
+  /** A retained sandbox is up: the turn may issue its read-only checks now,
+   * alongside the credential check that still decides whether it is used. */
+  readonly onRetainedStarted?: (sandbox: SandboxHandle, binding: SandboxBinding) => void;
+}
+
+/**
+ * The template a NEW sandbox starts from: a personal computer's own snapshot;
+ * the caller's snapshot on the deployment's default provider; and, when the
+ * binding is a member's preferred provider, that provider's own runtime
+ * template, since the default provider's template name means nothing there.
+ */
+export function snapshotForBinding(
+  binding: SandboxBinding,
+  snapshot: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  if (binding.credential === "user") return binding.snapshot ?? "";
+  return binding.kind === sandboxProviderKind(env) ? snapshot : runtimeRunSnapshot(env, binding.kind);
 }
 
 export function sandboxHasRequiredLabels(
@@ -59,7 +78,11 @@ export function sandboxHasRequiredLabels(
 export async function reviveRetainedSandbox(
   ctx: EngineRunContext,
   sandboxId: string,
-  options: { readonly chip: string; readonly onResume?: () => void },
+  options: {
+    readonly chip: string;
+    readonly onResume?: () => void;
+    readonly onStarted?: (sandbox: SandboxHandle, binding: SandboxBinding) => void;
+  },
   dependencies = {
     threadBinding: resolveSandboxBindingForThread,
     sandboxBinding: resolveSandboxBindingForSandbox,
@@ -89,6 +112,8 @@ export async function reviveRetainedSandbox(
     options.onResume?.();
   } else if (state !== "started") {
     throw new Error(`unusable state: ${state}`);
+  } else {
+    options.onStarted?.(sandbox, binding);
   }
   if (!(await dependencies.credentialsCurrent(sandbox))) {
     throw new RetainedSandboxRuntimeMismatchError("credential-isolation");
@@ -118,7 +143,10 @@ export async function resolveRetainedSandbox(
   if (ctx.expectedSandbox && sandboxId !== ctx.expectedSandbox.sandboxId) throw new ExpectedSandboxMismatchError();
   if (!sandboxId) return null;
   try {
-    const { sandbox, binding } = await dependencies.revive(ctx, sandboxId, { chip: options.chip });
+    const { sandbox, binding } = await dependencies.revive(ctx, sandboxId, {
+      chip: options.chip,
+      onStarted: options.onRetainedStarted,
+    });
     if (!sandboxHasRequiredLabels(sandbox, options.requiredLabels)) {
       throw new RetainedSandboxRuntimeMismatchError();
     }
@@ -140,26 +168,33 @@ export async function resolveRetainedSandbox(
 export async function acquireThreadSandbox(
   ctx: EngineRunContext,
   options: ThreadSandboxOptions,
+  dependencies = {
+    retained: resolveRetainedSandbox,
+    bindingForThread: resolveSandboxBindingForThread,
+    bindingForRun: resolveSandboxBindingForRun,
+    persist: setRunSandbox,
+  },
 ): Promise<ThreadSandboxLease> {
-  const binding = ctx.expectedSandbox
-    ? await resolveSandboxBindingForThread(ctx.orgId ?? "", ctx.threadId ?? "", { expectedSandbox: ctx.expectedSandbox })
-    : await resolveSandboxBindingForRun(ctx);
   const resourceTarget = resolveSandboxResourceTarget();
   const endRetained = ctx.timing?.begin(RUN_TIMING_STAGES.sandboxRetained);
-  let sandbox: SandboxHandle | null;
-  // What gets recorded next to the sandbox id: the binding that actually produced it.
-  let effectiveBinding: SandboxBinding = binding;
+  let retained: { sandbox: SandboxHandle; binding: SandboxBinding } | null;
   try {
-    const retained = await resolveRetainedSandbox(ctx, { ...options, minimumResources: resourceTarget });
-    sandbox = retained?.sandbox ?? null;
-    if (retained) effectiveBinding = retained.binding;
+    retained = await dependencies.retained(ctx, { ...options, minimumResources: resourceTarget });
   } catch (error) {
     endRetained?.(RUN_TIMING_OUTCOMES.failure);
     throw error;
   }
+  endRetained?.(retained ? RUN_TIMING_OUTCOMES.hit : RUN_TIMING_OUTCOMES.miss);
+  // What gets recorded next to the sandbox id: the binding that actually
+  // produced it, the retained sandbox's own, else a fresh one where the thread
+  // asked to run. The fresh one is resolved only when nothing is retained, so a
+  // collaborator's reply reuses the thread's sandbox wherever it lives instead of
+  // being asked for a machine of their own.
+  const binding = retained?.binding ?? (ctx.expectedSandbox
+    ? await dependencies.bindingForThread(ctx.orgId ?? "", ctx.threadId ?? "", { expectedSandbox: ctx.expectedSandbox })
+    : await dependencies.bindingForRun(ctx));
+  let sandbox: SandboxHandle | null = retained?.sandbox ?? null;
   let reused = sandbox !== null;
-
-  endRetained?.(sandbox ? RUN_TIMING_OUTCOMES.hit : RUN_TIMING_OUTCOMES.miss);
 
   if (!sandbox) {
     await ctx.emit({ kind: "task", label: "Provisioning cloud sandbox…", chip: options.chip });
@@ -181,7 +216,7 @@ export async function acquireThreadSandbox(
         sandbox = (await provisionSandbox({
           ctx,
           binding,
-          snapshot: binding.credential === "user" ? (binding.snapshot ?? "") : options.snapshot,
+          snapshot: snapshotForBinding(binding, options.snapshot),
           chip: options.chip,
           create: {
             labels: {
@@ -212,13 +247,13 @@ export async function acquireThreadSandbox(
     runId: ctx.runId,
     sandboxId: sandbox.id,
     reused,
-    persist: (runId, sandboxId) => setRunSandbox(runId, sandboxId, bindingRecord(effectiveBinding)),
+    persist: (runId, sandboxId) => dependencies.persist(runId, sandboxId, bindingRecord(binding)),
     deleteFreshSandbox: () => sandbox.delete(),
   });
   if (ctx.threadId) rememberLiveThreadSandbox(ctx.threadId, sandbox);
   return {
     sandbox,
-    binding: effectiveBinding,
+    binding,
     reused,
     retained: Boolean(ctx.threadId),
     releaseAfterRun: !ctx.threadId,

@@ -38,6 +38,12 @@ export const GATEWAY_GRANTS: readonly string[] = [
   // organisation's local-execution policy; it never holds a link or a token.
   "GRANT SELECT (id, org_id, user_id, name, platform, status, logins, enrolled_at, token_hash) ON runners TO useagent_gateway",
   "GRANT SELECT ON runner_policies TO useagent_gateway",
+  // Spend allowance: the admission check reads the member's account. Today a
+  // restricted gateway bridges every acceptance to the backend (child sessions
+  // and run-now fail closed without a primary origin), so this is defence in
+  // depth for any future in-process acceptance; the ledger is only ever
+  // written by the backend's finalization.
+  "GRANT SELECT ON spend_accounts TO useagent_gateway",
   "GRANT UPDATE (usage_count, last_run_at, updated_at) ON skills TO useagent_gateway",
   "GRANT SELECT (id, run_id, thread_id, seq, provider, event_type, payload) ON provider_events TO useagent_gateway",
   "GRANT INSERT (id, run_id, thread_id, seq, provider, event_type, native_session_id, native_parent_session_id, native_message_id, native_part_id, native_call_id, payload, created_at) ON provider_events TO useagent_gateway",
@@ -75,12 +81,21 @@ export const GATEWAY_GRANTS: readonly string[] = [
   // tools READ the projection; the privileged BACKEND writes it (projector on
   // skill/knowledge/automation writes). SELECT only - no gateway write path.
   "GRANT SELECT ON context_index TO useagent_gateway",
+  // The gateway accepts new work through the single door (child sessions, child
+  // batches, run-automation-now, approval-minted follow-ups), and the door reads
+  // the member's sandbox minutes ledger to refuse a capped member. The ledger is
+  // written only by the privileged backend at settlement.
+  "GRANT SELECT ON sandbox_minutes_entries TO useagent_gateway",
 ];
 
 /** Migration 0039 creates the BYOK credentials view; later migrations extend
- * it with non-secret computer metadata. Grant only if present. */
-const VIEW_GRANT =
-  "GRANT SELECT ON gateway_provider_api_key_credentials TO useagent_gateway";
+ * it with non-secret computer metadata. Grant only if present. The UPDATE lets
+ * the gateway mark a member's key the provider rejected as reauth_required;
+ * the view holds only connected keys, so it can never reconnect one. */
+const VIEW_GRANTS = [
+  "GRANT SELECT ON gateway_provider_api_key_credentials TO useagent_gateway",
+  "GRANT UPDATE (status, status_reason, updated_at) ON gateway_provider_api_key_credentials TO useagent_gateway",
+];
 
 function grantsForRole(role: string): readonly string[] {
   if (role === GATEWAY_DATABASE_ROLE) return GATEWAY_GRANTS;
@@ -121,11 +136,12 @@ export async function applyGatewayGrants(
   }
   const [view] = await sql`SELECT 1 FROM pg_views WHERE viewname = 'gateway_provider_api_key_credentials'`;
   if (view) {
-    const viewGrant = VIEW_GRANT.replaceAll(GATEWAY_DATABASE_ROLE, role);
-    await sql.unsafe(viewGrant).catch((error) => {
-      console.error(`[gateway-grants] failed: ${viewGrant}:`, error);
-      throw error;
-    });
+    for (const viewGrant of VIEW_GRANTS.map((grant) => grant.replaceAll(GATEWAY_DATABASE_ROLE, role))) {
+      await sql.unsafe(viewGrant).catch((error) => {
+        console.error(`[gateway-grants] failed: ${viewGrant}:`, error);
+        throw error;
+      });
+    }
   } else if (options.strict) {
     throw new Error("required hosted credentials view gateway_provider_api_key_credentials is missing");
   }

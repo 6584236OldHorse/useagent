@@ -1,12 +1,11 @@
 "use client";
 
-import { RiKey2Line, RiPlugLine } from "@remixicon/react";
-import { useCallback, useEffect, useState } from "react";
+import { RiPlugLine } from "@remixicon/react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/base/buttons/button";
-import { InputBase } from "@/components/base/input/input";
 import { CodexChatGptPath } from "./codex-chatgpt-path";
-import { ConnectionStatusChip, SpinnerIcon } from "./connection-status-chip";
-import { putProviderApiKey, revokeProviderConnection } from "./provider-connections-api";
+import { ConnectionStatusChip } from "./connection-status-chip";
+import { revokeProviderConnection } from "./provider-connections-api";
 import {
   accountLabel,
   connectionBadgeStatus,
@@ -16,9 +15,10 @@ import {
   type ProviderConnectionMeta,
   type ProviderConnectionProvider,
   providerStatusConnection,
-  safeProviderMetadata,
+  rejectedKeyNotice,
   statusLabel,
 } from "./provider-connections-data";
+import { ProviderKeyForm } from "./provider-key-form";
 import { relTime } from "./relative-time";
 
 const MASK = "••••••••";
@@ -68,47 +68,18 @@ export function ProviderConnectionPanel({
   onSaved: () => Promise<void>;
 }) {
   const labels = PROVIDER_LABELS[provider];
-  const [apiKey, setApiKey] = useState("");
-  const [email, setEmail] = useState("");
-  const [planType, setPlanType] = useState("");
-  const [saving, setSaving] = useState(false);
   const [revoking, setRevoking] = useState<ProviderConnectionAuthMethod | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setEmail(connection?.metadata.email ?? "");
-    setPlanType(connection?.metadata.planType ?? "");
-  }, [connection?.metadata.email, connection?.metadata.planType]);
-
-  const save = useCallback(async () => {
-    const trimmed = apiKey.trim();
-    if (!trimmed) return;
-    setSaving(true);
-    setFormError(null);
-    try {
-      await putProviderApiKey({
-        provider,
-        apiKey: trimmed,
-        metadata: safeProviderMetadata({ email, planType }),
-      });
-      setApiKey("");
-      await onSaved();
-    } catch {
-      setFormError(`Couldn't save the ${labels.name} API key.`);
-    } finally {
-      setSaving(false);
-    }
-  }, [apiKey, email, labels.name, onSaved, planType, provider]);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const revoke = useCallback(
     async (authMethod: ProviderConnectionAuthMethod) => {
       setRevoking(authMethod);
-      setFormError(null);
+      setRevokeError(null);
       try {
         await revokeProviderConnection({ provider, authMethod });
         await onSaved();
       } catch {
-        setFormError(`Couldn't revoke the ${labels.name} connection.`);
+        setRevokeError(`Couldn't revoke the ${labels.name} connection.`);
       } finally {
         setRevoking(null);
       }
@@ -117,6 +88,7 @@ export function ProviderConnectionPanel({
   );
 
   const keyActive = isActiveConnection(connection);
+  const rejectedNotice = rejectedKeyNotice(connection, labels.name);
 
   return (
     <section className="rounded-xl border border-border-button-default bg-background-secondary-default px-4">
@@ -158,6 +130,9 @@ export function ProviderConnectionPanel({
           <p className="mt-1 text-caption-1-regular text-text-tertiary">
             {labels.keyHint}. Write-only - never shown again.
           </p>
+          {rejectedNotice ? (
+            <p className="mt-1 text-caption-1-regular text-text-error-primary">{rejectedNotice}</p>
+          ) : null}
           <div className="mt-1 flex flex-wrap items-center gap-2 text-caption-1-regular text-text-secondary">
             <span className="truncate">{accountLabel(connection)}</span>
             {connection ? (
@@ -188,53 +163,11 @@ export function ProviderConnectionPanel({
       </div>
 
       {/* Save-key row */}
-      <form
-        className="flex flex-col gap-2 py-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save();
-        }}
-      >
-        <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_auto]">
-          <InputBase
-            aria-label={`${labels.name} API key`}
-            placeholder={labels.keyPlaceholder}
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            leadingIcon={RiKey2Line}
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-          />
-          <InputBase
-            aria-label={`${labels.name} account email`}
-            placeholder="Account email (optional)"
-            type="email"
-            autoComplete="off"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-          <InputBase
-            aria-label={`${labels.name} plan or label`}
-            placeholder="Label (optional)"
-            value={planType}
-            onChange={(event) => setPlanType(event.target.value)}
-          />
-          <Button
-            type="submit"
-            variant="secondary"
-            size="small"
-            className="rounded-full"
-            disabled={apiKey.trim().length === 0 || saving}
-            leadingIcon={saving ? SpinnerIcon : undefined}
-          >
-            Save key
-          </Button>
-        </div>
-        {formError ? (
-          <p className="text-caption-1-regular text-text-error-primary">{formError}</p>
-        ) : null}
-      </form>
+      <ProviderKeyForm provider={provider} connection={connection} onSaved={onSaved} />
+      {revokeError ? (
+        <p className="pb-3 text-caption-1-regular text-text-error-primary">{revokeError}</p>
+      ) : null}
     </section>
   );
 }
+

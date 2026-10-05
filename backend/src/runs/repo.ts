@@ -4,7 +4,15 @@ import type {
   ApiRunSummary,
   ApiStep,
   ApiThreadOutlineTurn,
+  PermissionMode,
+  RunConnector,
+  RunLocation,
 } from "@useagent/agent-client/wire";
+import {
+  configuredRuntimeMode,
+  PermissionModeUnsupportedError,
+  permissionModeSupported,
+} from "../engines/permission-mode";
 import {
   and,
   desc,
@@ -13,9 +21,6 @@ import {
   isNotNull,
   isNull,
   like,
-  lt,
-  ne,
-  or,
   sql,
 } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
@@ -90,6 +95,7 @@ function toRun(
     project_id: r.projectId,
     prompt: r.prompt,
     model: r.model,
+    reasoning_effort: r.reasoningEffort,
     engine: r.engine,
     status: r.status,
     summary: r.summary,
@@ -97,17 +103,22 @@ function toRun(
     parent_run_id: r.parentRunId,
     child_session: childSession,
     thread_id: r.threadId,
+    thread_seq: r.threadSeq,
     engine_session_id: r.engineSessionId,
     sandbox_id: r.sandboxId,
+    sandbox_provider: r.sandboxProvider ?? null,
     repo: r.repo ? parseRepoRef(r.repo).repo : null,
     repos: specs.map((s) => s.repo),
     repo_specs: specs,
     resolved_resources: r.resolvedResources ?? [],
     memory_scope: r.memoryScope,
+    permission_mode: r.permissionMode,
+    run_location: r.runLocation ?? null,
     skill_id: r.skillId,
     skill_version: r.skillVersion,
     skill_content_hash: r.skillContentHash,
     uploads,
+    connector: r.connector ?? null,
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
     steps: stepRows.map(toStep),
@@ -199,6 +210,8 @@ export async function createRun(
     id: string;
     prompt: string;
     model: string;
+    /** Resolved at the run-creation boundary (see runs/reasoning-effort.ts). */
+    reasoningEffort?: string | null;
     engine: EngineId;
     orgId: string | null;
     userId: string | null;
@@ -209,6 +222,10 @@ export async function createRun(
     /** Team-memory pool for the run. Resolved server-side at the run-creation
      *  boundary (explicit choice, parent inheritance, or the "org" default). */
     memoryScope: MemoryScope;
+    /** The run's permission policy. Product lanes resolve it (composer choice or
+     *  the parent's); a lane that omits it takes the operator's configured posture. */
+    permissionMode?: PermissionMode;
+    /** Where the thread runs (RunLocation); null: the cloud, or a caller that predates the choice. */ runLocation?: RunLocation | null;
     skillId?: string | null;
     skillVersion?: number | null;
     skillContentHash?: string | null;
@@ -226,6 +243,13 @@ export async function createRun(
    *  commits the command + run atomically). Defaults to the shared pool. */
   exec: Executor = db,
 ): Promise<void> {
+  // The one place every lane inserts a run: a mode the engine cannot honour
+  // never reaches the row, whoever asked for it (a child of a read-only turn
+  // spawned on Pi, a bot handoff to a Pi bot).
+  const permissionMode = input.permissionMode ?? configuredRuntimeMode();
+  if (permissionMode !== "full-access" && !permissionModeSupported(input.engine)) {
+    throw new PermissionModeUnsupportedError(input.engine, permissionMode);
+  }
   const primaryRepo = input.repos?.[0] ? parseRepoRef(input.repos[0]).repo : null;
   const project =
     input.orgId && primaryRepo
@@ -240,8 +264,18 @@ export async function createRun(
     id: input.id,
     prompt: input.prompt,
     model: input.model,
+    reasoningEffort: input.reasoningEffort ?? null,
     engine: input.engine,
     status: "queued",
+    // The insert's own clock time, not the transaction's start (`now()`): the
+    // acceptance transaction opens before it takes the thread lifecycle lock, so
+    // a run that waited for the lock must still sort after every run accepted
+    // while it waited. Thread order is the order runs were accepted in.
+    createdAt: sql`clock_timestamp()`,
+    // The run's place in its thread, assigned here under the same lock: the
+    // lossless acceptance order the wire carries (created_at loses its
+    // microseconds in transit).
+    threadSeq: sql`(select coalesce(max(${runs.threadSeq}), 0) + 1 from ${runs} where ${runs.threadId} = ${input.threadId})`,
     orgId: input.orgId,
     userId: input.userId,
     projectId: project?.id ?? null,
@@ -252,6 +286,8 @@ export async function createRun(
     // Legacy single-value mirror: clean "owner/name" (drop any branch suffix).
     repo: primaryRepo,
     memoryScope: input.memoryScope,
+    permissionMode,
+    runLocation: input.runLocation ?? null,
     skillId: input.skillId ?? null,
     skillVersion: input.skillVersion ?? null,
     skillContentHash: input.skillContentHash ?? null,
@@ -266,6 +302,25 @@ export async function createRun(
 
 export async function getRun(id: string): Promise<RunRecord | null> {
   const [row] = await db.select().from(runs).where(eq(runs.id, id)).limit(1);
+  return row ?? null;
+}
+
+/** The thread's newest run: the turn whose mode a follow-up without a choice
+ *  keeps. Newest by acceptance order: `created_at` is the insert's clock time
+ *  taken under the thread lifecycle lock (see createRun), so a run that waited
+ *  for the lock sorts after the runs accepted meanwhile. Read it through the
+ *  acceptance transaction when the answer decides what the inserted run may do. */
+export async function getLatestThreadRun(
+  orgId: string,
+  threadId: string,
+  exec: Executor = db,
+): Promise<RunRecord | null> {
+  const [row] = await exec
+    .select()
+    .from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))
+    .orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id))
+    .limit(1);
   return row ?? null;
 }
 
@@ -509,6 +564,7 @@ export async function listRunSummaries(
         root.project_id,
         root.repo,
         root.repos,
+        root.connector,
         root.created_at,
         root.updated_at,
         latest.id as latest_run_id,
@@ -544,7 +600,7 @@ export async function listRunSummaries(
     )
     select
       id, prompt, model, engine, status, summary, duration_ms, project_id,
-      repo, repos, created_at, updated_at,
+      repo, repos, connector, created_at, updated_at,
       latest_run_id, latest_status, latest_cancelled, latest_created_at, latest_updated_at
     from selected_rows
     order by ${outputOrder}
@@ -565,6 +621,7 @@ export async function listRunSummaries(
       repo: row.repo ? parseRepoRef(row.repo as string).repo : null,
       repos: specs.map((spec) => spec.repo),
       repo_specs: specs,
+      connector: (row.connector as RunConnector | null) ?? null,
       created_at: new Date(row.created_at as string | Date).toISOString(),
       updated_at: new Date(row.updated_at as string | Date).toISOString(),
       latest_run_id: row.latest_run_id as string,
@@ -610,7 +667,7 @@ export async function getThreadForRun(
     .select()
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
 }
 
@@ -639,7 +696,7 @@ export async function getThreadOutlineForRun(
     })
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return rows.map(
     (row) =>
       ({
@@ -675,73 +732,8 @@ export async function getThreadRunsByIds(
         inArray(runs.id, [...ids]),
       ),
     )
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
-}
-
-// ---------------------------------------------------------------------------
-// Thread context — the engine's view of prior turns. Prompts are stored clean;
-// the composed preamble below is what an adapter prepends to its engine prompt,
-// so context lives at invocation time and never nests into the stored prompt.
-// ---------------------------------------------------------------------------
-
-/** Keep the preamble bounded: at most the last N turns, and under ~MAX chars
- * with the OLDEST turns dropped first. */
-const THREAD_MAX_TURNS = 6;
-const THREAD_MAX_CHARS = 4000;
-
-/** Compose the engine context preamble for a run: walk its thread's PRIOR turns
- * (every other run in the thread, oldest→newest) and render each as
- * `User: <prompt>\nResult: <summary ?? 'no summary'>`. Returns "" when there is
- * no prior context (a thread root). */
-export async function buildThreadPreamble(
-  threadId: string,
-  currentRunId: string,
-): Promise<string> {
-  const [currentRun] = await db
-    .select({ createdAt: runs.createdAt })
-    .from(runs)
-    .where(and(eq(runs.threadId, threadId), eq(runs.id, currentRunId)))
-    .limit(1);
-  const priorRun = currentRun
-    ? or(
-        lt(runs.createdAt, currentRun.createdAt),
-        and(eq(runs.createdAt, currentRun.createdAt), lt(runs.id, currentRunId)),
-      )
-    : ne(runs.id, currentRunId);
-  const rows = await db
-    .select({ prompt: runs.prompt, summary: runs.summary })
-    .from(runs)
-    .where(
-      and(
-        eq(runs.threadId, threadId),
-        priorRun,
-        inArray(runs.status, ["completed", "failed"]),
-      ),
-    )
-    .orderBy(desc(runs.createdAt), desc(runs.id))
-    .limit(THREAD_MAX_TURNS);
-  if (rows.length === 0) return "";
-
-  // Keep the most recent turns, then trim oldest-first to the char budget.
-  let blocks = rows
-    .toReversed()
-    .map((r) => `User: ${r.prompt}\nYou replied: ${r.summary ?? "no summary"}`);
-  while (blocks.length > 1 && blocks.join("\n\n").length > THREAD_MAX_CHARS) {
-    blocks = blocks.slice(1);
-  }
-  // Framing is load-bearing: a weak "context:" note gets ignored and the engine
-  // claims it "starts fresh" when asked what happened above. State plainly that
-  // this IS its own history of THIS session and that "above / earlier /
-  // previously" refers to it.
-  return (
-    `This is an ONGOING conversation, and below is YOUR OWN history of it — the ` +
-    `previous turns between the user and you (oldest first, most recent last). ` +
-    `You DO have this context: when the user says "above", "earlier", or ` +
-    `"previously", they mean these turns — answer from them instead of saying ` +
-    `you lack history. (Only work outside this conversation is unknown to you ` +
-    `unless a team-memory block is provided above.)\n\n${blocks.join("\n\n")}\n\n---\n\n`
-  );
 }
 
 export async function getStepsApi(runId: string): Promise<ApiStep[]> {
@@ -792,4 +784,17 @@ export async function insertStep(step: {
     })
     .returning();
   return toStep(row!);
+}
+
+/** Append a step after the run's last one, for a lane without the worker's
+ *  in-memory step counter (the restart recovery loop). */
+export async function appendStep(
+  runId: string,
+  step: { kind: StepKind; label: string; chip: string | null; code: unknown | null },
+): Promise<ApiStep> {
+  const [last] = await db
+    .select({ idx: sql<number>`coalesce(max(${steps.idx}), -1)` })
+    .from(steps)
+    .where(eq(steps.runId, runId));
+  return insertStep({ runId, idx: (last?.idx ?? -1) + 1, ...step });
 }

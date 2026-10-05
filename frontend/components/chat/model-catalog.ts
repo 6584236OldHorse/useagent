@@ -110,6 +110,13 @@ const OPENCODE_SELECTABLE_MODELS: ModelOption[] = [
   ...FREE_MODELS,
 ];
 
+/** The picker's list before the server's manifest arrives (or when it cannot be
+ *  reached). A deployment may offer a direct provider to some accounts only, and
+ *  only the manifest can speak for that, so those models wait for it. */
+export function offlineModelsForEngine(engine: EngineId): ModelOption[] {
+  return selectableModelsForEngine(engine).filter((model) => !CEREBRAS_MODELS.includes(model));
+}
+
 export function selectableModelsForEngine(engine: EngineId): ModelOption[] {
   const normalized = normalizeEngine(engine);
   // The Free lane is OpenCode-only backend policy; pi keeps the paid catalog.

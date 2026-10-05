@@ -20,9 +20,19 @@ export interface Session {
   session: { activeOrganizationId?: string | null };
 }
 
-export interface Organization {
+export type WorkspaceRole = "owner" | "admin" | "member";
+export const ROLE_LABEL: Record<WorkspaceRole, string> = { owner: "Owner", admin: "Admin", member: "Member" };
+
+export interface Workspace {
   id: string;
   name: string;
+  /** The person's rank in it: the strongest of the roles the server stores. */
+  role: WorkspaceRole;
+  /** The workspace this session's requests are scoped to. */
+  active: boolean;
+  members: number;
+  /** Still named as it was created (`<name>'s workspace`): nobody has made it theirs yet. */
+  defaultName: boolean;
 }
 
 /** How long a page reuses one session answer across the components that read
@@ -94,14 +104,27 @@ export async function signOut(): Promise<void> {
   invalidateSession();
 }
 
-export async function listOrganizations(
+/** Every workspace the person belongs to, and which one the session is in: the
+ *  backend decides (a session without an active organisation lands in the
+ *  workspace created with the account), so the answer is read, never inferred. */
+export async function listWorkspaces(
   fetcher: typeof backendFetch = backendFetch,
-): Promise<Organization[]> {
-  const res = await fetcher("/api/auth/organization/list", { cache: "no-store" });
+): Promise<Workspace[]> {
+  const res = await fetcher("/api/team/workspaces", { cache: "no-store" });
   if (!res.ok) throw new Error(`Workspace list failed (${res.status})`);
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error("Workspace list returned an invalid response");
-  return data as Organization[];
+  const data = (await res.json()) as { activeOrganizationId?: unknown; workspaces?: unknown };
+  const rows = Array.isArray(data.workspaces) ? (data.workspaces as Array<Partial<Workspace>>) : null;
+  if (!rows || rows.some((row) => typeof row?.id !== "string" || typeof row.name !== "string")) {
+    throw new Error("Workspace list returned an invalid response");
+  }
+  return rows.map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    role: row.role === "owner" || row.role === "admin" ? row.role : "member",
+    active: row.id === data.activeOrganizationId,
+    members: typeof row.members === "number" ? row.members : 0,
+    defaultName: row.defaultName === true,
+  }));
 }
 
 export async function switchOrganization(
@@ -132,6 +155,9 @@ export interface AuthConfig {
   /** The deployment emails organisation invitations; otherwise the inviter shares the link. */
   /** Whether invitations go out by email; null until the server has said. */
   invitationEmail: boolean | null;
+  /** Open sign-up: whether an invite code is asked for and which email domains
+   *  are admitted (empty: any). Null when the deployment creates no accounts. */
+  signup: { inviteCode: boolean; domains: string[] } | null;
 }
 
 const FALLBACK_CONFIG: AuthConfig = {
@@ -139,6 +165,7 @@ const FALLBACK_CONFIG: AuthConfig = {
   emailPassword: false,
   allowDevOrg: false,
   invitationEmail: null,
+  signup: null,
 };
 
 /** Public auth config. It never carries any secret. */
@@ -149,11 +176,18 @@ export async function getAuthConfig(
     const res = await fetcher("/api/auth/provider-config");
     if (!res.ok) return FALLBACK_CONFIG;
     const data = (await res.json()) as Partial<AuthConfig>;
+    const signup = data.signup && typeof data.signup === "object" ? data.signup : null;
     return {
       google: Boolean(data.google),
       emailPassword: data.emailPassword === true,
       allowDevOrg: Boolean(data.allowDevOrg),
       invitationEmail: typeof data.invitationEmail === "boolean" ? data.invitationEmail : null,
+      signup: signup
+        ? {
+            inviteCode: signup.inviteCode === true,
+            domains: Array.isArray(signup.domains) ? signup.domains.filter((domain): domain is string => typeof domain === "string") : [],
+          }
+        : null,
     };
   } catch {
     return FALLBACK_CONFIG;

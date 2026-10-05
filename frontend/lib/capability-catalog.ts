@@ -6,6 +6,8 @@ export interface CapabilityCatalogModel {
   dispatchable: boolean;
   policyAllowed: boolean;
   displayName?: string;
+  /** Whose key pays for this model's run (anthropic, openai, openrouter...). */
+  provider?: string;
   nativeAvailable?: boolean;
   defaultReasoningEffort?: string;
   supportedReasoningEfforts?: string[];
@@ -130,6 +132,7 @@ export function parseCapabilityCatalog(value: unknown): CapabilityCatalog | null
         ...(typeof model.displayName === "string" && model.displayName.length <= 120
           ? { displayName: model.displayName }
           : {}),
+        ...(typeof model.provider === "string" && model.provider.length <= 40 ? { provider: model.provider } : {}),
         ...(typeof model.nativeAvailable === "boolean"
           ? { nativeAvailable: model.nativeAvailable }
           : {}),

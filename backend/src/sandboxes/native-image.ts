@@ -13,7 +13,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { SandboxFileSystem, SandboxProcess } from "@useagent/sandbox-contract";
-import type { SandboxRuntimeLayout } from "./provider";
+import { sandboxRuntimeLayout, type SandboxRuntimeLayout } from "./provider";
+import { SANDBOX_PROVIDER_KINDS } from "./plugins";
 import {
   buildNativeRuntimeArtifactProbe,
   buildNativeRuntimeInstallCommand,
@@ -25,10 +26,7 @@ import {
   PI_RUNTIME_LOCK_SHA256,
   PI_RUNTIME_ROOT,
 } from "../engines/pi-runtime-config";
-import {
-  buildRuntimeProviderBootstrapCommand,
-  RUNTIME_ENGINE_VERSIONS,
-} from "../engines/runtime-provider-bridge";
+import { buildRuntimeProviderBootstrapCommand } from "../engines/runtime-provider-bridge";
 import {
   buildSandboxBunInstallCommand,
   buildSandboxBunProbeCommand,
@@ -38,8 +36,6 @@ import { claudeProviderGatewayEnvironment } from "../provider-gateway/sandbox-co
 import { desktopCdpRelaySource } from "../engines/desktop-cdp-relay";
 import { buildDesktopLaunchScript, DESKTOP_REQUIRED_BINARIES } from "../engines/desktop-workstation";
 
-/** Bump when a step changes in a way the fingerprinted inputs cannot express. */
-const NATIVE_IMAGE_RECIPE_VERSION = 3;
 /** Box accepts uploads of a few MB; larger files travel in parts and are joined in the sandbox. */
 const UPLOAD_PART_BYTES = 3 * 1024 * 1024;
 const NATIVE_ENGINES = ["codex", "claude", "opencode"] as const;
@@ -209,8 +205,8 @@ const DESKTOP_ITEMS = [
 
 const DESKTOP_LAUNCHERS: readonly [string, string, string, string][] = [
   ["files", "Files", "pcmanfm %U", "system-file-manager"],
-  // The same flags the desktop's own browser launch needs: root and a sandbox without user namespaces.
-  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox --disable-dev-shm-usage --disable-gpu"', "web-browser"],
+  // The desktop's own browser launch: its sandbox flags, its profile, and no background traffic.
+  ["browser", "Browser", 'sh -c "exec sh $HOME/.skynet/browser-launch.sh"', "web-browser"],
   ["terminal", "Terminal", "gnome-terminal", "org.gnome.Terminal"],
 ];
 
@@ -243,8 +239,10 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
     `if ! (command -v google-chrome || command -v chromium || command -v chromium-browser) >/dev/null 2>&1; then ${sudo}apt-get install -y -qq --no-install-recommends chromium; fi`,
     `${sudo}rm -rf /var/lib/apt/lists/*`,
     writeFile(sudo, "/etc/X11/xorg.conf.d/10-virtual-display.conf", XORG_VIRTUAL_DISPLAY),
-    // Xorg may be started by whoever owns the desktop process session, root or not.
-    writeFile(sudo, "/etc/X11/Xwrapper.config", "allowed_users=anybody\nneeds_root_rights=yes\n"),
+    // Xorg is started by whoever owns the desktop process session. On a non-root layout it must
+    // run as that user: with root rights the server's shared-memory segments belong to root and
+    // x11vnc (the user's process) dies on MIT-SHM BadAccess, so the stream never opens.
+    writeFile(sudo, "/etc/X11/Xwrapper.config", `allowed_users=anybody\nneeds_root_rights=${layout.runsAsRoot ? "yes" : "no"}\n`),
     writeFile(sudo, "/etc/dconf/profile/user", "user-db:user\nsystem-db:local\n"),
     writeFile(sudo, "/etc/dconf/db/local.d/00-useagent-desktop", DESKTOP_DEFAULTS),
     `${sudo}dconf update`,
@@ -259,32 +257,32 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
   ].join("\n");
 }
 
-/** The name every renderer produces for these inputs; stable across providers. */
+/** The name every renderer produces for these inputs; stable across providers. It is a digest of
+ *  everything the recipe writes and runs for each provider's layout, so no input can be left out. */
 export function nativeImageName(
-  inputs: Pick<NativeImageInputs, "claudeEnvironment">,
+  inputs: NativeImageInputs,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  const fingerprint = sha256(JSON.stringify({
-    recipe: NATIVE_IMAGE_RECIPE_VERSION,
-    boot: sha256(buildRuntimeEnvironmentBootScript(env, { home: "/root", workdir: "/root/work", runsAsRoot: true })),
-    runtime: NATIVE_RUNTIME_ARTIFACT.sourceCommit,
-    runtimeArchive: NATIVE_RUNTIME_ARTIFACT.archiveSha256,
-    runtimeDependencyLock: NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256,
-    bun: SANDBOX_BUN_VERSION,
-    engines: RUNTIME_ENGINE_VERSIONS,
-    claude: Object.keys(inputs.claudeEnvironment).length > 0,
-    pi: PI_RUNTIME_LOCK_SHA256,
-    documents: sha256(documentToolchainCommand({ home: "/root", workdir: "/root/work", runsAsRoot: true })),
-    desktop: sha256(desktopToolchainCommand({ home: "/root", workdir: "/root/work", runsAsRoot: true })),
-  })).slice(0, 10);
+  return nativeImageNameOf(SANDBOX_PROVIDER_KINDS.map((kind) => nativeImageSteps(sandboxRuntimeLayout(kind), inputs, env)));
+}
+
+/** The name for these renderings: every step's name and command and every file's path and bytes. */
+export function nativeImageNameOf(renderings: readonly (readonly NativeImageStep[])[]): string {
+  const hashes = new Map<Buffer, string>();
+  const fileHash = (bytes: Buffer) => hashes.get(bytes) ?? hashes.set(bytes, sha256(bytes)).get(bytes)!;
+  const digests = renderings.map((steps) => sha256(JSON.stringify(
+    steps.map((step) => [step.name, step.command, step.files.map((file) => [file.path, fileHash(file.bytes)])]),
+  )));
+  // Providers that share a layout render the same steps; a new one with a known layout changes nothing.
+  const fingerprint = sha256([...new Set(digests)].toSorted().join("\n")).slice(0, 10);
   return `useagent-native-${NATIVE_RUNTIME_ARTIFACT.sourceCommit.slice(0, 7)}-${fingerprint}`;
 }
 
 /** This deployment's native image name: the recipe inputs plus whether the Claude gateway is configured. */
-export function deploymentNativeImageName(
+export async function deploymentNativeImageName(
   claudeEnvironment: Readonly<Record<string, string>> = claudeProviderGatewayEnvironment(),
-): string {
-  return nativeImageName({ claudeEnvironment });
+): Promise<string> {
+  return nativeImageName(await loadNativeImageInputs(claudeEnvironment));
 }
 
 /** True for names this recipe produced (any generation), so a stamped connection can be advanced. */
@@ -299,7 +297,10 @@ export function nativeImageSteps(
 ): NativeImageStep[] {
   const home = layout.home;
   const bunStage = `${home}/.local/share/useagent/bun/.stage-image`;
-  const runtimeStage = `${home}/.local/share/useagent/native-runtime/.stage-image`;
+  const runtimeParent = `${home}/.local/share/useagent/native-runtime`;
+  const runtimeStage = `${runtimeParent}/.stage-image`;
+  // Runtimes an older base image carried are dead weight in every sandbox: only the pinned one stays.
+  const pruneOtherRuntimes = `find ${q(runtimeParent)} -mindepth 1 -maxdepth 1 ! -name ${q(NATIVE_RUNTIME_ARTIFACT.sourceCommit)} -exec rm -rf {} +`;
   const runtimeArchive = `${runtimeStage}/runtime.part-0`;
   const piRoot = layout.runsAsRoot ? PI_RUNTIME_ROOT : `${home}/.useagent/pi-runtime`;
   const piManifest = `${piRoot}/manifest`;
@@ -322,9 +323,10 @@ export function nativeImageSteps(
         { path: runtimeArchive, bytes: inputs.runtimeArchive },
       ],
       command: [
-        `if ${oneLine(buildNativeRuntimeArtifactProbe(layout))}; then rm -rf ${q(runtimeStage)}; exit 0; fi`,
+        `if ${oneLine(buildNativeRuntimeArtifactProbe(layout))}; then rm -rf ${q(runtimeStage)}; ${pruneOtherRuntimes}; exit 0; fi`,
         buildNativeRuntimeInstallCommand(layout, runtimeStage, [runtimeArchive]),
         `rm -rf ${q(runtimeStage)}`,
+        pruneOtherRuntimes,
       ].join("\n"),
       timeoutSeconds: 600,
     },
@@ -452,8 +454,9 @@ export function renderNativeImageDockerfile(
   // A non-root layout runs its steps as the runtime user, who must own what
   // COPY staged so the step can read and remove it.
   const copy = layout.runsAsRoot ? "COPY" : "COPY --chown=1000:1000";
+  const imageName = nativeImageName(inputs, env);
   const lines = [
-    `# ${nativeImageName(inputs, env)}: generated by backend/src/sandboxes/native-image.ts; do not edit.`,
+    `# ${imageName}: generated by backend/src/sandboxes/native-image.ts; do not edit.`,
     `ARG ${baseImageArg}`,
     `FROM \${${baseImageArg}}`,
     layout.runsAsRoot ? "USER root" : "",
@@ -478,7 +481,7 @@ export function renderNativeImageDockerfile(
   });
   lines.push(
     `RUN rm -rf ${scripts}`,
-    `LABEL org.useagent.native-image=${nativeImageName(inputs, env)}`,
+    `LABEL org.useagent.native-image=${imageName}`,
     // A sandbox comes up with its runtime ready; providers that ignore the image entrypoint still work, the plane repairs.
     `ENTRYPOINT [${JSON.stringify(runtimeEnvironmentBootPath(layout))}]`,
     ...(baseCommand.length ? [`CMD ${JSON.stringify(baseCommand)}`] : []),

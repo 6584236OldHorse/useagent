@@ -46,6 +46,35 @@ export async function fetchRunnerPolicy(fetcher: Fetcher = backendFetch): Promis
   return policy;
 }
 
+/** The deployment's sandbox vendor and the name a person reads for it. Only an
+ *  operator account is told (GET /api/operator/sandbox); for everyone else the
+ *  answer is a settled null and the product says "Cloud". Fetched once per page
+ *  and shared, since every run location asks the same question. A failed read
+ *  stays null and is retried on the next ask. */
+export interface SandboxProviderName {
+  readonly provider: string;
+  readonly label: string;
+}
+
+let sandboxProviderNameRead: Promise<SandboxProviderName | null> | null = null;
+
+export function fetchSandboxProviderName(fetcher: Fetcher = backendFetch): Promise<SandboxProviderName | null> {
+  sandboxProviderNameRead ??= (async () => {
+    try {
+      const response = await fetcher("/api/operator/sandbox", { cache: "no-store" });
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`operator sandbox ${response.status}`);
+      const value = (await response.json()) as { provider?: unknown; label?: unknown };
+      const { provider, label } = value;
+      return typeof provider === "string" && typeof label === "string" && label ? { provider, label } : null;
+    } catch {
+      sandboxProviderNameRead = null;
+      return null;
+    }
+  })();
+  return sandboxProviderNameRead;
+}
+
 export async function fetchRunnerEnabled(fetcher: Fetcher = backendFetch): Promise<boolean> {
   const response = await fetcher("/api/config", { cache: "no-store" });
   if (!response.ok) throw new Error(`config ${response.status}`);

@@ -26,6 +26,8 @@ const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "b";
+/** Longer than the width transition, so a keyboard toggle finishes with no motion. */
+const SIDEBAR_INSTANT_TOGGLE_MS = 250;
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
@@ -93,11 +95,21 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
   }, [isMobile, setOpen, setOpenMobile]);
 
+  // A keyboard toggle lands at once: the width transition plays only for a
+  // pointer toggle, so the shortcut never feels a step behind the key.
+  const [instant, setInstant] = React.useState(false);
+  React.useEffect(() => {
+    if (!instant) return;
+    const timer = window.setTimeout(() => setInstant(false), SIDEBAR_INSTANT_TOGGLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [instant]);
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        setInstant(true);
         toggleSidebar();
       }
     };
@@ -134,6 +146,7 @@ function SidebarProvider({
             ...style,
           } as React.CSSProperties
         }
+        data-instant={instant ? "" : undefined}
         className={cn(
           "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",
           className,
@@ -215,7 +228,7 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-out group-data-[instant]/sidebar-wrapper:transition-none",
           "group-data-[collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
@@ -227,7 +240,7 @@ function Sidebar({
         data-slot="sidebar-container"
         data-side={side}
         className={cn(
-          "fixed top-[var(--desktop-titlebar-height,0px)] bottom-0 z-10 hidden h-[calc(100svh-var(--desktop-titlebar-height,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+          "fixed top-[var(--desktop-titlebar-height,0px)] bottom-0 z-10 hidden h-[calc(100svh-var(--desktop-titlebar-height,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-out group-data-[instant]/sidebar-wrapper:transition-none data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
           // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "px-2 pb-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"

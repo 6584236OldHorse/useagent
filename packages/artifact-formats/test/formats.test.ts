@@ -36,6 +36,19 @@ describe("artifact native formats", () => {
     expect(await extractDocxText(output.bytes)).toContain("Hello Loop");
   });
 
+  test("renders plain-text line breaks as DOCX breaks", async () => {
+    const output = await renderArtifactExport(
+      { text: "OPEN_CODE_QA\r\nCopper Δ Finch\r\n\r\nTail" },
+      "docx",
+    );
+    const zip = await JSZip.loadAsync(output.bytes);
+    const document = await zip.file("word/document.xml")?.async("string") ?? "";
+
+    expect(document.match(/<w:p(?:\s|>)/g)).toHaveLength(2);
+    expect(document.match(/<w:br\/>/g)).toHaveLength(1);
+    expect(document).not.toContain("\r");
+  });
+
   test("renders a workbook to XLSX faithfully: sheet names, a formula, a numFmt, bold + fill", async () => {
     const workbook: Workbook = {
       schemaVersion: 2,
@@ -70,7 +83,7 @@ describe("artifact native formats", () => {
     const reloaded = new ExcelJS.Workbook();
     const buffer = Buffer.from(output.bytes);
     await reloaded.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
-    expect(reloaded.creator).toBe("useAgent");
+    expect(reloaded.creator).toBe("UseAgent");
     expect(reloaded.worksheets.map((sheet) => sheet.name)).toEqual(["Summary", "Data"]);
     const summary = reloaded.getWorksheet("Summary")!;
     expect(summary.getCell("B4").formula).toBe("SUM(B2:B3)"); // a real formula, not text
@@ -94,13 +107,13 @@ describe("artifact native formats", () => {
     expect(new TextDecoder().decode(csv.bytes)).toContain("APAC,1200000");
   });
 
-  test("brands text-only XLSX exports with the useAgent creator", async () => {
+  test("brands text-only XLSX exports with the UseAgent creator", async () => {
     const output = await renderArtifactExport({ text: "Region,Pipeline\nAPAC,1200000" }, "xlsx");
     const reloaded = new ExcelJS.Workbook();
     const buffer = Buffer.from(output.bytes);
     await reloaded.xlsx.load(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
 
-    expect(reloaded.creator).toBe("useAgent");
+    expect(reloaded.creator).toBe("UseAgent");
   });
 
   test("imports worksheet cells when an unsupported chart drawing is present", async () => {
@@ -402,6 +415,65 @@ describe("artifact native formats", () => {
     expect(body!.style?.fontSize).toBe(44);
     expect(body!.style?.align).toBe("center");
     expect(body!.style?.color).toBe("#c8c8e0");
+  });
+
+  test("scales imported PPTX fonts against a noncanonical slide height", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "WIDE_75", width: 13.333, height: 7.5 });
+    pptx.layout = "WIDE_75";
+    const slide = pptx.addSlide();
+    slide.addText("First paragraph\nSecond paragraph", {
+      x: 1,
+      y: 1,
+      w: 10,
+      h: 2,
+      fontSize: 20,
+    });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+    const bytes = written instanceof Uint8Array ? written : new Uint8Array(written as ArrayBuffer);
+
+    const imported = await extractPptxDeck(bytes);
+    const block = imported?.deck.slides[0]?.blocks[0];
+    expect(block?.content).toBe("First paragraph\nSecond paragraph");
+    expect(block?.style?.fontSize).toBe(40);
+  });
+
+  test("falls back to canonical font scaling for invalid PPTX slide heights", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "DECK", width: 10, height: 5.625 });
+    pptx.layout = "DECK";
+    pptx.addSlide().addText("Readable text", { x: 1, y: 1, w: 8, h: 2, fontSize: 20 });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+
+    for (const height of ["0", "1", "9".repeat(400), "9007199254740991"]) {
+      const zip = await JSZip.loadAsync(written);
+      const path = "ppt/presentation.xml";
+      const presentation = await zip.file(path)?.async("string") ?? "";
+      zip.file(path, presentation.replace(/\bcy="\d+"/, `cy="${height}"`));
+      const imported = await extractPptxDeck(await zip.generateAsync({ type: "uint8array" }));
+      const fontSize = imported?.deck.slides[0]?.blocks[0]?.style?.fontSize;
+      expect(fontSize).toBe(53);
+      expect(Number.isFinite(fontSize ?? Number.NaN)).toBe(true);
+    }
+  });
+
+  test("a bad slide width sends both edges back to the canonical size", async () => {
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({ name: "WIDE_75", width: 13.333, height: 7.5 });
+    pptx.layout = "WIDE_75";
+    pptx.addSlide().addText("Placed text", { x: 1, y: 1, w: 8, h: 2, fontSize: 20 });
+    const written = await pptx.write({ outputType: "nodebuffer" });
+    const zip = await JSZip.loadAsync(written);
+    const path = "ppt/presentation.xml";
+    const presentation = await zip.file(path)?.async("string") ?? "";
+    zip.file(path, presentation.replace(/\bcx="\d+"/, 'cx="0"'));
+    const imported = await extractPptxDeck(await zip.generateAsync({ type: "uint8array" }));
+    const block = imported?.deck.slides[0]?.blocks[0];
+    // Canonical 10 by 5.625 inch fallback for both edges: the font scale and the
+    // vertical placement follow the same size the horizontal placement uses.
+    expect(block?.style?.fontSize).toBe(53);
+    expect(block?.y).toBeCloseTo((1 / 5.625) * 100, 1);
+    expect(block?.x).toBeCloseTo(10, 1);
   });
 
   test("skips import when a PPTX has no parsable text (behaves as download-only)", async () => {

@@ -4,6 +4,7 @@ import {
   RiApps2Line,
   RiBuilding4Line,
   RiCheckLine,
+  RiFlagLine,
   RiLoginBoxLine,
   RiLogoutBoxRLine,
   RiSettings3Line,
@@ -12,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Badge } from "@/components/base/badges/badge";
+import { Chip } from "@/components/base/badges/chip";
 import {
   Dropdown,
   DropdownDivider,
@@ -20,12 +22,15 @@ import {
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
 import {
+  ROLE_LABEL,
   type Session,
-  listOrganizations,
+  type Workspace,
+  listWorkspaces,
   signOut,
   switchOrganization,
   useSession,
 } from "@/lib/auth";
+import { firstRunApplies } from "@/lib/first-run";
 
 /**
  * Account affordance in the sidebar clusters: an avatar that opens a BoardUI
@@ -48,9 +53,8 @@ interface UserMenuProps {
 
 export function UserMenu(props: UserMenuProps = {}) {
   const { loading, session } = useSession();
-  const [workspaces, setWorkspaces] = useState<
-    readonly { readonly id: string; readonly name: string; readonly active: boolean }[] | undefined
-  >();
+  const [workspaces, setWorkspaces] = useState<readonly WorkspaceEntry[] | undefined>();
+  const [setupPending, setSetupPending] = useState(false);
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,21 +65,11 @@ export function UserMenu(props: UserMenuProps = {}) {
     let cancelled = false;
     setWorkspaces(undefined);
     setWorkspaceSwitchError(null);
-    listOrganizations()
-      .then((organizations) => {
+    listWorkspaces()
+      .then((next) => {
         if (cancelled) return;
-        const activeId = session.session.activeOrganizationId;
-        setWorkspaces(
-          organizations
-            .map((organization) => ({
-              ...organization,
-              active: organization.id === activeId,
-            }))
-            .sort(
-              (left, right) =>
-                Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
-            ),
-        );
+        setWorkspaces(sortedWorkspaces(next));
+        setSetupPending(firstRunApplies(next.find((workspace) => workspace.active)));
       })
       .catch(() => {
         if (!cancelled) setWorkspaceSwitchError("Could not load workspaces");
@@ -92,6 +86,7 @@ export function UserMenu(props: UserMenuProps = {}) {
       profile={profile}
       workspaces={profile.signedIn ? (workspaces ?? []) : undefined}
       workspacesLoaded={workspaces !== undefined}
+      setupPending={setupPending}
       workspaceAccessError={workspaceSwitchError}
       onSelectWorkspace={async (organizationId) => {
         if (workspaces?.some((workspace) => workspace.id === organizationId && workspace.active)) {
@@ -131,18 +126,50 @@ export function sessionUserProfile(session: Session | null, loading: boolean): U
   };
 }
 
+export type WorkspaceEntry = Pick<Workspace, "id" | "name" | "role" | "active">;
+
+/** The workspace the session is in first, the rest by name. */
+export function sortedWorkspaces(workspaces: readonly WorkspaceEntry[]): WorkspaceEntry[] {
+  return workspaces.toSorted(
+    (left, right) => Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
+  );
+}
+
+/** One row of the picker: the workspace, the person's role in it, and a check
+ *  on the one the session is in. */
+export function WorkspaceRow({ workspace }: { workspace: WorkspaceEntry }) {
+  return (
+    <>
+      <RiBuilding4Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-body-2-medium">{workspace.name}</span>
+      <Chip variant="caption" color={workspace.role === "owner" ? "purple" : "soft"}>
+        {ROLE_LABEL[workspace.role]}
+      </Chip>
+      {workspace.active ? (
+        <>
+          <RiCheckLine className="size-4 shrink-0 text-foreground-icon-primary" aria-hidden />
+          <span className="sr-only">Selected</span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function UserMenuView({
   trigger,
   profile,
   workspaces,
   workspacesLoaded = true,
+  setupPending = false,
   workspaceAccessError,
   onSelectWorkspace,
   onSignOut = signOut,
 }: UserMenuProps & {
   profile: UserMenuProfile;
-  workspaces?: readonly { readonly id: string; readonly name: string; readonly active: boolean }[];
+  workspaces?: readonly WorkspaceEntry[];
   workspacesLoaded?: boolean;
+  /** The active workspace is still on its first run: offer the page the landing redirect may have stood aside from. */
+  setupPending?: boolean;
   workspaceAccessError?: string | null;
   onSelectWorkspace?: (organization: string) => Promise<void>;
   onSignOut?: () => Promise<void>;
@@ -225,20 +252,7 @@ function UserMenuView({
                 shouldCloseOnSelect={false}
                 onAction={() => void onSelectWorkspace?.(workspace.id)}
               >
-                <RiBuilding4Line
-                  className="size-5 shrink-0 text-foreground-icon-secondary"
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate text-body-2-medium">{workspace.name}</span>
-                {workspace.active ? (
-                  <>
-                    <RiCheckLine
-                      className="size-4 shrink-0 text-foreground-icon-primary"
-                      aria-hidden
-                    />
-                    <span className="sr-only">Selected</span>
-                  </>
-                ) : null}
+                <WorkspaceRow workspace={workspace} />
               </DropdownMenuItem>
             ))
           ) : (
@@ -248,6 +262,12 @@ function UserMenuView({
               </span>
             </DropdownMenuItem>
           )
+        ) : null}
+        {setupPending ? (
+          <DropdownMenuItem id="setup" textValue="Set up your workspace" onAction={() => go("/welcome")}>
+            <RiFlagLine className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
+            <span className="text-body-2-medium">Set up your workspace</span>
+          </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem id="settings" textValue="Settings" onAction={() => go("/settings")}>
           <RiSettings3Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />

@@ -1,5 +1,6 @@
 "use client";
 
+import { MotionConfig } from "motion/react";
 import { ThemeProvider } from "next-themes";
 
 import { SubagentPane } from "@/components/chat/subagent-pane";
@@ -13,6 +14,9 @@ import { DesktopTitlebar } from "@/components/shell/desktop-titlebar";
  *
  * `SubagentPane` is the single global instance of the subagent viewing pane -
  * a portal-based slide-over any surface can open via `openSubagentPane(runId)`.
+ *
+ * `MotionConfig reducedMotion="user"` makes every motion/react animation honour the
+ * person's reduced-motion setting; the CSS side already does through media queries.
  */
 export function Providers({ children, nonce }: { children: React.ReactNode; nonce?: string }) {
   return (
@@ -32,11 +36,14 @@ export function Providers({ children, nonce }: { children: React.ReactNode; nonc
         "sakura",
         "sakura-night",
         "slate",
+        "neobrutal",
       ]}
     >
-      <DesktopTitlebar />
-      {children}
-      <SubagentPane />
+      <MotionConfig reducedMotion="user">
+        <DesktopTitlebar />
+        {children}
+        <SubagentPane />
+      </MotionConfig>
     </ThemeProvider>
   );
 }

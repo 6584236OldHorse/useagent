@@ -13,7 +13,9 @@ import {
   redactProviderQuestionPayload,
   validateProviderQuestionAnswers,
 } from "./provider-question";
-import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { dispatchRuntimeCommand } from "./runtime-dispatch";
+import { readRuntimeThreadView } from "./runtime-thread-read";
+import { buildV2RuntimeRequestRespond } from "./runtime-v2-wire";
 import {
   runtimeQuestionRequest,
   type RuntimeThreadSnapshot,
@@ -129,31 +131,17 @@ export async function replyToRuntimeQuestion(input: {
     input.signal,
     AbortSignal.timeout(RUNTIME_QUESTION_TIMEOUT_MS),
   ]);
-  const snapshot = await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
-    sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(input.sessionId)}`,
-    },
-    signal,
-  );
+  const snapshot = await readRuntimeThreadView(sandbox, input.sessionId, signal);
   const answers = runtimeQuestionAnswers(snapshot, input.sessionId, input.questionId, input.answers);
-  await requestRuntimeEnvironment(
-    sandbox,
-    {
-      method: "POST",
-      path: "/api/orchestration/dispatch",
-      payload: {
-        type: "thread.user-input.respond",
-        commandId: `skynet-user-input-${crypto.randomUUID()}`,
-        threadId: input.sessionId,
-        requestId: input.questionId,
-        answers,
-        createdAt: new Date().toISOString(),
-      },
-    },
-    signal,
-  );
+  await dispatchRuntimeCommand(sandbox, {
+    ...buildV2RuntimeRequestRespond({
+      commandId: `skynet-user-input-${crypto.randomUUID()}`,
+      threadId: input.sessionId,
+      requestId: input.questionId,
+      answers,
+    }),
+    threadId: input.sessionId,
+  }, signal);
   await recordProviderEvent(
     runtimeQuestionReplyProviderEvent(input, answers, input.redact),
     { critical: true },

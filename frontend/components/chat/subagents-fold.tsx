@@ -4,10 +4,11 @@
 // subagents") whose per-child rows read the SAME merged children projection as
 // the Agents rail (`deriveChildrenView` - one derivation, two surfaces), plus
 // this turn's gateway child sessions (runs the agent spawned through
-// child_session_create). Gateway children are QUEUED SERIAL thread turns - each
-// row states its own queued/running/settled status; nothing here implies
-// parallel execution. Timeline grammar: plain glyphs, BoardUI tokens, no motion
-// wrappers on the list (matches the context-recall fold shell).
+// child_session_create). A native child is one line that opens to its own tool
+// rows and summary (./subagent-row). Gateway children are QUEUED SERIAL thread
+// turns - each row states its own queued/running/settled status; nothing here
+// implies parallel execution. Timeline grammar: plain glyphs, BoardUI tokens,
+// no motion wrappers on the list (matches the context-recall fold shell).
 
 import { RiArrowDownSLine, RiExternalLinkLine, RiRobot2Line } from "@remixicon/react";
 import type {
@@ -29,6 +30,7 @@ import {
   RUN_STATUS_LABEL,
 } from "@/components/chat/gateway-children";
 import type { ChildStatus, NativeFrame } from "@/components/chat/native-events";
+import { SubagentRow } from "@/components/chat/subagent-row";
 import type { SubagentCard } from "@/components/chat/subagents";
 import { useTurnUiState } from "@/components/chat/turn-ui-state";
 import type { ApiStep } from "@/components/chat/types";
@@ -36,7 +38,6 @@ import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   CHILD_META_CLASS,
   formatChildEngineModel,
-  formatSubagentTokenCount,
   STATUS_TONE,
 } from "@/components/session-ui/agent-panel-row";
 import { StatusDot } from "@/components/shared/status-dot";
@@ -49,52 +50,6 @@ export type { GatewayChildSession } from "./gateway-children";
 
 const ROW_LINK_CLASS =
   "text-text-tertiary hover:bg-background-primary-hover hover:text-text-secondary mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring";
-
-function NativeChildRow({
-  card,
-  fidelity,
-  runLive,
-}: {
-  card: SubagentCard;
-  fidelity: MergedChildFidelity | undefined;
-  runLive: boolean;
-}) {
-  const status = fidelity?.status ?? (runLive ? "running" : "completed");
-  const active = isChildActive(status);
-  const meta = [
-    formatChildEngineModel(null, fidelity?.model),
-    fidelity?.usage ? `${formatSubagentTokenCount(fidelity.usage.totalTokens)} tok` : null,
-  ].filter((value): value is string => value !== null);
-  const state = active
-    ? (fidelity?.progress ?? card.status ?? "Working")
-    : (fidelity?.resultText ??
-      card.status ??
-      childStatusLabel(status, fidelity?.resumable ?? null));
-
-  return (
-    <li className="flex items-start gap-2 px-1.5 py-1" data-testid="subagent-fold-row">
-      <StatusDot tone={STATUS_TONE[status]} pulse={active} className="mt-1" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="text-body-2-medium text-text-primary min-w-0 truncate">
-            {card.title}
-          </span>
-          {fidelity?.role && (
-            <span className="border-border-button-default text-text-tertiary max-w-28 shrink-0 truncate rounded-full border px-1.5 text-caption-2-medium">
-              {fidelity.role}
-            </span>
-          )}
-          {meta.length > 0 && (
-            <span className={cn(CHILD_META_CLASS, "ml-auto shrink-0")}>{meta.join(" · ")}</span>
-          )}
-        </div>
-        <p className="text-caption-1-regular text-text-tertiary truncate">
-          {firstLine(state)}
-        </p>
-      </div>
-    </li>
-  );
-}
 
 function GatewayChildRow({ child }: { child: GatewayChildSession }) {
   const status = RUN_CHILD_STATUS[child.status];
@@ -330,10 +285,11 @@ export function SubagentsFold({
       {open && (
         <ul className="mt-0.5 space-y-px">
           {view.cards.map((card) => (
-            <NativeChildRow
+            <SubagentRow
               key={card.id}
               card={card}
               fidelity={fidelityFor(card)}
+              steps={steps.filter((step) => view.ownerByStep.get(step.id) === card.id)}
               runLive={runLive}
             />
           ))}

@@ -1181,6 +1181,14 @@ describe("provider connections", () => {
           requiresOpenaiAuth: false,
         } satisfies CodexChatGptStatus;
       },
+      limits: async ({ scope }) => {
+        calls.push({ action: "limits", scope });
+        return {
+          planType: "plus",
+          primary: { usedPercent: 38, windowDurationMins: 300, resetsAt: 1_789_000_000 },
+          secondary: null,
+        };
+      },
       cancel: async ({ scope, loginId }) => {
         calls.push({ action: "cancel", scope, loginId });
         return { status: "cancelled" };
@@ -1240,6 +1248,20 @@ describe("provider connections", () => {
       },
     });
 
+    const limits = await customJson<{ limits: unknown }>(
+      app,
+      "/api/provider-connections/openai/chatgpt-oauth/limits",
+      { cookies: session.cookies },
+    );
+    expect(limits.status).toBe(200);
+    expect(limits.body).toEqual({
+      limits: {
+        planType: "plus",
+        primary: { usedPercent: 38, windowDurationMins: 300, resetsAt: 1_789_000_000 },
+        secondary: null,
+      },
+    });
+
     const cancel = await customJson<{ status: "cancelled" }>(
       app,
       "/api/provider-connections/openai/chatgpt-oauth/cancel",
@@ -1282,6 +1304,7 @@ describe("provider connections", () => {
     expect(calls).toEqual([
       { action: "start:device_code", scope: expectedScope },
       { action: "status", scope: expectedScope },
+      { action: "limits", scope: expectedScope },
       { action: "cancel", scope: expectedScope, loginId: "login-safe" },
       { action: "revoke", scope: expectedScope },
       { action: "revoke", scope: expectedScope },

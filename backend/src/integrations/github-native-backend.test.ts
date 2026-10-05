@@ -40,14 +40,44 @@ function installation(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function backend(fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) {
+type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+const CONFIG = {
+  appId: "4689651",
+  appSlug: "useagent-cloud",
+  privateKey: PRIVATE_KEY,
+  clientId: "Iv1.client",
+  clientSecret: "client-secret",
+};
+
+/** GitHub as the installer sees it: the callback code becomes a user token,
+ *  which lists `reachable` installations a page at a time. Anything else is
+ *  an App call and goes to `appFetch`. */
+function installer(appFetch: Fetch, reachable: readonly number[] = [901]): Fetch {
+  return async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/login/oauth/access_token") {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        client_id: "Iv1.client",
+        client_secret: "client-secret",
+        code: "installer-code",
+      });
+      return response(200, { access_token: "ghu_installer", token_type: "bearer" });
+    }
+    if (url.pathname === "/user/installations") {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer ghu_installer");
+      const page = Number(url.searchParams.get("page"));
+      const ids = reachable.slice((page - 1) * 100, page * 100);
+      return response(200, { total_count: reachable.length, installations: ids.map((id) => ({ id })) });
+    }
+    return appFetch(input, init);
+  };
+}
+
+function backend(fetchImpl: Fetch, reachable?: readonly number[]) {
   return createGithubNativeConnectionBackend(
-    {
-      appId: "4689651",
-      appSlug: "useagent-cloud",
-      privateKey: PRIVATE_KEY,
-    },
-    { fetch: fetchImpl, now: () => 1_787_480_000_000 },
+    CONFIG,
+    { fetch: installer(fetchImpl, reachable), now: () => 1_787_480_000_000 },
   );
 }
 
@@ -87,7 +117,7 @@ describe("GitHub native connection backend", () => {
       return response(200, installation());
     });
 
-    await expect(instance.completeInstall(901)).resolves.toEqual({
+    await expect(instance.completeInstall(901, "installer-code")).resolves.toEqual({
       runtimeBindingId: GITHUB_NATIVE_RUNTIME_BINDING_ID,
       externalConnectionId: "901",
       externalConnectionName: "acme-inc",
@@ -101,9 +131,39 @@ describe("GitHub native connection backend", () => {
     });
   });
 
+  test("refuses an installation id the installer cannot reach, before reading it", async () => {
+    const appCalls: string[] = [];
+    const forged = backend(async (input) => {
+      appCalls.push(String(input));
+      return response(200, installation());
+    }, [555, 556]);
+    await expect(forged.completeInstall(901, "installer-code")).rejects.toThrow(
+      "not accessible to the signed-in GitHub user",
+    );
+    expect(appCalls).toEqual([]);
+  });
+
+  test("finds the installation on a later page of the installer's list", async () => {
+    const reachable = [...Array.from({ length: 150 }, (_, index) => index + 1), 901];
+    const instance = backend(async () => response(200, installation()), reachable);
+    await expect(instance.completeInstall(901, "installer-code")).resolves.toMatchObject({
+      externalConnectionId: "901",
+    });
+  });
+
+  test("refuses when GitHub turns the code down", async () => {
+    const instance = createGithubNativeConnectionBackend(CONFIG, {
+      fetch: async () => response(200, { error: "bad_verification_code" }),
+      now: () => 1_787_480_000_000,
+    });
+    await expect(instance.completeInstall(901, "stale-code")).rejects.toThrow(
+      "GitHub user authorization was refused",
+    );
+  });
+
   test("rejects an installation owned by another GitHub App", async () => {
     const instance = backend(async () => response(200, installation({ app_id: 123 })));
-    await expect(instance.completeInstall(901)).rejects.toThrow(
+    await expect(instance.completeInstall(901, "installer-code")).rejects.toThrow(
       "does not belong to the configured App",
     );
   });
@@ -112,7 +172,7 @@ describe("GitHub native connection backend", () => {
     const instance = backend(async () =>
       response(200, installation({ suspended_at: "2026-08-23T00:00:00Z" })),
     );
-    await expect(instance.completeInstall(901)).rejects.toThrow("installation is suspended");
+    await expect(instance.completeInstall(901, "installer-code")).rejects.toThrow("installation is suspended");
   });
 
   test("accepts only publication write permissions and preserves their actual scope", async () => {
@@ -121,14 +181,14 @@ describe("GitHub native connection backend", () => {
         contents: "write", pull_requests: "write", issues: "read", metadata: "read",
       } })),
     );
-    await expect(instance.completeInstall(901)).resolves.toMatchObject({
+    await expect(instance.completeInstall(901, "installer-code")).resolves.toMatchObject({
       scopes: ["contents:write", "issues:read", "metadata:read", "pull_requests:write"],
     });
     for (const permission of ["administration", "issues", "workflows"]) {
       const excessive = backend(async () => response(200, installation({
         permissions: { contents: "write", pull_requests: "write", [permission]: "write" },
       })));
-      await expect(excessive.completeInstall(901)).rejects.toThrow(
+      await expect(excessive.completeInstall(901, "installer-code")).rejects.toThrow(
         `unsupported permissions: ${permission}:write`,
       );
     }
@@ -153,13 +213,10 @@ describe("GitHub native connection backend", () => {
 
   test("adapts installation callbacks to the shared delegated lifecycle", async () => {
     const delegated = createGithubDelegatedConnectionBackend(
-      {
-        appId: "4689651",
-        appSlug: "useagent-cloud",
-        privateKey: PRIVATE_KEY,
-      },
-      { fetch: async () => response(200, installation()), now: () => 1_787_480_000_000 },
+      CONFIG,
+      { fetch: installer(async () => response(200, installation())), now: () => 1_787_480_000_000 },
     );
+    await expect(delegated.listConnectableProviders()).resolves.toEqual(["github"]);
     const started = await delegated.startConnect({
       orgId: "org-1",
       userId: "user-1",
@@ -175,11 +232,35 @@ describe("GitHub native connection backend", () => {
         userId: "user-1",
         provider: "github",
         backendSessionRef: started.backendSessionRef,
-        callback: { installation_id: "901", setup_action: "install" },
+        callback: { installation_id: "901", setup_action: "install", code: "installer-code" },
       }),
     ).resolves.toMatchObject({
       runtimeBindingId: GITHUB_NATIVE_RUNTIME_BINDING_ID,
       externalConnectionId: "901",
     });
+    // A setup-URL callback carries no user code: the id alone binds nothing.
+    await expect(
+      delegated.completeConnect({
+        orgId: "org-1",
+        userId: "user-1",
+        provider: "github",
+        backendSessionRef: started.backendSessionRef,
+        callback: { installation_id: "901", setup_action: "install" },
+      }),
+    ).rejects.toThrow("missing the user authorization code");
+  });
+
+  test("offers no new connect without the App's OAuth client", async () => {
+    const { clientId: _clientId, clientSecret: _clientSecret, ...appOnly } = CONFIG;
+    const delegated = createGithubDelegatedConnectionBackend(appOnly, {
+      fetch: async () => response(200, installation()),
+      now: () => 1_787_480_000_000,
+    });
+    await expect(delegated.listConnectableProviders()).resolves.toEqual([]);
+    await expect(
+      createGithubNativeConnectionBackend(appOnly, {
+        fetch: async () => response(200, installation()),
+      }).completeInstall(901, "installer-code"),
+    ).rejects.toThrow("GitHub user authorization is not configured");
   });
 });

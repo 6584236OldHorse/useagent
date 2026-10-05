@@ -9,6 +9,6 @@ export function invitationProblem(status: number, message: string | null): strin
   }
   if (text.includes("already a member")) return "You are already a member of this workspace.";
   if (status === 401) return "Sign in to accept this invitation.";
-  if (status === 0) return "Could not reach useAgent. Check your connection and try again.";
+  if (status === 0) return "Could not reach UseAgent. Check your connection and try again.";
   return message || "This invitation cannot be accepted right now.";
 }

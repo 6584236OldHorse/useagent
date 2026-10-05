@@ -37,7 +37,8 @@ describe("turn recovery policy", () => {
     expect(continuationRunId("run-1", 2)).not.toBe("run-1");
     expect(continuationRunId("run-1", 2)).toBe(continuationRunId("run-1", 2));
     expect(turnRunIds("run-1")).toEqual(["run-1", "run-1:continue-2"]);
-    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8") +
+      readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");
     expect(source).toContain("runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),");
     expect(source).toContain("throw new RuntimeTurnFailedError(applied.error);");
     // The continuation baseline and the late re-read share the first attempt's projector.

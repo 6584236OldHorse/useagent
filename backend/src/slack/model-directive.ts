@@ -1,4 +1,5 @@
 import type { EngineId } from "../db/schema";
+import { modelOfferedTo } from "../provider-gateway/provider-accounts";
 import { allowedModelsForEngine } from "../runs/model-policy";
 
 /**
@@ -46,9 +47,14 @@ export function isSlackSwitchableEngine(value: string): value is EngineId {
   return (SLACK_SWITCHABLE_ENGINES as readonly string[]).includes(value);
 }
 
+/** The engine's catalog as one account sees it (PROVIDER_ACCOUNTS withholds a provider from the rest). */
+function offeredModels(engine: EngineId, account: string | null): readonly string[] {
+  return allowedModelsForEngine(engine).filter((model) => modelOfferedTo(engine, model, account));
+}
+
 /** Resolve a user-typed model token against an engine's allowed catalog. */
-export function resolveModelToken(engine: EngineId, token: string): string | null {
-  const allowed = allowedModelsForEngine(engine);
+export function resolveModelToken(engine: EngineId, token: string, account: string | null = null): string | null {
+  const allowed = offeredModels(engine, account);
   const lower = token.toLowerCase();
   const exact = allowed.find((model) => model.toLowerCase() === lower);
   if (exact) return exact;
@@ -57,6 +63,6 @@ export function resolveModelToken(engine: EngineId, token: string): string | nul
 }
 
 /** Catalog line for guidance replies. */
-export function modelCatalogLine(engine: EngineId): string {
-  return allowedModelsForEngine(engine).join(", ");
+export function modelCatalogLine(engine: EngineId, account: string | null = null): string {
+  return offeredModels(engine, account).join(", ");
 }

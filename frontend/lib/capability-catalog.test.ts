@@ -11,8 +11,8 @@ const WIRE = {
       ready: true,
       defaultModel: "openai/gpt-5.6-luna",
       models: [
-        { id: "openai/gpt-5.6-luna", default: true, dispatchable: true, policyAllowed: true },
-        { id: "new/free:free", default: false, dispatchable: true, policyAllowed: true },
+        { id: "openai/gpt-5.6-luna", default: true, dispatchable: true, policyAllowed: true, provider: "openai" },
+        { id: "new/free:free", default: false, dispatchable: true, policyAllowed: true, provider: "openrouter" },
       ],
       runtime: { kind: "t3", label: "T3 orchestration · cloud" },
       session: { declared: {}, currentRun: null },
@@ -44,6 +44,8 @@ describe("browser capability catalog", () => {
       "openai/gpt-5.6-luna",
       "new/free:free",
     ]);
+    // Whose key pays for each model rides along for the key-aware pickers.
+    expect(parsed?.engines[0]?.models.map((model) => model.provider)).toEqual(["openai", "openrouter"]);
     expect(parsed?.engines[0]?.runtime).toEqual({
       kind: "t3",
       label: "T3 orchestration · cloud",

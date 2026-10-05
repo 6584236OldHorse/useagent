@@ -5,6 +5,7 @@ import {
   fetchRunnerEnabled,
   fetchRunnerPolicy,
   fetchRunners,
+  fetchSandboxProviderName,
   revokeRunner,
   updateRunnerPolicy,
 } from "./runner-api";
@@ -114,5 +115,24 @@ describe("runner API", () => {
     expect(calls).toEqual([
       "/api/auth/organization/get-active-member-role?organizationId=org_active",
     ]);
+  });
+});
+
+describe("fetchSandboxProviderName", () => {
+  const config = (body: unknown, ok = true) => async () =>
+    new Response(JSON.stringify(body), { status: ok ? 200 : 500, headers: { "content-type": "application/json" } });
+
+  test("reads the deployment's provider and label once and shares the answer", async () => {
+    let calls = 0;
+    const fetcher = async (path: string) => {
+      calls += 1;
+      expect(path).toBe("/api/operator/sandbox");
+      return config({ provider: "cube", label: "E2B" })();
+    };
+    const first = await fetchSandboxProviderName(fetcher);
+    const second = await fetchSandboxProviderName(fetcher);
+    expect(first).toEqual({ provider: "cube", label: "E2B" });
+    expect(second).toBe(first);
+    expect(calls).toBe(1);
   });
 });

@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=sh -c "exec sh $HOME/.skynet/browser-launch.sh"
+Icon=web-browser

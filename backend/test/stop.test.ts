@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { acceptRunCommand } from "../src/commands";
 import { CANCEL_SUMMARY } from "../src/commands/cancel";
 import { db } from "../src/db/client";
-import { runs } from "../src/db/schema";
+import { reconcileQueue, runs } from "../src/db/schema";
 import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
+import { enqueueReconcile } from "../src/runs/reconcile-queue";
 import { markRunStarted } from "../src/runs/run-state";
 import { stopRun } from "../src/runs/stop";
-import "./helpers"; // side-effect: imports src/index → migrate + seed
+import { waitFor } from "./helpers"; // side-effect: imports src/index → migrate + seed
 
 // Stop reaches everything the stopped turn delegated and nothing else:
 // children and grandchildren still working are cancelled the durable way;
@@ -115,6 +116,23 @@ describe("stop reaches delegated threads", () => {
     expect((await record(parent)).status).toBe("failed");
     const other = await root();
     expect(await markRunStarted(other)).toBe(true);
+  });
+
+  test("Stop on a parked run with no live worker frees its thread for the next queued message", async () => {
+    // After a restart a running run waits parked for its re-probe with no actor in
+    // this process; Stop settles it in place and must settle its command too.
+    const parked = await root();
+    await db.execute(sql`update commands set state = 'dispatched' where run_id = ${parked} and kind = 'run.create'`);
+    expect(await markRunStarted(parked)).toBe(true);
+    await enqueueReconcile({ runId: parked, threadId: parked, sandboxId: "sb", sessionId: "ses", sinceAt: new Date(),
+      nextAttemptAt: new Date(Date.now() + 60_000), deadline: new Date(Date.now() + 300_000) });
+    const next = await followUp(parked, parked);
+
+    expect(await stopRun({ orgId: ORG, actorId: null, runId: parked })).toMatchObject({ status: "cancelling" });
+
+    expect(await record(parked)).toEqual({ status: "failed", summary: CANCEL_SUMMARY });
+    expect(await db.select().from(reconcileQueue).where(eq(reconcileQueue.runId, parked))).toEqual([]);
+    await waitFor(async () => ((await record(next)).status === "completed" ? true : null));
   });
 
   test("a repeated Stop replays without counting children twice", async () => {

@@ -1,5 +1,7 @@
-import { Hono, type Handler } from "hono";
-import { env } from "../env";
+import { Hono, type Context, type Handler } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
+import { resolveSession } from "../auth/session";
+import { env, sameSecret } from "../env";
 import type { AppEnv } from "../http";
 import { orgAdminScope, orgScope } from "../middleware/org";
 import { createIntegrationService, type IntegrationServiceDependencies } from "./service";
@@ -10,6 +12,20 @@ function errorStatus(message: string): 400 | 403 | 404 | 409 | 503 {
   if (message.includes("unavailable")) return 503;
   if (message.includes("not connectable") || message.includes("already consumed")) return 409;
   return 400;
+}
+
+/** The browser that starts a connect flow holds its state, so a consent link
+ *  forwarded to someone else completes nothing in their browser. */
+const CONNECT_STATE_COOKIE = "useagent_connect_state";
+
+function rememberConnectState(c: Context<AppEnv>, started: { state: string; expiresAt: string }): void {
+  setCookie(c, CONNECT_STATE_COOKIE, started.state, {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: env.FRONTEND_ORIGIN.startsWith("https:"),
+    path: "/api/integrations",
+    expires: new Date(started.expiresAt),
+  });
 }
 
 export function createIntegrationRoutes(deps?: IntegrationServiceDependencies): Hono<AppEnv> {
@@ -26,8 +42,20 @@ export function createIntegrationRoutes(deps?: IntegrationServiceDependencies): 
         key !== "state" && key.length <= 64 && value.length <= 4_096 ? [[key, value]] : [],
       ),
     );
+    // Only the person who started the flow finishes it: when signed in, the
+    // session must be that user (enforced by the claim); without a session, the
+    // browser must hold the state cookie set when the flow started.
+    const signedInUserId = (await resolveSession(c.req.raw.headers).catch(() => null))?.user.id;
+    if (!signedInUserId && !sameSecret(getCookie(c, CONNECT_STATE_COOKIE) ?? "", state)) {
+      return c.redirect(fallback.toString(), 303);
+    }
     try {
-      const completed = await service.completePublicCallback({ provider, state, callback });
+      const completed = await service.completePublicCallback({
+        provider,
+        state,
+        callback,
+        ...(signedInUserId ? { actorUserId: signedInUserId } : {}),
+      });
       const destination = new URL(completed.returnTo, env.FRONTEND_ORIGIN);
       destination.searchParams.set("integration", "connected");
       destination.searchParams.set("integration_provider", provider);
@@ -69,6 +97,7 @@ export function createIntegrationRoutes(deps?: IntegrationServiceDependencies): 
         returnTo: typeof body.returnTo === "string" ? body.returnTo : "/settings#integrations",
         owner: { type: "user", userId },
       });
+      rememberConnectState(c, result);
       return c.json(result);
     } catch (error) {
       const message = (error as Error).message;
@@ -93,6 +122,7 @@ export function createIntegrationRoutes(deps?: IntegrationServiceDependencies): 
         returnTo: typeof body.returnTo === "string" ? body.returnTo : "/settings#integrations",
         owner: { type: "org" },
       });
+      rememberConnectState(c, result);
       return c.json(result);
     } catch (error) {
       const message = (error as Error).message;

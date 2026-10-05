@@ -14,6 +14,9 @@ export async function lockArtifactStorageKey(
   storageKey: string,
 ): Promise<void> {
   if (!CONTENT_ADDRESS.test(storageKey)) throw new Error("invalid artifact storage key");
+  // A lock held elsewhere for longer than this fails the publication instead
+  // of holding the caller: the transaction aborts and nothing persists.
+  await tx.execute(sql`select set_config('lock_timeout', '30s', true)`);
   await tx.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${`artifact-storage:${storageKey}`}, 0))`,
   );
@@ -22,8 +25,10 @@ export async function lockArtifactStorageKey(
 export async function withArtifactStorageKeyLock<T>(
   storageKey: string,
   action: (tx: DbTx) => Promise<T>,
+  beforeLock?: (tx: DbTx) => Promise<void>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
+    await beforeLock?.(tx);
     await lockArtifactStorageKey(tx, storageKey);
     return action(tx);
   });

@@ -3,10 +3,14 @@
 // the assistant text is published as it grows. One projector's view spans a
 // turn and the continuation the plane may send for it, so nothing that landed
 // between the two is taken as already seen or left out of the record.
-import { recordProviderEvent } from "../runs/provider-events";
+import { recordProviderEvent, recordProviderEvents, CaptureFenceError, runSettlementFence, type ProviderEventInput } from "../runs/provider-events";
 import { createSecretRedactor } from "../secrets/redact";
-import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityProviderEvent, runtimeActivityRevision, runtimeActivityStepKey, runtimeThreadId, runtimeTurnError, runtimeTurnSettled, shouldProjectRuntimeActivity, type RuntimeEngineId, type RuntimeThreadSnapshot } from "./runtime-orchestration";
+import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityProviderEvent, runtimeActivityRevision, runtimeActivityStepKey, runtimeThreadId, runtimeTurnError, runtimeTurnSettled, runtimeUserMessageId, shouldProjectRuntimeActivity, type RuntimeEngineId, type RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { type EngineRunContext } from "./types";
+import { appendOnlyMessageCapture, runtimeRootMessageBatches } from "./runtime-root-messages";
+import { turnRunIds } from "./turn-recovery";
+import { runtimeUsageSignature } from "./runtime-usage-frame";
+import { recordedRuntimeActivity } from "./runtime-v2-view";
 
 type RuntimeActivity = RuntimeThreadSnapshot["thread"]["activities"][number];
 
@@ -19,7 +23,8 @@ export interface AppliedSnapshot {
 }
 
 export interface TurnProjector {
-  apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void): Promise<AppliedSnapshot>;
+  /** `observe` sees each newly recorded activity revision before it is projected; it may answer it (awaited). */
+  apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void | Promise<void>): Promise<AppliedSnapshot>;
   /** Activity revisions applied so far, or handed in as already seen. */
   seen(): ReadonlyMap<string, string>;
   /** The step each activity key was recorded under, so a later revision updates it instead of adding another. */
@@ -55,10 +60,15 @@ export function createTurnProjector(input: {
 }): TurnProjector {
   const { ctx, redact, engine } = input;
   const revisions = new Map(input.seen);
+  // Usage the thread reported before this turn. A resumed session re-reports its
+  // last figures under a new activity id; that is not a model call of this run.
+  const priorUsage = new Set<string>();
   const steps = new Map(input.steps ?? []);
   const threadId = runtimeThreadId(ctx);
+  const capturedMessages = new Map<string, ProviderEventInput[]>();
   let publishedText = "";
   let finalText = "";
+  let sealed = false;
   return {
     get publishedText() { return publishedText; },
     get finalText() { return finalText; },
@@ -66,16 +76,51 @@ export function createTurnProjector(input: {
     steps: () => steps,
     async apply(snapshot, observe) {
       const toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
+      for (const batch of runtimeRootMessageBatches({
+        runId: ctx.runId, threadId: ctx.threadId ?? ctx.runId, sessionId: threadId,
+        userMessageIds: turnRunIds(ctx.runId).map(runtimeUserMessageId), redact: redact.text,
+      }, snapshot)) {
+        if (sealed) break;
+        const key = batch[0]!.id;
+        const capture = appendOnlyMessageCapture(batch, capturedMessages.get(key));
+        if (capture.events.length === 0) continue;
+        try {
+          await recordProviderEvents(capture.events, { critical: true, fence: runSettlementFence(ctx.runId) });
+          capturedMessages.set(key, capture.snapshot);
+        } catch (error) {
+          if (!(error instanceof CaptureFenceError)) throw error;
+          sealed = true;
+          break;
+        }
+      }
       for (const activity of snapshot.thread.activities) {
+        const usage = input.seen.has(activity.id) ? runtimeUsageSignature(activity) : null;
+        if (usage) priorUsage.add(usage);
+      }
+      for (const activity of snapshot.thread.activities) {
+        if (sealed) break;
         const revision = runtimeActivityRevision(activity);
         if (revisions.get(activity.id) === revision) continue;
         revisions.set(activity.id, revision);
-        await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
-          critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
-        });
-        observe?.(activity);
+        if (!input.seen.has(activity.id) && priorUsage.has(runtimeUsageSignature(activity) ?? "")) continue;
+        try {
+          // Fenced by the settlement seal: once the run is settled (whichever
+          // path settled it), a capture still in flight writes nothing, so the
+          // charge stays what was persisted before settlement.
+          await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
+            critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
+            fence: runSettlementFence(ctx.runId),
+          });
+        } catch (error) {
+          if (!(error instanceof CaptureFenceError)) throw error;
+          revisions.delete(activity.id);
+          sealed = true;
+          console.info(`[turn-projector] run ${ctx.runId} is settled; projection stopped`);
+          break;
+        }
+        await observe?.(activity);
         if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
-        const step = redact.unknown(activityStep(activity, threadId, engine));
+        const step = redact.unknown(activityStep(recordedRuntimeActivity(activity, redact), threadId, engine));
         const key = runtimeActivityStepKey(activity);
         const priorStepId = steps.get(key);
         if (priorStepId && ctx.updateStep) {
@@ -88,7 +133,7 @@ export function createTurnProjector(input: {
       const text = redact.text(assistantText(snapshot));
       const settled = runtimeTurnSettled(snapshot);
       const projection = projectRuntimeAssistantText({ publishedText, finalText }, text, settled);
-      if (projection.delta) ctx.publishDelta?.(projection.delta);
+      if (projection.delta && !sealed) ctx.publishDelta?.(projection.delta);
       publishedText = projection.publishedText;
       finalText = projection.finalText;
       const error = runtimeTurnError(snapshot);

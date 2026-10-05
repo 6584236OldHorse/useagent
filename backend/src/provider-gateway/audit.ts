@@ -25,6 +25,9 @@ export interface ProviderGatewayAuditStart {
   readonly requestedOutputTokens: number;
 }
 
+/** A token count is bookkeeping, not model work, so it never spends the request cap. */
+const TOKEN_COUNT_PATH = "/v1/messages/count_tokens";
+
 export async function beginProviderGatewayAudit(
   input: ProviderGatewayAuditStart,
   limits: ProviderRequestLimits,
@@ -35,7 +38,7 @@ export async function beginProviderGatewayAudit(
     );
     const counts = await tx.execute(sql`
       select
-        count(*)::int as requests,
+        count(*) filter (where path <> ${TOKEN_COUNT_PATH})::int as requests,
         count(*) filter (
           where outcome = 'started'
             and created_at > now() - (${limits.upstreamTimeoutMs} * interval '1 millisecond')
@@ -43,7 +46,10 @@ export async function beginProviderGatewayAudit(
       from provider_gateway_audit
       where run_id = ${input.runId}
     `);
-    if (Number(counts[0]?.requests ?? 0) >= limits.maxRequestsPerRun) {
+    if (
+      input.path !== TOKEN_COUNT_PATH &&
+      Number(counts[0]?.requests ?? 0) >= limits.maxRequestsPerRun
+    ) {
       throw new ProviderGatewayAdmissionError("request_budget_exhausted");
     }
     if (Number(counts[0]?.active ?? 0) >= limits.maxConcurrentPerRun) {

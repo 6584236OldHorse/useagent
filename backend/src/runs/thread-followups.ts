@@ -18,6 +18,9 @@ import { legacyParentResources, resolveRunIntake } from "../resources/run-intake
 import { createRunResourceAuthorization } from "../resources/authorization";
 import type { RunCommandInput } from "../commands/types";
 import { findCommandByKey } from "../commands/repo";
+import type { PermissionMode } from "@useagent/agent-client/wire";
+import { narrowerPermissionMode } from "../engines/permission-mode";
+import { getRun } from "./repo";
 
 export async function acceptResolvedThreadFollowup(input: {
   readonly orgId: string;
@@ -50,7 +53,7 @@ export async function acceptResolvedThreadFollowup(input: {
   if (input.requireCurrentHead) {
     const [latest] = await db.select({ id: runs.id }).from(runs).where(and(
       eq(runs.orgId, input.orgId), eq(runs.threadId, input.command.run.threadId),
-    )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+    )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
     if (latest?.id !== input.expectedParentRunId) return { status: "stale_parent" };
   }
   const inheritsParentModel =
@@ -111,6 +114,8 @@ export async function acceptThreadFollowup(input: {
   readonly attachmentIds: readonly string[];
   readonly idempotencyKey: string;
   readonly botHandoff?: RunCommandInput["botHandoff"];
+  /** The person's explicit choice for this turn; absent keeps the thread's current mode. */
+  readonly permissionMode?: PermissionMode;
 }): Promise<RunCommandOutcome | { readonly status: "not_found" } | { readonly status: "stale_parent" } | { readonly status: "attachments_require_actor" }> {
   const relationship = await getThreadRelationship(input.orgId, input.threadId);
   if (!relationship) return { status: "not_found" };
@@ -128,12 +133,14 @@ export async function acceptThreadFollowup(input: {
     const replayIntent: RunCommandIntent = {
       prompt: text,
       model: existingRun.model,
+      reasoningEffort: existingRun.reasoningEffort,
       engine: existingRun.engine,
       parentRunId: existingRun.parentRunId,
       requestedRepos: [],
       requestedResources: [],
       attachmentIds: [...input.attachmentIds],
       memoryScope: existingRun.memoryScope,
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
       skillId: null,
       skillVersion: null,
       commandName: null,
@@ -166,7 +173,7 @@ export async function acceptThreadFollowup(input: {
   const [latest] = await db.select().from(runs).where(and(
     eq(runs.orgId, input.orgId),
     eq(runs.threadId, input.threadId),
-  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+  )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
   if (!latest) return { status: "not_found" };
   const inheritedResources = latest.resolvedResources.length > 0
     ? latest.resolvedResources
@@ -175,15 +182,23 @@ export async function acceptThreadFollowup(input: {
     { source: "web", text: "", inheritedResources },
     { authorize: createRunResourceAuthorization(input.orgId) },
   );
+  // The person's explicit choice wins; otherwise the thread's current mode, and
+  // a bot handoff never widens what the turn that asked for it was allowed to do.
+  const source = input.botHandoff ? await getRun(input.botHandoff.sourceRunId) : null;
+  const permissionMode = input.permissionMode
+    ?? (source ? narrowerPermissionMode(latest.permissionMode, source.permissionMode) : latest.permissionMode);
   const intent: RunCommandIntent = {
     prompt: text,
     model: latest.model,
+    // The thread's level rides along the way its model does (see runs/reasoning-effort.ts).
+    reasoningEffort: latest.reasoningEffort,
     engine: latest.engine,
     parentRunId: latest.id,
     requestedRepos: [],
     requestedResources: [],
     attachmentIds: [...input.attachmentIds],
     memoryScope: latest.memoryScope,
+    ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
     skillId: null,
     skillVersion: null,
     commandName: null,
@@ -201,6 +216,7 @@ export async function acceptThreadFollowup(input: {
       id: crypto.randomUUID(),
       prompt: text,
       model: latest.model,
+      reasoningEffort: latest.reasoningEffort,
       engine: latest.engine,
       parentRunId: latest.id,
       threadId: input.threadId,
@@ -208,6 +224,7 @@ export async function acceptThreadFollowup(input: {
       resolvedResources: intake.resources,
       attachmentIds: [...input.attachmentIds],
       memoryScope: latest.memoryScope,
+      permissionMode,
       skillId: null,
       skillVersion: null,
       skillContentHash: null,

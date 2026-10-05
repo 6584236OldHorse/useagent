@@ -4,6 +4,8 @@ import {
   type CodexAppServerLoginStartResult,
   type CodexChatGptLoginCompletion,
   type CodexChatGptStatus,
+  type CodexRateLimits,
+  type CodexRateLimitWindow,
 } from "./codex-app-server-contracts";
 
 export async function startCodexChatGptAccountLogin(
@@ -62,6 +64,34 @@ export async function readCodexChatGptAppServerStatus(
   return {
     account,
     requiresOpenaiAuth: record.requiresOpenaiAuth === true,
+  };
+}
+
+function rateLimitWindow(value: unknown): CodexRateLimitWindow | null {
+  if (!value || typeof value !== "object") return null;
+  const window = value as { usedPercent?: unknown; windowDurationMins?: unknown; resetsAt?: unknown };
+  if (typeof window.usedPercent !== "number") return null;
+  return {
+    usedPercent: window.usedPercent,
+    windowDurationMins: typeof window.windowDurationMins === "number" ? window.windowDurationMins : null,
+    resetsAt: typeof window.resetsAt === "number" ? window.resetsAt : null,
+  };
+}
+
+/** The subscription's rolling usage windows, as the app-server reports them. */
+export async function readCodexRateLimits(appServer: CodexAppServerClient): Promise<CodexRateLimits> {
+  const response = await appServer.request("account/rateLimits/read", undefined);
+  if (!response || typeof response !== "object") {
+    throw new CodexAppServerAuthError("app_server_rejected");
+  }
+  const limits = (response as { rateLimits?: unknown }).rateLimits;
+  const record = limits && typeof limits === "object"
+    ? limits as { planType?: unknown; primary?: unknown; secondary?: unknown }
+    : {};
+  return {
+    planType: typeof record.planType === "string" ? record.planType : null,
+    primary: rateLimitWindow(record.primary),
+    secondary: rateLimitWindow(record.secondary),
   };
 }
 

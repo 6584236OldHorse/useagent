@@ -4,12 +4,16 @@ import {
   MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
+  type PermissionMode,
+  type RunConnector,
+  type RunLocation,
   type RunStatus,
   type StepKind,
 } from "@useagent/agent-client/wire";
 import type { RunResource } from "../../resources/types";
 import type { ExpectedSandboxBinding } from "../../sandboxes/expected-binding";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
+import type { PreambleHashes } from "../../engines/turn-prompt";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -51,6 +55,10 @@ export const runs = pgTable(
     userId: text("user_id"),
     prompt: text("prompt").notNull(),
     model: text("model").notNull(),
+    // The reasoning effort the run was accepted with (see runs/reasoning-effort.ts):
+    // the levels are an engine seam, null runs on the runtime's default, and a
+    // reply inherits its parent's value the way it inherits the model.
+    reasoningEffort: text("reasoning_effort"),
     engine: text("engine").$type<EngineId>().notNull().default("mock"),
     status: text("status").$type<RunStatus>().notNull(),
     summary: text("summary"),
@@ -61,6 +69,11 @@ export const runs = pgTable(
     // composed server-side by walking the thread, never nested into the prompt.
     parentRunId: text("parent_run_id").references((): AnyPgColumn => runs.id),
     threadId: text("thread_id").notNull(),
+    // The run's place in its thread, assigned under the thread lifecycle lock
+    // at insert (max + 1): a lossless acceptance order that survives the wire,
+    // where created_at is truncated to milliseconds. Rows from before the
+    // column keep 0 and sort among themselves by created_at.
+    threadSeq: integer("thread_seq").notNull().default(0),
     // The engine's OWN session id for this run (opencode ses_*, claude-sdk UUID,
     // codex session id). Persisted so the thread's next turn resumes the engine's
     // native conversation EXPLICITLY by id — a peer tool's set_resume_session_id
@@ -72,6 +85,16 @@ export const runs = pgTable(
     // current writes persist both atomically and the migration constrains them
     // to the same native id.
     providerSession: jsonb("provider_session").$type<ProviderSessionBinding>(),
+    // Delivery evidence, separate from session authority: set once the engine
+    // runtime ACCEPTED this run's prompt (the steer returned ok), never merely
+    // because a session was bound. Null on a run whose prompt never reached an
+    // engine, so the thread's next turn can carry that message as history.
+    promptDeliveredAt: timestamp("prompt_delivered_at", { withTimezone: true }),
+    // Content hashes of the rule blocks and skill catalog the native session held
+    // once this run's prompt was delivered (engines/turn-prompt.ts). The thread's
+    // next resumed turn re-sends a block only when its hash changed. Null when no
+    // prompt was delivered or a native command was, so the next turn sends all.
+    preambleHashes: jsonb("preamble_hashes").$type<PreambleHashes>(),
     // The Daytona sandbox this run executed in. Persisted so the thread→sandbox
     // mapping SURVIVES backend restarts — the next turn resumes the same box
     // (workspace + resident engine server) instead of provisioning a new one.
@@ -109,6 +132,15 @@ export const runs = pgTable(
     // A reply inherits its parent's scope unless the authenticated user changes
     // it; resolution/validation lives at the run-creation boundary (routes.ts).
     memoryScope: text("memory_scope").$type<MemoryScope>().notNull().default("org"),
+    // The permission policy the run was started with (engines/permission-mode.ts):
+    // what its resident runtime may do without asking. Rows from before the
+    // column ran with the runtime's full-access posture, hence the default.
+    permissionMode: text("permission_mode").$type<PermissionMode>().notNull().default("full-access"),
+    // Where the thread was asked to run (agent-client wire RunLocation): "local"
+    // is the person's connected machine, "cloud" the hosted provider. Chosen on
+    // the root run and copied onto every reply at insert, so a worker reads its
+    // own row; null on rows from before the choice, which ran under the old rule.
+    runLocation: text("run_location").$type<RunLocation>(),
     // Pinned skill/playbook selection for this run — an immutable REFERENCE to a
     // `skill_revisions` row (skill_id + skill_version) plus its content hash. Set
     // when a skill was selected in the composer/run-now; null otherwise. The
@@ -135,6 +167,12 @@ export const runs = pgTable(
     // unattended product execution without discarding the creator's user id.
     // Public callers can never set this field.
     origin: text("origin"),
+    // The connector a turn arrived through when it was not typed in the product
+    // (Slack today): the sender's display name and avatar as the channel showed
+    // them at ingress plus the message permalink, so the web can render who
+    // spoke and link back. Stamped once after acceptance (the lookup still owed
+    // waits in slack_identity_lookups meanwhile); null for product turns.
+    connector: jsonb("connector").$type<RunConnector>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -5,12 +5,13 @@ import { type DotTone, StatusDot } from "@/components/shared/status-dot";
 import { threadActivityTimestamp } from "@/components/shell/thread-discovery";
 import { backendFetch } from "@/lib/backend-fetch";
 import { relativeTimeShort } from "@/utils/format";
+import { FirstRunNotice } from "./first-run-notice";
 import { NewTaskComposer } from "./new-task-composer";
 import { fetchSkills } from "./skills-data";
 
 export const metadata: Metadata = {
   title: "New thread",
-  description: "Start a direct conversation or a sandbox-backed task with useAgent.",
+  description: "Start a direct conversation or a sandbox-backed task with UseAgent.",
 };
 
 interface RecentRun {
@@ -95,6 +96,7 @@ export default async function NewTaskPage({
           </div>
 
           <div className="mt-8">
+            <FirstRunNotice />
             <NewTaskComposer
               skills={skills}
               initialRepository={initialRepository}

@@ -31,8 +31,8 @@ import {
   scenarioPath,
 } from "./team-memory-scenarios";
 
-/** Hard cap on a single memory HTTP call. Memory is best-effort; better to skip
- *  recall than to add latency to a run. */
+/** Hard cap on a memory HTTP call and on a whole recall. Memory is best-effort;
+ *  better to skip recall than to add latency to a run. */
 const DEFAULT_TIMEOUT_MS = 4000;
 /** How many facts to pull for a single prompt. */
 const DEFAULT_LIMIT = 6;
@@ -877,10 +877,10 @@ async function fetchOrgL2L3Hits(
 ): Promise<{ scoped: ScopedHit[]; unreachable: boolean }> {
   const orgPool = pools.find((p) => p.sourceScope === "org");
   if (!orgPool) return { scoped: [], unreachable: false };
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const deadlineAt = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS); // one budget for both phases
   const [listed, core] = await Promise.all([
-    listOrgScenarios(orgPool.identity, query, { limit: opts.limit, timeoutMs }),
-    readOrgCoreMemory(orgPool.identity, { timeoutMs }),
+    listOrgScenarios(orgPool.identity, query, { limit: opts.limit, timeoutMs: deadlineAt - Date.now() }),
+    readOrgCoreMemory(orgPool.identity, { timeoutMs: deadlineAt - Date.now() }),
   ]);
   const scenarioRefs = listed.data.flatMap((item) => {
     const path = scenarioPath(item);
@@ -900,7 +900,7 @@ async function fetchOrgL2L3Hits(
           unreachable: false,
         };
       }
-      return readOrgScenarioMemory(orgPool.identity, path, { timeoutMs });
+      return readOrgScenarioMemory(orgPool.identity, path, { timeoutMs: Math.max(0, deadlineAt - Date.now()) });
     }),
   );
   const hits = [

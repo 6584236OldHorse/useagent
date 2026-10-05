@@ -1,26 +1,25 @@
 "use client";
 
-
 import {
-  RiAddLine,
-  RiArrowDownSLine,
   RiArrowUpLine,
+  RiCornerDownLeftLine,
   RiMicLine,
   RiStopFill,
   RiToolsLine,
 } from "@remixicon/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Agent, AgentChip, ChooseAgentPopover } from "@/components/chat/agent-command";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import { ChatModelMenu, type ChatModelOption } from "@/components/chat/chat-model-menu";
+import { ChatModelTrigger } from "@/components/chat/chat-model-trigger";
 import { AddContextMenu } from "@/components/chat/composer-add-menu";
 import { ComposerAlert } from "@/components/chat/composer-alert";
 import { mentionedBotIds, unlinkedBotTokens } from "@/components/chat/composer-mentions";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
-import { ModelPicker } from "@/components/chat/engine-picker";
-import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
+import { CatalogModelPicker } from "@/components/chat/catalog-model-picker";
+import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
   commandOptionId,
@@ -30,17 +29,18 @@ import {
   SlashCommandPopover,
   slashInsertText,
 } from "@/components/chat/slash-command";
-import type { EngineId, MemoryScope } from "@/components/chat/types";
+import type { EngineId, MemoryScope, PermissionMode } from "@/components/chat/types";
 import { Loader } from "@/components/prompt-kit/loader";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { engineDisplayLabel, ProviderStatusBanner } from "@/components/session-ui/provider-status-banner";
-import { ThreadErrorBanner } from "@/components/session-ui/thread-error-banner";
+import { ThreadErrorBanner, type ThreadErrorResend } from "@/components/session-ui/thread-error-banner";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
 import { composerPlaceholder, getComposerAction } from "@/components/chat/composer-model";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { cx as cn } from "@/utils/cx";
 type Variant = "hero" | "compact";
-
 
 /**
  * Submit a composed prompt. `idempotencyKey` is a stable per-submission id the
@@ -64,6 +64,9 @@ export type ComposerSubmit = (
   resources?: readonly RunResourceSelection[],
   /** Bot ids behind @bot chips; each opens a delegated handoff thread on that bot's preset. */
   botMentions?: readonly string[],
+  permissionMode?: PermissionMode, // the run's permission policy, chosen in the status row chip
+  /** The reasoning effort chosen in the picker; null keeps the runtime's default. */
+  reasoningEffort?: string | null,
 ) => void | Promise<void>;
 
 export type ComposerProps = {
@@ -102,6 +105,8 @@ export type ComposerProps = {
   };
   /** Starting model for the picker (thread's current model on replies). */
   defaultModel?: string;
+  /** Starting reasoning effort (the thread's current value on replies). */
+  defaultReasoningEffort?: string | null;
   /** Starting memory scope (a reply inherits the thread's current scope). */
   defaultMemoryScope?: MemoryScope;
   /** Engine slash commands for "/" autocomplete (reply composer, live thread). */
@@ -118,8 +123,8 @@ export type ComposerProps = {
   /** Exact repository revisions already bound to this thread. */
   repoRevisions?: Readonly<Record<string, string | null>>;
   onSubmit: ComposerSubmit;
-  /** A turn is running in this thread - an empty input exposes Stop, while a
-   *  non-empty draft exposes a labelled Steer action for the queued reply. */
+  /** A turn is running in this thread: the send action becomes Queue (the reply
+   *  is queued behind the run); with `onStop` an empty input exposes Stop instead. */
   running?: boolean;
   stopping?: boolean;
   /** Visible failure from the durable cancel request; the Stop control remains retryable. */
@@ -135,6 +140,8 @@ export type ComposerProps = {
   threadError?: string | null;
   /** Records the session-scoped dismissal at the call site; absent hides the X. */
   onDismissThreadError?: () => void;
+  /** Resend for the failed run behind `threadError`; absent hides the button. */
+  threadErrorResend?: ThreadErrorResend;
   /** A notice about the LAST accepted send (e.g. a mentioned bot that did not
    *  get the message). Rendered in the failure slot; the draft is NOT restored
    *  because the message itself went through. Editing dismisses it. */
@@ -155,6 +162,10 @@ export type ComposerProps = {
    *  "Ask agent to redo"); the text replaces the current draft so the user can send
    *  or edit it. Absent leaves the composer fully user-driven. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
+  /** The status tray under the card (location, branch, project, engine, spend, context). Compact only. */
+  tab?: ReactNode;
+  /** The permission chip for the footer's second column. Compact only. */
+  permission?: ReactNode;
 };
 
 /**
@@ -183,6 +194,7 @@ export function Composer({
   enableModelPicker = true,
   modelMenu,
   defaultModel = "claude-opus-5",
+  defaultReasoningEffort = null,
   defaultMemoryScope = "org",
   commands,
   commandState,
@@ -197,12 +209,15 @@ export function Composer({
   runStartedAt,
   threadError,
   onDismissThreadError,
+  threadErrorResend,
   notice,
   onDismissNotice,
   engineUnavailable = false,
   engineUnavailableMessage,
   draftKey,
   prefill,
+  tab,
+  permission,
 }: ComposerProps) {
   // Draft restore is a lazy initializer so SSR (no window) and draft-less
   // composers stay on the empty string with zero effect churn.
@@ -237,6 +252,7 @@ export function Composer({
   // can still override it without changing the call sites.
   const [engineState] = useState<EngineId>(defaultEngine);
   const [model, setModel] = useState(defaultModel);
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(defaultReasoningEffort);
   const [modelAvailable, setModelAvailable] = useState(true);
   const [command, setCommand] = useState<Agent | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -293,7 +309,7 @@ export function Composer({
   });
   const actionBusy = composerAction.kind === "stop" ? stopping : busy;
   const actionDisabled = composerAction.kind === "stop" ? stopping : !canSend;
-  const actionLabel = composerAction.kind === "steer" ? "Steer this run" : composerAction.label;
+  const actionLabel = composerAction.kind === "steer" ? "Queue this message" : composerAction.label;
 
   // Slash-command autocomplete: live while the FIRST token is being typed
   // ("/rev" but not "/review changes"). A trailing space ends completion.
@@ -397,6 +413,7 @@ export function Composer({
       // trimmed text) so a command's argument bytes reach the backend EXACTLY as typed - the
       // backend rebuilds `/name <args>` verbatim from this intent. The backend re-validates.
       const intent = commands ? parseCommandIntent(raw, commands) : null;
+      const sent = runUploads.readyIds; // the uploads this send carries; later ones stay
       // The chat model picker (when present) owns the model; else the internal state.
       await onSubmit(
         text,
@@ -407,12 +424,14 @@ export function Composer({
         // removed from the toolbar); the run still reads/writes that pool.
         defaultMemoryScope,
         intent,
-        runUploads.readyIds,
+        sent,
         mentionsToRunResources(mentions.mentions),
         mentionedBotIds(mentions.mentions),
+        undefined, // the permission mode is the status row's; the reply wrapper fills it in
+        reasoningEffort,
       );
       retry.current = null; // accepted — drop the retry key
-      runUploads.clearAccepted();
+      runUploads.clearAccepted(sent);
       mentions.clear(); // accepted — drop the chips (their text tokens already sent)
     } catch (error) {
       // Never silently swallow: restore the draft and show an explicit failed
@@ -436,7 +455,11 @@ export function Composer({
     // The composer THEME-FOLLOWS: its card uses bg-background-primary-default (white in light mode,
     // #20201f in dark) so it reads as the reference's clean white pill in light and
     // a native dark pill in dark - never a white island clashing with the dark page.
-    <div ref={rootRef} className={cn("relative w-full", className)}>
+    <div
+      ref={rootRef}
+      className={cn("relative w-full", className)}
+      {...(enableUploads ? attachmentIntake(runUploads.addFiles, !busy) : {})} // drop or paste files here
+    >
       {showAgentPopover && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-full">
           <ChooseAgentPopover query={slashActive ? value : ""} onSelect={pickAgent} />
@@ -519,7 +542,7 @@ export function Composer({
       {(threadError || (engineUnavailable && !providerBannerDismissed) || (running && onStop)) && (
         <div className="mb-1.5 flex flex-col gap-1.5">
           {threadError && (
-            <ThreadErrorBanner error={threadError} onDismiss={onDismissThreadError} />
+            <ThreadErrorBanner error={threadError} onDismiss={onDismissThreadError} resend={threadErrorResend} />
           )}
           {engineUnavailable && !providerBannerDismissed && (
             <ProviderStatusBanner
@@ -559,9 +582,10 @@ export function Composer({
                 event.target.value = "";
               }}
             />
-            <RunUploadChips
+            <ComposerAttachmentRow
               uploads={runUploads.uploads}
               onRemove={(upload) => void runUploads.remove(upload)}
+              className="px-3 pt-3"
             />
           </>
         ) : null}
@@ -583,40 +607,16 @@ export function Composer({
             "cursor-text rounded-none border-0 bg-transparent shadow-none",
             hero
               ? "p-3 md:p-4"
-              : "@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
+              : "grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
           )}
         >
-          {/* The "+" add-context button sits FIRST in the DOM so keyboard focus
-              travels + -> textarea -> send, matching the visual left-to-right
-              order in the compact grid (col-start-1 pins it to the left cell). */}
-          {enableUploads ? (
-            <button
-              type="button"
-              aria-label="Add context"
-              aria-haspopup="menu"
-              aria-expanded={addMenuOpen}
-              onClick={() => setAddMenuOpen((o) => !o)}
-              className={cn(
-                "col-start-1 row-start-1 flex size-9 items-center justify-center rounded-full border transition-colors @max-[26rem]:row-start-2",
-                addMenuOpen
-                  ? "border-border-button-default bg-background-secondary-default text-text-primary"
-                  : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
-              )}
-            >
-              <RiAddLine
-                className={cn(
-                  "size-5 transition-transform duration-200",
-                  addMenuOpen && "rotate-45",
-                )}
-                aria-hidden
-              />
-            </button>
-          ) : null}
           <div
             className={cn(
               "flex items-start gap-1.5 px-1",
               // A narrow composer (the split pane) stacks: the input takes the whole first row, the controls the second.
-              !hero && "col-start-2 row-start-1 min-w-0 items-center @max-[26rem]:col-span-3 @max-[26rem]:col-start-1",
+              // Compact: the field takes the whole first row; the controls are the footer row.
+              // The agent chip and the text share the field's top edge.
+              !hero && "col-span-3 col-start-1 row-start-1 min-w-0",
             )}
           >
             {command && (
@@ -656,16 +656,25 @@ export function Composer({
               }}
               className={cn(
                 "flex-1",
-                // Compact: the box height must equal the line-height so the single
-                // line of placeholder/text sits vertically CENTERED against the
-                // +/send buttons - a taller min-height top-aligns the text (textarea
-                // text can't vertical-center), which read as "input slightly up". It
-                // still auto-grows with content up to maxHeight.
-                hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6",
+                // Compact: the field rests two lines tall (twice the line-height) so
+                // the reply box reads as a place to write, not a search field; the
+                // controls sit in their own footer row, so nothing needs centering
+                // against the text. It still auto-grows with content up to maxHeight.
+                hero ? "pt-1 text-headline-regular" : "min-h-12 text-body-2-regular leading-6",
               )}
             />
           </div>
 
+          {/* Compact footer: "+" (after the field in the DOM, so Tab order follows the visual order), the permission chip, then model and send. */}
+          {enableUploads ? (
+            <ComposerAddButton
+              aria-label="Add context"
+              open={addMenuOpen}
+              onToggle={() => setAddMenuOpen((o) => !o)}
+              className="col-start-1 row-start-2"
+            />
+          ) : null}
+          {permission && <div className="col-start-2 row-start-2 flex min-w-0 items-center">{permission}</div>}
           {/* px-1 matches the text row above so the +/send controls left/right-align
               with the placeholder (was px-0.5 → a 2px asymmetry). */}
           <div className={cn(hero ? "mt-1 flex items-center gap-1.5 px-1" : "contents")}>
@@ -688,50 +697,33 @@ export function Composer({
               </button>
             )}
 
-            {/* Real chat MODEL picker trigger (honest replacement for the
-                placeholder agent picker). Opens the "Choose model" card above. */}
+            {/* Real chat MODEL picker trigger (the Chat surface): opens the
+                "Choose model" card above. */}
             {modelMenu && (
-              <button
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={modelMenuOpen}
-                aria-label={`Model: ${activeModelOption?.label ?? modelMenu.value}`}
-                onClick={() => setModelMenuOpen((o) => !o)}
-                className={cn(
-                  "flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-body-2-medium transition-colors",
-                  modelMenuOpen
-                    ? "border-border-button-default bg-background-secondary-default text-text-primary"
-                    : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
-                )}
-              >
-                {activeModelOption && (
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: activeModelOption.color }}
-                    aria-hidden
-                  />
-                )}
-                <span className="max-w-[10rem] truncate">
-                  {activeModelOption?.label ?? "Model"}
-                </span>
-                <RiArrowDownSLine className="size-4 shrink-0" aria-hidden />
-              </button>
+              <ChatModelTrigger
+                open={modelMenuOpen}
+                option={activeModelOption}
+                fallback={modelMenu.value}
+                onToggle={() => setModelMenuOpen((o) => !o)}
+              />
             )}
 
             {/* Right cluster */}
             <div
               className={cn(
                 "ml-auto flex items-center gap-1.5",
-                !hero && "col-start-3 row-start-1 @max-[26rem]:row-start-2",
+                !hero && "col-start-3 row-start-2",
               )}
             >
               {/* One engine now — the meaningful per-message choice is the MODEL. */}
               {enableModelPicker && (
-                <ModelPicker
+                <CatalogModelPicker
                   engine={engine}
                   model={model}
                   onChange={setModel}
                   onAvailabilityChange={setModelAvailable}
+                  reasoningEffort={reasoningEffort}
+                  onReasoningEffortChange={(next) => setReasoningEffort(next || null)}
                 />
               )}
               {hero && (
@@ -755,7 +747,7 @@ export function Composer({
                     layout: { duration: 0.2, ease: [0.22, 1, 0.36, 1] },
                   }}
                   className={cn(
-                    "flex shrink-0 items-center justify-center overflow-hidden rounded-full transition-colors",
+                    "button-press-motion flex shrink-0 items-center justify-center overflow-hidden rounded-full",
                     hero ? "h-10 min-w-10" : "h-9 min-w-9",
                     composerAction.kind === "steer" ? "gap-1.5 px-3.5" : hero ? "w-10" : "w-9",
                     composerAction.kind === "stop"
@@ -778,13 +770,13 @@ export function Composer({
                         <Loader variant="circular" size="sm" className="border-white" />
                       ) : composerAction.kind === "stop" ? (
                         <RiStopFill className="size-5" aria-hidden />
-                      ) : (
+                      ) : composerAction.kind === "steer" ? (
                         <>
-                          <RiArrowUpLine className="size-5" aria-hidden />
-                          {composerAction.kind === "steer" ? (
-                            <span className="text-body-2-medium">{composerAction.label}</span>
-                          ) : null}
+                          <span className="text-body-2-medium">{composerAction.label}</span>
+                          <RiCornerDownLeftLine className="size-4" aria-hidden />
                         </>
+                      ) : (
+                        <RiArrowUpLine className="size-5" aria-hidden />
                       )}
                     </motion.span>
                   </AnimatePresence>
@@ -794,6 +786,9 @@ export function Composer({
           </div>
         </PromptInput>
       </div>
+      {/* The status tray hangs under the card in every state, so it never moves
+          when a run starts or stops. */}
+      {tab}
     </div>
   );
 }

@@ -1,8 +1,9 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/client";
-import { invitation, member, user } from "../db/auth-schema";
+import { invitation, member, organization, user } from "../db/auth-schema";
 import { NO_WAY_IN } from "../auth-invitations";
+import { personalWorkspaceName } from "../auth/personal-workspace";
 import { withOrgLock } from "../org-lock";
 import { decideAccessRequest, listAccessRequests } from "../slack/access-requests";
 import type { AppEnv } from "../http";
@@ -98,4 +99,50 @@ teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
   if (outcome === "email_invalid") return c.json({ message: "That does not look like an email address" }, 400);
   if (outcome === "no_way_in") return c.json({ message: NO_WAY_IN }, 400);
   return c.json({ status: outcome });
+});
+
+type WorkspaceRole = "owner" | "admin" | "member";
+
+/** The strongest of the comma-separated roles the library stores. */
+function strongestRole(value: string | null): WorkspaceRole {
+  const roles = (value ?? "").split(",").map((role) => role.trim());
+  return roles.includes("owner") ? "owner" : roles.includes("admin") ? "admin" : "member";
+}
+
+/** Every workspace the person belongs to, with their role in it, its size and
+ *  whether it still carries the name it was created with; and the workspace
+ *  this session's requests are scoped to, which is where a session without an
+ *  active organisation lands (seed.ts firstOrgForUser). The user menu and the
+ *  first-run page read this. */
+teamRoutes.get("/workspaces", async (c) => {
+  const orgId = c.get("orgId");
+  const userId = c.get("userId");
+  if (!orgId || !userId) return c.json({ error: "forbidden" }, 403);
+  const [who] = await db.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
+  const rows = await db
+    .select({ id: organization.id, name: organization.name, slug: organization.slug, role: member.role })
+    .from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId))
+    .where(eq(member.userId, userId))
+    .orderBy(asc(member.createdAt), asc(member.id));
+  const sizes = rows.length
+    ? await db
+        .select({ organizationId: member.organizationId, members: count() })
+        .from(member)
+        .where(inArray(member.organizationId, rows.map((row) => row.id)))
+        .groupBy(member.organizationId)
+    : [];
+  const members = new Map(sizes.map((row) => [row.organizationId, row.members]));
+  const created = who ? personalWorkspaceName(who) : null;
+  return c.json({
+    activeOrganizationId: orgId,
+    workspaces: rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      slug: row.slug,
+      role: strongestRole(row.role),
+      members: members.get(row.id) ?? 0,
+      defaultName: row.name === created,
+    })),
+  });
 });

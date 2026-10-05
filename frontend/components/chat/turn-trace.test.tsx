@@ -54,8 +54,9 @@ describe("turn trace", () => {
   test("a bot thread starts with the trace folded and the reply as the block", () => {
     const html = renderToStaticMarkup(<Timeline nodes={NODES} live={false} trace={BOT} />);
     expect(html).toContain('data-testid="turn-trace"');
-    expect(html).toContain("Thought for 3m 12s");
-    expect(html).toContain(">2 tool calls<");
+    // The work-log pill: "Worked · ran 1 command · called 1 tool · 3m 12.0s".
+    expect(html).toContain(">Worked<");
+    expect(html).toContain(">· ran 1 command · called 1 tool · 3m 12.0s<");
     expect(html).toContain('aria-expanded="false"');
     // The header is one pill: label, muted count, chevron. No star, and once
     // settled no loader and no empty loader slot padding the left edge.
@@ -64,7 +65,7 @@ describe("turn trace", () => {
     expect(header).not.toContain("M12 2l2.4");
     expect(header).not.toContain("data-pattern");
     expect(header).not.toContain('data-testid="thinking-status-slot"');
-    expect(header.indexOf("Thought for")).toBeLessThan(header.indexOf("<svg"));
+    expect(header.indexOf("Worked")).toBeLessThan(header.indexOf("<svg"));
     // The reply is the primary block, outside the trace.
     expect(html).toContain('data-testid="agent-answer"');
     expect(html).toContain("Here is today&#x27;s digest.");
@@ -142,8 +143,8 @@ describe("turn trace", () => {
     expect(rows(html)).toHaveLength(2);
     expect(html.match(/data-testid="trace-row-chip"/g)).toHaveLength(2);
     expect(html.match(/aria-label="Completed"/g)).toHaveLength(2);
-    // It still counts as a message in the settled header and folds with the rest.
-    expect(html).toContain(">1 tool call, 1 message<");
+    // The pill counts the work, never the narration, and it folds with the rest.
+    expect(html).toContain(">· ran 1 command · 3m 12.0s<");
     const folded = renderToStaticMarkup(<Timeline nodes={narrated} live={false} trace={BOT} />);
     expect(folded).not.toContain('data-testid="trace-narration"');
   });
@@ -203,13 +204,41 @@ describe("turn trace", () => {
       exit_code: 1,
     });
     const html = renderToStaticMarkup(<Timeline nodes={[failed]} live={false} trace={PLAIN} />);
-    expect(html).toContain("1 tool call, 1 failed");
+    expect(html).toContain("ran 1 command · 1 failed");
     expect(html).toContain('data-status="failed"');
     expect(html).toContain('aria-label="Failed"');
     expect(html).toContain(">bun run typecheck<");
     expect(html).toContain(">exit 1<");
-    // A step the turn survived is marked, not alarmed: no error tint on the row or the header.
+    // The failed row wears the red Error chip; a passing row never does.
+    expect(html).toContain('data-testid="trace-row-error"');
+    expect(html).toContain(">Error<");
+    const passing = renderToStaticMarkup(<Timeline nodes={NODES} live={false} trace={PLAIN} />);
+    expect(passing).not.toContain('data-testid="trace-row-error"');
+    // A step the turn survived is marked, not alarmed: no error tint on the header.
     expect(html).not.toContain("text-text-error-primary");
+  });
+
+  test("the open rows hang off the wavy guide; a listing counts its entries and a timed step shows its duration", () => {
+    const listing = toolNode("s5", {
+      tool: "list",
+      input: { path: "src/gateway" },
+      output: "src/gateway/\n  middleware.ts\n  router.ts\n  types.ts",
+      durationMs: 180,
+    });
+    const html = renderToStaticMarkup(
+      <Timeline nodes={[listing, ANSWER]} live={false} trace={PLAIN} />,
+    );
+    expect(html).toContain("trace-guide");
+    expect(html).toContain(">List<");
+    expect(html).toContain(">gateway<");
+    expect(html).toContain(">3 entries<");
+    expect(html).toContain('data-testid="trace-row-duration"');
+    expect(html).toContain(">180ms<");
+    // The pill: a listing is a tool call, timed by the run.
+    expect(html).toContain(">· called 1 tool · 3m 12.0s<");
+    // A step without a reported duration shows none.
+    const untimed = renderToStaticMarkup(<Timeline nodes={NODES} live={false} trace={PLAIN} />);
+    expect(untimed).not.toContain('data-testid="trace-row-duration"');
   });
 
   test("a bot reply keeps fetched sources visible outside the closed trace", () => {
@@ -276,8 +305,31 @@ describe("turn trace", () => {
       <Timeline nodes={[receipt, ANSWER]} live={false} trace={PLAIN} />,
     );
     expect(html).toContain('data-testid="trace-changed-files"');
-    expect(html).toContain("Changed 1 file");
+    expect(html).toContain(">· edited 1 file · 3m 12.0s<");
     expect(html).toContain(">generated-report.ts<");
+  });
+
+  test("a subagent's steps never render as the parent's rows", () => {
+    const html = renderToStaticMarkup(
+      <Timeline nodes={NODES} live={false} trace={{ ...PLAIN, childSteps: new Set(["s2"]) }} />,
+    );
+    expect(rows(html)).toHaveLength(3);
+    expect(html).not.toContain("git log --since=yesterday");
+    expect(html).toContain(">· called 1 tool · 3m 12.0s<");
+  });
+
+  test("a subagent's file edit never counts as the parent's edited file", () => {
+    const edit = toolNode("s7", {
+      tool: "edit",
+      input: { file_path: "src/child.ts", old_string: "a", new_string: "a\nb" },
+      output: "Edited src/child.ts",
+    });
+    const html = renderToStaticMarkup(
+      <Timeline nodes={[edit, ANSWER]} live={false} trace={{ ...PLAIN, childSteps: new Set(["s7"]) }} />,
+    );
+    expect(html).not.toContain("edited 1 file");
+    expect(html).not.toContain('data-testid="trace-changed-files"');
+    expect(html).not.toContain('data-testid="turn-trace"');
   });
 
   test("a turn without work or reasoning renders no header at all", () => {

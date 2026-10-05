@@ -68,8 +68,9 @@ describe("live-reload gate for artifact change signals", () => {
 describe("byte-PDF surfaces never leak raw bytes", () => {
   test("the rendered surface embeds the PDF and states the honest note", () => {
     const html = renderToStaticMarkup(<PdfEmbedSurface url="/api/artifacts/a1/preview?v=2" />);
-    expect(html).toContain('type="application/pdf"');
-    expect(html).toContain("/api/artifacts/a1/preview?v=2");
+    expect(html).toContain('<iframe src="/api/artifacts/a1/preview?v=2"');
+    expect(html).toContain('title="Embedded PDF preview"');
+    expect(html).not.toContain("<object");
     expect(html).toContain("Open the PDF");
     expect(html).toContain("Page reorder and delete are the supported revisions");
     expect(html).not.toContain("%PDF");

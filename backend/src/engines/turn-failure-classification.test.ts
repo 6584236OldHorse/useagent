@@ -45,6 +45,28 @@ describe("turn failure classification", () => {
     expect(failure.summary.length).toBe(7 + 180);
   });
 
+  test("names a spent provider key plainly instead of relaying the refusal", () => {
+    const failure = classifyTurnFailure(
+      new Error('upstream 403: {"error":{"message":"Key limit exceeded","code":403}}'),
+    );
+    expect(failure.kind).toBe("provider");
+    expect(failure.label).toBe("Provider key limit reached");
+    expect(failure.summary).toContain("reached its spending limit");
+    expect(failure.summary).not.toContain("—");
+  });
+
+  test("names a member key the gateway reported rejected, without the engine's wrapping", () => {
+    const failure = classifyTurnFailure(new Error(
+      'APIError: 401 {"type":"error","error":{"type":"authentication_error","message":"Your Anthropic key was rejected (expired or revoked). Reconnect it in Settings."}}',
+    ));
+    expect(failure).toEqual({
+      kind: "provider",
+      resumable: false,
+      label: "Anthropic key rejected",
+      summary: "Your Anthropic key was rejected (expired or revoked). Reconnect it in Settings.",
+    });
+  });
+
   test("falls back to a generic engine error for a message-less throw", () => {
     const failure = classifyTurnFailure(new Error(""));
     expect(failure.kind).toBe("provider");

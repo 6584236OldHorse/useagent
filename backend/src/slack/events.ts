@@ -13,8 +13,10 @@
  *    (and shares our `channel:ts` dedupe key, so duplicates collapse anyway).
  *  - channel `message` thread reply → only if we already root that thread.
  *  - anything else                  → ignored (no channel-wide chatter).
+ *  - "(aside)" / "!aside" first     → ignored anywhere (talk for the humans).
+ *  - "mute" / "unmute" alone        → flips whether a rooted thread is heard.
  */
-import { env, slackConfig } from "../env";
+import { slackConfig } from "../env";
 import { runs, type MemoryScope, type RunStatus } from "../db/schema";
 import { db } from "../db/client";
 import { getRunForOrg } from "../runs/repo";
@@ -24,24 +26,28 @@ import {
   RunAdmissionClosedError,
   type RunCommandIntent,
 } from "../commands";
+import { SpendAllowanceExceededError } from "../runs/spend";
+import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { pumpThread } from "../worker";
 import { stageInboundSlackFiles, type SlackInboundFileMeta } from "./inbound-files";
-import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread } from "./repo";
+import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread, slackThreadCardBase } from "./repo";
+import { settleThreadControl, slackThreadControl } from "./asides";
 import { watchSlackRun } from "./watcher";
 import {
   enqueueAddReactionTx,
+  enqueuePostCardTx,
   enqueuePostMessage,
-  enqueueSessionStatusTx,
-  enqueueStartStreamTx,
   enqueueThreadStatusTx,
+  enqueueUpdateCardTx,
   kickSlackOutbox,
+  slackSpendRefusalKey,
 } from "./outbox";
-import { buildRunCard, deriveTitle, sessionUrl } from "./card";
-import { parseRepoRef } from "../github/repo-ref";
-import { directMessageChannel, openingStreamChunks } from "./streaming";
+import { buildRunCard, stripMentions } from "./card";
+import { WORKING_PHRASES } from "./streaming";
 import { enqueueSlackTerminalDeliveryForRunTx } from "../runs/finalize";
 import { eq } from "drizzle-orm";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
+import { catalogAccount, modelOfferedTo } from "../provider-gateway/provider-accounts";
 import {
   isSlackSwitchableEngine,
   modelCatalogLine,
@@ -57,7 +63,7 @@ import {
 } from "../resources/run-intake";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
 import { requestSlackAccess } from "./access-requests";
-import { resolveSlackClient } from "./client";
+import { resolveSlackClient, type SlackClient } from "./client";
 
 /** Compatibility no-op: ingress dedupe now lives in the durable Slack inbox. */
 export function resetSlackDeduperForTest(): void {
@@ -96,52 +102,40 @@ async function healSlackRunDelivery(input: {
         run.summary ?? "",
       )) || kickSlack;
     } else {
-      const title = deriveTitle(run.prompt);
-      const card = buildRunCard({
-        title,
-        phase: "queued",
-        model: run.model,
-        repoSpecs: run.repos.map(parseRepoRef),
-        webUrl: sessionUrl(env.FRONTEND_ORIGIN, run.threadId),
+      // The thread's ONE card: its first turn posts it (a later turn that
+      // finds no card posts it too), and a follow-up turn sets it spinning
+      // again. Every turn's answer is its own message under the card.
+      const base = await slackThreadCardBase(run.threadId, run.orgId, tx);
+      const card = base ? buildRunCard({ ...base, status: "in_progress" }) : null;
+      const target = { orgId: run.orgId, teamId: input.teamId, channel: input.channel, threadTs: input.threadTs, rootRunId: run.threadId };
+      const cardPosted = card !== null && await enqueuePostCardTx(tx, {
+        idempotencyKey: `slack-card:${input.teamId}:${run.threadId}`,
+        ...target,
+        blocks: card.blocks,
+        text: card.text,
       });
-      const statusCreated = await enqueueSessionStatusTx(tx, {
-        idempotencyKey: `slack-status:start:${input.teamId}:${input.runId}`,
+      const cardSpinning = card !== null && run.id !== run.threadId && (await enqueueUpdateCardTx(tx, {
+        idempotencyKey: `slack-card:turn:${input.teamId}:${input.runId}`,
+        ...target,
+        runId: input.runId,
+        blocks: card.blocks,
+        text: card.text,
+        live: true,
+      }));
+      // The working shimmer, a calm phrase Slack rotates, on every thread; it
+      // is the one status family this thread uses (Slack maps it onto the
+      // session status itself).
+      const shimmerCreated = await enqueueThreadStatusTx(tx, {
+        idempotencyKey: `slack-thread-status:start:${input.teamId}:${input.runId}`,
         orgId: run.orgId,
         teamId: input.teamId,
         channel: input.channel,
         threadTs: input.threadTs,
         runId: input.runId,
-        status: "processing",
+        status: WORKING_PHRASES[0],
+        loadingMessages: WORKING_PHRASES,
       });
-      const streamCreated = await enqueueStartStreamTx(tx, {
-        idempotencyKey: `slack-stream:start:${input.teamId}:${input.runId}`,
-        orgId: run.orgId,
-        teamId: input.teamId,
-        channel: input.channel,
-        threadTs: input.threadTs,
-        runId: input.runId,
-        taskDisplayMode: "timeline",
-        chunks: openingStreamChunks(title),
-        recipientTeamId: input.teamId,
-        recipientUserId: input.slackUserId,
-        fallbackBlocks: card.blocks,
-        fallbackText: card.text,
-      });
-      kickSlack = kickSlack || statusCreated || streamCreated;
-      // Free-text shimmer while the run works - documented for DM assistant
-      // threads only, so channel threads keep the enum session status above.
-      if (directMessageChannel(input.channel)) {
-        const shimmerCreated = await enqueueThreadStatusTx(tx, {
-          idempotencyKey: `slack-thread-status:start:${input.teamId}:${input.runId}`,
-          orgId: run.orgId,
-          teamId: input.teamId,
-          channel: input.channel,
-          threadTs: input.threadTs,
-          runId: input.runId,
-          status: "is thinking...",
-        });
-        kickSlack = kickSlack || shimmerCreated;
-      }
+      kickSlack = kickSlack || cardPosted || cardSpinning || shimmerCreated;
     }
 
     const reactionCreated = await enqueueAddReactionTx(tx, {
@@ -187,11 +181,50 @@ function botUserIdOf(body: SlackEnvelope): string {
   return body.authorizations?.[0]?.user_id ?? "";
 }
 
-/** Strip the bot's own mention token(s) and collapse whitespace. */
-function cleanPrompt(text: string, botUserId: string): string {
-  let t = text;
-  if (botUserId) t = t.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ");
+/** Lookups one message may spend naming the people it mentions. */
+const MENTION_LOOKUPS = 8;
+// ponytail: process-local name cache keyed by team and user, wiped past a
+// thousand entries; a shared store only matters once several backends serve
+// Slack.
+const mentionNames = new Map<string, string>();
+
+/** The display name behind a user mention, or null when Slack cannot say. */
+async function mentionName(client: SlackClient, teamId: string, userId: string): Promise<string | null> {
+  const key = `${teamId}:${userId}`;
+  const cached = mentionNames.get(key);
+  if (cached) return cached;
+  const name = (await client.userInfo?.({ user: userId }))?.name;
+  if (!name || name === userId) return null;
+  if (mentionNames.size >= 1000) mentionNames.clear();
+  mentionNames.set(key, name);
+  return name;
+}
+
+/** The message without the bot's own mention, whitespace collapsed: the
+ *  STABLE ingress text. Replays of one event fingerprint this, never the
+ *  resolved prompt, so a name lookup that fails or changes between deliveries
+ *  can never turn an identical event into a payload mismatch. */
+function ingressText(text: string, botUserId: string): string {
+  const t = botUserId ? text.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ") : text;
   return t.replace(/\s+/g, " ").trim();
+}
+
+/** Name the people mentioned (`<@U…>` becomes `@Display Name`, so neither the
+ *  model nor a reader sees a raw id), render the rest of the mention markup,
+ *  and collapse whitespace. Bounded and fail-soft: an unnamed mention keeps
+ *  its label or disappears. */
+async function cleanPrompt(
+  text: string,
+  name: (userId: string) => Promise<string | null>,
+): Promise<string> {
+  let t = text;
+  const ids = [...new Set([...t.matchAll(/<@([^>|]+)>/g)].map((m) => m[1]!))].slice(0, MENTION_LOOKUPS);
+  const names = new Map(await Promise.all(ids.map(async (id) => [id, await name(id).catch(() => null)] as const)));
+  t = t.replace(/<@([^>|]+)>/g, (token, id: string) => {
+    const known = names.get(id);
+    return known ? `@${known}` : token;
+  });
+  return stripMentions(t).replace(/\s+/g, " ").trim();
 }
 
 /** Pure transport-envelope gates that never need tenant identity or mutation. */
@@ -232,6 +265,48 @@ export type SlackEventOutcome =
   | { readonly status: "permanent_noop"; readonly reason: string }
   | { readonly status: "retryable_unavailable"; readonly reason: string }
   | { readonly status: "waiting_for_root"; readonly threadTs: string };
+
+async function handleSpendRefused(input: {
+  readonly error: SpendAllowanceExceededError;
+  readonly orgId: string;
+  readonly teamId: string;
+  readonly channel: string;
+  readonly ts: string;
+  readonly threadTs: string;
+}): Promise<SlackEventOutcome> {
+  // The refusal is the answer: replied once (keyed by the message) and settled,
+  // never retried, since only a raised allowance can change the outcome.
+  await enqueuePostMessage({
+    idempotencyKey: slackSpendRefusalKey(input.teamId, input.channel, input.ts),
+    orgId: input.orgId,
+    teamId: input.teamId,
+    channel: input.channel,
+    threadTs: input.threadTs,
+    text: input.error.message,
+  });
+  return { status: "permanent_noop", reason: input.error.code };
+}
+
+async function handleSandboxMinutesRefused(input: {
+  readonly error: SandboxMinutesExceededError;
+  readonly orgId: string;
+  readonly teamId: string;
+  readonly channel: string;
+  readonly ts: string;
+  readonly threadTs: string;
+}): Promise<SlackEventOutcome> {
+  // The refusal is the answer: replied once (keyed by the message) and settled,
+  // never retried, since only a raised cap can change the outcome.
+  await enqueuePostMessage({
+    idempotencyKey: `slack-sandbox-minutes-refused:${input.teamId}:${input.channel}:${input.ts}`,
+    orgId: input.orgId,
+    teamId: input.teamId,
+    channel: input.channel,
+    threadTs: input.threadTs,
+    text: input.error.message,
+  });
+  return { status: "permanent_noop", reason: input.error.code };
+}
 
 async function handleAdmissionClosed(input: {
   readonly error: RunAdmissionClosedError;
@@ -311,6 +386,14 @@ export async function handleSlackEvent(
     if (!isThreadReply) return { status: "permanent_noop", reason: "untargeted_channel_message" };
   }
 
+  // An aside is for the people in the thread, never for the bot: it settles
+  // here with no run, reply or reaction, so a redelivery stays quiet.
+  const control = slackThreadControl(ingressText(rawText, botUserId));
+  if (control === "aside") {
+    console.log(`[slack] aside ignored: ${teamId}:${channel}:${ts}`);
+    return { status: "permanent_noop", reason: "aside" };
+  }
+
   const orgId = options.identity.orgId;
   const botToken = await resolveSlackBotTokenForWorkspace({
     orgId,
@@ -318,6 +401,7 @@ export async function handleSlackEvent(
     config,
   });
   if (!botToken) return { status: "retryable_unavailable", reason: "bot_token_unavailable" };
+  const client = resolveSlackClient({ apiUrl: config.apiUrl, botToken });
 
   // A message threads under its thread root (replies) or under itself (top-level).
   const slackThreadTs = threadTs ?? ts;
@@ -329,6 +413,11 @@ export async function handleSlackEvent(
   });
   if (!isDm && type === "message" && isThreadReply && !link) {
     return { status: "waiting_for_root", threadTs: slackThreadTs };
+  }
+  // A muted thread hears nothing but "unmute".
+  if (link?.mutedAt && control !== "unmute") {
+    console.log(`[slack] muted thread ignored: ${teamId}:${channel}:${slackThreadTs}`);
+    return { status: "permanent_noop", reason: "thread_muted" };
   }
 
   // Workspace mapping establishes the tenant only. Every run also receives org
@@ -343,7 +432,7 @@ export async function handleSlackEvent(
       slackUserId: event.user,
       orgId,
       messageTs: ts,
-      client: resolveSlackClient({ apiUrl: config.apiUrl, botToken }),
+      client,
     });
     if (verdict !== "denied") {
       await enqueuePostMessage({
@@ -365,17 +454,26 @@ export async function handleSlackEvent(
     return { status: "permanent_noop", reason: "sender_not_linked" };
   }
 
+  if (control) {
+    return settleThreadControl(control, { teamId, channel, ts, orgId, threadTs: slackThreadTs, rooted: Boolean(link) });
+  }
+
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;
   const files = Array.isArray(event.files) ? event.files : [];
 
-  let prompt = cleanPrompt(rawText, botUserId);
-  if (!prompt) {
+  // Two prompts from one message: the STABLE one (bot mention stripped,
+  // mention markup left as Slack sent it) is what replays fingerprint, exactly
+  // as rows accepted before names were resolved were fingerprinted; the run
+  // itself gets the names resolved.
+  let stablePrompt = ingressText(rawText, botUserId);
+  let prompt = (await cleanPrompt(stablePrompt, (id) => mentionName(client, teamId, id))) || stablePrompt;
+  if (!stablePrompt) {
     // A files-only message still runs (the attachments ARE the request); an
     // empty message with no attached files stays a no-op.
     if (files.length === 0) {
       return { status: "permanent_noop", reason: "empty_message" };
     }
-    prompt = "Review the attached files.";
+    stablePrompt = prompt = "Review the attached files.";
   }
 
   // Threading: an existing Slack thread → reply under its root run (inherits the
@@ -430,6 +528,7 @@ export async function handleSlackEvent(
   // a supported provider capability); engine switches only start NEW threads -
   // an existing thread's engine owns its native session state.
   const { directives, rest } = parseSlackDirectives(prompt);
+  const stableRest = parseSlackDirectives(stablePrompt).rest;
   const guide = (text: string) =>
     enqueuePostMessage({
       idempotencyKey: `slack-directive:${teamId}:${channel}:${ts}`,
@@ -439,9 +538,12 @@ export async function handleSlackEvent(
       text,
       threadTs: slackThreadTs,
     });
+  const account = await catalogAccount(userId);
   if (directives.engine || directives.model) {
-    if (rest) prompt = rest;
-    else if (files.length === 0) {
+    if (rest) {
+      prompt = rest;
+      stablePrompt = stableRest || stablePrompt;
+    } else if (files.length === 0) {
       await guide("Include your request in the same message as the directive, e.g. `model:sol summarize this thread`.");
       return { status: "permanent_noop", reason: "directive_without_prompt" };
     }
@@ -460,15 +562,15 @@ export async function handleSlackEvent(
       }
     }
     if (directives.model) {
-      const resolved = resolveModelToken(engine, directives.model);
+      const resolved = resolveModelToken(engine, directives.model, account);
       if (!resolved) {
-        await guide(`Unknown model \`${directives.model}\` for \`${engine}\`. Available: ${modelCatalogLine(engine)}.`);
+        await guide(`Unknown model \`${directives.model}\` for \`${engine}\`. Available: ${modelCatalogLine(engine, account)}.`);
         return { status: "permanent_noop", reason: "unknown_model_directive" };
       }
       model = resolved;
     }
   }
-  if (!isModelAllowedForEngine(engine, model)) {
+  if (!isModelAllowedForEngine(engine, model) || !modelOfferedTo(engine, model, account)) {
     model = defaultModelForEngine(engine);
   }
 
@@ -482,8 +584,14 @@ export async function handleSlackEvent(
     ]),
   );
   const intent: RunCommandIntent = {
-    prompt,
+    // The intent carries the processed prompt with names UNRESOLVED (the
+    // directives applied, the attachment default applied): identical events
+    // fingerprint identically whatever users.info answers on a replay, and
+    // rows accepted before names were resolved replay unchanged.
+    prompt: stablePrompt,
     model,
+    // A reply keeps the thread's reasoning level the way it keeps its model.
+    reasoningEffort: parent?.reasoningEffort ?? null,
     engine,
     parentRunId,
     requestedRepos: [],
@@ -506,15 +614,10 @@ export async function handleSlackEvent(
       source: "slack",
     });
   } catch (error) {
+    const refusal = { orgId, teamId, channel, ts, threadTs: slackThreadTs };
+    if (error instanceof SpendAllowanceExceededError) return handleSpendRefused({ error, ...refusal });
     if (!(error instanceof RunAdmissionClosedError)) throw error;
-    return handleAdmissionClosed({
-      error,
-      orgId,
-      teamId,
-      channel,
-      ts,
-      threadTs: slackThreadTs,
-    });
+    return handleAdmissionClosed({ error, ...refusal });
   }
   if (replay) {
     if (replay.status === "replayed" && !link) {
@@ -628,6 +731,7 @@ export async function handleSlackEvent(
         id: runId,
         prompt,
         model,
+        reasoningEffort: parent?.reasoningEffort ?? null,
         engine,
         parentRunId,
         threadId,
@@ -638,6 +742,9 @@ export async function handleSlackEvent(
         // Staged inbound attachments — claimed atomically with run acceptance.
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         memoryScope,
+        // Slack has no permission chooser: a reply keeps its thread's current mode,
+        // read inside the acceptance transaction (insertCommandWithRun), and a new
+        // thread takes the operator's configured posture (createRun's default).
         // Slack turns don't pin a skill yet.
         skillId: null,
         skillVersion: null,
@@ -650,15 +757,11 @@ export async function handleSlackEvent(
       },
     });
   } catch (error) {
+    const refusal = { orgId, teamId, channel, ts, threadTs: slackThreadTs };
+    if (error instanceof SpendAllowanceExceededError) return handleSpendRefused({ error, ...refusal });
+    if (error instanceof SandboxMinutesExceededError) return handleSandboxMinutesRefused({ error, ...refusal });
     if (!(error instanceof RunAdmissionClosedError)) throw error;
-    return handleAdmissionClosed({
-      error,
-      orgId,
-      teamId,
-      channel,
-      ts,
-      threadTs: slackThreadTs,
-    });
+    return handleAdmissionClosed({ error, ...refusal });
   }
 
   // A durable duplicate (the in-memory fast path missed it - restart or
@@ -690,6 +793,6 @@ export async function handleSlackEvent(
 
   await pumpThread(threadId);
 
-  watchSlackRun({ runId, rootRunId: threadId, orgId, teamId, channel, threadTs: slackThreadTs });
+  watchSlackRun({ runId, rootRunId: threadId, orgId, teamId, channel, threadTs: slackThreadTs, slackUserId: event.user });
   return { status: "accepted", runId };
 }

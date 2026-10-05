@@ -2,18 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   runtimeRunSnapshot,
-  runtimeSessionHasAuthoritativeHistory,
+  runtimeThreadHasAuthoritativeHistory,
   configuredRuntimeMode,
   createRuntimeTerminalSessionCleanup,
   drainRuntimeTerminalOutput,
-  ensureRuntimeProviderReadyForTurn,
   projectRuntimeAssistantText,
   readRuntimeTerminalSnapshot,
-  reloadRetainedOpenCodeSession,
   RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR,
   waitForRuntimeTurn,
-  type OpenCodeSessionReloadDependencies,
 } from "./runtime-adapter";
+import { ensureRuntimeProviderReadyForTurn } from "./runtime-provider-barrier";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -21,335 +19,44 @@ import {
 import { composeTurnPrompt } from "./turn-prompt";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
-import type { RuntimeEnvironmentRequest } from "./runtime-environment-client";
+import { RuntimeEnvironmentRequestError, type RuntimeEnvironmentRequest } from "./runtime-environment-client";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { createSecretRedactor } from "../secrets/redact";
-import type { RuntimeThreadStreamItem } from "./runtime-event-stream";
 import type { EngineRunContext } from "./types";
+import { SandboxUnresponsiveError } from "./turn-liveness";
+import { scriptedFollow, v2Projection, v2ProviderThread, v2Run, v2Session, v2Snapshot, v2Turn } from "./runtime-v2.test-support";
+import { runtimeThreadView } from "./runtime-v2-view";
+import { createForeignRunGuard, FOREIGN_RUN_REASON } from "./runtime-foreign-runs";
 
-function reloadSnapshot(
+/** A runtime thread whose provider session is `sessionStatus` after its latest run `runId` in `runState`. */
+function stuckThread(
   sessionStatus: string | null,
-  turnState: "running" | "completed" | null = "completed",
-  threadId = "thread-1",
-  turnId = "turn-1",
-): RuntimeThreadSnapshot {
-  return {
-    snapshotSequence: 1,
-    thread: {
-      id: threadId,
-      latestTurn: turnState === null
-        ? null
-        : {
-            turnId,
-            state: turnState,
-            requestedAt: "2026-09-05T00:00:00.000Z",
-            startedAt: "2026-09-05T00:00:00.001Z",
-            completedAt: turnState === "running" ? null : "2026-09-05T00:00:00.002Z",
-            assistantMessageId: null,
-          },
-      messages: [],
-      activities: [],
-      session: sessionStatus === null
-        ? null
-        : {
-            threadId,
-            status: sessionStatus,
-            providerName: "opencode",
-            runtimeMode: "full-access",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: "2026-09-05T00:00:00.000Z",
-          },
-    },
-  } as unknown as RuntimeThreadSnapshot;
+  runState: "running" | "completed" | null = "completed",
+  _threadId = "skynet-thread-thread-1",
+  runId = "turn-1",
+) {
+  return v2Snapshot(1, v2Projection({
+    runs: runState === null ? [] : [v2Run({ id: runId, status: runState, completedAt: runState === "running" ? null : "x" })],
+    providerSessions: sessionStatus === null ? [] : [v2Session({ status: sessionStatus })],
+    providerThreads: sessionStatus === null ? [] : [v2ProviderThread()],
+  }));
 }
 
-function turnSnapshot(input: {
-  readonly sequence: number;
-  readonly turnId: string;
-  readonly state: "running" | "completed";
-  readonly text: string;
-  readonly threadId?: string;
-}): RuntimeThreadSnapshot {
+function turnContext(runId: string, overrides: Partial<EngineRunContext> = {}): EngineRunContext {
   return {
-    snapshotSequence: input.sequence,
-    thread: {
-      id: input.threadId ?? "skynet-thread-thread-1",
-      latestTurn: {
-        turnId: input.turnId,
-        state: input.state,
-        assistantMessageId: "assistant-1",
-      },
-      messages: [{
-        id: "assistant-1",
-        role: "assistant",
-        text: input.text,
-        turnId: input.turnId,
-        streaming: input.state === "running",
-      }],
-      activities: [],
-      session: null,
-    },
-  };
+    runId,
+    threadId: "thread-1",
+    signal: new AbortController().signal,
+    emit: async () => undefined,
+    setSummary() {},
+    ...overrides,
+  } as unknown as EngineRunContext;
 }
 
-const reloadCommandState = {
-  modelLimitsChanged: true,
-  modelLimitsRevision: "revision-1",
-  modelLimitsChangedAt: "2026-09-05T00:00:00.000Z",
-} as const;
+const noRead = async (): Promise<never> => { throw new Error("unexpected HTTP thread read"); };
+const noGuard = () => async () => [] as string[];
 
 describe("T3 run adapter gate", () => {
-  test("stops an idle retained OpenCode session before continuing", async () => {
-    const calls: Array<{
-      method: string;
-      path: string;
-      payload?: Readonly<Record<string, unknown>>;
-    }> = [];
-    const snapshots = [
-      reloadSnapshot("ready", "completed", "skynet-thread-thread-1"),
-      reloadSnapshot("stopped", "completed", "skynet-thread-thread-1"),
-    ];
-    await reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "skynet-thread-thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          calls.push(request);
-          if (request.method === "GET") return snapshots.shift() as T;
-          return {} as T;
-        },
-        wait: async () => {},
-      } satisfies OpenCodeSessionReloadDependencies,
-    });
-
-    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
-      "GET /api/orchestration/threads/skynet-thread-thread-1",
-      "POST /api/orchestration/dispatch",
-      "GET /api/orchestration/threads/skynet-thread-thread-1",
-    ]);
-    expect(calls[1]?.payload).toMatchObject({
-      type: "thread.session.stop",
-      threadId: "skynet-thread-thread-1",
-    });
-  });
-
-  test("skips cold and unchanged OpenCode sessions", async () => {
-    let requests = 0;
-    const dependencies = {
-      requestEnvironment: async <T>() => {
-        requests += 1;
-        return {} as T;
-      },
-      wait: async () => {},
-    } satisfies OpenCodeSessionReloadDependencies;
-    await reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: false,
-      ...reloadCommandState,
-      dependencies,
-    });
-    await reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: true,
-      modelLimitsChanged: false,
-      dependencies,
-    });
-    expect(requests).toBe(0);
-  });
-
-  test("accepts only an explicit null session as the retained no-session path", async () => {
-    const calls: string[] = [];
-    await reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          calls.push(`${request.method} ${request.path}`);
-          return reloadSnapshot(null) as T;
-        },
-        wait: async () => {},
-      } satisfies OpenCodeSessionReloadDependencies,
-    });
-    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1"]);
-  });
-
-  test.each([
-    ["running", "completed", "retained session is running"],
-    ["starting", "completed", "retained session is starting"],
-    ["stopped", "running", "retained native turn is running"],
-  ] as const)("refuses unsafe %s OpenCode session state", async (status, turnState, message) => {
-    const calls: string[] = [];
-    await expect(reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          calls.push(`${request.method} ${request.path}`);
-          return reloadSnapshot(status, turnState) as T;
-        },
-        wait: async () => {},
-      } satisfies OpenCodeSessionReloadDependencies,
-    })).rejects.toThrow(message);
-    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1"]);
-  });
-
-  test.each(["missing", "unknown"] as const)(
-    "fails closed on a %s retained session shape",
-    async (shape) => {
-      const snapshot = reloadSnapshot("ready") as unknown as {
-        thread: { session?: Record<string, unknown> | null };
-      };
-      if (shape === "missing") delete snapshot.thread.session;
-      else snapshot.thread.session!.status = "future-state";
-
-      await expect(reloadRetainedOpenCodeSession({
-        sandbox: {} as never,
-        signal: new AbortController().signal,
-        threadId: "thread-1",
-        threadExists: true,
-        ...reloadCommandState,
-        dependencies: {
-          requestEnvironment: async <T>() => snapshot as T,
-          wait: async () => {},
-        } satisfies OpenCodeSessionReloadDependencies,
-      })).rejects.toThrow("snapshot is malformed");
-    },
-  );
-
-  test("reuses the stop command after a lost transport response", async () => {
-    const stopCommands: Readonly<Record<string, unknown>>[] = [];
-    const runAttempt = (loseResponse: boolean) => {
-      let reads = 0;
-      return reloadRetainedOpenCodeSession({
-        sandbox: {} as never,
-        signal: new AbortController().signal,
-        threadId: "thread-1",
-        threadExists: true,
-        ...reloadCommandState,
-        dependencies: {
-          requestEnvironment: async <T>(
-            _sandbox: SandboxHandle,
-            request: RuntimeEnvironmentRequest,
-          ) => {
-            if (request.method === "POST") {
-              stopCommands.push(request.payload!);
-              if (loseResponse) throw new Error("transport response lost");
-              return {} as T;
-            }
-            reads += 1;
-            return reloadSnapshot(!loseResponse && reads > 1 ? "stopped" : "ready") as T;
-          },
-          wait: async () => {},
-        } satisfies OpenCodeSessionReloadDependencies,
-      });
-    };
-
-    await expect(runAttempt(true)).rejects.toThrow("transport response lost");
-    await expect(runAttempt(false)).resolves.toBeUndefined();
-    expect(stopCommands).toHaveLength(2);
-    expect(stopCommands[1]).toEqual(stopCommands[0]);
-  });
-
-  test("fails without acknowledgement when the conditional stop observes re-engagement", async () => {
-    let reads = 0;
-    let stopCommand: Readonly<Record<string, unknown>> | undefined;
-    await expect(reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          if (request.method === "POST") {
-            stopCommand = request.payload;
-            throw new Error("conditional stop rejected");
-          }
-          reads += 1;
-          return reloadSnapshot(reads === 1 ? "ready" : "running", "completed") as T;
-        },
-        wait: async () => {},
-      } satisfies OpenCodeSessionReloadDependencies,
-    })).rejects.toThrow("reactivated before the conditional stop");
-    expect(stopCommand).toMatchObject({
-      type: "thread.session.stop",
-      onlyIfSettled: true,
-    });
-  });
-
-  test("fails closed on cancellation and stop timeout", async () => {
-    const reason = new Error("turn cancelled");
-    const controller = new AbortController();
-    await expect(reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: controller.signal,
-      threadId: "thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          if (request.method === "POST") controller.abort(reason);
-          return reloadSnapshot("ready") as T;
-        },
-        wait: async () => {},
-      } satisfies OpenCodeSessionReloadDependencies,
-    })).rejects.toBe(reason);
-
-    let dispatches = 0;
-    await expect(reloadRetainedOpenCodeSession({
-      sandbox: {} as never,
-      signal: new AbortController().signal,
-      threadId: "thread-1",
-      threadExists: true,
-      ...reloadCommandState,
-      deadlineMs: 10,
-      dependencies: {
-        requestEnvironment: async <T>(
-          _sandbox: SandboxHandle,
-          request: RuntimeEnvironmentRequest,
-        ) => {
-          if (request.method === "POST") dispatches += 1;
-          return reloadSnapshot("ready") as T;
-        },
-        wait: async (signal) => {
-          await new Promise<void>((_resolve, reject) =>
-            signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-          );
-        },
-      } satisfies OpenCodeSessionReloadDependencies,
-    })).rejects.toThrow("Timed out waiting for the retained OpenCode session to stop");
-    expect(dispatches).toBe(1);
-  });
-
   test("uses a separate Cube candidate template during parity testing", () => {
     expect(
       runtimeRunSnapshot({
@@ -427,29 +134,36 @@ describe("T3 run adapter gate", () => {
   });
 
   test("keeps semantic prompt composition and native T3 activity projection", () => {
-    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const adapterSource = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const waitSource = readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");
+    const source = adapterSource;
     expect(source).toContain(
-      "runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease)",
+      "runtimeThreadHasAuthoritativeHistory(priorSnapshot, providerBridgeLease)",
     );
-    expect(source).toContain("const prompt = composeTurnPrompt(");
+    expect(source).toContain("const prompt = await composeRunTurnPrompt(");
     expect(source).toContain("await establishProviderSession({");
-    expect(source).toContain("const priorSnapshot = await readThreadSnapshot(ctx, sandbox);");
+    expect(source).toContain("snapshot: await readThreadSnapshot(ctx, sandbox),");
     expect(source).not.toContain("established.resumed\n          ? await readThreadSnapshot");
     expect(source).toContain("const steerResult = await driver.steer({");
-    const reloadIdx = source.indexOf("await reloadRetainedOpenCodeSession({");
+    const reloadIdx = source.indexOf("const limitsApplied = await reloadRetainedSession({");
     const ackIdx = source.indexOf("await providerBridgeLease.ackModelLimitsReload();");
     const establishIdx = source.indexOf("await establishProviderSession({");
     const steerIdx = source.indexOf("const steerResult = await driver.steer({");
     expect(reloadIdx).toBeGreaterThan(-1);
     expect(ackIdx).toBeGreaterThan(reloadIdx);
     expect(establishIdx).toBeGreaterThan(ackIdx);
+    // Local Codex detaches a session started on an older config.toml before the turn, like OpenCode.
+    const codexStampIdx = source.indexOf("await stampCodexConfig(sandbox, threadId, configRevision);");
+    expect(codexStampIdx).toBeGreaterThan(ackIdx);
+    expect(establishIdx).toBeGreaterThan(codexStampIdx);
+    expect(source.indexOf("readCodexConfigChange(sandbox, runtimeThreadId(ctx))")).toBeLessThan(source.indexOf("const shell = "));
     expect(steerIdx).toBeGreaterThan(establishIdx);
     const reloadModuleSource = readFileSync(
       new URL("./runtime-session-stop.ts", import.meta.url),
       "utf8",
     );
     const reloadFunctionIdx = reloadModuleSource.indexOf(
-      "export async function reloadRetainedOpenCodeSession",
+      "export async function reloadRetainedSession",
     );
     expect(reloadFunctionIdx).toBeGreaterThan(-1);
     const reloadSource = reloadModuleSource.slice(reloadFunctionIdx);
@@ -463,9 +177,21 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("? { runtimeMode, createdAt, ...controlMetadata }");
     // Native activity projection lives with the turn projector the adapter drives.
     const projectorSource = readFileSync(new URL("./turn-projector.ts", import.meta.url), "utf8");
-    expect(projectorSource).toContain("activityStep(activity, threadId, engine)");
+    expect(projectorSource).toContain("activityStep(recordedRuntimeActivity(activity, redact), threadId, engine)");
     expect(projectorSource).toContain("ctx.publishDelta?.(projection.delta)");
-    expect(source).toContain("projector.apply(snapshot, (activity) => watchdog.observeActivity(activity))");
+    // The observer feeds the watchdog every activity and, for a read-only run, answers its write requests.
+    expect(waitSource).toContain("projector.apply(snapshot, observe)");
+    expect(waitSource).toContain("watchdog.observeActivity(activity);");
+    // The turn is steered on the subscribed socket: the wait owns the steer as its start.
+    expect(source).toContain("const start = async () => {");
+    expect(source).toContain("engine, projector, start,");
+    expect(waitSource).toContain("...(start ? { start } : {}),");
+    // Every view first passes the guard against runs the plane did not start.
+    expect(waitSource).toContain("await guardForeignRuns(source.projection);");
+    // The run's mode is applied to the runtime THREAD before the turn is steered.
+    expect(source).toContain("const priorSnapshot = await ensureRuntimeThreadMode({");
+    // A read-only turn never resumes a thread that may hold an "always allow" grant.
+    expect(source).toContain("await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
     expect(source).toContain('"turn aborted",');
@@ -475,6 +201,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain('providerAfterResources: engine === "claude"');
     expect(source).toContain('resourceUser: engine === "claude"');
     expect(source).toContain("preparation.stableProviderPrepared");
+    expect(source).toContain("stableProviderPendingRevision");
     expect(source).toContain("closeProvider: (state) => state.close()");
     expect(source).toContain("await prepared.close().catch(() => {})");
     expect(source).not.toContain("await providerBridgeLease?.close()");
@@ -484,7 +211,29 @@ describe("T3 run adapter gate", () => {
     expect(source).not.toContain("keyword");
   });
 
-  test("includes canonical history when T3 resumed metadata but the current auth epoch is unbound", () => {
+  test("records the session's command catalog once the session is up, before steering, and again once the turn settled", () => {
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const establishedIdx = source.indexOf("const session = established.session;");
+    const catalogIdx = source.indexOf("const commandCatalog = recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const snapshotIdx = source.indexOf("snapshot: await readThreadSnapshot(ctx, sandbox),");
+    const sessionStartedIdx = source.indexOf("await recordProviderSessionStarted(ctx, session, {");
+    const awaitedIdx = source.indexOf("await commandCatalog;");
+    const revalidateIdx = source.indexOf("await runtimeCommandDispatchRejection({");
+    const steerIdx = source.indexOf("const steerResult = await driver.steer({");
+    const settledIdx = source.lastIndexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const closeIdx = source.indexOf("await prepared.close().catch(() => {});");
+    expect(establishedIdx).toBeGreaterThan(-1);
+    expect(catalogIdx).toBeGreaterThan(establishedIdx);
+    // The catalog probe runs alongside the thread snapshot read, not after it.
+    expect(snapshotIdx).toBeGreaterThan(catalogIdx);
+    expect(awaitedIdx).toBeGreaterThan(sessionStartedIdx);
+    expect(revalidateIdx).toBeGreaterThan(awaitedIdx);
+    expect(steerIdx).toBeGreaterThan(revalidateIdx);
+    expect(settledIdx).toBeGreaterThan(steerIdx);
+    expect(closeIdx).toBeGreaterThan(settledIdx);
+  });
+
+  test("the plane's history goes only into a fresh runtime thread", () => {
     const ctx = {
       prompt: "continue",
       bootstrapContext: "CANONICAL PRIOR THREAD HISTORY\n\n",
@@ -499,37 +248,55 @@ describe("T3 run adapter gate", () => {
       gatewayAvailable: true,
       desktopAvailability: "on_demand",
     });
+    const promptFor = (snapshot: RuntimeThreadSnapshot, lease: Parameters<typeof runtimeThreadHasAuthoritativeHistory>[1]) =>
+      composeTurnPrompt(ctx, runtimeThreadHasAuthoritativeHistory(snapshot, lease), executionCapabilities, {});
+    const gateway = { authPath: "provider_gateway", hasCurrentEpochThreadBinding: false } as const;
 
-    const afterFailedNewEpochRun = composeTurnPrompt(
-      ctx,
-      runtimeSessionHasAuthoritativeHistory(true, {
-        authPath: "subscription",
-        hasCurrentEpochThreadBinding: false,
-      }),
-      executionCapabilities,
-      {},
-    );
-    expect(afterFailedNewEpochRun).toContain("CANONICAL PRIOR THREAD HISTORY");
+    // The first turn, or the first after the sandbox was recreated: no runs yet.
+    const fresh = runtimeThreadView(v2Snapshot(1, v2Projection()));
+    expect(promptFor(fresh, gateway)).toContain("CANONICAL PRIOR THREAD HISTORY");
 
-    const boundResume = composeTurnPrompt(
-      ctx,
-      runtimeSessionHasAuthoritativeHistory(true, {
-        authPath: "subscription",
-        hasCurrentEpochThreadBinding: true,
-      }),
-      executionCapabilities,
-      {},
-    );
-    expect(boundResume).not.toContain("CANONICAL PRIOR THREAD HISTORY");
+    // Another engine on a living thread: the runtime hands its own history
+    // over, even though the plane's session for this engine is new.
+    const living = runtimeThreadView(v2Snapshot(2, v2Projection({
+      runs: [v2Run({ id: "run-codex", status: "completed", providerThreadId: "pt-codex" })],
+      providerThreads: [v2ProviderThread({ id: "pt-codex" })],
+    })));
+    expect(promptFor(living, gateway)).not.toContain("CANONICAL PRIOR THREAD HISTORY");
 
-    expect(runtimeSessionHasAuthoritativeHistory(true, {
-      authPath: "provider_gateway",
-      hasCurrentEpochThreadBinding: false,
-    })).toBe(true);
+    // A subscription thread keeps the plane's history until it is bound for the current auth epoch.
+    expect(promptFor(living, { authPath: "subscription", hasCurrentEpochThreadBinding: false }))
+      .toContain("CANONICAL PRIOR THREAD HISTORY");
+    expect(promptFor(living, { authPath: "subscription", hasCurrentEpochThreadBinding: true }))
+      .not.toContain("CANONICAL PRIOR THREAD HISTORY");
+  });
+
+  test("reads a warm runtime's shell alongside the provider bridge, and again after a restart", () => {
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const prepareProviderIdx = source.indexOf("async prepareProvider(sandbox, workdir, binding, preparation) {");
+    const earlyIdx = source.indexOf("if (runtimeEnvironmentAccessValidated(sandbox)) {", prepareProviderIdx);
+    const bridgeIdx = source.indexOf("return await prepareRuntimeProviderBridge(", prepareProviderIdx);
+    expect(prepareProviderIdx).toBeGreaterThan(-1);
+    expect(earlyIdx).toBeGreaterThan(prepareProviderIdx);
+    expect(bridgeIdx).toBeGreaterThan(earlyIdx);
+    // A barrier that restarts the runtime discards the early read; one that
+    // only waits (or asks T3 to re-check) keeps it.
+    const pending = source.indexOf("await applyPendingCodexProviderConfiguration({");
+    // The pending Codex configuration always restarts the runtime.
+    const pendingBlock = source.lastIndexOf('providerBridgeLease.authPath !== "subscription" &&', pending);
+    expect(pendingBlock).toBeGreaterThan(-1);
+    expect(source.slice(pendingBlock, pending)).toContain("runtimeTouched = true;");
+    expect(source).toContain("runtimeTouched = (await ensureRuntimeProviderReadyForTurn({");
+    const subscriptionRestart = source.indexOf("await restartRuntimeEnvironment(sandbox, ctx.signal, ctx.timing);");
+    const lineAbove = source.lastIndexOf("\n", source.lastIndexOf("\n", subscriptionRestart) - 1);
+    expect(source.slice(lineAbove, subscriptionRestart)).toContain("runtimeTouched = true;");
+    expect(source.match(/runtimeTouched = true;/g)).toHaveLength(2);
+    expect(source).toContain("const shell = (!runtimeTouched && await earlyShell) ||");
   });
 
   test("keeps desktop/noVNC readiness off the ordinary T3 turn critical path", () => {
-    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8") +
+      readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");
     expect(source).toContain("Preparing runtime and integrations");
     expect(source).toContain("Waiting for provider activity");
     expect(source).toContain("runtimeFirstActivityTimeoutMs()");
@@ -562,7 +329,7 @@ describe("T3 run adapter gate", () => {
           calls.push(request.path);
           return (request.path === "/api/orchestration/shell"
             ? { projects: [], threads: [{ id: "skynet-thread-thread-1" }] }
-            : reloadSnapshot(
+            : stuckThread(
                 "starting",
                 "completed",
                 "skynet-thread-thread-1",
@@ -583,7 +350,7 @@ describe("T3 run adapter gate", () => {
 
     expect(returned).toEqual({ error, stuckStartConfirmed: true });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1/bounded",
       "/api/orchestration/shell",
       "close-lease",
       "restart-runtime",
@@ -629,7 +396,7 @@ describe("T3 run adapter gate", () => {
           touched.push(sandbox);
           return (request.path === "/api/orchestration/shell"
             ? { projects: [], threads: [{ id: "skynet-thread-thread-1" }] }
-            : reloadSnapshot("starting", null, "skynet-thread-thread-1")) as T;
+            : stuckThread("starting", null, "skynet-thread-thread-1")) as T;
         },
         restart: async (sandbox) => { touched.push(sandbox); return {} as never; },
         invalidateAccess: (sandbox) => { touched.push(sandbox); },
@@ -696,7 +463,7 @@ describe("T3 run adapter gate", () => {
           calls.push(request.path);
           return (request.path === "/api/orchestration/shell"
             ? { projects: [], threads: [{ id: "skynet-thread-thread-1" }] }
-            : reloadSnapshot("starting", null, "skynet-thread-thread-1")) as T;
+            : stuckThread("starting", null, "skynet-thread-thread-1")) as T;
         },
         restart: async () => { calls.push("restart-runtime"); return {} as never; },
         invalidateAccess: () => { calls.push("invalidate-access"); },
@@ -707,7 +474,7 @@ describe("T3 run adapter gate", () => {
 
     expect(recovery).toEqual({ error: userStopped, stuckStartConfirmed: true });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1/bounded",
       "/api/orchestration/shell",
       "close-lease",
       "restart-runtime",
@@ -715,7 +482,9 @@ describe("T3 run adapter gate", () => {
     ]);
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     expect(source).toContain("skipQueuedCancel = recovery.stuckStartConfirmed");
-    expect(source).toContain("if (ctx.signal.aborted && !skipQueuedCancel)");
+    expect(source).toContain(
+      'if (ctx.signal.aborted && !skipQueuedCancel && ctx.commandName !== "compact")',
+    );
   });
 
   test("does not restart for ordinary waits or when the native turn advanced", async () => {
@@ -723,7 +492,7 @@ describe("T3 run adapter gate", () => {
     const dependencies = {
       requestEnvironment: async <T>() => {
         calls.push("read");
-        return reloadSnapshot("starting", "completed", "skynet-thread-thread-1") as T;
+        return stuckThread("starting", "completed", "skynet-thread-thread-1") as T;
       },
       restart: async () => { calls.push("restart"); return {} as never; },
       invalidateAccess: () => { calls.push("invalidate"); },
@@ -792,7 +561,7 @@ describe("T3 run adapter gate", () => {
                   { id: "skynet-thread-another-active-thread" },
                 ],
               }
-            : reloadSnapshot(
+            : stuckThread(
                 "starting",
                 "completed",
                 "skynet-thread-thread-1",
@@ -802,9 +571,33 @@ describe("T3 run adapter gate", () => {
       },
     })).toEqual({ error: timeout, stuckStartConfirmed: false });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1/bounded",
       "/api/orchestration/shell",
     ]);
+
+    // The thread's own subagent children share its runtime and do not block the restart.
+    calls.length = 0;
+    expect(await recoverStuckCodexSubscriptionStart({
+      error: timeout,
+      ctx,
+      sandbox: { id: "sandbox-owned" } as SandboxHandle,
+      lease,
+      priorTurnId: "turn-previous",
+      dependencies: {
+        ...dependencies,
+        requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest) =>
+          (request.path === "/api/orchestration/shell"
+            ? {
+                projects: [],
+                threads: [
+                  { id: "skynet-thread-thread-1", lineage: { rootThreadId: "skynet-thread-thread-1" } },
+                  { id: "child-of-thread-1", lineage: { rootThreadId: "skynet-thread-thread-1" } },
+                ],
+              }
+            : stuckThread("starting", "completed", "skynet-thread-thread-1", "turn-previous")) as T,
+      },
+    })).toEqual({ error: timeout, stuckStartConfirmed: true });
+    expect(calls).toEqual(["close", "restart", "invalidate"]);
   });
 
   test("preserves the first-activity cause when stuck-start recovery fails", async () => {
@@ -828,7 +621,7 @@ describe("T3 run adapter gate", () => {
         requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest) =>
           (request.path === "/api/orchestration/shell"
             ? { projects: [], threads: [{ id: "skynet-thread-thread-1" }] }
-            : reloadSnapshot("starting", null, "skynet-thread-thread-1")) as T,
+            : stuckThread("starting", null, "skynet-thread-thread-1")) as T,
         restart: async () => {
           calls.push("restart-runtime");
           throw new Error("restart failed");
@@ -845,7 +638,8 @@ describe("T3 run adapter gate", () => {
   });
 
   test("bounds a provider retry storm with one no-progress watchdog owner", () => {
-    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8") +
+      readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");
     expect(source).toContain(
       "createNoProgressWatchdog(runtimeNoProgressTimeoutMs(), redact.text)",
     );
@@ -864,6 +658,8 @@ describe("T3 run adapter gate", () => {
     // Scoped to the subscription bridge only. Provider-gateway Codex and the
     // other engines never publish the relay-backed subscription cache marker.
     expect(source).toContain('providerBridgeLease?.authPath === "subscription"');
+    // A run that reuses the thread's kept session changed no settings: no barrier.
+    expect(source).toContain('providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused');
     // (B) Content barrier is attempted first (fast path, no restart cost).
     expect(source).toContain(
       "awaitCodexProviderReady(sandbox, ctx.signal, CODEX_BARRIER_DEADLINE_MS)",
@@ -978,6 +774,80 @@ describe("T3 run adapter gate", () => {
     expect(restarts).toBe(0);
   });
 
+  test("asks T3 to re-check Claude when the cache is not ready, and restarts nothing once it is", async () => {
+    const calls: string[] = [];
+    const looks = [false, true];
+    const restarted = await ensureRuntimeProviderReadyForTurn({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      readiness: {
+        instanceId: "claudeAgent",
+        driver: "claudeAgent",
+        displayName: "UseAgent Claude gateway current",
+      },
+      barrierDeadlineMs: 35_000,
+      verifyDeadlineMs: 35_000,
+      providerLabel: "Claude",
+      dependencies: {
+        awaitReady: async (_sandbox, _signal, deadlineMs) => {
+          calls.push(`look:${deadlineMs <= 1_500 ? "quick" : "rest"}`);
+          return looks.shift() ?? false;
+        },
+        refresh: async (_sandbox, instanceId, _signal, timeoutMs) => {
+          calls.push(`refresh:${instanceId}:${timeoutMs > 30_000 ? "within-deadline" : "short"}`);
+          return true;
+        },
+        restart: async () => {
+          calls.push("restart");
+          return {} as never;
+        },
+        invalidateAccess: () => {
+          calls.push("invalidate");
+        },
+      },
+    });
+    // A pooled sandbox's cache predates the run's capability: one quick look,
+    // a targeted re-check, and the rest of the same deadline. No restart.
+    expect(calls).toEqual(["look:quick", "refresh:claudeAgent:within-deadline", "look:rest"]);
+    expect(restarted).toBe(false);
+  });
+
+  test("still restarts once when the re-check does not make Claude ready", async () => {
+    const calls: string[] = [];
+    const looks = [false, false, true];
+    const restarted = await ensureRuntimeProviderReadyForTurn({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      readiness: {
+        instanceId: "claudeAgent",
+        driver: "claudeAgent",
+        displayName: "UseAgent Claude gateway current",
+      },
+      barrierDeadlineMs: 10,
+      verifyDeadlineMs: 10,
+      providerLabel: "Claude",
+      dependencies: {
+        awaitReady: async () => {
+          calls.push("look");
+          return looks.shift() ?? false;
+        },
+        refresh: async () => {
+          calls.push("refresh");
+          throw new Error("socket closed");
+        },
+        restart: async () => {
+          calls.push("restart");
+          return {} as never;
+        },
+        invalidateAccess: () => {
+          calls.push("invalidate");
+        },
+      },
+    });
+    expect(calls).toEqual(["look", "refresh", "look", "restart", "invalidate", "look"]);
+    expect(restarted).toBe(true);
+  });
+
   test("restarts Claude exactly once after a readiness timeout", async () => {
     const outcomes = [false, true];
     let restarts = 0;
@@ -1076,252 +946,153 @@ describe("T3 run adapter gate", () => {
     expect(source).not.toContain("ctx.saveProviderSession?.(");
   });
 
-  test("projects authoritative websocket snapshots without a remote snapshot reread", async () => {
+  test("dispatches the turn on the subscribed stream and projects its views without an HTTP reread", async () => {
     const deltas: string[] = [];
-    let reads = 0;
-    const ctx = {
-      runId: "run-stream-snapshot",
-      threadId: "thread-1",
-      signal: new AbortController().signal,
-      emit: async () => undefined,
-      setSummary() {},
-      publishDelta: (delta: string) => deltas.push(delta),
-    } as unknown as EngineRunContext;
-    const prior = turnSnapshot({ sequence: 10, turnId: "turn-prior", state: "completed", text: "old" });
-    const subscribe = async (
-      _sandbox: SandboxHandle,
-      _threadId: string,
-      afterSequence: number | undefined,
-      _signal: AbortSignal,
-      onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-    ) => {
-      expect(afterSequence).toBeUndefined();
-      expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-        sequence: 11, turnId: "turn-current", state: "running", text: "hello",
-      }) })).toBe(true);
-      expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-        sequence: 12, turnId: "turn-current", state: "completed", text: "hello world",
-      }) })).toBe(false);
-    };
-
+    const order: string[] = [];
+    const ctx = turnContext("run-stream-snapshot", { publishDelta: (delta: string) => deltas.push(delta) });
+    const prior = runtimeThreadView(v2Turn({ sequence: 10, runId: "turn-prior", status: "completed", text: "old" }));
+    const { follow, calls } = scriptedFollow([
+      v2Turn({ sequence: 11, runId: "turn-current", status: "running", text: "hello", ordinal: 2 }),
+      v2Turn({ sequence: 12, runId: "turn-current", status: "completed", text: "hello world", ordinal: 2 }),
+    ]);
     await expect(waitForRuntimeTurn(
-      ctx,
-      {} as SandboxHandle,
-      new Map(),
-      prior,
-      createSecretRedactor([]),
-      {
-        subscribeRuntimeThread: subscribe,
-        readThreadSnapshot: async () => {
-          reads += 1;
-          throw new Error("unexpected REST snapshot read");
-        },
-      },
+      ctx, {} as SandboxHandle, new Map(), prior, createSecretRedactor([]),
+      { followRuntimeThread: follow, readThreadSnapshot: noRead, guardForeignRuns: noGuard },
+      null, undefined, async () => { order.push("start"); },
     )).resolves.toBe("hello world");
-    expect(reads).toBe(0);
+    expect(order).toEqual(["start"]);
+    expect(calls[0]?.threadId).toBe("skynet-thread-thread-1");
     expect(deltas).toEqual(["hello", " world"]);
   });
 
-  test("coalesces duplicate event bursts behind one authoritative snapshot refresh", async () => {
-    let reads = 0;
-    const ctx = {
-      runId: "run-stream-events",
-      threadId: "thread-1",
-      signal: new AbortController().signal,
-      emit: async () => undefined,
-      setSummary() {},
-    } as unknown as EngineRunContext;
-    const prior = turnSnapshot({ sequence: 20, turnId: "turn-prior", state: "completed", text: "old" });
-    const readStarted = Promise.withResolvers<void>();
-    const releaseRead = Promise.withResolvers<void>();
-    const subscribe = async (
-      _sandbox: SandboxHandle,
-      _threadId: string,
-      _afterSequence: number | undefined,
-      signal: AbortSignal,
-      onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-    ) => {
-      expect(await onItem({ kind: "event", event: {
-        sequence: 21, aggregateKind: "thread", aggregateId: "skynet-thread-thread-1",
-      } })).toBe(true);
-      await readStarted.promise;
-      for (const sequence of [22, 22, 23]) {
-        expect(await onItem({ kind: "event", event: {
-          sequence, aggregateKind: "thread", aggregateId: "skynet-thread-thread-1",
-        } })).toBe(true);
-      }
-      releaseRead.resolve();
-      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {
-        once: true,
-      }));
-    };
-
+  test("a run the plane did not start is interrupted and never taken for the turn", async () => {
+    const deltas: string[] = [];
+    const interrupted: unknown[] = [];
+    const recorded: unknown[] = [];
+    const ctx = turnContext("run-guarded", { publishDelta: (delta: string) => deltas.push(delta) });
+    const prior = runtimeThreadView(v2Turn({ sequence: 20, runId: "turn-prior", status: "completed", text: "old" }));
+    const wake = v2Run({ id: "turn-wake", ordinal: 2, userMessageId: "notification-1", status: "running", completedAt: null });
+    const withWake = (state: ReturnType<typeof v2Turn>) =>
+      v2Snapshot(state.snapshotSequence, { ...state.projection, runs: [...state.projection.runs, wake] });
+    const { follow } = scriptedFollow([
+      withWake(v2Turn({ sequence: 21, runId: "turn-prior", status: "completed", text: "old" })),
+      v2Turn({ sequence: 22, runId: "turn-current", status: "completed", text: "mine", ordinal: 3 }),
+    ]);
     await expect(waitForRuntimeTurn(
-      ctx,
-      {} as SandboxHandle,
-      new Map(),
-      prior,
-      createSecretRedactor([]),
+      ctx, {} as SandboxHandle, new Map(), prior, createSecretRedactor([]),
       {
-        subscribeRuntimeThread: subscribe,
-        readThreadSnapshot: async () => {
-          reads += 1;
-          readStarted.resolve();
-          await releaseRead.promise;
-          return turnSnapshot({ sequence: 23, turnId: "turn-current", state: "completed", text: "done" });
-        },
+        followRuntimeThread: follow,
+        readThreadSnapshot: noRead,
+        guardForeignRuns: (input) => createForeignRunGuard({
+          ...input,
+          dependencies: {
+            dispatch: async (_sandbox, command) => { interrupted.push(command); return { sequence: 1 }; },
+            record: async (event) => { recorded.push(event); },
+          },
+        }),
       },
-    )).resolves.toBe("done");
-    expect(reads).toBe(1);
+    )).resolves.toBe("mine");
+    expect(interrupted).toEqual([expect.objectContaining({ type: "run.interrupt", runId: "turn-wake", reason: FOREIGN_RUN_REASON })]);
+    expect(recorded).toEqual([expect.objectContaining({ eventType: "t3.activity.runtime.warning", runId: "run-guarded" })]);
+    expect(deltas).toEqual(["mine"]);
   });
 
-  test("ignores malformed, foreign-thread, duplicate, and prior-turn websocket snapshots", async () => {
+  test("ignores the prior run until the plane's next run appears", async () => {
     const deltas: string[] = [];
-    const ctx = {
-      runId: "run-stream-fence",
-      threadId: "thread-1",
-      signal: new AbortController().signal,
-      emit: async () => undefined,
-      setSummary() {},
-      publishDelta: (delta: string) => deltas.push(delta),
-    } as unknown as EngineRunContext;
-    const prior = turnSnapshot({ sequence: 30, turnId: "turn-prior", state: "completed", text: "old" });
-
+    const ctx = turnContext("run-stream-fence", { publishDelta: (delta: string) => deltas.push(delta) });
+    const prior = runtimeThreadView(v2Turn({ sequence: 30, runId: "turn-prior", status: "completed", text: "old" }));
+    const { follow } = scriptedFollow([
+      v2Turn({ sequence: 31, runId: "turn-prior", status: "completed", text: "old" }),
+      v2Turn({ sequence: 32, runId: "turn-current", status: "running", text: "new", ordinal: 2 }),
+      v2Turn({ sequence: 33, runId: "turn-current", status: "completed", text: "new done", ordinal: 2 }),
+    ]);
     await expect(waitForRuntimeTurn(
-      ctx,
-      {} as SandboxHandle,
-      new Map(),
-      prior,
-      createSecretRedactor([]),
-      {
-        subscribeRuntimeThread: async (_sandbox, _threadId, _after, _signal, onItem) => {
-          expect(await onItem({
-            kind: "snapshot",
-            snapshot: { snapshotSequence: 31 },
-          } as unknown as RuntimeThreadStreamItem)).toBe(true);
-          expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-            sequence: 31, turnId: "turn-current", state: "running", text: "foreign",
-            threadId: "skynet-thread-other",
-          }) })).toBe(true);
-          expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-            sequence: 31, turnId: "turn-prior", state: "completed", text: "old",
-          }) })).toBe(true);
-          expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-            sequence: 32, turnId: "turn-current", state: "running", text: "new",
-          }) })).toBe(true);
-          expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-            sequence: 32, turnId: "turn-current", state: "running", text: "duplicate",
-          }) })).toBe(true);
-          expect(await onItem({ kind: "snapshot", snapshot: turnSnapshot({
-            sequence: 33, turnId: "turn-current", state: "completed", text: "new done",
-          }) })).toBe(false);
-        },
-        readThreadSnapshot: async () => {
-          throw new Error("unexpected REST snapshot read");
-        },
-      },
+      ctx, {} as SandboxHandle, new Map(), prior, createSecretRedactor([]),
+      { followRuntimeThread: follow, readThreadSnapshot: noRead, guardForeignRuns: noGuard },
     )).resolves.toBe("new done");
     expect(deltas).toEqual(["new", " done"]);
   });
 
-  test("preserves caller cancellation while waiting on the websocket stream", async () => {
+  test("preserves caller cancellation while waiting on the stream", async () => {
     const controller = new AbortController();
     const reason = new Error("turn cancelled");
-    const ctx = {
-      runId: "run-stream-cancel",
-      threadId: "thread-1",
-      signal: controller.signal,
-      emit: async () => undefined,
-      setSummary() {},
-    } as unknown as EngineRunContext;
     const waiting = waitForRuntimeTurn(
-      ctx,
+      turnContext("run-stream-cancel", { signal: controller.signal }),
       {} as SandboxHandle,
       new Map(),
-      turnSnapshot({ sequence: 40, turnId: "turn-prior", state: "completed", text: "old" }),
+      runtimeThreadView(v2Turn({ sequence: 40, runId: "turn-prior", status: "completed", text: "old" })),
       createSecretRedactor([]),
       {
-        subscribeRuntimeThread: async (_sandbox, _threadId, _after, signal) => {
-          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {
-            once: true,
-          }));
+        followRuntimeThread: async ({ signal }) => {
+          await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
         },
-        readThreadSnapshot: async () => {
-          throw new Error("unexpected REST snapshot read");
-        },
+        readThreadSnapshot: noRead,
+        guardForeignRuns: noGuard,
       },
     );
-
     controller.abort(reason);
     await expect(waiting).rejects.toBe(reason);
   });
 
-  test("does not hide a websocket reconnect failure behind terminal fallback", async () => {
+  test("does not hide a stream failure behind terminal fallback", async () => {
     const connectionError = new Error("provider stream closed before the turn settled");
-    const ctx = {
-      runId: "run-stream-close",
-      threadId: "thread-1",
-      signal: new AbortController().signal,
-      emit: async () => undefined,
-      setSummary() {},
-    } as unknown as EngineRunContext;
-
     await expect(waitForRuntimeTurn(
-      ctx,
+      turnContext("run-stream-close"),
       {} as SandboxHandle,
       new Map(),
-      turnSnapshot({ sequence: 50, turnId: "turn-prior", state: "completed", text: "old" }),
+      runtimeThreadView(v2Turn({ sequence: 50, runId: "turn-prior", status: "completed", text: "old" })),
       createSecretRedactor([]),
-      {
-        subscribeRuntimeThread: async () => {
-          throw connectionError;
-        },
-        readThreadSnapshot: async () => {
-          throw new Error("unexpected REST snapshot read");
-        },
-      },
+      { followRuntimeThread: async () => { throw connectionError; }, readThreadSnapshot: noRead, guardForeignRuns: noGuard },
     )).rejects.toBe(connectionError);
   });
 
-  test("caller cancellation wins over a terminal refresh racing with a socket failure", async () => {
-    const controller = new AbortController();
-    const reason = new Error("turn cancelled during terminal refresh");
-    const deltas: string[] = [];
-    const readStarted = Promise.withResolvers<void>();
-    const releaseRead = Promise.withResolvers<void>();
-    const ctx = {
-      runId: "run-stream-terminal-cancel",
-      threadId: "thread-1",
-      signal: controller.signal,
-      emit: async () => undefined,
-      setSummary() {},
-      publishDelta: (delta: string) => deltas.push(delta),
-    } as unknown as EngineRunContext;
-
+  test("fails a turn whose sandbox stopped responding and feeds the stream's signs of life to the watch", async () => {
+    const dead = new AbortController();
+    let heard = 0;
+    let disposed = false;
     await expect(waitForRuntimeTurn(
-      ctx,
+      turnContext("run-stream-dead"),
       {} as SandboxHandle,
       new Map(),
-      turnSnapshot({ sequence: 50, turnId: "turn-prior", state: "completed", text: "old" }),
+      runtimeThreadView(v2Turn({ sequence: 60, runId: "turn-prior", status: "completed", text: "old" })),
       createSecretRedactor([]),
       {
-        subscribeRuntimeThread: async (_sandbox, _threadId, _after, _signal, onItem) => {
-          await onItem({ kind: "event", event: {
-            sequence: 51, aggregateKind: "thread", aggregateId: "skynet-thread-thread-1",
-          } });
-          await readStarted.promise;
+        watchLiveness: () => ({
+          signal: dead.signal,
+          heard: () => { heard += 1; },
+          dispose: () => { disposed = true; },
+        }),
+        followRuntimeThread: async ({ signal, onHeard }) => {
+          onHeard?.();
+          dead.abort(new SandboxUnresponsiveError());
+          expect(signal.aborted).toBe(true);
+        },
+        readThreadSnapshot: noRead,
+        guardForeignRuns: noGuard,
+      },
+    )).rejects.toThrow("The sandbox stopped responding");
+    expect(heard).toBe(1);
+    expect(disposed).toBe(true);
+  }, 5_000);
+
+  test("caller cancellation wins over a socket failure", async () => {
+    const controller = new AbortController();
+    const reason = new Error("turn cancelled during a socket failure");
+    await expect(waitForRuntimeTurn(
+      turnContext("run-stream-terminal-cancel", { signal: controller.signal }),
+      {} as SandboxHandle,
+      new Map(),
+      runtimeThreadView(v2Turn({ sequence: 50, runId: "turn-prior", status: "completed", text: "old" })),
+      createSecretRedactor([]),
+      {
+        followRuntimeThread: async () => {
           controller.abort(reason);
-          releaseRead.resolve();
           throw new Error("socket closed");
         },
-        readThreadSnapshot: async () => {
-          readStarted.resolve();
-          await releaseRead.promise;
-          return turnSnapshot({ sequence: 51, turnId: "turn-current", state: "completed", text: "done" });
-        },
+        readThreadSnapshot: noRead,
+        guardForeignRuns: noGuard,
       },
     )).rejects.toBe(reason);
-    expect(deltas).toEqual([]);
   });
 
   test("drains late text and reads Cube and Daytona synchronous snapshot output", async () => {
@@ -1363,16 +1134,7 @@ describe("T3 run adapter gate", () => {
       runId: "run-terminal-drain",
       threadId: "thread-terminal-drain",
     } as Parameters<typeof readRuntimeTerminalSnapshot>[0];
-    const snapshotBody = JSON.stringify({
-      snapshotSequence: 1,
-      thread: {
-        id: "skynet-thread-thread-terminal-drain",
-        latestTurn: null,
-        messages: [],
-        activities: [],
-        session: null,
-      },
-    });
+    const snapshotBody = JSON.stringify(v2Snapshot(1, v2Projection({}, "skynet-thread-thread-terminal-drain")));
     for (const result of [
       { cmdId: "cube", output: `${snapshotBody}\n__USEAGENT_T3_HTTP_STATUS__:200`, exitCode: 0 },
       { cmdId: "daytona", stdout: `${snapshotBody}\n__USEAGENT_T3_HTTP_STATUS__:200`, exitCode: 0 },
@@ -1396,7 +1158,7 @@ describe("T3 run adapter gate", () => {
         terminalSnapshotContext,
         sandbox,
         new AbortController().signal,
-      )).resolves.toMatchObject({ snapshotSequence: 1 });
+      )).resolves.toMatchObject({ snapshotSequence: 1, thread: { id: "skynet-thread-thread-terminal-drain", latestTurn: null } });
       expect(calls.some((call) => Array.isArray(call) && call[0] === "execute" && call[2] === false && call[3] === 2)).toBe(true);
       expect(calls.some((call) => Array.isArray(call) && call[0] === "delete")).toBe(true);
     }

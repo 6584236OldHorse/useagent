@@ -6,6 +6,10 @@ import { MODEL_QUALIFICATION_RUN_ORIGIN } from "./origin";
 export const FREE_MODEL_QUALIFICATION_ORIGIN = MODEL_QUALIFICATION_RUN_ORIGIN;
 export const FREE_MODEL_QUALIFICATION_PRIORITY = -100;
 export const FREE_MODEL_QUALIFICATION_MARKER = "USEAGENT_MODEL_QUALIFICATION_OK";
+/** A probe is a real sandboxed run: a cold sandbox, the engine's boot and a
+ * free model's first answer took over three minutes in production, so the
+ * deadline leaves room for that and for a slow model. */
+export const FREE_MODEL_QUALIFICATION_TIMEOUT_MS = 10 * 60_000;
 
 export interface FreeModelQualificationRequest {
   readonly modelId: string;
@@ -41,6 +45,10 @@ export interface InternalQualificationRunServices {
   readonly read: (orgId: string, runId: string) => Promise<ApiRun | null>;
   readonly cancel: (orgId: string, runId: string) => Promise<void>;
   readonly admission?: () => Promise<{ readonly open: boolean }>;
+  /** The newest upstream status the provider gateway recorded for the run, so a
+   * failed probe is classified by what the provider answered rather than by the
+   * engine's summary text. */
+  readonly lastUpstream?: (runId: string) => Promise<{ readonly upstreamStatus: number | null } | null>;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly nowMs?: () => number;
 }
@@ -132,17 +140,35 @@ async function withinDeadline<T>(
 export function classifyFailedQualificationRun(
   summary: string | null,
   latencyMs: number,
+  upstreamStatus: number | null = null,
 ): Exclude<FreeModelQualificationResult, { classification: "success" }> {
   const text = (summary ?? "").toLowerCase();
-  const httpStatus = statusFromSummary(text);
-  if (
-    text.includes("hosted app") ||
+  // A model the provider serves only to particular apps is that model's
+  // failure, whatever status came with it (OpenRouter says so with a 403).
+  const appRestricted = text.includes("hosted app") ||
     text.includes("application restriction") ||
     text.includes("not allowed for this app") ||
-    text.includes("application is not authorized")
-  ) {
-    return { classification: "model_failure", latencyMs, httpStatus, errorCode: "hosted_app_restricted" };
+    text.includes("application is not authorized") ||
+    text.includes("only available on");
+  if (appRestricted || upstreamStatus === 403) {
+    return { classification: "model_failure", latencyMs, httpStatus: upstreamStatus ?? statusFromSummary(text), errorCode: "hosted_app_restricted" };
   }
+  // What the provider actually answered outranks what the engine wrote about it:
+  // a free tier that is busy (429) is not the model failing, and a slug the
+  // provider no longer serves (404) is.
+  if (upstreamStatus === 429) {
+    return { classification: "system_failure", latencyMs, httpStatus: 429, errorCode: "rate_limited" };
+  }
+  if (upstreamStatus === 401 || upstreamStatus === 402) {
+    return { classification: "system_failure", latencyMs, httpStatus: upstreamStatus, errorCode: "authentication_failed" };
+  }
+  if (upstreamStatus !== null && upstreamStatus >= 500) {
+    return { classification: "system_failure", latencyMs, httpStatus: upstreamStatus, errorCode: "provider_capacity" };
+  }
+  if (upstreamStatus === 404) {
+    return { classification: "model_failure", latencyMs, httpStatus: 404, errorCode: "invalid_response" };
+  }
+  const httpStatus = statusFromSummary(text);
   if (httpStatus === 429) {
     return { classification: "system_failure", latencyMs, httpStatus, errorCode: "rate_limited" };
   }
@@ -190,7 +216,7 @@ export function createInternalOpenCodeQualificationDriver(
   services: InternalQualificationRunServices,
 ): FreeModelQualificationDriver {
   if (!options.orgId.trim()) throw new Error("free_model_qualifier_org_missing");
-  const timeoutMs = options.timeoutMs ?? 180_000;
+  const timeoutMs = options.timeoutMs ?? FREE_MODEL_QUALIFICATION_TIMEOUT_MS;
   const pollMs = options.pollMs ?? 1_000;
   const sleep = services.sleep ?? ((ms: number) => Bun.sleep(ms));
   const nowMs = services.nowMs ?? Date.now;
@@ -360,7 +386,10 @@ export function createInternalOpenCodeQualificationDriver(
           };
         }
         if (run?.status === "failed") {
-          return classifyFailedQualificationRun(run.summary, nowMs() - startedAt);
+          const upstream = services.lastUpstream
+            ? await withinDeadline(() => services.lastUpstream!(acceptedRunId), deadlineAt).catch(() => null)
+            : null;
+          return classifyFailedQualificationRun(run.summary, nowMs() - startedAt, upstream?.upstreamStatus ?? null);
         }
         try {
           await withinDeadline(() => sleep(pollMs), deadlineAt);

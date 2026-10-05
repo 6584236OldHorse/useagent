@@ -21,7 +21,6 @@ import {
 } from "./execution-graph-repo";
 import {
   executionGraphPendingObservationBySource,
-  executionGraphSealBlockers,
   markExecutionGraphObservationApplied,
   recordExecutionGraphRecoveryAttempt,
   stageExecutionGraphObservation,
@@ -699,14 +698,13 @@ async function applyExecutionGraphWrite(
 }
 
 /** Strict seal-time audit. Replays the latest durable provider rows in bounded
- * pages, reconstructing any pointer missed by fail-open hot-path capture, then
- * rejects unresolved or structurally mismatched graph evidence. */
+ * pages, reconstructing any pointer missed by fail-open hot-path capture. What it
+ * still cannot place stays recorded on its pointer as a graph gap. */
 export async function auditExecutionGraphAtSeal(
   orgId: string,
   runId: string,
   exec: Executor,
-  options: { readonly failOnBlockers?: boolean } = {},
-): Promise<number> {
+): Promise<void> {
   const pageSize = 500;
   let afterSeq = -1;
   let afterId = "";
@@ -730,7 +728,7 @@ export async function auditExecutionGraphAtSeal(
       const observation = graphObservation(source.input);
       if (observation) {
         // The strict core, not the fail-open wrapper: an audit must surface a
-        // reconstruction failure so the seal can fail closed on it.
+        // reconstruction failure so the seal can log it and roll its own writes back.
         await applyExecutionGraphWrite(source.input, source.seq, exec);
         continue;
       }
@@ -760,14 +758,6 @@ export async function auditExecutionGraphAtSeal(
     afterId = rows.at(-1)!.id;
     if (rows.length < pageSize) break;
   }
-  const blockers = await executionGraphSealBlockers(orgId, runId, exec);
-  if (blockers.length > 0 && options.failOnBlockers !== false) {
-    const mismatch = blockers.some((row) => row.structuralMismatchAt != null);
-    throw new Error(mismatch
-      ? "execution_graph_structural_revision_mismatch"
-      : "execution_graph_pending_unresolved");
-  }
-  return blockers.length;
 }
 
 /** The execution graph writer, called after every durable provider event. Fail-open: it

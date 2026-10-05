@@ -14,13 +14,27 @@ afterEach(() => {
 });
 
 describe("POST /api/chat", () => {
-  test("503 when no OpenRouter credential resolves (no customer key, no house key)", async () => {
+  test("403 with the remedy when the member has no OpenRouter key (the house env never serves)", async () => {
     const { status, body } = await json("/api/chat", {
       method: "POST",
       body: { messages: [{ role: "user", content: "hi" }] },
     });
-    expect(status).toBe(503);
-    expect(body).toMatchObject({ error: expect.stringContaining("OpenRouter credential") });
+    expect(status).toBe(403);
+    expect(body).toMatchObject({ error: expect.stringContaining("Connect an OpenRouter key in Settings") });
+  });
+
+  test("503 when the deployment turns chat off", async () => {
+    process.env.CHAT = "off";
+    try {
+      const { status, body } = await json("/api/chat", {
+        method: "POST",
+        body: { messages: [{ role: "user", content: "hi" }] },
+      });
+      expect(status).toBe(503);
+      expect(body).toMatchObject({ error: "chat is turned off" });
+    } finally {
+      delete process.env.CHAT;
+    }
   });
 
   test("400 on invalid JSON body (configured)", async () => {

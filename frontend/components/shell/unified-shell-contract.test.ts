@@ -117,10 +117,15 @@ describe("unified shell contract", () => {
 
     expect(sessionView).toContain("const [railTabOverride, setRailTabOverride] = useState<");
     expect(sessionView).toContain('SurfaceChoice | "editor" | "workspace" | null');
-    for (const tab of ["agents", "artifacts", "editor", "terminal", "desktop"]) {
-      expect(sessionView).toContain(`data-testid="rail-tab-${tab}"`);
-      expect(sessionView).toContain(`isSelected={railTab === "${tab}"}`);
-      expect(sessionView).toContain(`onSelect={() => setRailTabOverride("${tab}")}`);
+    // The pills live in the rail switcher; the session view feeds it the choice
+    // and takes the override back unchanged.
+    const railTabs = readFromFrontend("components/chat/session-rail-tabs.tsx");
+    expect(sessionView).toContain("railTab={railTab}");
+    expect(sessionView).toContain("onSelect={setRailTabOverride}");
+    expect(railTabs).toContain("data-testid={`rail-tab-${id}`}");
+    expect(railTabs).toContain("isSelected={railTab === id}");
+    for (const tab of ["agents", "artifacts", "editor", "terminal", "desktop", "details"]) {
+      expect(railTabs).toContain(`tab("${tab}"`);
     }
   });
 
@@ -161,7 +166,9 @@ describe("unified shell contract", () => {
     const projectMenu = read("./sidebar-project-menu.tsx");
     const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
-    expect(projects).toContain('backendFetch("/api/repos"');
+    // The project list still comes from GET /api/repos, through the page's shared request.
+    expect(projects).toContain("loadRepoList(");
+    expect(readFromFrontend("lib/repo-list.ts")).toContain('fetcher("/api/repos")');
     expect(projectMenu).toContain("encodeURIComponent(group.fullName");
     expect(composer).toContain("initialRepository");
     expect(projects).not.toContain("Growth Campaign");
@@ -227,8 +234,9 @@ describe("unified shell contract", () => {
     expect(composer).toContain("Start thread");
     expect(composer).toContain("flex-nowrap");
     expect(composer).toContain("overflow-hidden");
-    // Model rides the compact engine + model chip.
-    expect(composer).toContain('ariaLabel="Select model"');
+    // Engine and model ride one chip: the picker's rail chooses the engine.
+    expect(composer).toContain("<ModelPicker");
+    expect(composer).toContain("providerId={engine}");
     expect(newThreadPage).toContain("max-w-3xl");
     // Chat is a first-class engine choice (no computer); the picker reads the
     // manifest-driven option list instead of filtering it out.
@@ -322,11 +330,16 @@ describe("unified shell contract", () => {
     const promptInput = readFromFrontend("components/prompt-kit/prompt-input.tsx");
 
     expect(composer).toContain("maxHeight={180}");
+    // Two rows: the field spans the first, the footer (add button, permission
+    // slot, model, send) is the second, at every width.
     expect(composer).toContain(
-      '"@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
+      '"grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
     );
+    expect(composer).toContain('"col-span-3 col-start-1 row-start-1 min-w-0"');
+    expect(composer).toContain('"col-start-3 row-start-2"');
+    // The field rests two lines tall (twice the line-height) and grows with the text.
     expect(composer).toContain(
-      'hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6"',
+      'hero ? "pt-1 text-headline-regular" : "min-h-12 text-body-2-regular leading-6"',
     );
     expect(promptInput).toContain('el.style.height = "0px"');
     expect(promptInput).not.toContain('el.style.height = "auto"');

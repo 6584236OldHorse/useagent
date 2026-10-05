@@ -111,9 +111,11 @@ afterEach(() => {
 });
 
 describe("runtime warm-pool size gating", () => {
-  test("the T3 pool uses an independent default-off size gate", () => {
-    expect(cubeRuntimeWarmPoolSize({ CUBE_WARM_POOL_SIZE: "3" })).toBeNull();
+  test("the T3 pool keeps three members unless its own variable sets another size", () => {
+    expect(cubeRuntimeWarmPoolSize({})).toBe(3);
+    expect(cubeRuntimeWarmPoolSize({ CUBE_WARM_POOL_SIZE: "1" })).toBe(3);
     expect(cubeRuntimeWarmPoolSize({ CUBE_T3_WARM_POOL_SIZE: "2" })).toBe(2);
+    expect(cubeRuntimeWarmPoolSize({ CUBE_T3_WARM_POOL_SIZE: "0" })).toBeNull();
   });
 });
 
@@ -545,6 +547,7 @@ describe("CubeWarmPool", () => {
       size: 1,
       createOptions: { snapshot: "tpl-1" },
       warmDesktop: async () => await gate.promise,
+      claimWaitMs: 20,
       logger: quietLogger,
     });
 
@@ -560,6 +563,55 @@ describe("CubeWarmPool", () => {
     });
     await waitFor(() => pool.status().ready, 1);
     expect(await pool.claim()).toBe(box);
+  });
+
+  test("a claim on an empty pool waits for the refill already in flight", async () => {
+    const gate = deferred<void>();
+    const box = sandbox("cube-in-flight");
+    const pool = new CubeWarmPool({
+      provider: provider([box]),
+      size: 1,
+      requireDesktop: false,
+      createOptions: { snapshot: "tpl-1" },
+      warmRuntime: async () => await gate.promise,
+      logger: quietLogger,
+    });
+
+    pool.start();
+    await waitFor(() => pool.status().creating, 1);
+    const waiting = pool.claim();
+    // A second claim has no refill left for it and goes cold at once.
+    expect(await pool.claim()).toBeNull();
+    await sleep(30);
+    gate.resolve();
+    expect(await waiting).toBe(box);
+  });
+
+  test("parks a warmed member where the provider can pause, and a failed pause keeps it", async () => {
+    const parked = sandbox("cube-parked");
+    const running = sandbox("cube-running");
+    const paused: string[] = [];
+    const base = provider([parked, running]);
+    const pool = new CubeWarmPool({
+      provider: {
+        ...base,
+        pause: async (id) => {
+          if (id === running.id) throw new Error("pause unavailable");
+          paused.push(id);
+        },
+      },
+      size: 1,
+      requireDesktop: false,
+      createOptions: { snapshot: "tpl-1" },
+      logger: quietLogger,
+    });
+
+    pool.start();
+    await waitFor(() => pool.status().ready, 1);
+    expect(paused).toEqual(["cube-parked"]);
+    expect(await pool.claim()).toBe(parked);
+    await waitFor(() => pool.status().ready, 1);
+    expect(await pool.claim()).toBe(running);
   });
 
   test("can warm a runtime-only pool without desktop/noVNC readiness", async () => {
@@ -656,7 +708,7 @@ describe("CubeWarmPool", () => {
     expect((await pool.claim())?.id).toBe("cube-current-template");
   });
 
-  test("uses the useAgent template label before Cube system labels", async () => {
+  test("uses the UseAgent template label before Cube system labels", async () => {
     const conflictingTemplate = sandbox("cube-conflicting-template");
     const currentTemplate = sandbox("cube-current-template");
     conflictingTemplate.labels = {

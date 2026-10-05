@@ -11,9 +11,11 @@ test("a manifest path names its app route without route groups", () => {
   expect(routeOfManifestPath("(library)/agent/artifacts/[id]/page_client-reference-manifest.js")).toBe("/agent/artifacts/[id]");
 });
 
-test("only routes reachable from the signed-in shell are warmed", () => {
-  for (const route of ["/", "/dashboard", "/session/[id]", "/bots/[id]", "/agent/new"]) expect(isWarmedRoute(route)).toBe(true);
-  for (const route of ["/lab", "/lab/session", "/login/[[...login]]", "/signup", "/desktop-auth", "/download", "/foundation", "/_not-found", "/_global-error"]) {
+test("only the routes the rails link to are warmed: the prefetched routes, thread rows and bots rows", () => {
+  for (const route of ["/dashboard", "/session/[id]", "/bots", "/bots/[id]", "/agent/new", "/skills", "/secrets"]) expect(isWarmedRoute(route)).toBe(true);
+  // A detail page reached from inside a page, a page no rail links to, and the public
+  // or development pages load their own chunks on the hop.
+  for (const route of ["/", "/wiki/[id]", "/agent/artifacts/[id]", "/session/new", "/accept-invitation/[id]", "/welcome", "/lab", "/lab/session", "/login/[[...login]]", "/signup", "/desktop-auth", "/download", "/foundation", "/_not-found", "/_global-error"]) {
     expect(isWarmedRoute(route)).toBe(false);
   }
 });
@@ -28,6 +30,7 @@ test("the union over warmed routes is sorted and skips excluded routes", () => {
     { path: "(workspace)/dashboard/page_client-reference-manifest.js", text: manifest(["static/chunks/z.js", "static/chunks/shared.js"]) },
     { path: "(library)/skills/page_client-reference-manifest.js", text: manifest(["static/chunks/shared.js", "static/chunks/skills.js"]) },
     { path: "lab/session/page_client-reference-manifest.js", text: manifest(["static/chunks/lab-only.js"]) },
+    { path: "(library)/wiki/[id]/page_client-reference-manifest.js", text: manifest(["static/chunks/wiki-page-only.js"]) },
   ]);
   expect(chunks).toEqual(["/_next/static/chunks/shared.js", "/_next/static/chunks/skills.js", "/_next/static/chunks/z.js"]);
 });

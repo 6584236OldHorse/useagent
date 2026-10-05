@@ -1,6 +1,6 @@
 type ComposerAction =
   | { kind: "send"; label: "Send" }
-  | { kind: "steer"; label: "Steer" }
+  | { kind: "steer"; label: "Queue" }
   | { kind: "stop"; label: "Stop this run" };
 
 export function getComposerAction({
@@ -12,9 +12,42 @@ export function getComposerAction({
   hasDraft: boolean;
   canStop: boolean;
 }): ComposerAction {
-  if (running && hasDraft) return { kind: "steer", label: "Steer" };
-  if (running && canStop) return { kind: "stop", label: "Stop this run" };
+  // While a turn runs the draft queues behind it; Stop is the button only for a
+  // caller that gives this composer the stop action (the running footer owns it otherwise).
+  if (running && (hasDraft || !canStop)) return { kind: "steer", label: "Queue" };
+  if (running) return { kind: "stop", label: "Stop this run" };
   return { kind: "send", label: "Send" };
+}
+
+/**
+ * Compact now is offered only on a quiet thread: nothing running, pending or
+ * queued (a queued gateway child counts, it holds the thread's lane), no
+ * control request open, the composer unlocked, and the engine offering the
+ * command.
+ */
+export function compactAvailable({
+  running,
+  pending,
+  turnStatuses,
+  controlOpen,
+  locked,
+  commands,
+}: {
+  running: boolean;
+  pending: boolean;
+  turnStatuses: readonly string[];
+  controlOpen: boolean;
+  locked: boolean;
+  commands: readonly { name: string }[] | undefined;
+}): boolean {
+  return (
+    !running &&
+    !pending &&
+    !turnStatuses.includes("queued") &&
+    !controlOpen &&
+    !locked &&
+    (commands?.some((c) => c.name === "compact") ?? false)
+  );
 }
 
 /**

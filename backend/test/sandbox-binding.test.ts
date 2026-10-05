@@ -11,6 +11,8 @@ import { eq, sql } from "drizzle-orm";
 import {
   bindingSnapshot,
   envSandboxBinding,
+  LocalExecutionDisabledError,
+  MachineNotConnectedError,
   resolveSandboxBindingForRun,
   resolveSandboxBindingForSandbox,
   resolveSandboxBindingForThread,
@@ -42,7 +44,7 @@ const runnerStub = {
 } as unknown as import("../src/runners/registry").LiveRunner;
 
 describe("local runner binding", () => {
-  test("a connected machine runs the user's work, with logins only when the org allows them", async () => {
+  test("a thread placed on the machine runs there, with logins only when the org allows them; nothing else picks a machine", async () => {
     const built: string[] = [];
     const seam = (allowLocalExecution: boolean, allowLocalLogins: boolean) => ({
       onlineForUser: (orgId: string, userId: string) => (orgId === "org" && userId === "user" ? runnerStub : null),
@@ -55,17 +57,24 @@ describe("local runner binding", () => {
       providers: { local: () => { built.push("local"); return fakeProvider("local"); } },
       runners: seam(true, true),
     };
-    const binding = await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, deps);
+    const local = { orgId: "org", userId: "user", runLocation: "local" as const };
+    const binding = await resolveSandboxBindingForRun(local, deps);
     expect(binding).toMatchObject({ kind: "local", credential: "user", userId: "user", snapshot: null, connectionUpdatedAt: "2026-09-08T00:00:00.000Z", logins: ["codex", "claude"] });
     expect(built).toEqual(["local"]);
     // Logins are lent only with the org's say-so; no hosted binding carries any.
-    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, runners: seam(true, false) })).logins).toEqual([]);
-    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "other" }, deps)).logins).toEqual([]);
+    expect((await resolveSandboxBindingForRun(local, { ...deps, runners: seam(true, false) })).logins).toEqual([]);
     expect(bindingSnapshot(binding, "DAYTONA_SNAPSHOT")).toBe("");
-    // Another user, the org switch off, or the deployment kill switch: the server's provider.
-    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "other" }, deps)).credential).toBe("env");
-    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, runners: seam(false, true) })).credential).toBe("env");
-    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, env: { LOCAL_RUNNERS: "off" } })).credential).toBe("env");
+    // No choice, or the cloud, is the server's provider even while the machine is
+    // connected: the plane never places a run on a machine nobody chose.
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, deps)).credential).toBe("env");
+    expect((await resolveSandboxBindingForRun({ ...local, runLocation: null }, deps)).credential).toBe("env");
+    expect((await resolveSandboxBindingForRun({ ...local, runLocation: "cloud" }, deps)).credential).toBe("env");
+    // Asked for the machine, a user without one, the org switch off, or the
+    // deployment kill switch fail plainly; nothing falls back to the cloud.
+    await expect(resolveSandboxBindingForRun({ ...local, userId: "other" }, deps)).rejects.toBeInstanceOf(MachineNotConnectedError);
+    await expect(resolveSandboxBindingForRun({ ...local, userId: null }, deps)).rejects.toBeInstanceOf(MachineNotConnectedError);
+    await expect(resolveSandboxBindingForRun(local, { ...deps, runners: seam(false, true) })).rejects.toBeInstanceOf(LocalExecutionDisabledError);
+    await expect(resolveSandboxBindingForRun(local, { ...deps, env: { LOCAL_RUNNERS: "off" } })).rejects.toBeInstanceOf(LocalExecutionDisabledError);
   });
 
   test("a recorded local sandbox resolves to its machine even while it is away", async () => {

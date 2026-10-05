@@ -7,6 +7,7 @@ import {
   XLSX_CONTENT_TYPE,
 } from "@useagent/artifact-workspace";
 import { resolveRunSandbox, resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import { awaitWithSignal } from "../util/abortable-operation";
 
 type RunSandboxAuthority = Parameters<typeof resolveRunSandbox>[0];
 
@@ -84,7 +85,12 @@ async function providerConvert(input: OfficePreviewInput): Promise<Uint8Array | 
     if ((result.exitCode ?? 1) !== 0) return null;
     const info = await sandbox.fs.getFileDetails(outPath);
     if (Number((info as { size?: number }).size ?? 0) > input.maxBytes) return null;
-    const bytes = await sandbox.fs.downloadFile(outPath);
+    // The converted PDF is read within the same bound as the conversion: a
+    // stream that never ends yields no preview instead of holding the caller.
+    const bytes = await awaitWithSignal(
+      () => sandbox.fs.downloadFile(outPath),
+      AbortSignal.timeout(input.timeoutSeconds * 1000),
+    );
     if (bytes.length === 0 || bytes.length > input.maxBytes) return null;
     return new Uint8Array(bytes);
   } finally {

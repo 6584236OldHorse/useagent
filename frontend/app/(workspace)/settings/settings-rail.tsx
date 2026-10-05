@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useOperatorAccess } from "@/lib/account-access";
 import { cx } from "@/utils/cx";
 import { activeSectionIndex, settingsAnchorOffset } from "./settings-rail-active";
 
@@ -34,6 +35,10 @@ function scrollerOf(el: HTMLElement): HTMLElement | null {
 
 export function SettingsRail({ className }: { className?: string }) {
   const [active, setActive] = useState<string>(SETTINGS_SECTIONS[0].id);
+  // Infrastructure exists for an operator account only; the section mounts when
+  // that answer arrives, so the measuring effect runs again then.
+  const operator = useOperatorAccess();
+  const sections = operator ? SETTINGS_SECTIONS : SETTINGS_SECTIONS.filter(({ id }) => id !== "infrastructure");
 
   useEffect(() => {
     const els = SETTINGS_SECTIONS.map(({ id }) => document.getElementById(id)).filter(
@@ -78,11 +83,11 @@ export function SettingsRail({ className }: { className?: string }) {
       scrollTarget.removeEventListener("scroll", schedule);
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [operator]);
 
   return (
     <nav aria-label="Settings sections" className={cx("flex flex-col gap-0.5", className)}>
-      {SETTINGS_SECTIONS.map(({ id, label }) => {
+      {sections.map(({ id, label }) => {
         const selected = active === id;
         return (
           <a

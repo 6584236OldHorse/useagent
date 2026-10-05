@@ -300,6 +300,9 @@ export interface TraceContext {
   readonly durationMs: number | null;
   readonly defaultOpen: boolean;
   readonly failure?: TurnFailure | null;
+  /** Steps a subagent ran: they render under its row in the subagents fold,
+   *  never as the parent's own work. */
+  readonly childSteps?: ReadonlySet<string>;
 }
 
 const DEFAULT_TRACE: TraceContext = { durationMs: null, defaultOpen: true };
@@ -313,13 +316,17 @@ export function turnTraceContext(
     steps: readonly ApiStep[];
   },
   defaultOpen: boolean,
+  childSteps?: ReadonlySet<string>,
 ): TraceContext {
-  return { durationMs: turn.run.duration_ms, defaultOpen, failure: turnFailure(turn) };
+  return { durationMs: turn.run.duration_ms, defaultOpen, failure: turnFailure(turn), childSteps };
 }
 
 interface TimelineProps {
   nodes: TimelineNode[];
   live: boolean;
+  /** Finalized server reply. Settled native timelines keep their work and tail,
+   *  but this replaces the provider's pre-final text burst. */
+  settledReply?: string | null;
   workingSince?: string;
   /** Render this turn's follow-up suggestions (the LATEST turn only - stale
    *  suggestions under scrolled-back history are noise). */
@@ -336,22 +343,30 @@ interface TimelineProps {
 export function Timeline({
   nodes,
   live,
+  settledReply,
   workingSince,
   showFollowups = false,
   trace = DEFAULT_TRACE,
 }: TimelineProps) {
   const { work, reply, tail } = useMemo(() => splitTurn(nodes, live), [nodes, live]);
+  const visibleReply = live ? reply : (settledReply ?? reply);
   const failure = trace.failure ?? null;
   // A failed run closes its rows with the terminal failure, so even a run that
   // failed before any work still traces why.
   const rows = useMemo(() => {
-    const workRows = traceRowsFromWork(work, live);
+    const workRows = traceRowsFromWork(work, live, trace.childSteps);
     return failure ? [...workRows, failureRow(failure)] : workRows;
-  }, [work, live, failure]);
+  }, [work, live, failure, trace.childSteps]);
   // Durable file.changed receipts live in the closing tail, while edit/write
   // tool calls live in work. Aggregate the complete turn so either source feeds
   // the same compact changed-files strip.
-  const files = useMemo(() => changedFilesFromTimeline(nodes), [nodes]);
+  // A subagent's edits belong to its row too, never to the parent's own count.
+  const files = useMemo(() => {
+    const own = trace.childSteps
+      ? nodes.filter((node) => !(node.kind === "tool" && trace.childSteps?.has(node.step.id)))
+      : nodes;
+    return changedFilesFromTimeline(own);
+  }, [nodes, trace.childSteps]);
   const header = useMemo(
     () =>
       traceHeader({
@@ -386,9 +401,11 @@ export function Timeline({
           className="animate-ai-fade-up"
         />
       )}
-      {reply && <TextBurst text={reply} />}
+      {visibleReply && <TextBurst text={visibleReply} />}
       {/* Nothing to trace yet and nothing said: the boot gap keeps a live signal. */}
-      {live && rows.length === 0 && !reply && <WorkingIndicator createdAt={workingSince ?? null} />}
+      {live && rows.length === 0 && !visibleReply && (
+        <WorkingIndicator createdAt={workingSince ?? null} />
+      )}
       {tail.map((node) =>
         node.kind === "file" ? (
           <FileChangeRow key={node.key} node={node} />

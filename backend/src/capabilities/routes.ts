@@ -9,6 +9,7 @@ import { botsEnabled } from "../bots/rollout";
 import { orgScope } from "../middleware/org";
 import { configuredUserFacingEngines } from "../runs/engine-readiness";
 import { buildCapabilityCatalog, type CapabilityCatalog } from "./catalog";
+import { catalogAccount } from "../provider-gateway/provider-accounts";
 import {
   nativeCodexModelCatalog,
   type NativeCodexModelCatalog,
@@ -50,6 +51,7 @@ export function createCapabilityCatalogRoutes(
       productChildThreadsConfigured: productChildThreadsEnabled(),
       botsConfigured: botsEnabled(c.get("orgId")),
       ...(codexModelCatalog ? { codexModelCatalog } : {}),
+      account: await catalogAccount(userId),
     }));
   });
   return routes;

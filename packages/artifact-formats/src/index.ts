@@ -150,7 +150,7 @@ function textForState(state: WorkpieceState): string {
 }
 
 function splitMarkdownParagraphs(text: string): Paragraph[] {
-  return text.split(/\n{2,}/).flatMap((block) => {
+  return text.replace(/\r\n?/g, "\n").split(/\n{2,}/).flatMap((block) => {
     const trimmed = block.trim();
     if (!trimmed) return [];
     const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
@@ -166,7 +166,7 @@ function splitMarkdownParagraphs(text: string): Paragraph[] {
     }
     return [new Paragraph({
       children: trimmed.split("\n").map((line, index) =>
-        new TextRun({ text: index === 0 ? line : `\n${line}` })
+        new TextRun({ text: line, break: index === 0 ? undefined : 1 })
       ),
     })];
   });
@@ -532,7 +532,7 @@ function setCellValue(target: ExcelJS.Cell, cell: SheetCell): void {
 
 function renderWorkbookXlsx(book: Workbook): Promise<Buffer | ArrayBuffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "useAgent";
+  workbook.creator = "UseAgent";
   for (const sheetModel of book.sheets) {
     const sheet = workbook.addWorksheet(sheetModel.name.slice(0, 31) || "Sheet");
     for (const [ref, cell] of Object.entries(sheetModel.cells)) {
@@ -555,7 +555,7 @@ async function renderXlsx(state: WorkpieceState): Promise<Uint8Array> {
   // A non-spreadsheet state exported to XLSX: one sheet of its flattened text.
   const rows = parseCsv(textForState(state));
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "useAgent";
+  workbook.creator = "UseAgent";
   const sheet = workbook.addWorksheet("Sheet 1");
   rows.forEach((row) => {
     sheet.addRow(row);
@@ -1167,6 +1167,7 @@ export async function extractXlsxWorkbook(bytes: Uint8Array): Promise<Workbook> 
 
 const DEFAULT_SLIDE_WIDTH_EMU = 9_144_000; // 10in
 const DEFAULT_SLIDE_HEIGHT_EMU = 5_143_500; // 5.625in
+const EMU_PER_POINT = 12_700;
 /** Above this reference-px font size (and with no placeholder) a text box is a
  * heading. Sits between the body presets (40-44) and the heading presets (84-96). */
 const IMPORT_HEADING_MIN_REF_PX = 60;
@@ -1177,6 +1178,14 @@ function importPercent(emu: number, totalEmu: number): number {
 
 function importClamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value * 100) / 100));
+}
+
+/** A declared slide edge in EMU, or null when it is missing, malformed or
+ * outside PowerPoint's own 1 to 56 inch range (a 1 EMU height would turn a
+ * 20 point run into a 274 million pixel font). */
+function importSlideDimension(value: string | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 914_400 && parsed <= 51_206_400 ? parsed : null;
 }
 
 function importXfrm(
@@ -1218,7 +1227,7 @@ function importShapeBlock(
   if (content.trim()) {
     const szMatch = /<a:rPr[^>]*\bsz="(\d+)"/.exec(txBody);
     const fontSize = szMatch
-      ? Math.round(Number(szMatch[1]) / 100 / (405 / DECK_REFERENCE_HEIGHT))
+      ? Math.round(Number(szMatch[1]) / 100 / (slideHeight / EMU_PER_POINT / DECK_REFERENCE_HEIGHT))
       : undefined;
     const bold = /<a:rPr[^>]*\bb="1"/.test(txBody);
     const colorMatch = /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(txBody);
@@ -1391,8 +1400,13 @@ export async function extractPptxDeck(bytes: Uint8Array): Promise<PptxImportResu
   const sldSz = presentation
     ? /<p:sldSz[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(presentation)
     : null;
-  const slideWidth = sldSz ? Number(sldSz[1]) : DEFAULT_SLIDE_WIDTH_EMU;
-  const slideHeight = sldSz ? Number(sldSz[2]) : DEFAULT_SLIDE_HEIGHT_EMU;
+  // Both edges come from one declaration, so a bad one sends both back to the
+  // canonical size; mixing a real width with a default height would skew every
+  // shape on the slide.
+  const declaredWidth = importSlideDimension(sldSz?.[1]);
+  const declaredHeight = importSlideDimension(sldSz?.[2]);
+  const slideWidth = declaredWidth !== null && declaredHeight !== null ? declaredWidth : DEFAULT_SLIDE_WIDTH_EMU;
+  const slideHeight = declaredWidth !== null && declaredHeight !== null ? declaredHeight : DEFAULT_SLIDE_HEIGHT_EMU;
 
   const slideFiles = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
