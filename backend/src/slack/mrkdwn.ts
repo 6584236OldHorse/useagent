@@ -75,7 +75,7 @@ export function toSlackMrkdwn(md: string): string {
 
   text = reformatTables(text, keep);
 
-  text = text.replace(/!?\[([^\]]*)\]\(\s*<?([^()\s>]+)>?(?:\s+"[^"]*")?\s*\)/g, (_m, label, url) =>
+  text = text.replace(/!?\[((?:\\.|[^\\\]])*)\]\(\s*<?([^()\s>]+)>?(?:\s+"[^"]*")?\s*\)/g, (_m, label, url) =>
     // A sandbox path is not a link anyone can open; the file itself reaches the
     // thread as an upload, so only the label survives.
     /^(?:https?:\/\/|mailto:)/i.test(url)

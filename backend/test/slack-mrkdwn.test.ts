@@ -48,6 +48,9 @@ describe("toSlackMrkdwn — required cases", () => {
     expect(toSlackMrkdwn("see [GitHub](https://github.com)")).toBe("see <https://github.com|GitHub>");
     expect(toSlackMrkdwn("[plain](https://x.io)")).toBe("<https://x.io|plain>");
     expect(toSlackMrkdwn("![alt](https://x.io/a.png)")).toBe("<https://x.io/a.png|alt>");
+    expect(toSlackMrkdwn(String.raw`[report\[final\].pdf](https://x.test/d)`)).toBe(
+      "<https://x.test/d|report[final].pdf>",
+    );
   });
 
   test("fenced code block passes through untouched", () => {
@@ -66,13 +69,13 @@ describe("toSlackMrkdwn — required cases", () => {
   });
 
   test("converts actual rewritten artifact Markdown without visible escape slashes", () => {
-    const markdown = "Done. Report: [PDF.](result.pdf)";
+    const markdown = String.raw`Done. Report: [report\[final\].pdf](result.pdf)`;
     const links = explicitOutputLinks(markdown, "/work");
     const rewritten = replaceOutputLinks(markdown, links, new Map([
       ["/work/result.pdf", { preview: "https://files.test/preview", download: "https://files.test/download" }],
     ]));
     expect(rewritten).toContain("Done\\.");
-    expect(toSlackMrkdwn(rewritten)).toBe("Done. Report: <https://files.test/download|PDF.>");
+    expect(toSlackMrkdwn(rewritten)).toBe("Done. Report: <https://files.test/download|report[final].pdf>");
   });
 });
 

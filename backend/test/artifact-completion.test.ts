@@ -16,6 +16,7 @@ import {
   finishedWorkObligations,
   finishedWorkReceipts,
   providerEvents,
+  runs,
 } from "../src/db/schema";
 import { finalizeRun } from "../src/runs/finalize";
 import { createRun, getRun, setRunSandbox, setRunStatus } from "../src/runs/repo";
@@ -157,6 +158,14 @@ async function within<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
 }
 
 describe("artifact completion", () => {
+  test("cannot complete a local-file claim without an attached sandbox", async () => {
+    const runId = await createSandboxRun(owner);
+    await db.update(runs).set({ sandboxId: null }).where(eq(runs.id, runId));
+    const finalized = await finalizeRun(runId, "completed", "[Report](/root/work/report.pdf)", 1);
+    expect(finalized).toMatchObject({ applied: true, status: "failed" });
+    expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
+  });
+
   test("publishes an explicitly linked local PDF before completing the run", async () => {
     const path = "/home/user/work/Quarterly Report (final).pdf";
     const runId = await createSandboxRun(owner, "box");

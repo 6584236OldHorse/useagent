@@ -67,7 +67,7 @@ export async function completeRunOutputs(
   summary: string,
   options: ArtifactCompletionOptions = {},
 ): Promise<{ status: "completed" | "failed" | "obsolete"; summary: string; artifactIds: string[] }> {
-  if (!run.orgId || !run.sandboxId) return { status: "completed", summary, artifactIds: [] };
+  if (!run.orgId) return { status: "completed", summary, artifactIds: [] };
   const signal = AbortSignal.any([
     AbortSignal.timeout(OUTPUT_BUDGET_MS),
     ...(options.signal ? [options.signal] : []),
@@ -79,6 +79,10 @@ export async function completeRunOutputs(
     // A legacy text-only recovery needs no sandbox credentials. Resolve the
     // attached root only when rendered local links actually need publication.
     let links = explicitOutputLinks(summary, "/");
+    if (!run.sandboxId) {
+      if (links.length > 0) throw new Error("output has no attached sandbox");
+      return { status: "completed", summary, artifactIds: [] };
+    }
     if (links.length > 0) {
       const root = await resolveAttachedSandboxWorkspaceRoot(run as Run & { sandboxId: string });
       links = explicitOutputLinks(summary, root);
