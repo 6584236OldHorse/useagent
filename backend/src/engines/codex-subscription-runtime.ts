@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import {
@@ -5,6 +6,7 @@ import {
   sandboxProviderKind,
 } from "../sandboxes/provider";
 import { openCodexExecServerBridge } from "../provider-connections/codex-exec-server-bridge";
+import { openCodexCodeModeBridge } from "../provider-connections/codex-code-mode-bridge";
 import {
   issueCodexSubscriptionRelayCapability,
   type CodexSubscriptionRelayBinding,
@@ -23,11 +25,24 @@ import {
   RUNTIME_GENERATION,
   RUNTIME_SANDBOX_HOME,
 } from "./runtime-environment";
+import {
+  buildSandboxListenerProbeCommand,
+  LISTENER_FOREIGN,
+  LISTENER_OURS,
+  readListenerVerdicts,
+  type SandboxListenerOwner,
+} from "./sandbox-listener-probe";
+import {
+  buildCodexCodeModeLaunchCommand,
+  buildCodexCodeModeTokenCommand,
+  CODEX_CODE_MODE_FORWARDER_PORT,
+  CODEX_CODE_MODE_HOST_PORT,
+  CODEX_CODE_MODE_SESSION,
+  codexCodeModeOwners,
+} from "./codex-code-mode-sandbox";
 
 const CODEX_EXEC_SERVER_PORT = 37_734;
 const CODEX_EXEC_SERVER_SESSION = "skynet-codex-exec-server";
-const CODEX_EXEC_SERVER_PORT_FOREIGN = 2;
-const CODEX_EXEC_SERVER_PORT_TAKEN = `Codex exec-server port ${CODEX_EXEC_SERVER_PORT} is held by another process in the sandbox`;
 const RUNTIME_SETTINGS_PATH = `${RUNTIME_ENVIRONMENT_HOME}/userdata/settings.json`;
 /** Display name carried only by the subscription (relay-backed) codex instance.
  * T3's legacy `providers.codex` synthesis uses the driver default ("Codex"), so
@@ -61,12 +76,14 @@ export interface CodexSubscriptionLease {
 
 interface SubscriptionDependencies {
   readonly openExecBridge: typeof openCodexExecServerBridge;
+  readonly openCodeModeBridge: typeof openCodexCodeModeBridge;
   readonly issueRelay: typeof issueCodexSubscriptionRelayCapability;
   readonly loadThreadBinding: typeof findProviderThreadBinding;
 }
 
 const defaultDependencies: SubscriptionDependencies = {
   openExecBridge: openCodexExecServerBridge,
+  openCodeModeBridge: openCodexCodeModeBridge,
   issueRelay: issueCodexSubscriptionRelayCapability,
   loadThreadBinding: findProviderThreadBinding,
 };
@@ -76,10 +93,10 @@ export async function prepareCodexSubscription(input: {
   readonly ctx: EngineRunContext;
   readonly workdir: string;
   readonly runtime: CodexSubscriptionRuntimeSelection;
-  readonly dependencies?: SubscriptionDependencies;
+  readonly dependencies?: Partial<SubscriptionDependencies>;
 }): Promise<CodexSubscriptionLease> {
   const { sandbox, ctx, workdir, runtime } = input;
-  const dependencies = input.dependencies ?? defaultDependencies;
+  const dependencies = { ...defaultDependencies, ...input.dependencies };
   const orgId = requiredIdentity(ctx.orgId, "organization");
   const userId = requiredIdentity(ctx.userId, "user");
   const productThreadId = ctx.threadId ?? ctx.runId;
@@ -93,16 +110,29 @@ export async function prepareCodexSubscription(input: {
   const environmentId = codexExecutionEnvironmentId(ctx.runId, sandbox.id);
   const layout = codexRuntimeLayout(sandbox);
   let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
+  let codeModeBridge: ReturnType<typeof openCodexCodeModeBridge> | undefined;
   let relay: ReturnType<typeof issueCodexSubscriptionRelayCapability> | undefined;
 
-  // A retained sandbox keeps the exec-server an earlier turn started: the
-  // detached process outlives its session, so a relaunch only loses the port.
-  // The run-bound environment id lives in the relay and T3 settings, not here.
-  const probe = await sandbox.process
-    .executeCommand(buildCodexExecServerReadinessCommand(0, layout), undefined, undefined, 10)
-    .catch(() => null);
-  if (probe?.exitCode === CODEX_EXEC_SERVER_PORT_FOREIGN) throw new Error(CODEX_EXEC_SERVER_PORT_TAKEN);
-  const execServerListening = probe?.exitCode === 0;
+  // One round trip: admit only this run's code-mode bearer from now on, then
+  // ask who holds each service port. A retained sandbox keeps the services an
+  // earlier turn started (the detached processes outlive their sessions), so
+  // only a missing one is launched. The run-bound environment id lives in the
+  // relay and T3 settings, not in the exec-server.
+  const owners = [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
+  const codeModeBearer = randomBytes(32).toString("hex");
+  const probe = await sandbox.process.executeCommand(
+    `${buildCodexCodeModeTokenCommand(createHash("sha256").update(codeModeBearer).digest("hex"), layout)} && ` +
+      buildSandboxListenerProbeCommand(owners, 0),
+    undefined,
+    undefined,
+    10,
+  ).catch(() => null);
+  const verdicts = assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners));
+  const execServerListening = verdicts[CODEX_EXEC_SERVER_PORT] === LISTENER_OURS;
+  const startCodeMode = {
+    host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
+    forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
+  };
   if (!execServerListening) {
     await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
   }
@@ -121,26 +151,46 @@ export async function prepareCodexSubscription(input: {
       if ((launch.exitCode ?? 0) !== 0) {
         throw new Error("Codex exec-server failed to start");
       }
-
+    }
+    if (startCodeMode.host || startCodeMode.forwarder) {
+      await sandbox.process.createSession(CODEX_CODE_MODE_SESSION);
+      const launch = await sandbox.process.executeSessionCommand(
+        CODEX_CODE_MODE_SESSION,
+        { command: buildCodexCodeModeLaunchCommand(layout, startCodeMode), runAsync: true, suppressInputEcho: true },
+        30,
+      );
+      if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
+    }
+    if (!execServerListening || startCodeMode.host || startCodeMode.forwarder) {
       const readiness = await sandbox.process.executeCommand(
-        buildCodexExecServerReadinessCommand(15_000, layout),
+        buildSandboxListenerProbeCommand(owners, 15_000),
         undefined,
         undefined,
         20,
-      );
-      if (readiness.exitCode === CODEX_EXEC_SERVER_PORT_FOREIGN) throw new Error(CODEX_EXEC_SERVER_PORT_TAKEN);
-      if ((readiness.exitCode ?? 1) !== 0) {
-        throw new Error("Codex exec-server failed readiness");
+      ).catch(() => null);
+      const ready = assertNoForeignListener(readListenerVerdicts(readiness?.result ?? "", owners));
+      if (owners.some(({ port }) => ready[port] !== LISTENER_OURS)) {
+        throw new Error("Codex sandbox services failed readiness");
       }
     }
 
-    const preview = await sandbox.getPreviewLink(CODEX_EXEC_SERVER_PORT);
     const sandboxKind = sandbox.providerKind ?? sandboxProviderKind();
-    const upstreamUrl = previewWebSocketUrl(preview.url, sandboxKind);
+    const [execPreview, codeModePreview] = await Promise.all([
+      sandbox.getPreviewLink(CODEX_EXEC_SERVER_PORT),
+      sandbox.getPreviewLink(CODEX_CODE_MODE_FORWARDER_PORT),
+    ]);
+    const upstreamUrl = previewWebSocketUrl(execPreview.url, sandboxKind);
     execBridge = dependencies.openExecBridge({
       upstreamUrl,
       expectedUpstreamHost: new URL(upstreamUrl).host,
-      headers: { ...previewLinkBase(preview).headers },
+      headers: { ...previewLinkBase(execPreview).headers },
+    });
+    const codeModeUrl = previewWebSocketUrl(codeModePreview.url, sandboxKind);
+    codeModeBridge = dependencies.openCodeModeBridge({
+      upstreamUrl: codeModeUrl,
+      expectedUpstreamHost: new URL(codeModeUrl).host,
+      headers: { ...previewLinkBase(codeModePreview).headers },
+      bearerToken: codeModeBearer,
     });
     const binding: CodexSubscriptionRelayBinding = {
       orgId,
@@ -159,6 +209,7 @@ export async function prepareCodexSubscription(input: {
       binding,
       runtime,
       execServerUrl: execBridge.url,
+      codeModeHostUrl: codeModeBridge.url,
       toolGateway: codexToolGatewayDescriptor(ctx),
     });
     // Retained-sandbox validation requires both the immutable control-plane
@@ -175,6 +226,7 @@ export async function prepareCodexSubscription(input: {
     ]);
   } catch (error) {
     relay?.close();
+    codeModeBridge?.close();
     execBridge?.close();
     await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     throw error;
@@ -189,6 +241,7 @@ export async function prepareCodexSubscription(input: {
       closed = true;
       await removeCodexProviderInstance(sandbox).catch(() => {});
       relay?.close();
+      codeModeBridge?.close();
       execBridge?.close();
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
@@ -206,28 +259,35 @@ export function buildCodexExecServerCommand(
   ].join("\n");
 }
 
-/** Exits 0 once the exec-server port is held by this sandbox's installed native
- * Codex binary running `exec-server --listen` on it, 1 if nothing listens by the
- * deadline, and 2 as soon as anything else holds the port. An open port alone
- * could be any process in the sandbox. The optional second argument is the proc
- * root, for tests. */
+/** The exec-server as the process that must own its port: the installed native
+ * Codex binary running `exec-server --listen` on it. */
+export function codexExecServerOwner(layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT): SandboxListenerOwner {
+  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
+  return {
+    port: CODEX_EXEC_SERVER_PORT,
+    executable: "codex",
+    installRoot: `${prefix}/share/useagent/native-engines`,
+    args: ["exec-server", "--listen", `ws://0.0.0.0:${CODEX_EXEC_SERVER_PORT}`],
+  };
+}
+
+/** Exits 0 once the exec-server port is held by our exec-server, 1 if nothing
+ * listens by the deadline, 2 as soon as anything else holds it. */
 export function buildCodexExecServerReadinessCommand(
   deadlineMs = 15_000,
   layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
 ): string {
-  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
-  const portHex = CODEX_EXEC_SERVER_PORT.toString(16).toUpperCase().padStart(4, "0");
-  const script = [
-    'const fs=require("node:fs"),path=require("node:path")',
-    'const root=fs.realpathSync(process.argv[1]),proc=process.argv[2]||"/proc"',
-    `const deadline=Date.now()+${deadlineMs}`,
-    `const listening=()=>{const found=new Set();for(const name of["net/tcp","net/tcp6"]){let text="";try{text=fs.readFileSync(path.join(proc,name),"utf8")}catch{continue}for(const line of text.split("\n").slice(1)){const c=line.trim().split(/\\s+/);if(c.length>9&&c[1].endsWith(":${portHex}")&&c[3]==="0A")found.add(c[9])}}return found}`,
-    'const holds=(pid,found)=>{try{return fs.readdirSync(path.join(proc,pid,"fd")).some(fd=>{try{const link=fs.readlinkSync(path.join(proc,pid,"fd",fd));return link.startsWith("socket:[")&&found.has(link.slice(8,-1))}catch{return false}})}catch{return false}}',
-    `const ours=pid=>{try{const exe=fs.realpathSync(path.join(proc,pid,"exe")),rel=path.relative(root,exe),args=fs.readFileSync(path.join(proc,pid,"cmdline"),"utf8").split("\0");return path.basename(exe)==="codex"&&rel!==""&&!rel.startsWith("..")&&!path.isAbsolute(rel)&&args[1]==="exec-server"&&args[2]==="--listen"&&args[3]==="ws://0.0.0.0:${CODEX_EXEC_SERVER_PORT}"}catch{return false}}`,
-    "const probe=()=>{const found=listening();if(found.size>0){const holders=fs.readdirSync(proc).filter(pid=>!Number.isNaN(Number(pid))&&holds(pid,found));if(holders.length>0)process.exit(holders.every(ours)?0:2)}Date.now()<deadline?setTimeout(probe,50):process.exit(found.size>0?2:1)}",
-    "probe()",
-  ].join(";");
-  return `node -e ${JSON.stringify(script)} ${JSON.stringify(`${prefix}/share/useagent/native-engines`)}`;
+  return buildSandboxListenerProbeCommand([codexExecServerOwner(layout)], deadlineMs);
+}
+
+/** The verdicts, once no service port is held by another process. */
+function assertNoForeignListener(
+  verdicts: ReturnType<typeof readListenerVerdicts>,
+): NonNullable<ReturnType<typeof readListenerVerdicts>> {
+  if (!verdicts) throw new Error("Codex sandbox services could not be probed");
+  const taken = Object.entries(verdicts).find(([, verdict]) => verdict === LISTENER_FOREIGN)?.[0];
+  if (taken) throw new Error(`Codex service port ${taken} is held by another process in the sandbox`);
+  return verdicts;
 }
 
 export function buildCodexProviderInstanceCommand(input: {

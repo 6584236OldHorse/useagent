@@ -30,7 +30,8 @@ const CODEX_PLAN_TOOL_OVERRIDE = "tools.update_plan.enabled=true";
 // start a process, browser or plugin here stays off; shell and file tools reach
 // the sandbox through the run's remote environment. ChatGPT Apps (codex_apps)
 // are not part of the product's tool surface either, and every turn waited on
-// their startup. Model-written code-mode JS still runs in Codex's isolate here.
+// their startup. Model-written code-mode JavaScript runs in the sandbox's
+// code-mode host (see codexSubscriptionAppServerArgs).
 const HOST_EXECUTION_FEATURES_OFF = [
   "apps", "plugins", "remote_plugin", "plugin_sharing", "tool_suggest", "skill_mcp_dependency_install",
   "hooks", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
@@ -71,6 +72,7 @@ interface RelayGrant {
   readonly binding: CodexSubscriptionRelayBinding;
   readonly codexHome: string;
   readonly execServerUrl: string;
+  readonly codeModeHostUrl: string;
   readonly toolGateway: ToolGatewayCapabilityDescriptor | null;
   readonly expiresAt: number;
   consumed: boolean;
@@ -82,6 +84,7 @@ interface RelayDependencies {
   readonly spawnAppServer: (input: {
     readonly codexHome: string;
     readonly execServerUrl: string;
+    readonly codeModeHostUrl: string;
     readonly toolGateway: ToolGatewayCapabilityDescriptor | null;
   }) => ChildProcessWithoutNullStreams;
   readonly loadThreadBinding: (binding: CodexSubscriptionRelayBinding) => Promise<string | null>;
@@ -92,12 +95,19 @@ interface RelayDependencies {
 
 const grants = new Map<string, RelayGrant>();
 
+/** The app-server's arguments. Model-written code-mode JavaScript runs in the
+ * sandbox's code-mode host at `codeModeHostUrl` (a loopback tunnel), never in a
+ * host process this backend would otherwise start. */
 export function codexSubscriptionAppServerArgs(
   toolGateway: ToolGatewayCapabilityDescriptor | null,
+  codeModeHostUrl: string,
 ): string[] {
+  assertLoopbackUrl(codeModeHostUrl, ["http:"], "Codex code-mode host must be a loopback HTTP tunnel");
   return [
     "app-server",
     "--stdio",
+    "--code-mode-host",
+    codeModeHostUrl,
     "-c",
     CODEX_PLAN_TOOL_OVERRIDE,
     ...HOST_EXECUTION_FEATURES_OFF,
@@ -115,8 +125,8 @@ export function codexSubscriptionAppServerArgs(
 const defaultDependencies: RelayDependencies = {
   now: Date.now,
   selectRuntime: getCodexSubscriptionRuntimeSelection,
-  spawnAppServer: ({ codexHome, toolGateway }) =>
-    spawn("codex", codexSubscriptionAppServerArgs(toolGateway), {
+  spawnAppServer: ({ codexHome, toolGateway, codeModeHostUrl }) =>
+    spawn("codex", codexSubscriptionAppServerArgs(toolGateway, codeModeHostUrl), {
       env: {
         ...codexAppServerChildEnvironment(codexHome),
         ...(toolGateway
@@ -138,12 +148,14 @@ export function issueCodexSubscriptionRelayCapability(input: {
   readonly binding: CodexSubscriptionRelayBinding;
   readonly runtime: CodexSubscriptionRuntimeSelection;
   readonly execServerUrl: string;
+  readonly codeModeHostUrl: string;
   readonly toolGateway?: ToolGatewayCapabilityDescriptor | null;
   readonly ttlMs?: number;
   readonly publicOrigin?: string;
 }): CodexSubscriptionRelayCapability {
   pruneExpiredGrants(dependencies.now());
-  assertLoopbackWebSocket(input.execServerUrl);
+  assertLoopbackUrl(input.execServerUrl, ["ws:", "wss:"], "Codex app-server exec bridge must be a loopback websocket");
+  assertLoopbackUrl(input.codeModeHostUrl, ["http:"], "Codex code-mode host must be a loopback HTTP tunnel");
   assertRuntimeMatchesBinding(input.runtime, input.binding);
   const token = crypto.randomUUID();
   const key = capabilityKey(token);
@@ -151,6 +163,7 @@ export function issueCodexSubscriptionRelayCapability(input: {
     binding: structuredClone(input.binding),
     codexHome: input.runtime.codexHome,
     execServerUrl: input.execServerUrl,
+    codeModeHostUrl: input.codeModeHostUrl,
     toolGateway: input.toolGateway ?? null,
     expiresAt: dependencies.now() + (input.ttlMs ?? DEFAULT_CAPABILITY_TTL_MS),
     consumed: false,
@@ -224,6 +237,7 @@ codexSubscriptionRelayRoutes.get(
           spawn: () => dependencies.spawnAppServer({
             codexHome: grant.codexHome,
             execServerUrl: grant.execServerUrl,
+            codeModeHostUrl: grant.codeModeHostUrl,
             toolGateway: grant.toolGateway,
           }),
           onSpawn: (process) => {
@@ -381,13 +395,13 @@ function pruneExpiredGrants(now: number): void {
   }
 }
 
-function assertLoopbackWebSocket(value: string): void {
+function assertLoopbackUrl(value: string, protocols: readonly string[], message: string): void {
   const url = new URL(value);
   if (
-    (url.protocol !== "ws:" && url.protocol !== "wss:") ||
+    !protocols.includes(url.protocol) ||
     (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "::1")
   ) {
-    throw new Error("Codex app-server exec bridge must be a loopback websocket");
+    throw new Error(message);
   }
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +15,7 @@ import {
   buildCodexExecServerReadinessCommand,
   buildCodexProviderInstanceCommand,
   buildCodexProviderReadyProbeCommand,
+  codexExecServerOwner,
   prepareCodexSubscription,
   previewWebSocketUrl,
 } from "./codex-subscription-runtime";
@@ -72,12 +74,13 @@ describe("T3 Codex subscription lease", () => {
       },
     });
 
-    expect(harness.createdSessions).toEqual(["skynet-codex-exec-server"]);
-    expect(harness.sessionCommands).toHaveLength(1);
+    expect(harness.createdSessions).toEqual(["skynet-codex-exec-server", "skynet-codex-code-mode"]);
+    expect(harness.sessionCommands).toHaveLength(2);
     expect(harness.sessionCommands[0]?.command).toContain(
       '"/usr/local/bin/codex" exec-server --listen ws://0.0.0.0:37734',
     );
-    expect(harness.previewPorts).toEqual([37_734]);
+    expect(harness.sessionCommands[1]?.command).toContain('"--listen" "grpc://127.0.0.1:37736"');
+    expect(harness.previewPorts).toEqual([37_734, 37_737]);
     expect(relayBinding).toEqual({
       orgId: "org-1",
       userId: "user-1",
@@ -128,7 +131,7 @@ describe("T3 Codex subscription lease", () => {
   });
 
   test("reuses the exec server an earlier turn left listening", async () => {
-    const harness = fakeSandbox({ execServerListening: true });
+    const harness = fakeSandbox({ execServerListening: true, codeModeListening: true });
     let relayExecServerUrl: string | undefined;
 
     const lease = await prepareCodexSubscription({
@@ -149,9 +152,11 @@ describe("T3 Codex subscription lease", () => {
     expect(harness.deletedSessions).toEqual([]);
     expect(harness.createdSessions).toEqual([]);
     expect(harness.sessionCommands).toEqual([]);
-    expect(harness.previewPorts).toEqual([37_734]);
+    expect(harness.previewPorts).toEqual([37_734, 37_737]);
     expect(relayExecServerUrl).toBe("ws://127.0.0.1:43111/grant");
-    expect(harness.commands[0]?.command).toBe(buildCodexExecServerReadinessCommand(0));
+    expect(harness.commands[0]?.command).toContain("code-mode-forwarder.sha256");
+    expect(harness.commands[0]?.command).toContain("const deadline=Date.now()+0;");
+    expect(harness.commands).toHaveLength(3);
     expect(harness.commands.some(({ command }) => command.includes("CODEX_INSTANCE_B64"))).toBe(true);
     expect(
       harness.commands.some(({ command }) => command.includes("provider-gateway-generation")),
@@ -191,6 +196,43 @@ describe("T3 Codex subscription lease", () => {
     expect(await probe({ exe: native, args: listening })).toBe(0);
     expect(await probe({ exe: foreign, args: listening })).toBe(2);
     expect(await probe({ exe: native, args: ["codex", "app-server", "--listen", "ws://0.0.0.0:37734"] })).toBe(2);
+  });
+
+  test("points the app-server's code mode at the sandbox host through this run's bearer", async () => {
+    const harness = fakeSandbox({ execServerListening: true });
+    let bridgeInput: Parameters<typeof import("../provider-connections/codex-code-mode-bridge").openCodexCodeModeBridge>[0] | undefined;
+    let relayCodeModeUrl: string | undefined;
+
+    const lease = await prepareCodexSubscription({
+      sandbox: harness.sandbox,
+      ctx: context(),
+      workdir: "/root/work",
+      runtime: runtime(),
+      dependencies: {
+        loadThreadBinding: async () => null,
+        openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+        openCodeModeBridge: (input) => {
+          bridgeInput = input;
+          return { url: "http://127.0.0.1:43112", close() {} };
+        },
+        issueRelay: (input) => {
+          relayCodeModeUrl = input.codeModeHostUrl;
+          return { url: "wss://useagent.example.test/api/internal/codex-relay/opaque", close() {} };
+        },
+      },
+    });
+
+    // Only the code-mode host and forwarder were missing; the exec-server was reused.
+    expect(harness.createdSessions).toEqual(["skynet-codex-code-mode"]);
+    expect(harness.sessionCommands[0]?.command).toContain("code-mode-forwarder.js");
+    expect(relayCodeModeUrl).toBe("http://127.0.0.1:43112");
+    expect(bridgeInput?.upstreamUrl).toBe("wss://preview.example.test/");
+    expect(bridgeInput?.bearerToken).toMatch(/^[0-9a-f]{64}$/);
+    const digest = createHash("sha256").update(bridgeInput!.bearerToken).digest("hex");
+    expect(harness.commands[0]?.command).toContain(digest);
+    expect(harness.commands[0]?.command).not.toContain(bridgeInput!.bearerToken);
+
+    await lease.close();
   });
 
   test("fails the turn when another process holds the exec-server port", async () => {
@@ -360,7 +402,7 @@ describe("T3 Codex subscription lease", () => {
     expect(() => buildCodexExecServerCommand("unsafe; touch /tmp/pwned")).toThrow(
       "environment id is unsafe",
     );
-    expect(buildCodexExecServerReadinessCommand()).toContain("ws://0.0.0.0:37734");
+    expect(codexExecServerOwner().args).toEqual(["exec-server", "--listen", "ws://0.0.0.0:37734"]);
 
     const patch = buildCodexProviderInstanceCommand({
       relayUrl: "wss://useagent.example.test/api/internal/codex-relay/opaque",
@@ -482,6 +524,7 @@ function runtime(): CodexSubscriptionRuntimeSelection {
 function fakeSandbox(options: {
   execServerListening?: boolean;
   execServerPortForeign?: boolean;
+  codeModeListening?: boolean;
   failProviderPatch?: boolean;
   launchExit?: number;
   providerKind?: "box" | "cube" | "daytona";
@@ -499,12 +542,21 @@ function fakeSandbox(options: {
     process: {
       async executeCommand(command: string) {
         const providerPatch = command.includes("CODEX_INSTANCE_B64");
-        const listeningProbe = command.includes("const deadline=Date.now()+0;");
-        const result = {
-          exitCode: listeningProbe && options.execServerPortForeign
-            ? 2
-            : (providerPatch && options.failProviderPatch) || (listeningProbe && !options.execServerListening) ? 1 : 0,
-        };
+        const quickProbe = command.includes("const deadline=Date.now()+0;");
+        const readinessProbe = command.includes("const deadline=Date.now()+15000;");
+        if (quickProbe || readinessProbe) {
+          const owners = JSON.parse(Buffer.from(command.trim().split(" ").at(-1) ?? "", "base64").toString("utf8")) as Array<{ port: number }>;
+          const verdicts = Object.fromEntries(owners.map(({ port }) => [port, readinessProbe
+            ? 0
+            : port === 37_734
+              ? options.execServerPortForeign ? 2 : options.execServerListening ? 0 : 1
+              : options.codeModeListening ? 0 : 1]));
+          const values = Object.values(verdicts);
+          const result = { exitCode: values.includes(2) ? 2 : values.every((v) => v === 0) ? 0 : 1, result: JSON.stringify(verdicts) };
+          commands.push({ command, result });
+          return result;
+        }
+        const result = { exitCode: providerPatch && options.failProviderPatch ? 1 : 0 };
         commands.push({ command, result });
         return result;
       },

@@ -51,9 +51,11 @@ const HOST_EXECUTION_OFF = [
 
 describe("Codex subscription relay public origin", () => {
   test("enables the native plan tool and keeps host-side execution features off on the per-run model app-server", () => {
-    expect(codexSubscriptionAppServerArgs(null)).toEqual([
+    expect(codexSubscriptionAppServerArgs(null, "http://127.0.0.1:43112")).toEqual([
       "app-server",
       "--stdio",
+      "--code-mode-host",
+      "http://127.0.0.1:43112",
       "-c",
       "tools.update_plan.enabled=true",
       ...HOST_EXECUTION_OFF,
@@ -71,9 +73,11 @@ describe("Codex subscription relay public origin", () => {
         runId: "run-1",
         scope: "run",
       },
-    })).toEqual([
+    }, "http://127.0.0.1:43112")).toEqual([
       "app-server",
       "--stdio",
+      "--code-mode-host",
+      "http://127.0.0.1:43112",
       "-c",
       "tools.update_plan.enabled=true",
       ...HOST_EXECUTION_OFF,
@@ -82,6 +86,21 @@ describe("Codex subscription relay public origin", () => {
       "-c",
       'mcp_servers.useagent.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"',
     ]);
+  });
+
+  test("never starts an app-server that would run model code on this host", () => {
+    for (const url of ["", "https://127.0.0.1:43112", "http://10.0.0.5:43112", "grpc://127.0.0.1:43112"]) {
+      expect(() => codexSubscriptionAppServerArgs(null, url)).toThrow();
+    }
+    const grant = {
+      binding: binding(),
+      runtime: runtime(),
+      execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      publicOrigin: "http://127.0.0.1:1",
+    };
+    expect(() => issueCodexSubscriptionRelayCapability({ ...grant, codeModeHostUrl: "http://sandbox.example.test:37737" }))
+      .toThrow("Codex code-mode host must be a loopback HTTP tunnel");
+    issueCodexSubscriptionRelayCapability({ ...grant, codeModeHostUrl: "http://127.0.0.1:43112" }).close();
   });
 
   test("uses an explicit relay host without changing the Better Auth origin", () => {
@@ -134,6 +153,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -197,6 +217,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       toolGateway: {
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
@@ -232,6 +253,7 @@ describe("Codex subscription run relay", () => {
     expect(spawnInput).toEqual({
       codexHome: "/host/codex-home",
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       toolGateway: {
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
@@ -302,6 +324,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
 
@@ -330,6 +353,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const browserSocket = new WebSocket(capability.url, {
@@ -343,6 +367,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(secondCapability.url);
@@ -364,6 +389,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -406,6 +432,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const first = await opened(firstCapability.url);
@@ -425,6 +452,7 @@ describe("Codex subscription run relay", () => {
       binding: { ...binding(), runId: "run-2" },
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const resumed = await opened(resumeCapability.url);
@@ -446,6 +474,7 @@ describe("Codex subscription run relay", () => {
       binding: { ...binding(), runId: "run-3" },
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const forged = await opened(forgedCapability.url);
@@ -480,6 +509,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -510,6 +540,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -546,6 +577,7 @@ describe("Codex subscription run relay", () => {
       binding: binding(),
       runtime: runtime(),
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -626,6 +658,7 @@ describe("Codex subscription run relay", () => {
       },
       runtime: selected,
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+      codeModeHostUrl: "http://127.0.0.1:43112",
       publicOrigin: `http://127.0.0.1:${server.port}`,
     });
     const socket = await opened(capability.url);
@@ -1004,6 +1037,7 @@ async function initializedNativeOutputRelay(runId: string, codexHome: string) {
     },
     runtime: selected,
     execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
+    codeModeHostUrl: "http://127.0.0.1:43112",
     publicOrigin: `http://127.0.0.1:${server.port}`,
   });
   const socket = await opened(capability.url);
