@@ -259,6 +259,10 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     // Artifact/media links render as dense source chips (type badge + label +
     // arrow), matching the retrieval-chip grammar; ordinary links stay links.
     const isArtifact = /\/(?:api|agent)\/artifacts\//.test(url);
+    // Workspace chips belong to a session surface (SessionView provides the
+    // workpiece opener); a wiki page or a document cites repository files by
+    // relative path, and those stay links.
+    const workspaceLinks = openWorkpiece !== null;
     const label =
       typeof children === "string"
         ? children
@@ -268,7 +272,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     // A workspace file cannot be opened from the browser, so the chip names
     // it without pretending to be a link; whether it was harvested is for the
     // Session files rail to say, so the chip claims nothing about that.
-    if (!isArtifact && isSandboxPath(url)) {
+    if (workspaceLinks && !isArtifact && isSandboxPath(url)) {
       return (
         <span
           data-chip

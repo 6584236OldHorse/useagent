@@ -32,9 +32,13 @@ describe("Markdown links", () => {
     expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
-  test("a sandbox path of any file type never becomes a link", () => {
+  test("a sandbox path of any file type never becomes a link inside a session", () => {
     for (const href of ["/root/work/notes.md", "/home/user/work/page.html", "out/chart.svg"]) {
-      const html = renderToStaticMarkup(<Markdown>{`[Report](${href})`}</Markdown>);
+      const html = renderToStaticMarkup(
+        <WorkspaceOpenProvider value={() => {}}>
+          <Markdown>{`[Report](${href})`}</Markdown>
+        </WorkspaceOpenProvider>,
+      );
       expect(html).not.toContain("href=");
       expect(html).toContain("Report");
     }
@@ -48,7 +52,9 @@ describe("Markdown links", () => {
 
   test("renders a sandbox path as a named chip, never as a dead link", () => {
     const html = renderToStaticMarkup(
-      <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>,
+      <WorkspaceOpenProvider value={() => {}}>
+        <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>
+      </WorkspaceOpenProvider>,
     );
     expect(html).toContain("Download the PDF");
     expect(html).not.toContain("href=");
@@ -58,10 +64,19 @@ describe("Markdown links", () => {
   test("a workspace path that is not a deliverable keeps its ordinary anchor, and formatted labels survive", () => {
     expect(isSandboxPath("/root/work/data.json")).toBe(false);
     expect(isSandboxPath("src/index.ts")).toBe(false);
-    const html = renderToStaticMarkup(<Markdown>{"[**Quarterly notes**](output/notes.md)"}</Markdown>);
+    const html = renderToStaticMarkup(
+      <WorkspaceOpenProvider value={() => {}}>
+        <Markdown>{"[**Quarterly notes**](output/notes.md)"}</Markdown>
+      </WorkspaceOpenProvider>,
+    );
     expect(html).toContain("<strong>Quarterly notes</strong>");
     expect(html).not.toContain("href=");
     expect(html).not.toContain(">Open<");
+  });
+
+  test("outside a session, such as a wiki page, a relative file link stays a link", () => {
+    const html = renderToStaticMarkup(<Markdown>{"[README.md](README.md)"}</Markdown>);
+    expect(html).toContain('href="README.md"');
   });
 
   test("keeps ordinary links on the plain markdown link path", () => {

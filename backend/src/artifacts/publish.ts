@@ -190,17 +190,29 @@ async function attachOfficePreview(
     return currentRecord();
   }
   const previewKey = createHash("sha256").update(pdf).digest("hex");
-  const attached = await withArtifactStorageKeyLock(previewKey, async (tx) => {
-    await artifactStorage().put(previewKey, pdf);
-    return updateArtifactPreview({
-      orgId: input.orgId,
-      id: input.record.id,
-      expectedSha256: input.record.sha256,
-      expectedWorkpieceRevision: input.record.workpieceRevision,
-      previewStorageKey: previewKey,
-      exec: tx,
+  // The preview is a convenience on top of an artifact that already exists:
+  // a lock held elsewhere or a storage failure here must not take the
+  // publication's lifecycle events with it.
+  let attached: Awaited<ReturnType<typeof updateArtifactPreview>> | null;
+  try {
+    attached = await withArtifactStorageKeyLock(previewKey, async (tx) => {
+      await artifactStorage().put(previewKey, pdf);
+      return updateArtifactPreview({
+        orgId: input.orgId,
+        id: input.record.id,
+        expectedSha256: input.record.sha256,
+        expectedWorkpieceRevision: input.record.workpieceRevision,
+        previewStorageKey: previewKey,
+        exec: tx,
+      });
     });
-  });
+  } catch (error) {
+    console.warn(
+      `[office-preview] preview not attached for artifact ${input.record.id}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return currentRecord();
+  }
   return attached ?? currentRecord();
 }
 

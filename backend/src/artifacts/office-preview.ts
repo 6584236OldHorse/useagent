@@ -84,7 +84,16 @@ async function providerConvert(input: OfficePreviewInput): Promise<Uint8Array | 
     if ((result.exitCode ?? 1) !== 0) return null;
     const info = await sandbox.fs.getFileDetails(outPath);
     if (Number((info as { size?: number }).size ?? 0) > input.maxBytes) return null;
-    const bytes = await sandbox.fs.downloadFile(outPath);
+    // The converted PDF is read within the same bound as the conversion: a
+    // stream that never ends yields no preview instead of holding the caller.
+    const bytes = await Promise.race([
+      sandbox.fs.downloadFile(outPath),
+      new Promise<null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), input.timeoutSeconds * 1000);
+        timer.unref?.();
+      }),
+    ]);
+    if (bytes === null) return null;
     if (bytes.length === 0 || bytes.length > input.maxBytes) return null;
     return new Uint8Array(bytes);
   } finally {
