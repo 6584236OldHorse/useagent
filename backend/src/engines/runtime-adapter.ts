@@ -60,6 +60,7 @@ import {
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
 import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
+import { activityRevisions, createTurnProjector, type TurnProjector } from "./turn-projector";
 import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { operatorEnv } from "./runtime-env";
@@ -93,6 +94,7 @@ const RUNTIME_TERMINAL_OUTPUT_DRAIN_MS = 15_000;
 const RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS = 2;
 const RUNTIME_TERMINAL_CLEANUP_MS = 250;
 export { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR } from "./turn-recovery";
+export { projectRuntimeAssistantText } from "./turn-projector";
 // Codex subscription writes its per-run relay config into the sandbox's T3
 // settings.json, which T3 applies through an asynchronous settings-watch
 // reconcile. Wait for the reconcile to publish the remote instance before
@@ -225,16 +227,6 @@ export function configuredRuntimeMode(
   return mode;
 }
 
-/** What the thread already held before a turn is dispatched, so nothing earlier is read as its response. */
-function turnBaseline(priorSnapshot: Awaited<ReturnType<typeof readThreadSnapshot>>) {
-  return {
-    priorSnapshot,
-    preExistingActivities: new Map(
-      priorSnapshot.thread.activities.map((activity) => [activity.id, runtimeActivityRevision(activity)]),
-    ),
-  };
-}
-
 async function readThreadSnapshot(
   ctx: EngineRunContext,
   sandbox: Awaited<ReturnType<typeof acquireThreadSandbox>>["sandbox"],
@@ -344,19 +336,6 @@ export async function readRuntimeTerminalSnapshot(
   }
 }
 
-export function projectRuntimeAssistantText(
-  state: { readonly publishedText: string; readonly finalText: string },
-  text: string,
-  settled: boolean,
-): { readonly publishedText: string; readonly finalText: string; readonly delta: string } {
-  const monotonic = text.startsWith(state.publishedText);
-  return {
-    publishedText: monotonic ? text : state.publishedText,
-    finalText: settled ? text : state.finalText,
-    delta: monotonic ? text.slice(state.publishedText.length) : "",
-  };
-}
-
 interface RuntimeTurnWaitDependencies {
   readonly readThreadSnapshot: typeof readThreadSnapshot;
   readonly subscribeRuntimeThread: typeof subscribeRuntimeThread;
@@ -375,9 +354,8 @@ export async function waitForRuntimeTurn(
   redact: ReturnType<typeof createSecretRedactor>,
   dependencies: RuntimeTurnWaitDependencies = runtimeTurnWaitDependencies,
   engine: RuntimeEngineId | null = null,
+  projector: TurnProjector = createTurnProjector({ ctx, redact, engine, seen: preExistingActivities }),
 ): Promise<string> {
-  const activityRevisions = new Map(preExistingActivities);
-  const activitySteps = new Map<string, string>();
   // Single owner of the turn-stream no-progress bound: a provider retry storm
   // (only runtime.warning activities, no tool/text progress) must terminate
   // the run with the real provider reason instead of running forever.
@@ -394,8 +372,6 @@ export async function waitForRuntimeTurn(
     }
   }, 15_000);
   toolHeartbeat.unref?.();
-  let publishedText = "";
-  let finalText = "";
   const threadId = runtimeThreadId(ctx);
   const priorTurnId = priorSnapshot.thread.latestTurn?.turnId ?? null;
   let currentTurnObserved = false;
@@ -411,47 +387,11 @@ export async function waitForRuntimeTurn(
     firstActivityDeadline.signal,
   ]);
   const applySnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
-    toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
-    for (const activity of snapshot.thread.activities) {
-      const revision = runtimeActivityRevision(activity);
-      if (activityRevisions.get(activity.id) === revision) continue;
-      activityRevisions.set(activity.id, revision);
-      await recordProviderEvent(runtimeActivityProviderEvent(
-        ctx,
-        runtimeThreadId(ctx),
-        activity,
-        redact,
-      ), {
-        critical:
-          activity.kind === "user-input.requested" || activity.kind === "approval.requested",
-      });
-      watchdog.observeActivity(activity);
-      if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
-      const step = redact.unknown(activityStep(activity, runtimeThreadId(ctx), engine));
-      const activityStepKey = runtimeActivityStepKey(activity);
-      const priorStepId = activitySteps.get(activityStepKey);
-      if (priorStepId && ctx.updateStep) {
-        await ctx.updateStep(priorStepId, step.code_json ?? null);
-      } else {
-        const stepId = await ctx.emit(step);
-        if (stepId) activitySteps.set(activityStepKey, stepId);
-      }
-    }
-
-    const text = redact.text(assistantText(snapshot));
-    const settled = runtimeTurnSettled(snapshot);
-    const projection = projectRuntimeAssistantText({ publishedText, finalText }, text, settled);
-    const delta = projection.delta;
-    if (delta) {
-      ctx.publishDelta?.(delta);
-      watchdog.observeProgress();
-    }
-    publishedText = projection.publishedText;
-    finalText = projection.finalText;
-
-    const error = runtimeTurnError(snapshot);
-    if (error) throw new RuntimeTurnFailedError(redact.text(error));
-    return !settled;
+    const applied = await projector.apply(snapshot, (activity) => watchdog.observeActivity(activity));
+    toolInFlight = applied.toolInFlight;
+    if (applied.delta) watchdog.observeProgress();
+    if (applied.error) throw new RuntimeTurnFailedError(applied.error);
+    return !applied.settled;
   };
   const acceptSnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
     const latestTurnId = snapshot.thread.latestTurn?.turnId ?? null;
@@ -494,12 +434,12 @@ export async function waitForRuntimeTurn(
     throw new Error("Provider thread subscription ended before the dispatched turn was observed");
   }
   return await drainRuntimeTerminalOutput({
-    initialText: finalText,
-    fallbackText: publishedText,
+    initialText: projector.finalText,
+    fallbackText: projector.publishedText,
     signal: ctx.signal,
     readAndApplySnapshot: async (drainSignal) => {
       await applySnapshot(await readRuntimeTerminalSnapshot(ctx, sandbox, drainSignal));
-      return finalText;
+      return projector.finalText;
     },
   });
 }
@@ -671,7 +611,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // turn before steering so an initialization greeting cannot be mistaken
         // for the response to this run.
         const priorSnapshot = await readThreadSnapshot(ctx, sandbox);
-        const priorTurnId = priorSnapshot.thread.latestTurn?.turnId ?? null;
 
         // HTTP orchestration dispatch validates thread.turn.start against an
         // already-projected thread. ProviderDriver.start creates it explicitly instead of
@@ -687,7 +626,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           resumed: established.resumed,
         });
         let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model };
-        let turnBase = turnBaseline(priorSnapshot);
+        let turnBase = priorSnapshot;
+        let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
         let attempt = 1;
         const endTurn = ctx.timing?.begin("t3.turn_wait");
         let skipQueuedCancel = false;
@@ -714,11 +654,12 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               const summary = await waitForRuntimeTurn(
                 ctx,
                 sandbox,
-                turnBase.preExistingActivities,
-                turnBase.priorSnapshot,
+                projector.seen(),
+                turnBase,
                 redact,
                 runtimeTurnWaitDependencies,
                 engine,
+                projector,
               );
               await ctx.emit({ kind: "done", label: "Done", chip: null });
               ctx.setSummary(summary, Date.now() - startedAt);
@@ -733,7 +674,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
                   ctx,
                   sandbox,
                   lease: providerBridgeLease,
-                  priorTurnId,
+                  priorTurnId: turnBase.thread.latestTurn?.turnId ?? null,
                 });
                 skipQueuedCancel = recovery.stuckStartConfirmed;
                 throw recovery.error;
@@ -758,17 +699,19 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               }
               attempt += 1;
               if (recovery.delayMs > 0) await delay(recovery.delayMs, undefined, { signal: ctx.signal });
+              // Whatever landed after the wait gave up goes through the same
+              // projector, so the record keeps it and the continuation does not
+              // take it for old. An answer that landed late is the answer.
               const settledSnapshot = await readThreadSnapshot(ctx, sandbox);
-              const lateText = recovery.answerMayBeLate ? redact.text(assistantText(settledSnapshot)).trim() : "";
-              if (lateText) {
-                // The answer landed after the drain gave up; it is the answer, nothing is resent.
-                ctx.publishDelta?.(lateText);
+              await projector.apply(settledSnapshot);
+              if (recovery.answerMayBeLate && projector.finalText.trim()) {
                 await ctx.emit({ kind: "done", label: "Done", chip: null });
-                ctx.setSummary(lateText, Date.now() - startedAt);
+                ctx.setSummary(projector.finalText, Date.now() - startedAt);
                 break;
               }
               await ctx.emit({ kind: "task", label: recovery.label, chip: `runtime:${engine}` });
-              turnBase = turnBaseline(settledSnapshot);
+              turnBase = settledSnapshot;
+              projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen() });
               turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
             }
           }

@@ -7,6 +7,7 @@ import {
   TURN_RECOVERY_ATTEMPTS,
   continuationRunId,
   describeUpstreamOutcome,
+  turnRunIds,
   transientProviderFailure,
   turnRecovery,
 } from "./turn-recovery";
@@ -35,9 +36,13 @@ describe("turn recovery policy", () => {
   test("a continuation dispatches under its own identity", () => {
     expect(continuationRunId("run-1", 2)).not.toBe("run-1");
     expect(continuationRunId("run-1", 2)).toBe(continuationRunId("run-1", 2));
+    expect(turnRunIds("run-1")).toEqual(["run-1", "run-1:continue-2"]);
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     expect(source).toContain("runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),");
-    expect(source).toContain("throw new RuntimeTurnFailedError(redact.text(error));");
+    expect(source).toContain("throw new RuntimeTurnFailedError(applied.error);");
+    // The continuation baseline and the late re-read share the first attempt's projector.
+    expect(source).toContain("projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen() });");
+    expect(source).toContain("priorTurnId: turnBase.thread.latestTurn?.turnId ?? null,");
   });
 
   test("lets every other failure stand", () => {

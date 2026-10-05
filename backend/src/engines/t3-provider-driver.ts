@@ -1,4 +1,5 @@
 import type { HarnessRuntime, HarnessSession } from "@useagent/agent-harness/canonical";
+import { turnRunIds } from "./turn-recovery";
 import {
   providerProtocolIdentity,
   providerDriverUnsupported,
@@ -205,13 +206,18 @@ function snapshotMatchesAcceptedRun(
 ): boolean {
   const latestTurn = snapshot.thread.latestTurn;
   if (!latestTurn) return false;
-  const accepted = snapshot.thread.messages.find(
-    (message) => message.role === "user" && message.id === runtimeUserMessageId(runId),
+  // The run's own message, or the continuation the plane sent for it.
+  const messageIds = new Set(turnRunIds(runId).map(runtimeUserMessageId));
+  const accepted = snapshot.thread.messages.filter(
+    (message) => message.role === "user" && messageIds.has(message.id),
   );
-  if (!accepted) return false;
-  if (accepted.turnId !== null) return accepted.turnId === latestTurn.turnId;
-  if (!accepted.createdAt || !latestTurn.requestedAt) return false;
-  const acceptedAt = Date.parse(accepted.createdAt);
+  const original = accepted[0];
+  if (!original) return false;
+  if (accepted.some((message) => message.turnId !== null)) {
+    return accepted.some((message) => message.turnId === latestTurn.turnId);
+  }
+  if (!original.createdAt || !latestTurn.requestedAt) return false;
+  const acceptedAt = Date.parse(original.createdAt);
   const requestedAt = Date.parse(latestTurn.requestedAt);
   return Number.isFinite(acceptedAt) && acceptedAt === requestedAt;
 }

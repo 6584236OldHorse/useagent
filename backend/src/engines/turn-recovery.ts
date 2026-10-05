@@ -23,6 +23,11 @@ export function continuationRunId(runId: string, attempt: number): string {
   return `${runId}:continue-${attempt}`;
 }
 
+/** Every dispatch identity a run may have used: its own, then each continuation the plane is allowed to send. */
+export function turnRunIds(runId: string): string[] {
+  return [runId, ...Array.from({ length: TURN_RECOVERY_ATTEMPTS }, (_, index) => continuationRunId(runId, index + 2))];
+}
+
 /** Continuation turns the plane sends by itself for one dispatched turn. */
 export const TURN_RECOVERY_ATTEMPTS = 1;
 
