@@ -374,6 +374,7 @@ test("the desktop app's referer passes the resend check the way the library allo
 test("a deployment that cannot create accounts refuses to invite an address without one", async () => {
   const org = await createOrgSession("closed-signup");
   const existing = await createOrgSession("has-account");
+  const stranger = await createOrgSession("stranger-closed");
   // Invited while the deployment could still create accounts, but never signed in with a password.
   const googleOnly = `google-only-${crypto.randomUUID().slice(0, 8)}@example.test`;
   await db.insert(user).values({ id: crypto.randomUUID(), name: "Google Only", email: googleOnly, emailVerified: true });
@@ -417,18 +418,49 @@ test("a deployment that cannot create accounts refuses to invite an address with
       body: { organizationId: org.orgId, email: existing.email, role: "member" },
     });
     expect(known.status).toBe(200);
-    // An outsider learns nothing about who has an account.
-    const outsider = await json<{ message?: string }>("/api/auth/organization/invite-member", {
-      method: "POST",
-      cookies: existing.cookies,
-      body: { organizationId: org.orgId, email: "nobody-yet@example.test", role: "member" },
-    });
-    expect(outsider.status).toBe(403);
-    expect(outsider.body.message).toBe("You are not allowed to invite people to this workspace");
+    // Nobody but a manager learns which addresses can sign in: the same answer for
+    // an address with a password account and one without, whoever asks.
+    const [plainUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, existing.email));
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: org.orgId, userId: plainUser!.id, role: "member", createdAt: new Date() });
+    for (const cookies of [undefined, stranger.cookies, existing.cookies]) {
+      const answers = new Set<string>();
+      for (const email of [existing.email, "nobody-yet@example.test"]) {
+        const res = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+          method: "POST",
+          cookies,
+          body: { organizationId: org.orgId, email, role: "member" },
+        });
+        answers.add(`${res.status} ${res.body.message}`);
+      }
+      expect(answers.size).toBe(1);
+      expect([...answers][0]!.startsWith(cookies ? "403" : "401")).toBe(true);
+    }
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
   }
+});
+
+test("a second resend within a minute is refused and changes nothing", async () => {
+  const org = await createOrgSession("throttle");
+  const invite = await json<{ id: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "throttle@example.test", role: "member" },
+  });
+  expect(invite.status).toBe(200);
+  const resend = () =>
+    json<{ expiresAt?: string; message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "throttle@example.test", role: "member", resend: true },
+    });
+  const first = await resend();
+  expect(first.status).toBe(200);
+  const second = await resend();
+  expect(second.status).toBe(429);
+  const [row] = await db.select({ expiresAt: invitation.expiresAt }).from(invitation).where(eq(invitation.id, invite.body.id));
+  expect(row!.expiresAt.toISOString()).toBe(first.body.expiresAt);
 });

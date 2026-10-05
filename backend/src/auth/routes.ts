@@ -123,6 +123,18 @@ async function canSignIn(email: string): Promise<boolean> {
   return known !== undefined;
 }
 
+const RESEND_WINDOW_MS = 60_000;
+const recentResends = new Map<string, number>();
+// ponytail: process-local, which matches the documented one-backend deployment; move to the database if replicas ever appear.
+function resendAllowed(organizationId: string, email: string): boolean {
+  const now = Date.now();
+  for (const [key, at] of recentResends) if (now - at > RESEND_WINDOW_MS) recentResends.delete(key);
+  const key = `${organizationId}:${email.trim().toLowerCase()}`;
+  if (recentResends.has(key)) return false;
+  recentResends.set(key, now);
+  return true;
+}
+
 /** A resend renews the invitation that already exists, with the role stored on
  *  it, never the role the request names. It is answered here in full instead of
  *  being forwarded, so nothing can change between the check and the renewal.
@@ -142,11 +154,12 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     // The library trims role tokens when it validates them but stores the raw
     // string, so "admin, owner" passes as admin and lands as owner. One exact role.
     if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
-    if (typeof body.email === "string" && !(await canSignIn(body.email))) {
-      // Only a manager learns which addresses have a way in.
+    if (typeof body.email === "string" && !selfSignupEnabled() && !googleAuthEnabled()) {
+      // On a closed deployment the manager check comes first, whatever the
+      // address, so nobody else can tell from the answer which addresses can sign in.
       const manager = await managerFor(request, body);
       if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-      return c.json({ message: NO_WAY_IN }, 400);
+      if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
     }
     return auth.handler(request);
   }
@@ -167,6 +180,11 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     );
   if (live.some((row) => roles(row.role).includes("owner")) && !mine.includes("owner")) {
     return c.json({ message: "Only an owner can resend an owner invitation" }, 403);
+  }
+  // Answered outside the library, so its request limiter does not apply; one
+  // resend per address and organisation per minute bounds the mail it can cause.
+  if (live.length && !resendAllowed(organizationId, body.email)) {
+    return c.json({ message: "That invitation was resent less than a minute ago. Try again shortly." }, 429);
   }
   const [renewed] = live.length
     ? await db
