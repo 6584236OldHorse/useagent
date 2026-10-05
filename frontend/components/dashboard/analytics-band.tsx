@@ -28,7 +28,7 @@ export function AnalyticsBand({
   return (
     <div className='grid grid-cols-1 gap-4 lg:grid-cols-2'>
       <AreaChartCard
-        title='Runs settled'
+        title='Runs finished'
         data={points}
         series={[
           {
@@ -69,7 +69,7 @@ export function AnalyticsBand({
       />
       <div className='sr-only'>
         <table>
-          <caption>Runs settled by UTC day</caption>
+          <caption>Runs finished by UTC day</caption>
           <thead><tr><th>Day</th><th>Completed</th><th>Failed</th></tr></thead>
           <tbody>{daily.map((row) => <tr key={row.key}><th>{row.label}</th><td>{row.completed}</td><td>{row.failed}</td></tr>)}</tbody>
         </table>
