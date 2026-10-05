@@ -14,6 +14,7 @@ import {
   decodeRuntimeEnvironmentCommandOutput,
   invalidateRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeThreadSnapshotRequest,
 } from "./runtime-environment-client";
 import { awaitCodexProviderReady } from "./codex-subscription-runtime";
 import {
@@ -190,10 +191,7 @@ async function readThreadSnapshot(
 ): Promise<RuntimeThreadSnapshot> {
   return await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
     sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(runtimeThreadId(ctx))}`,
-    },
+    runtimeThreadSnapshotRequest(runtimeThreadId(ctx)),
     signal,
   );
 }
@@ -271,10 +269,7 @@ export async function readRuntimeTerminalSnapshot(
     await awaitRuntimeOperation(sandbox.process.createSession(sessionId), signal, cleanup);
     const result = await awaitRuntimeOperation(
       sandbox.process.executeSessionCommand(sessionId, {
-        command: buildRuntimeEnvironmentRequestCommand({
-          method: "GET",
-          path: `/api/orchestration/threads/${encodeURIComponent(runtimeThreadId(ctx))}`,
-        }),
+        command: buildRuntimeEnvironmentRequestCommand(runtimeThreadSnapshotRequest(runtimeThreadId(ctx))),
         runAsync: false,
       }, RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS),
       signal,

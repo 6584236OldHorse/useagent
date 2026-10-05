@@ -130,9 +130,9 @@ describe("T3 run adapter gate", () => {
     });
 
     expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
-      "GET /api/orchestration/threads/skynet-thread-thread-1",
+      "GET /api/orchestration/threads/skynet-thread-thread-1?turnLimit=2",
       "POST /api/orchestration/dispatch",
-      "GET /api/orchestration/threads/skynet-thread-thread-1",
+      "GET /api/orchestration/threads/skynet-thread-thread-1?turnLimit=2",
     ]);
     expect(calls[1]?.payload).toMatchObject({
       type: "thread.session.stop",
@@ -187,7 +187,7 @@ describe("T3 run adapter gate", () => {
         wait: async () => {},
       } satisfies OpenCodeSessionReloadDependencies,
     });
-    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1"]);
+    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1?turnLimit=2"]);
   });
 
   test.each([
@@ -213,7 +213,7 @@ describe("T3 run adapter gate", () => {
         wait: async () => {},
       } satisfies OpenCodeSessionReloadDependencies,
     })).rejects.toThrow(message);
-    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1"]);
+    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1?turnLimit=2"]);
   });
 
   test.each(["missing", "unknown"] as const)(
@@ -317,7 +317,7 @@ describe("T3 run adapter gate", () => {
       } satisfies OpenCodeSessionReloadDependencies,
     });
     expect(applied).toBe(false);
-    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1", "POST /api/orchestration/dispatch"]);
+    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1?turnLimit=2", "POST /api/orchestration/dispatch"]);
   });
 
   test("a refusal that is not about the stop still fails the reload", async () => {
@@ -681,7 +681,7 @@ describe("T3 run adapter gate", () => {
 
     expect(returned).toEqual({ error, stuckStartConfirmed: true });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2",
       "/api/orchestration/shell",
       "close-lease",
       "restart-runtime",
@@ -805,7 +805,7 @@ describe("T3 run adapter gate", () => {
 
     expect(recovery).toEqual({ error: userStopped, stuckStartConfirmed: true });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2",
       "/api/orchestration/shell",
       "close-lease",
       "restart-runtime",
@@ -902,7 +902,7 @@ describe("T3 run adapter gate", () => {
       },
     })).toEqual({ error: timeout, stuckStartConfirmed: false });
     expect(calls).toEqual([
-      "/api/orchestration/threads/skynet-thread-thread-1",
+      "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2",
       "/api/orchestration/shell",
     ]);
   });

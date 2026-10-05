@@ -4,7 +4,7 @@ import {
 } from "../sandboxes/provider";
 import { setTimeout as delay } from "node:timers/promises";
 import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
-import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
+import { issueRuntimeEnvironmentWebSocketTicket, RUNTIME_THREAD_TURN_WINDOW } from "./runtime-environment-client";
 import { pingRuntimeSocket } from "./turn-liveness";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { applyRuntimeThreadEvent, type RuntimeThreadEvent } from "./runtime-thread-events";
@@ -76,6 +76,8 @@ export function buildRuntimeThreadSubscriptionRequest(
     payload: {
       threadId,
       ...(afterSequence === undefined ? {} : { afterSequence }),
+      // The first snapshot carries the same recent window as a thread read.
+      turnLimit: RUNTIME_THREAD_TURN_WINDOW,
       requestCompletionMarker: true,
     },
     headers: [],

@@ -1,8 +1,8 @@
 {
-  "archiveName": "native-runtime-90dc3ebbb74b.tar.gz",
-  "archiveSha256": "8a635e99dd0137f4c7cf2f54a5b17ec774d3e40e1932fe99e1804ec969b6e80e",
-  "manifestSha256": "6bc517c569e2da4179bee12488f592d4650fd9c374002b0fba15bffbe1d7b455",
-  "sourceCommit": "90dc3ebbb74b0e85f41c4cb3105a9f8994ce0bfa",
-  "dependencyVersion": "0.0.39-nightly.20260906.1293",
-  "dependencyLockSha256": "bb8a70f3a722a67fbd7838b73e427c863ed51e18b4705cd69297057e10ddff34"
+  "archiveName": "native-runtime-762f4b14b328.tar.gz",
+  "archiveSha256": "40023789a64a00df1f89cf5dadfac1a3bef9e10dda8f6eedf2883629223571af",
+  "manifestSha256": "753f5dc0dc5405b0ad9c1b6909ca7c1685ee25fdddf8df5729830b8016d9f2c1",
+  "sourceCommit": "762f4b14b328829b667b65cbe3a081f9af2a191e",
+  "dependencyVersion": "0.0.45",
+  "dependencyLockSha256": "64faa8040f236a620acd928cd648df931311274cfd1501b570e29fb09914e35e"
 }

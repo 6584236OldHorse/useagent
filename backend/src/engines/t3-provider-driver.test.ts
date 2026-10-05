@@ -499,9 +499,9 @@ describe("T3 provider drivers", () => {
       ],
     });
     expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1" },
+      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2" },
       { method: "POST", path: "/api/orchestration/dispatch" },
-      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1" },
+      { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1?turnLimit=2" },
     ]);
     expect(requests[1]?.payload).toMatchObject({
       type: "thread.turn.interrupt",

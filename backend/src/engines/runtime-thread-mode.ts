@@ -2,7 +2,7 @@ import type { PermissionMode } from "@useagent/agent-client/wire";
 import { setTimeout as delay } from "node:timers/promises";
 import { threadHasSessionGrant } from "../runs/provider-events";
 import type { SandboxHandle } from "../sandboxes/provider";
-import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { requestRuntimeEnvironment, runtimeThreadSnapshotRequest } from "./runtime-environment-client";
 import type { RuntimeMode, RuntimeThreadSnapshot } from "./runtime-orchestration";
 
 /**
@@ -77,7 +77,7 @@ export async function ensureRuntimeThreadMode(input: {
   for (let attempt = 0; attempt < MODE_SETTLE_ATTEMPTS; attempt += 1) {
     latest = await request<RuntimeThreadSnapshot>(
       input.sandbox,
-      { method: "GET", path: `/api/orchestration/threads/${encodeURIComponent(input.threadId)}` },
+      runtimeThreadSnapshotRequest(input.threadId),
       input.signal,
     );
     if (latest.thread.runtimeMode === input.runtimeMode) return latest;

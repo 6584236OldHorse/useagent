@@ -1,9 +1,11 @@
 {
   "name": "@useagent/native-runtime-dependencies",
-  "version": "0.0.0",
+  "version": "0.0.45",
   "private": true,
   "dependencies": {
-    "t3": "0.0.39-nightly.20260906.1293"
+    "@ff-labs/fff-node": "0.9.4",
+    "@napi-rs/keyring": "1.3.0",
+    "node-pty": "1.2.0-beta.15"
   },
   "trustedDependencies": [
     "node-pty"

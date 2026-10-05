@@ -47,7 +47,7 @@ const CLAUDE_READY_POLL_MS = 150;
 const NATIVE_VERSION_PROBE_ATTEMPTS = 3;
 const NATIVE_VERSION_PROBE_DELAYS_MS = [250, 500] as const;
 const NATIVE_VERSION_PROBE_DIAGNOSTIC_PREFIX = "useagent-native-version-probe:";
-const CODEX_VERSION = "0.153.3";
+const CODEX_VERSION = "0.159.3";
 const CLAUDE_CODE_VERSION = "2.1.226";
 const OPENCODE_VERSION = "1.18.7";
 /** The pinned driver versions the bootstrap installs; the native image name is derived from them. */

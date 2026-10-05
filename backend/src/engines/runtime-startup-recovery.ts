@@ -3,6 +3,7 @@ import { restartRuntimeEnvironment } from "./runtime-environment.js";
 import {
   invalidateRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeThreadSnapshotRequest,
 } from "./runtime-environment-client.js";
 import {
   runtimeThreadId,
@@ -86,7 +87,7 @@ export async function recoverStuckCodexSubscriptionStart(
     }
     const snapshot = await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
       sandbox,
-      { method: "GET", path: `/api/orchestration/threads/${encodeURIComponent(threadId)}` },
+      runtimeThreadSnapshotRequest(threadId),
       signal,
     );
     if (

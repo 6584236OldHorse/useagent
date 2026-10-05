@@ -18,6 +18,7 @@ import {
   isRuntimeEnvironmentMissingSessionError,
   requestRuntimeEnvironment,
   RuntimeEnvironmentRequestError,
+  runtimeThreadSnapshotRequest,
 } from "./runtime-environment-client";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 import {
@@ -209,10 +210,7 @@ async function readThreadSnapshot(
     sandbox,
     snapshot: await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
       sandbox,
-      {
-        method: "GET",
-        path: `/api/orchestration/threads/${encodeURIComponent(currentSession.nativeSessionId)}`,
-      },
+      runtimeThreadSnapshotRequest(currentSession.nativeSessionId),
       signal,
     ),
   }));

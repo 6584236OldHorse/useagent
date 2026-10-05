@@ -4,7 +4,7 @@ import { approvalDecisionAllowed, readOnlyRefusal } from "./permission-mode";
 import { resolveExpectedSandbox } from "../sandboxes/binding";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { providerEventExists, recordProviderEvent } from "../runs/provider-events";
-import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { requestRuntimeEnvironment, runtimeThreadSnapshotRequest } from "./runtime-environment-client";
 import type { EmitStep } from "./types";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
@@ -164,10 +164,7 @@ export async function replyToRuntimeApproval(input: {
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(RUNTIME_APPROVAL_TIMEOUT_MS)]);
   const snapshot = await request<RuntimeThreadSnapshot>(
     sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(input.sessionId)}`,
-    },
+    runtimeThreadSnapshotRequest(input.sessionId),
     signal,
   );
   const pending = assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);

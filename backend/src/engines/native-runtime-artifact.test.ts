@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -17,8 +17,7 @@ describe("native runtime provenance", () => {
     const root = dirname(dirname(executable));
     try {
       await mkdir(dirname(executable), { recursive: true });
-      await mkdir(join(root, "node_modules/t3/dist"), { recursive: true });
-      await symlink("node_modules/t3/dist", join(root, "dist"));
+      await mkdir(join(root, "dist"), { recursive: true });
       await Bun.write(executable, `#!/bin/sh\nexec node '${root}/dist/bin.mjs' "$@"\n`);
       await chmod(executable, 0o700);
       await Bun.write(join(root, "dist/T3_SOURCE_COMMIT"), "public-package\n");
@@ -59,6 +58,14 @@ describe("native runtime provenance", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  test("installs the fork dist beside its native externals, never over a registry runtime", () => {
+    const layout = { home: "/home/user", workdir: "/home/user/work", runsAsRoot: false };
+    const command = buildNativeRuntimeInstallCommand(layout, "/home/user/stage", ["/home/user/stage/part-0"]);
+    expect(command).toContain("tar -xzf '/home/user/stage/runtime.tar.gz' -C '/home/user/stage/dependencies/dist'");
+    expect(command).not.toContain("node_modules/t3");
+    expect(buildNativeRuntimeArtifactProbe(layout)).toContain("test ! -L");
   });
 
   test("generates portable shell for root and non-root substrate layouts", () => {

@@ -46,7 +46,7 @@ export function buildNativeRuntimeArtifactProbe(layout: SandboxRuntimeLayout): s
         .update(launcherScript(`${root}/dist`))
         .digest("hex"),
     )} ${q(`${root}/bin/t3`)} | sha256sum -c - >/dev/null &&`,
-    `test "$(readlink ${q(`${root}/dist`)})" = node_modules/t3/dist &&`,
+    `test -d ${q(`${root}/dist`)} && test ! -L ${q(`${root}/dist`)} &&`,
     `${verifyDist(`${root}/dist`)} &&`,
     verifyDependencies(root),
   ].join("\n");
@@ -72,26 +72,24 @@ export function buildNativeRuntimeInstallCommand(
 ): string {
   const root = nativeRuntimeExecutable(layout).replace(/\/bin\/t3$/, "");
   const archive = `${staging}/runtime.tar.gz`;
-  const packageRoot = `${staging}/dependencies/node_modules/t3`;
+  const dist = `${staging}/dependencies/dist`;
   return [
     "set -eu",
     `export HOME=${q(layout.home)}`,
     `cat ${chunkPaths.map(q).join(" ")} > ${q(archive)}`,
     `printf '%s  %s\\n' ${q(manifest.archiveSha256)} ${q(archive)} | sha256sum -c - >/dev/null`,
     `mkdir -p ${q(`${staging}/dependencies`)}`,
-    // The registry package supplies platform-specific external dependencies
-    // only. Its public dist is never executed; the verified fork replaces it.
+    // The registry packages are the bundle's native externals only; the
+    // verified fork dist sits beside them and resolves them from node_modules.
     `cd ${q(`${staging}/dependencies`)}`,
     `printf '%s  %s\\n' ${q(manifest.dependencyLockSha256)} bun.lock | sha256sum -c - >/dev/null`,
     `BUN_INSTALL_CACHE_DIR=${q(`${staging}/cache`)} ${q(sandboxBunExecutable(layout))} install --frozen-lockfile --ignore-scripts --no-progress`,
     // Bun owns installation; use the existing Node toolchain only for its native addon.
     `node_gyp=$(node -e ${q('const fs=require("node:fs"),p=require("node:path");console.log(require.resolve("node-gyp/bin/node-gyp.js",{paths:[p.dirname(fs.realpathSync(process.argv[1]))]}))')} "$(command -v npm)")`,
     `(cd node_modules/node-pty && { node scripts/prebuild.js || node "$node_gyp" rebuild; } && node scripts/post-install.js)`,
-    `test -d ${q(`${packageRoot}/dist`)}`,
-    `mv ${q(`${packageRoot}/dist`)} ${q(`${staging}/public-dist`)}`,
-    `mkdir ${q(`${packageRoot}/dist`)}`,
-    `tar -xzf ${q(archive)} -C ${q(`${packageRoot}/dist`)}`,
-    `${verifyDist(`${packageRoot}/dist`)} || exit 1`,
+    `mkdir ${q(dist)}`,
+    `tar -xzf ${q(archive)} -C ${q(dist)}`,
+    `${verifyDist(dist)} || exit 1`,
     // Detect accidental file/topology corruption. This is not remote attestation
     // against tenant code with full access to the sandbox's process environment.
     "find node_modules -type f -print0 | sort -z | xargs -0 sha256sum > .native-dependencies.sha256",
@@ -99,7 +97,6 @@ export function buildNativeRuntimeInstallCommand(
     // Move the entire dependency tree, preserving node module resolution.
     `test ! -e ${q(root)}`,
     `mv ${q(`${staging}/dependencies`)} ${q(root)}`,
-    `ln -s node_modules/t3/dist ${q(`${root}/dist`)}`,
     publishLauncher(root),
     `test "$( ${q(`${root}/bin/t3`)} --version)" = ${q(`t3 v${manifest.dependencyVersion}`)}`,
     buildNativeRuntimeArtifactProbe(layout),

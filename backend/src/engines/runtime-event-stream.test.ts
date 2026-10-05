@@ -29,6 +29,7 @@ describe("T3 native thread event stream", () => {
       payload: {
         threadId: "skynet-thread-1",
         afterSequence: 41,
+        turnLimit: 2,
         requestCompletionMarker: true,
       },
       headers: [],
@@ -42,6 +43,7 @@ describe("T3 native thread event stream", () => {
       tag: "orchestration.subscribeThread",
       payload: {
         threadId: "skynet-thread-1",
+        turnLimit: 2,
         requestCompletionMarker: true,
       },
       headers: [],

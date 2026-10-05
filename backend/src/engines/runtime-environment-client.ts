@@ -55,6 +55,18 @@ export type RuntimeEnvironmentHttpPath =
   | `/api/orchestration/threads/${string}`
   | "/api/orchestration/dispatch";
 
+/** User turns a thread read returns: a run's own turn and its one continuation.
+ *  The latest turn and the session are thread-level and always included. */
+export const RUNTIME_THREAD_TURN_WINDOW = 2;
+
+/** A read of one thread's recent window, not its whole history. */
+export function runtimeThreadSnapshotRequest(threadId: string): RuntimeEnvironmentRequest {
+  return {
+    method: "GET",
+    path: `/api/orchestration/threads/${encodeURIComponent(threadId)}?turnLimit=${RUNTIME_THREAD_TURN_WINDOW}`,
+  };
+}
+
 interface RuntimeWebSocketTicket {
   readonly ticket: string;
   readonly expiresAt?: string;
@@ -86,7 +98,7 @@ function runtimeLoopbackUrl(path: RuntimeLoopbackPath): string {
     path !== "/api/orchestration/snapshot" &&
     path !== "/api/orchestration/shell" &&
     path !== "/api/orchestration/dispatch" &&
-    !/^\/api\/orchestration\/threads\/[a-zA-Z0-9._~%-]+$/.test(path)
+    !/^\/api\/orchestration\/threads\/[a-zA-Z0-9._~%-]+(\?turnLimit=[1-9][0-9]?)?$/.test(path)
   ) {
     throw new Error("invalid runtime loopback path");
   }
@@ -180,10 +192,11 @@ export function buildRuntimeEnvironmentRequestCommand(request: RuntimeEnvironmen
     const payload = Buffer.from(JSON.stringify(request.payload), "utf8").toString("base64");
     return [
       "set -eu",
-      `printf %s '${payload}' | base64 -d | ${curl.join(" ")} -H 'content-type: application/json' --data-binary @- ${runtimeLoopbackUrl(request.path)}`,
+      `printf %s '${payload}' | base64 -d | ${curl.join(" ")} -H 'content-type: application/json' --data-binary @- '${runtimeLoopbackUrl(request.path)}'`,
     ].join("\n");
   }
-  return ["set -eu", `${curl.join(" ")} ${runtimeLoopbackUrl(request.path)}`].join("\n");
+  // Quoted: a windowed thread read carries a query string.
+  return ["set -eu", `${curl.join(" ")} '${runtimeLoopbackUrl(request.path)}'`].join("\n");
 }
 
 export function buildRuntimeEnvironmentFirstAccessCommand(

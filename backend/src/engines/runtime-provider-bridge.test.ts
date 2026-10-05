@@ -561,9 +561,9 @@ describe("T3 provider bridge", () => {
     const engines = [
       {
         id: "codex" as const,
-        package: "@openai/codex@0.153.3",
+        package: "@openai/codex@0.159.3",
         binary: "codex",
-        version: "codex-cli 0.153.3",
+        version: "codex-cli 0.159.3",
       },
       {
         id: "opencode" as const,
@@ -613,13 +613,13 @@ describe("T3 provider bridge", () => {
           await Bun.write(packageBin, `#!/bin/sh\necho '${engine.version}'\n`);
           await Bun.write(join(packageDir, "package.json"), JSON.stringify({
             name: "@openai/codex",
-            version: "0.153.3",
+            version: "0.159.3",
             bin: { codex: "bin/codex.js" },
           }));
           await Bun.write(nativeBin, "native fixture");
           await Bun.write(join(platformDir, "package.json"), JSON.stringify({
             name: "@openai/codex",
-            version: `0.153.3-${platform.suffix}`,
+            version: `0.159.3-${platform.suffix}`,
           }));
           await Bun.$`chmod 700 ${packageBin} ${nativeBin}`;
           await symlink(packageBin, join(bin, engine.binary));
@@ -643,7 +643,7 @@ describe("T3 provider bridge", () => {
         expect(result.exitCode).toBe(0);
         expect(command).toContain(engine.package);
         for (const otherPackage of [
-          "@openai/codex@0.153.3",
+          "@openai/codex@0.159.3",
           "@anthropic-ai/claude-code@2.1.226",
           "opencode-ai@1.18.7",
         ]) {
@@ -978,7 +978,7 @@ exit 17
 
     const bootstraps = commands.filter((command) => command.includes("NATIVE_PACKAGE="));
     expect(bootstraps).toHaveLength(3);
-    expect(bootstraps[0]).toContain("@openai/codex@0.153.3");
+    expect(bootstraps[0]).toContain("@openai/codex@0.159.3");
     expect(bootstraps[1]).toContain("@anthropic-ai/claude-code@2.1.226");
     expect(bootstraps[2]).toContain("opencode-ai@1.18.7");
   });
@@ -1033,7 +1033,7 @@ exit 17
 
     const bootstraps = commands.filter((command) => command.includes("NATIVE_PACKAGE="));
     expect(bootstraps).toHaveLength(2);
-    expect(bootstraps[0]).toContain("@openai/codex@0.153.3");
+    expect(bootstraps[0]).toContain("@openai/codex@0.159.3");
     expect(bootstraps[0]).not.toContain("providerInstances");
     expect(commands.some((command) => command.includes("exec-server"))).toBe(false);
     expect(commands.some((command) => command.includes("codex-relay"))).toBe(false);
@@ -1147,7 +1147,7 @@ exit 17
       process: {
         executeCommand: async (command: string) => {
           commands.push(command);
-          if (command.includes('NATIVE_PACKAGE="@openai/codex@0.153.3"')) {
+          if (command.includes('NATIVE_PACKAGE="@openai/codex@0.159.3"')) {
             bootstraps += 1;
             identityValid = true;
             return { exitCode: 0, result: "" };
@@ -1199,7 +1199,7 @@ exit 17
       providerKind: "cube",
       process: {
         executeCommand: async (command: string) => {
-          if (command.includes('NATIVE_PACKAGE="@openai/codex@0.153.3"')) {
+          if (command.includes('NATIVE_PACKAGE="@openai/codex@0.159.3"')) {
             bootstraps += 1;
             return { exitCode: 0, result: "" };
           }

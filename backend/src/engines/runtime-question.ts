@@ -13,7 +13,7 @@ import {
   redactProviderQuestionPayload,
   validateProviderQuestionAnswers,
 } from "./provider-question";
-import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { requestRuntimeEnvironment, runtimeThreadSnapshotRequest } from "./runtime-environment-client";
 import {
   runtimeQuestionRequest,
   type RuntimeThreadSnapshot,
@@ -131,10 +131,7 @@ export async function replyToRuntimeQuestion(input: {
   ]);
   const snapshot = await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
     sandbox,
-    {
-      method: "GET",
-      path: `/api/orchestration/threads/${encodeURIComponent(input.sessionId)}`,
-    },
+    runtimeThreadSnapshotRequest(input.sessionId),
     signal,
   );
   const answers = runtimeQuestionAnswers(snapshot, input.sessionId, input.questionId, input.answers);

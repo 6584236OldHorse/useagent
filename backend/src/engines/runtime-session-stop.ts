@@ -1,5 +1,5 @@
 import { awaitRuntimeOperation } from "./runtime-operation";
-import { RuntimeEnvironmentRequestError, requestRuntimeEnvironment } from "./runtime-environment-client";
+import { RuntimeEnvironmentRequestError, requestRuntimeEnvironment, runtimeThreadSnapshotRequest } from "./runtime-environment-client";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -166,10 +166,7 @@ export async function reloadRetainedOpenCodeSession(input: {
   const readThread = async () => reloadThreadState(await awaitReloadOperation(
     dependencies.requestEnvironment<unknown>(
       input.sandbox,
-      {
-        method: "GET",
-        path: `/api/orchestration/threads/${encodeURIComponent(input.threadId)}`,
-      },
+      runtimeThreadSnapshotRequest(input.threadId),
       signal,
     ),
     signal,
