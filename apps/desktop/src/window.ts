@@ -1,10 +1,11 @@
 import { app, BrowserWindow, session, shell } from "electron";
 import { join } from "node:path";
+import { authScope } from "./auth-storage";
 import { externalUrl, trustedIpcSender, trustedNavigation } from "./security";
 
 /** The window owns browser policy; it never reads credentials or starts processes. */
 export function createDesktopWindow(plane: URL): BrowserWindow {
-  const browserSession = session.fromPartition("persist:useagent");
+  const browserSession = session.fromPartition(`persist:useagent-${authScope(plane.origin)}`);
   const localPermissions = new Set(["local-network", "local-network-access", "loopback-network"]);
   const allowPermission = (permission: string, origin: string) =>
     plane.protocol === "http:" && localPermissions.has(permission) && trustedIpcSender(origin, true, plane.origin);
