@@ -55,7 +55,7 @@ function CompletionMark({ done, total }: { readonly done: number; readonly total
   if (total > 0 && done === total) {
     return (
       <RiCheckboxCircleFill
-        className="size-5 shrink-0 text-lime-600 transition-colors duration-300"
+        className="size-4 shrink-0 text-lime-600 transition-colors duration-300"
         aria-hidden
       />
     );
@@ -64,7 +64,7 @@ function CompletionMark({ done, total }: { readonly done: number; readonly total
   const circumference = 2 * Math.PI * radius;
   const ratio = total === 0 ? 0 : done / total;
   return (
-    <svg viewBox="0 0 18 18" className="size-5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 18 18" className="size-4 shrink-0" aria-hidden="true">
       <circle cx="9" cy="9" r={radius} strokeWidth="2" className="fill-none stroke-background-tertiary-default" />
       <circle
         cx="9"
@@ -105,7 +105,9 @@ export function PlanChecklist({
       aria-label={title}
       data-testid={testId}
       className={cx(
-        "overflow-hidden rounded-2xl border border-border-button-default bg-background-primary-default shadow-card",
+        // The same density as the trace rows it sits under: a hairline
+        // surface, 12.5px text, compact rows, no card shadow.
+        "overflow-hidden rounded-xl border border-border-button-default bg-background-primary-default",
         className,
       )}
     >
@@ -113,12 +115,12 @@ export function PlanChecklist({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-background-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-background-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
       >
         <CompletionMark done={done} total={total} />
-        <span className="min-w-0 flex-1 truncate text-body-2-medium text-text-primary">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium leading-5 text-text-primary">{title}</span>
         <span
-          className="text-caption-1-medium font-medium tabular-nums text-lime-600"
+          className="text-[11.5px] font-medium tabular-nums text-lime-600"
           aria-label={`${done} of ${total} complete`}
           role="img"
         >
@@ -133,7 +135,7 @@ export function PlanChecklist({
         />
       </button>
       {open && (
-        <ol className="border-t border-border-button-default py-1 motion-safe:animate-ai-fade-up">
+        <ol className="border-t border-border-button-default py-0.5 motion-safe:animate-ai-fade-up">
           {entries.map((entry) => {
             const Icon = ITEM_ICON[entry.status];
             const struck = entry.status === "completed" || entry.status === "cancelled";
@@ -142,13 +144,13 @@ export function PlanChecklist({
               <li
                 key={entry.id}
                 className={cx(
-                  "flex items-start gap-2.5 px-4 py-2 transition-colors duration-300",
+                  "flex items-center gap-2 px-3 py-1 transition-colors duration-300",
                   active && "bg-accent-500/10",
                 )}
               >
                 <Icon
                   className={cx(
-                    "mt-0.5 size-4 shrink-0 transition-colors duration-300",
+                    "size-3.5 shrink-0 transition-colors duration-300",
                     ITEM_TONE[entry.status],
                     active && "motion-safe:animate-spin",
                   )}
@@ -156,7 +158,7 @@ export function PlanChecklist({
                 />
                 <span
                   className={cx(
-                    "min-w-0 flex-1 text-body-2-regular transition-colors duration-300",
+                    "min-w-0 flex-1 truncate text-[12.5px] leading-5 transition-colors duration-300",
                     struck && "text-text-tertiary line-through",
                     active && "font-medium text-text-primary",
                     !struck && !active && "text-text-secondary",
