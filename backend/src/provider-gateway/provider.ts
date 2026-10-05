@@ -3,6 +3,14 @@ import type { EngineId } from "../db/schema";
 export const PROVIDER_IDS = ["anthropic", "openai", "openrouter", "cerebras", "opencode"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
+export const PROVIDER_DISPLAY_NAMES: Record<ProviderId, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  cerebras: "Cerebras",
+  opencode: "OpenCode Zen",
+};
+
 /** OpenCode Zen's own model id for one of our "opencode/<id>:free" lane ids:
  * the lane marks free models with ":free" (OpenRouter's convention); Zen's ids
  * carry no marker. */

@@ -11,6 +11,8 @@
 
 import { recordProviderEvent } from "./provider-events";
 import { resolveProviderCredentialForRun } from "../provider-gateway/credentials";
+import { markGatewayProviderApiKeyRejected } from "../provider-gateway/api-key-credentials";
+import { ProviderKeyRejectedError, providerRejectedKey } from "../provider-gateway/rejected-key";
 
 export const FOLLOWUPS_EVENT_TYPE = "followups.suggested";
 
@@ -104,6 +106,7 @@ async function generateSuggestions(
   });
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 200);
+    if (providerRejectedKey(res.status, detail)) throw new ProviderKeyRejectedError("openrouter", res.status);
     throw new Error(`openrouter ${res.status}: ${detail}`);
   }
   const body = (await res.json()) as ChatResponse;
@@ -127,6 +130,7 @@ export async function recordRunFollowups(run: {
   resolveCredential?: typeof resolveProviderCredentialForRun;
   fetch?: typeof fetch;
   recordEvent?: typeof recordProviderEvent;
+  markRejectedKey?: typeof markGatewayProviderApiKeyRejected;
 } = {}): Promise<void> {
   try {
     const env = deps.env ?? process.env;
@@ -141,13 +145,22 @@ export async function recordRunFollowups(run: {
     // Agent-run follow-ups must spend the run user's/org's credential. A shared
     // process key is never an acceptable fallback, even in development mode.
     if (!credential || credential.source === "backend_env") return;
-    const suggestions = await generateSuggestions(
-      run.prompt,
-      summary,
-      credential.value,
-      env,
-      deps.fetch ?? fetch,
-    );
+    let suggestions: string[];
+    try {
+      suggestions = await generateSuggestions(run.prompt, summary, credential.value, env, deps.fetch ?? fetch);
+    } catch (error) {
+      // A member's key OpenRouter rejected waits for a new one in Settings.
+      if (error instanceof ProviderKeyRejectedError && credential.source === "user_connection" && run.userId) {
+        await (deps.markRejectedKey ?? markGatewayProviderApiKeyRejected)({
+          orgId: run.orgId,
+          userId: run.userId,
+          provider: "openrouter",
+          value: credential.value,
+          status: error.status,
+        });
+      }
+      throw error;
+    }
     if (suggestions.length === 0) return;
     await (deps.recordEvent ?? recordProviderEvent)({
       id: `folup_${run.id}`,

@@ -4,7 +4,11 @@ import type {
   ProviderConnectionProvider,
 } from "../db/schema";
 import { openSecret } from "../secrets/crypto";
+import { awaitWithSignal } from "../util/abortable-operation";
 import type { ProviderId } from "./provider";
+
+/** How long marking a rejected key may hold the failing turn. */
+const REJECTED_KEY_WRITE_MS = 5_000;
 
 export interface GatewayProviderApiKeyCredentialRow {
   readonly auth_method: string;
@@ -93,6 +97,57 @@ export async function resolveGatewayProviderApiKeyCredential(input: {
   `;
   const row = rows[0];
   return row ? openGatewayProviderApiKeyCredential(row) : null;
+}
+
+/** Mark a member's connected API key as reauth_required after the provider
+ * rejected it. Only the exact key that was sent: a key saved since is a new
+ * sealed credential (new iv) and stays connected. The reason is the HTTP
+ * status alone, never the provider's answer. Writes through the restricted
+ * view, so the gateway role can only move a connected key out of it. Bounded
+ * and never throws: a failed write must not change how the turn fails. */
+export async function markGatewayProviderApiKeyRejected(
+  input: {
+    readonly orgId: string;
+    readonly userId: string;
+    readonly provider: ProviderId;
+    readonly value: string;
+    readonly status: number;
+  },
+  sql: typeof client = client,
+): Promise<boolean> {
+  try {
+    return await awaitWithSignal(async () => {
+      const [row] = await sql<GatewayProviderApiKeyCredentialRow[]>`
+        SELECT auth_method, status, credential_ciphertext, iv, tag
+        FROM gateway_provider_api_key_credentials
+        WHERE org_id = ${input.orgId}
+          AND user_id = ${input.userId}
+          AND provider = ${input.provider}
+          AND auth_method = 'api_key'
+          AND status = 'connected'
+        LIMIT 1
+      `;
+      if (!row || openGatewayProviderApiKeyCredential(row) !== input.value) return false;
+      const updated = await sql`
+        UPDATE gateway_provider_api_key_credentials
+        SET status = 'reauth_required',
+          status_reason = ${`provider_rejected_${input.status}`},
+          updated_at = now()
+        WHERE org_id = ${input.orgId}
+          AND user_id = ${input.userId}
+          AND provider = ${input.provider}
+          AND auth_method = 'api_key'
+          AND iv = ${row.iv}
+      `;
+      return updated.count > 0;
+    }, AbortSignal.timeout(REJECTED_KEY_WRITE_MS));
+  } catch (error) {
+    console.warn(
+      `[provider-key] could not mark the rejected ${input.provider} key:`,
+      error instanceof Error ? error.message : error,
+    );
+    return false;
+  }
 }
 
 /** Resolve the most recently updated connected computer credential through the

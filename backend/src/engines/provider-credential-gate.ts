@@ -5,20 +5,12 @@ import {
   type ProviderCredentialResolvers,
 } from "../provider-gateway/credentials";
 import { awaitWithSignal } from "../util/abortable-operation";
-import { providerForEngine, type ProviderId } from "../provider-gateway/provider";
+import { PROVIDER_DISPLAY_NAMES, providerForEngine, type ProviderId } from "../provider-gateway/provider";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 import { ENGINE_DISPLAY_NAMES } from "../runs/engine-readiness";
 import { defaultModelForEngine } from "../runs/model-policy";
 import type { EngineRunContext } from "./types";
 import { getCodexSubscriptionRuntimeSelection } from "../provider-connections/service";
-
-export const PROVIDER_DISPLAY_NAMES: Record<ProviderId, string> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  cerebras: "Cerebras",
-  opencode: "OpenCode Zen",
-};
 
 /** Thrown when no key can serve the run; the message is the remedy. */
 export class ProviderCredentialMissingError extends Error {}

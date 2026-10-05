@@ -87,7 +87,8 @@ describe("gateway grants single source of truth", () => {
 
     await applyGatewayGrants(legacyHost, { strict: true });
 
-    expect(applied).toHaveLength(GATEWAY_GRANTS.length + 1);
+    // The manifest plus the credentials view's SELECT and its rejected-key UPDATE.
+    expect(applied).toHaveLength(GATEWAY_GRANTS.length + 2);
     expect(applied.every((grant) => !grant.includes("useagent_gateway"))).toBe(true);
     expect(applied.every((grant) => grant.includes("skynet_gateway"))).toBe(true);
   });

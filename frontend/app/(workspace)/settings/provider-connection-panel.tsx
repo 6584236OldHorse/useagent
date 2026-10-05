@@ -16,6 +16,7 @@ import {
   type ProviderConnectionMeta,
   type ProviderConnectionProvider,
   providerStatusConnection,
+  rejectedKeyNotice,
   safeProviderMetadata,
   statusLabel,
 } from "./provider-connections-data";
@@ -117,6 +118,7 @@ export function ProviderConnectionPanel({
   );
 
   const keyActive = isActiveConnection(connection);
+  const rejectedNotice = rejectedKeyNotice(connection, labels.name);
 
   return (
     <section className="rounded-xl border border-border-button-default bg-background-secondary-default px-4">
@@ -158,6 +160,9 @@ export function ProviderConnectionPanel({
           <p className="mt-1 text-caption-1-regular text-text-tertiary">
             {labels.keyHint}. Write-only - never shown again.
           </p>
+          {rejectedNotice ? (
+            <p className="mt-1 text-caption-1-regular text-text-error-primary">{rejectedNotice}</p>
+          ) : null}
           <div className="mt-1 flex flex-wrap items-center gap-2 text-caption-1-regular text-text-secondary">
             <span className="truncate">{accountLabel(connection)}</span>
             {connection ? (

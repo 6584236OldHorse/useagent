@@ -117,4 +117,24 @@ describe("gating", () => {
     expect(authorization).toBe("Bearer tenant-key");
     expect(recorded).toBe(true);
   });
+
+  test("a member's key OpenRouter rejects is marked for reconnect; an outage is not", async () => {
+    const marked: unknown[] = [];
+    for (const status of [401, 500]) {
+      await recordRunFollowups(
+        { id: "run-3", threadId: "thread-3", orgId: "org-3", userId: "user-3", prompt: "Explain" },
+        "A sufficiently long completed answer for suggestions.",
+        {
+          env: { FOLLOWUPS_ENABLED: "1" },
+          resolveCredential: async () => ({ value: "member-key", source: "user_connection" }),
+          fetch: (async () => new Response("upstream detail", { status })) as unknown as typeof fetch,
+          markRejectedKey: async (input) => (marked.push(input), true),
+          recordEvent: async () => undefined,
+        },
+      );
+    }
+    expect(marked).toEqual([
+      { orgId: "org-3", userId: "user-3", provider: "openrouter", value: "member-key", status: 401 },
+    ]);
+  });
 });

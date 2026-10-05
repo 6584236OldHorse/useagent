@@ -41,6 +41,7 @@ function app(options: {
   fetchUpstream?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   beginAudit?: () => Promise<void>;
   finishAudit?: () => Promise<void>;
+  markRejectedKey?: ProviderRouteDeps["markRejectedKey"];
 } = {}): Hono {
   const app = new Hono();
   app.route(
@@ -58,6 +59,7 @@ function app(options: {
       fetchUpstream: options.fetchUpstream,
       beginAudit: options.beginAudit ?? (async () => undefined),
       finishAudit: options.finishAudit ?? (async () => undefined),
+      markRejectedKey: options.markRejectedKey ?? (async () => false),
     }),
   );
   return app;
@@ -307,25 +309,57 @@ describe("provider gateway routes", () => {
     expect(captured.authorization).toBe("Bearer user-owned-key");
   });
 
-  test("an invalid customer key surfaces the provider error, never falls back to the house key", async () => {
+  test("a rejected customer key is marked for reconnect, never falls back to the house key", async () => {
     const attempts: string[] = [];
+    const marked: unknown[] = [];
+    const audits: unknown[] = [];
     const response = await app({
       // A connected customer key was resolved for this run.
       resolveCredential: async () => ({ value: "customer-key", source: "user_connection" }),
       fetchUpstream: async (_input, init) => {
         attempts.push(new Headers(init?.headers).get("authorization") ?? "");
-        return Response.json({ error: { message: "invalid api key" } }, { status: 401 });
+        return Response.json({ error: { message: "secret upstream detail" } }, { status: 401 });
       },
+      markRejectedKey: async (input) => (marked.push(input), true),
+      finishAudit: async (input?: unknown) => void audits.push(input),
     }).request("/api/provider/openrouter/v1/chat/completions", {
       method: "POST",
       headers: { authorization: "Bearer sandbox-capability" },
       body: JSON.stringify({ model: run.model }),
     });
 
-    // The provider's real 401 is proxied back; the gateway does not retry with a
-    // different (house) key - that would silently bill the wrong account.
+    // The 401 goes back with the remedy in place of the provider's text; the
+    // gateway does not retry with a different (house) key - that would
+    // silently bill the wrong account.
     expect(response.status).toBe(401);
+    const body = await response.text();
+    expect(body).toContain("Your OpenRouter key was rejected (expired or revoked). Reconnect it in Settings.");
+    expect(body).not.toContain("secret upstream detail");
     expect(attempts).toEqual(["Bearer customer-key"]);
+    expect(marked).toEqual([
+      { orgId: claims.orgId, userId: run.userId, provider: "openrouter", value: "customer-key", status: 401 },
+    ]);
+    expect(audits).toMatchObject([{ outcome: "responded", upstreamStatus: 401 }]);
+  });
+
+  test("a provider outage or a non-member key never marks a connection", async () => {
+    const marked: unknown[] = [];
+    for (const [source, status, text] of [
+      ["user_connection", 500, "upstream down"],
+      ["org_secret", 401, "org key detail"],
+    ] as const) {
+      const response = await app({
+        resolveCredential: async () => ({ value: "a-key", source }),
+        fetchUpstream: async () => new Response(text, { status, headers: { "x-should-retry": "false" } }),
+        markRejectedKey: async (input) => (marked.push(input), true),
+      }).request("/api/provider/openrouter/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: run.model }),
+      });
+      expect(response.status).toBe(status);
+      expect(await response.text()).toBe(text);
+    }
+    expect(marked).toEqual([]);
   });
 
   test("enforces throughput-first, tool-capable routing for Kimi K3", async () => {
