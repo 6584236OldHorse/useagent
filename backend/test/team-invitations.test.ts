@@ -501,3 +501,39 @@ test("a workspace keeps at least one owner, even when two owners demote each oth
   });
   expect(leave.status).toBe(400);
 });
+
+test("owner guards answer strangers uniformly and act on the organisation that was locked", async () => {
+  const org = await createOrgSession("guarded");
+  const [ownerUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, org.email));
+  const [ownerMember] = await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, org.orgId), eq(member.userId, ownerUser!.id)));
+  // Signed out: the sole owner's email and an unknown one get the same answer.
+  const answers = new Set<string>();
+  for (const memberIdOrEmail of [org.email, "nobody@example.test"]) {
+    const res = await json<{ message?: string }>("/api/auth/organization/remove-member", {
+      method: "POST",
+      body: { organizationId: org.orgId, memberIdOrEmail },
+    });
+    answers.add(`${res.status} ${res.body.message}`);
+  }
+  expect([...answers]).toEqual(["401 Not authenticated"]);
+  // The session's active organisation is used and pinned when the body names none.
+  const other = await createOrgSession("guarded-other");
+  const [otherUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, other.email));
+  const otherMemberId = `member_${crypto.randomUUID()}`;
+  await db.insert(member).values({ id: otherMemberId, organizationId: org.orgId, userId: otherUser!.id, role: "admin", createdAt: new Date() });
+  const demoted = await json("/api/auth/organization/update-member-role", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { memberId: otherMemberId, role: "member" },
+  });
+  expect(demoted.status).toBe(200);
+  const [after] = await db.select({ role: member.role }).from(member).where(eq(member.id, otherMemberId));
+  expect(after!.role).toBe("member");
+  const lastOwner = await json<{ message?: string }>("/api/auth/organization/update-member-role", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { memberId: ownerMember!.id, role: "admin" },
+  });
+  expect(lastOwner.status).toBe(400);
+  expect(lastOwner.body.message).toContain("at least one owner");
+});

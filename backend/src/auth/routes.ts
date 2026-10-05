@@ -73,7 +73,7 @@ type Manager = { session: NonNullable<Awaited<ReturnType<typeof auth.api.getSess
 /** The signed-in owner or admin behind a request, for the organisation it names
  *  or the session's active one. Refusals come before any invitation is read, so
  *  an outsider gets one answer whatever exists. */
-async function managerFor(request: Request, body: Record<string, unknown>): Promise<Manager | Refusal> {
+async function managerFor(request: Request, body: Record<string, unknown>, least: "manager" | "member" = "manager"): Promise<Manager | Refusal> {
   if (!trustedOrigin(request)) return { status: 403, message: "Invalid origin" };
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) return { status: 401, message: "Not authenticated" };
@@ -88,9 +88,12 @@ async function managerFor(request: Request, body: Record<string, unknown>): Prom
     .where(and(eq(member.organizationId, organizationId), eq(member.userId, session.user.id)))
     .limit(1);
   const mine = roles(membership?.role);
-  if (!mine.includes("owner") && !mine.includes("admin")) {
+  // One answer for an outsider and for a member without the rank, so nobody
+  // learns from the difference who belongs to the workspace.
+  if (least === "manager" && !mine.includes("owner") && !mine.includes("admin")) {
     return { status: 403, message: "You are not allowed to invite people to this workspace" };
   }
+  if (!membership) return { status: 403, message: "You are not a member of this workspace" };
   return { session, organizationId, roles: mine };
 }
 
@@ -101,8 +104,21 @@ const orgLocks = new Map<string, Promise<unknown>>();
 function withOrgLock<T>(orgId: string, work: () => Promise<T>): Promise<T> {
   const previous = orgLocks.get(orgId) ?? Promise.resolve();
   const run = previous.then(work, work);
-  orgLocks.set(orgId, run.then(() => undefined, () => undefined));
+  const settled = run.then(() => undefined, () => undefined);
+  orgLocks.set(orgId, settled);
+  void settled.then(() => {
+    if (orgLocks.get(orgId) === settled) orgLocks.delete(orgId);
+  });
   return run;
+}
+
+/** The request the library sees names the organisation that was locked, so a
+ *  workspace switch in between cannot move the change elsewhere. */
+function pinned(request: Request, body: Record<string, unknown>, organizationId: string): Request {
+  const next = new Request(request, { body: JSON.stringify({ ...body, organizationId }) });
+  next.headers.set("content-type", "application/json");
+  next.headers.delete("content-length");
+  return next;
 }
 
 const LAST_OWNER = "A workspace needs at least one owner. Make someone else an owner first.";
@@ -124,12 +140,6 @@ async function onlyOwner(organizationId: string, target: { memberId?: string; em
   );
 }
 
-async function organisationOf(request: Request, body: Record<string, unknown>): Promise<string | null> {
-  if (typeof body.organizationId === "string" && body.organizationId.trim()) return body.organizationId.trim();
-  const session = await auth.api.getSession({ headers: request.headers });
-  return session?.session.activeOrganizationId ?? null;
-}
-
 async function jsonBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const parsed = (await request.clone().json()) as unknown;
@@ -140,19 +150,21 @@ async function jsonBody(request: Request): Promise<Record<string, unknown> | nul
 }
 
 /** The same trimming gap applies when a role is changed, and taking ownership
- *  away from the last owner is refused. */
+ *  away from the last owner is refused. The manager check comes first, so
+ *  nobody else learns who owns what, and only real managers take the lock. */
 routes.post("/api/auth/organization/update-member-role", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
   if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
-  const organizationId = await organisationOf(request, body);
-  if (!organizationId || body.role === "owner") return auth.handler(request);
-  return withOrgLock(organizationId, async () => {
-    if (typeof body.memberId === "string" && (await onlyOwner(organizationId, { memberId: body.memberId }))) {
+  if (body.role === "owner") return auth.handler(request); // never fewer owners
+  const manager = await managerFor(request, body);
+  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+  return withOrgLock(manager.organizationId, async () => {
+    if (typeof body.memberId === "string" && (await onlyOwner(manager.organizationId, { memberId: body.memberId }))) {
       return c.json({ message: LAST_OWNER }, 400);
     }
-    return auth.handler(request);
+    return auth.handler(pinned(request, body, manager.organizationId));
   });
 });
 
@@ -160,14 +172,14 @@ routes.post("/api/auth/organization/remove-member", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
-  const organizationId = await organisationOf(request, body);
-  if (!organizationId) return auth.handler(request);
-  return withOrgLock(organizationId, async () => {
+  const manager = await managerFor(request, body);
+  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+  return withOrgLock(manager.organizationId, async () => {
     const target = typeof body.memberIdOrEmail === "string" ? body.memberIdOrEmail : "";
-    if (target && (await onlyOwner(organizationId, { memberId: target, email: target }))) {
+    if (target && (await onlyOwner(manager.organizationId, { memberId: target, email: target }))) {
       return c.json({ message: LAST_OWNER }, 400);
     }
-    return auth.handler(request);
+    return auth.handler(pinned(request, body, manager.organizationId));
   });
 });
 
@@ -175,14 +187,14 @@ routes.post("/api/auth/organization/leave", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
-  const session = await auth.api.getSession({ headers: request.headers });
-  const organizationId = await organisationOf(request, body);
-  if (!session || !organizationId) return auth.handler(request);
-  return withOrgLock(organizationId, async () => {
-    if (await onlyOwner(organizationId, { userId: session.user.id })) return c.json({ message: LAST_OWNER }, 400);
-    return auth.handler(request);
+  const leaver = await managerFor(request, body, "member");
+  if ("status" in leaver) return c.json({ message: leaver.message }, leaver.status);
+  return withOrgLock(leaver.organizationId, async () => {
+    if (await onlyOwner(leaver.organizationId, { userId: leaver.session.user.id })) return c.json({ message: LAST_OWNER }, 400);
+    return auth.handler(pinned(request, body, leaver.organizationId));
   });
 });
+
 const RESEND_WINDOW_MS = 60_000;
 const recentResends = new Map<string, number>();
 // ponytail: process-local, which matches the documented one-backend deployment; move to the database if replicas ever appear.
