@@ -1,4 +1,5 @@
 export interface ProviderRequestLimits {
+  /** Unlimited unless the operator sets PROVIDER_GATEWAY_MAX_REQUESTS_PER_RUN: a turn runs as long as its work needs. */
   readonly maxRequestsPerRun: number;
   readonly maxConcurrentPerRun: number;
   readonly maxOutputTokens: number;
@@ -6,7 +7,7 @@ export interface ProviderRequestLimits {
 }
 
 const DEFAULT_LIMITS: ProviderRequestLimits = {
-  maxRequestsPerRun: 256,
+  maxRequestsPerRun: Number.POSITIVE_INFINITY,
   maxConcurrentPerRun: 4,
   maxOutputTokens: 65_536,
   upstreamTimeoutMs: 10 * 60 * 1000,

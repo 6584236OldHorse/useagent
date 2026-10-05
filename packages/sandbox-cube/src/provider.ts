@@ -508,7 +508,12 @@ class CubeSandboxHandle implements SandboxHandle {
   private async connected(): Promise<E2BSandbox> {
     if (!this.sandbox) {
       assertCubeConnectionCurrent(this.connection);
-      this.sandbox = await E2BSandbox.connect(this.id, this.connection);
+      // Without a timeout a resumed sandbox gets the SDK's 5-minute default and
+      // pauses under a follow-up turn before its first keepAlive.
+      this.sandbox = await E2BSandbox.connect(this.id, {
+        ...this.connection,
+        timeoutMs: this.lifetimeMinutes * 60_000,
+      });
       this.state = "started";
     }
     return this.sandbox;
@@ -618,6 +623,12 @@ class CubeProvider implements SandboxProvider {
     return handle;
   }
 
+  /** Pause an idle sandbox without touching it first (a get would resume it); the next connect resumes it. */
+  async pause(sandboxId: string): Promise<void> {
+    assertCubeConnectionCurrent(this.connection);
+    await E2BSandbox.pause(sandboxId, this.connection);
+  }
+
   async *list(): AsyncIterable<SandboxHandle> {
     assertCubeConnectionCurrent(this.connection);
     const paginator = E2BSandbox.list(this.connection);
@@ -627,16 +638,11 @@ class CubeProvider implements SandboxProvider {
     }
   }
 
+  /** Node headroom from CubeOps when configured. No sandbox counts: nothing reads them, and
+   *  counting meant listing the whole account on every poll. */
   async inventory(): Promise<SandboxInventory> {
-    let activeSandboxes = 0;
-    let pausedSandboxes = 0;
-    for await (const sandbox of this.list()) {
-      if (sandbox.state === "running" || sandbox.state === "started") activeSandboxes += 1;
-      else if (sandbox.state === "paused") pausedSandboxes += 1;
-    }
-
     const token = process.env.CUBE_OPS_ACCESS_TOKEN?.trim();
-    if (!token) return { activeSandboxes, pausedSandboxes };
+    if (!token) return {};
     const base = (process.env.CUBE_OPS_URL?.trim() || "http://127.0.0.1:12088/opsapi/v1")
       .replace(/\/+$/, "");
     const response = await fetch(`${base}/nodes`, {
@@ -662,8 +668,6 @@ class CubeProvider implements SandboxProvider {
       readyNodes: nodes.filter((node) => node.ready && !node.schedulingDisabled).length,
       allocatableCpuMillicores: nodes.reduce((sum, node) => sum + node.allocatableCpuMillicores, 0),
       allocatableMemoryMib: nodes.reduce((sum, node) => sum + node.allocatableMemoryMib, 0),
-      activeSandboxes,
-      pausedSandboxes,
     };
   }
 }

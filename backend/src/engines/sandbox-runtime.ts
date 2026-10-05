@@ -27,3 +27,23 @@ export function forgetLiveThreadSandbox(threadId: string, sandboxId?: string): v
   if (sandboxId && liveThreadSandboxes.get(threadId)?.id !== sandboxId) return;
   liveThreadSandboxes.delete(threadId);
 }
+
+/** Open terminal and desktop connections per thread: an idle sandbox someone is looking at is not paused. */
+const threadViewers = new Map<string, number>();
+
+/** Count one open viewer of a thread's sandbox; the returned release is safe to call twice. */
+export function watchThreadSandbox(threadId: string): () => void {
+  threadViewers.set(threadId, (threadViewers.get(threadId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (threadViewers.get(threadId) ?? 1) - 1;
+    if (left > 0) threadViewers.set(threadId, left);
+    else threadViewers.delete(threadId);
+  };
+}
+
+export function threadSandboxWatched(threadId: string): boolean {
+  return threadViewers.has(threadId);
+}

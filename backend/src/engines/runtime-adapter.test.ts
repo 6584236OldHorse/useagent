@@ -26,6 +26,7 @@ import type { SandboxHandle } from "../sandboxes/provider";
 import { createSecretRedactor } from "../secrets/redact";
 import type { RuntimeThreadStreamItem } from "./runtime-event-stream";
 import type { EngineRunContext } from "./types";
+import { SandboxUnresponsiveError } from "./turn-liveness";
 
 function reloadSnapshot(
   sessionStatus: string | null,
@@ -1381,6 +1382,44 @@ describe("T3 run adapter gate", () => {
       },
     )).rejects.toBe(connectionError);
   });
+
+  test("fails a turn whose sandbox stopped responding and feeds the stream's signs of life to the watch", async () => {
+    const dead = new AbortController();
+    let heard = 0;
+    let disposed = false;
+    const ctx = {
+      runId: "run-stream-dead",
+      threadId: "thread-1",
+      signal: new AbortController().signal,
+      emit: async () => undefined,
+      setSummary() {},
+    } as unknown as EngineRunContext;
+
+    await expect(waitForRuntimeTurn(
+      ctx,
+      {} as SandboxHandle,
+      new Map(),
+      turnSnapshot({ sequence: 60, turnId: "turn-prior", state: "completed", text: "old" }),
+      createSecretRedactor([]),
+      {
+        watchLiveness: () => ({
+          signal: dead.signal,
+          heard: () => { heard += 1; },
+          dispose: () => { disposed = true; },
+        }),
+        subscribeRuntimeThread: async (_sandbox, _threadId, _after, signal, _onItem, onHeard) => {
+          onHeard?.();
+          dead.abort(new SandboxUnresponsiveError());
+          expect(signal.aborted).toBe(true);
+        },
+        readThreadSnapshot: async () => {
+          throw new Error("unexpected REST snapshot read");
+        },
+      },
+    )).rejects.toThrow("The sandbox stopped responding");
+    expect(heard).toBe(1);
+    expect(disposed).toBe(true);
+  }, 5_000);
 
   test("caller cancellation wins over a terminal refresh racing with a socket failure", async () => {
     const controller = new AbortController();
