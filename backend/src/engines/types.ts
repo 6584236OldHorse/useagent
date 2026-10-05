@@ -2,6 +2,7 @@ import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
+import type { SandboxHandle } from "../sandboxes/provider";
 import type {
   HarnessSession,
   ProviderSessionBinding,
@@ -55,10 +56,6 @@ export interface EngineRunContext {
    *  session — a resumed session already holds this history natively. Empty for a
    *  root run. Compose via {@link composeTurnPrompt}, never by hand. */
   bootstrapContext: string;
-  /** Prior thread turns that failed before any engine ran, injected ONLY into a
-   *  RESUMED session (its native history lacks them; a fresh session gets them
-   *  through bootstrapContext). "" or absent when there are none. */
-  unseenTurnsContext?: string;
   /** Fresh per-turn reference material (team memory today, knowledge later),
    *  already framed as reference-only (never instructions). Injected on EVERY
    *  turn — fresh AND resumed — so a continuing conversation still sees newly
@@ -150,10 +147,8 @@ export interface EngineRunContext {
   /** Persist the complete provider session atomically with its legacy native-id
    * mirror before dispatch. */
   saveProviderSession?(session: HarnessSession, authEpoch?: string | null): Promise<void>;
-  /** Delivery evidence, separate from session authority: called once the engine
-   *  runtime ACCEPTED the composed prompt (the steer returned ok), never on
-   *  session binding alone. */
-  markPromptDelivered?(): Promise<void>;
+  /** Persist the sandbox-clock output baseline after setup, before execution. */
+  prepareOutputCapture?(sandbox: SandboxHandle, workdir: string): Promise<void>;
   /** Aborted when the run exceeds its timeout; adapters must wire this to their
    *  subprocess / SDK call so a runaway engine is actually killed. */
   signal: AbortSignal;

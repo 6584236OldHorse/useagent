@@ -1,240 +1,235 @@
-/**
- * Turn output harvest: the plane looks at the workspace itself instead of
- * waiting for the agent to call the publish tool. After a sandbox turn, every
- * deliverable file the agent created or changed during the turn (documents,
- * spreadsheets, decks, media, archives) becomes an artifact through the same
- * trusted path the publish tool uses, so the session files rail, the thread's
- * Slack uploads and the artifact hub all see it. Files inside cloned
- * repositories are code changes, not deliverables, and stay out; a file the
- * thread already holds with the same bytes is skipped, and a changed file
- * becomes a new revision of the thread's artifact where the kinds allow it.
- */
-import { createHash } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
-import { db } from "../db/client";
-import { artifacts } from "../db/schema";
+import { posix } from "node:path";
 import { getRun } from "../runs/repo";
+import { readStableProviderEvent, recordProviderEventIfAbsent } from "../runs/provider-events";
 import { resolveRunSandbox } from "../sandboxes/binding";
-import { resolveAttachedSandboxWorkspaceRoot } from "../sandboxes/workspace";
-import { downloadSandboxFile } from "../slack/sandbox-file";
-import { MAX_ARTIFACT_BYTES, publishSandboxArtifact } from "./publish";
+import type { SandboxHandle } from "../sandboxes/provider";
+import {
+  requiresScreenshotProofPurpose,
+  resolveAttachedSandboxWorkspaceRoot,
+} from "../sandboxes/workspace";
+import { awaitWithSignal } from "../util/abortable-operation";
+import { MAX_ARTIFACT_BYTES } from "./publish";
 
-/** File types worth keeping as durable outputs of a turn. */
 const DELIVERABLE_EXTENSIONS = [
   "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "md", "html",
-  "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mp3", "wav", "zip",
+  "txt", "json", "xml", "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4",
+  "webm", "mp3", "wav", "zip", "tar", "gz",
 ] as const;
-/** Directories that never hold deliverables: dependency and build trees,
- *  caches, the plane's own state and the staged user uploads. */
 const PRUNED_DIRECTORIES = [
   "node_modules", ".git", ".cache", ".venv", "venv", "__pycache__", "dist", "build", ".next",
   ".useagent", ".skynet", ".skynet-inputs", ".useagent-inputs",
 ] as const;
-/** Clock skew allowance between the plane and the sandbox, in seconds. */
-const CLOCK_SLACK_SECONDS = 120;
 export const MAX_HARVESTED_FILES = 20;
-/** Records a listing may carry before the sandbox stops printing. */
-const MAX_LISTING_RECORDS = 3000;
+export const MAX_LISTING_RECORDS = 3000;
 const LISTING_TIMEOUT_SECONDS = 30;
-const STEP_TIMEOUT_MS = 30_000;
-const HARVEST_BUDGET_MS = 90_000;
+const LISTING_COMPLETE = "__USEAGENT_LISTING_COMPLETE__";
+const BASELINE_EVENT_TYPE = "artifact.output-baseline";
+const BASELINE_PROVIDER = "skynet";
+const TIMESTAMP_PATTERN = /^\d+\.\d+$/;
 
 export interface HarvestCandidate {
   readonly path: string;
   readonly size: number;
 }
 
+export type RunRow = NonNullable<Awaited<ReturnType<typeof getRun>>>;
+
+export interface DiscoveryDependencies {
+  readonly list: (run: RunRow, command: string) => Promise<string>;
+}
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** One traversal: dependency and state directories are pruned by name from
- *  depth one, any directory below the root holding a `.git` entry (directory
- *  or worktree file) is pruned as a repository, and the deliverable files
- *  changed since the turn started print as `size TAB path` NUL-terminated
- *  records, so any file name survives intact. */
-export function fileListCommand(workspaceRoot: string, sinceEpochSeconds: number): string {
+const pruneClause = (names: readonly string[]) => names
+  .map((name) => `-name ${shellQuote(name)}`)
+  .join(" -o ");
+
+function boundedListing(find: string): string {
+  return [
+    "set -eu",
+    "listing_file=$(mktemp)",
+    "trap 'rm -f \"$listing_file\"' EXIT HUP INT TERM",
+    `${find} >"$listing_file" 2>/dev/null`,
+    `head -z -n ${MAX_LISTING_RECORDS + 1} "$listing_file"`,
+    `printf ${shellQuote(`${LISTING_COMPLETE}\\0`)}`,
+  ].join("\n");
+}
+
+/** Find every repository marker while pruning dependency trees at depth one.
+ * The parser drops the workspace root's own marker. */
+export function repositoryListCommand(workspaceRoot: string): string {
   const root = shellQuote(workspaceRoot);
-  const prune = PRUNED_DIRECTORIES.map((name) => `-name ${shellQuote(name)}`).join(" -o ");
-  const names = DELIVERABLE_EXTENSIONS.map((ext) => `-iname ${shellQuote(`*.${ext}`)}`).join(" -o ");
-  return (
-    `find ${root} -xdev \\( ${prune} \\) -prune ` +
-    `-o \\( ! -path ${root} -type d -exec test -e '{}/.git' \\; \\) -prune ` +
-    `-o -type f -newermt ${shellQuote(`@${sinceEpochSeconds}`)} -size -${MAX_ARTIFACT_BYTES + 1}c ` +
-    `\\( ${names} \\) -printf '%s\\t%p\\0' 2>/dev/null | head -z -n ${MAX_LISTING_RECORDS}`
+  return boundedListing(
+    `find ${root} -xdev \\( ${pruneClause(PRUNED_DIRECTORIES.filter((name) => name !== ".git"))} \\) -prune ` +
+    `-o -name .git -printf '%h\\0' -prune`,
   );
 }
 
-/** Candidates from the listing, sorted by path so a rerun is stable, capped. */
-export function parseFileListing(output: string, workspaceRoot: string): HarvestCandidate[] {
+/** Find recognized deliverables newer than the sandbox-clock baseline. */
+export function fileListCommand(
+  workspaceRoot: string,
+  since: string,
+  repositoryRoots: readonly string[],
+): string {
+  if (!TIMESTAMP_PATTERN.test(since)) throw new Error("artifact output baseline timestamp is invalid");
+  const root = shellQuote(workspaceRoot);
+  const repositories = repositoryRoots.map((path) => `-path ${shellQuote(path)}`);
+  const prune = [pruneClause(PRUNED_DIRECTORIES), ...repositories].join(" -o ");
+  const names = DELIVERABLE_EXTENSIONS.map((ext) => `-iname ${shellQuote(`*.${ext}`)}`).join(" -o ");
+  return boundedListing(
+    `find ${root} -xdev \\( ${prune} \\) -prune -o -type f -newermt ${shellQuote(`@${since}`)} ` +
+    `\\( ${names} \\) -printf '%s\\t%p\\0'`,
+  );
+}
+
+function listingRecords(output: string): string[] {
+  const suffix = `${LISTING_COMPLETE}\0`;
+  if (!output.endsWith(suffix)) throw new Error("artifact listing was incomplete");
+  const body = output.slice(0, -suffix.length);
+  const records = body ? body.split("\0") : [];
+  if (records.at(-1) === "") records.pop();
+  if (records.length > MAX_LISTING_RECORDS) throw new Error("artifact listing exceeded 3000 records");
+  return records;
+}
+
+export function parseRepositoryListing(output: string, workspaceRoot: string): string[] {
+  const roots = listingRecords(output).filter((path) => path !== workspaceRoot);
+  for (const path of roots) {
+    if (!path.startsWith(`${workspaceRoot}/`)) throw new Error("repository listing escaped the workspace");
+  }
+  return [...new Set(roots)].toSorted();
+}
+
+export function parseFileListing(
+  output: string,
+  workspaceRoot: string,
+  repositoryRoots: readonly string[],
+): HarvestCandidate[] {
   const candidates: HarvestCandidate[] = [];
-  for (const record of output.split("\0")) {
+  for (const record of listingRecords(output)) {
     const tab = record.indexOf("\t");
-    if (tab <= 0) continue;
-    const digits = record.slice(0, tab);
-    const size = Number(digits);
+    if (tab <= 0) throw new Error("artifact listing record is malformed");
+    const sizeText = record.slice(0, tab);
+    const size = Number(sizeText);
     const path = record.slice(tab + 1);
-    if (!/^\d+$/.test(digits) || !Number.isSafeInteger(size) || size <= 0) continue;
-    if (!path.startsWith(`${workspaceRoot}/`) || path.includes("\n")) continue;
+    if (!/^\d+$/.test(sizeText) || !Number.isSafeInteger(size) || size <= 0 || size > MAX_ARTIFACT_BYTES) {
+      throw new Error("artifact listing size is invalid");
+    }
+    if (!path.startsWith(`${workspaceRoot}/`)) throw new Error("artifact listing escaped the workspace");
+    if (repositoryRoots.some((root) => path === root || path.startsWith(`${root}/`))) continue;
+    if (requiresScreenshotProofPurpose(path)) continue;
     candidates.push({ path, size });
   }
-  return candidates.toSorted((a, b) => a.path.localeCompare(b.path)).slice(0, MAX_HARVESTED_FILES);
-}
-
-type RunRow = NonNullable<Awaited<ReturnType<typeof getRun>>>;
-
-/** What the thread already holds for a path: enough to tell "unchanged" from "revised". */
-export interface KnownArtifact {
-  readonly id: string;
-  readonly sha256: string;
-  readonly sizeBytes: number;
-}
-
-export interface HarvestDependencies {
-  /** Runs the listing command in the run's sandbox and returns its stdout. */
-  readonly list: (run: RunRow, command: string) => Promise<string>;
-  /** The most recently published artifact of the thread from this workspace path. */
-  readonly known: (run: RunRow, path: string) => Promise<KnownArtifact | null>;
-  /** The file's current sha256, read from the sandbox. */
-  readonly digest: (run: RunRow, path: string) => Promise<string>;
-  readonly publish: typeof publishSandboxArtifact;
+  if (candidates.length > MAX_HARVESTED_FILES) {
+    throw new Error(`automatic artifact discovery exceeded ${MAX_HARVESTED_FILES} candidates`);
+  }
+  return candidates.toSorted((a, b) => a.path.localeCompare(b.path));
 }
 
 async function sandboxList(run: RunRow, command: string): Promise<string> {
   const sandbox = await resolveRunSandbox(run);
   const result = await sandbox.process.executeCommand(command, undefined, undefined, LISTING_TIMEOUT_SECONDS);
+  if (result.exitCode !== 0) throw new Error("artifact listing command failed");
   return result.result ?? "";
 }
 
-async function knownThreadArtifact(run: RunRow, path: string): Promise<KnownArtifact | null> {
-  if (!run.orgId) return null;
-  const [row] = await db
-    .select({ id: artifacts.id, sha256: artifacts.sha256, sizeBytes: artifacts.sizeBytes })
-    .from(artifacts)
-    .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), eq(artifacts.sourcePath, path)))
-    .orderBy(desc(artifacts.createdAt), desc(artifacts.workpieceRevision))
-    .limit(1);
-  return row ?? null;
+const defaultDependencies: DiscoveryDependencies = { list: sandboxList };
+
+interface OutputBaseline {
+  readonly timestamp: string;
+  readonly sandboxId: string;
+  readonly workdir: string;
 }
 
-async function sandboxDigest(run: RunRow, path: string): Promise<string> {
-  if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
-  const file = await downloadSandboxFile(run.sandboxId, path, MAX_ARTIFACT_BYTES, run);
-  return createHash("sha256").update(file.bytes).digest("hex");
-}
-
-const defaultDependencies: HarvestDependencies = {
-  list: sandboxList,
-  known: knownThreadArtifact,
-  digest: sandboxDigest,
-  publish: publishSandboxArtifact,
-};
-
-class HarvestStopped extends Error {}
-
-/** Start read-only `work` unless the run is already cancelled, then wait at
- *  most `ms` for it. A late result or failure of work we stopped waiting for
- *  is dropped; that is safe only for reads (listing, lookups, digests), which
- *  is why publishing never goes through here: a publish that has started is
- *  awaited to completion, so nothing can persist after the harvest returned. */
-function bounded<T>(work: () => Promise<T>, ms: number, signal: AbortSignal | undefined, what: string): Promise<T> {
-  if (signal?.aborted) return Promise.reject(new HarvestStopped("run cancelled"));
-  if (ms <= 0) return Promise.reject(new HarvestStopped(`${what} has no time left`));
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      fn();
-    };
-    const onAbort = () => finish(() => reject(new HarvestStopped("run cancelled")));
-    const timer = setTimeout(() => finish(() => reject(new HarvestStopped(`${what} exceeded ${ms} ms`))), ms);
-    timer.unref?.();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    work().then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error)),
-    );
-  });
-}
-
-function kindMismatch(error: unknown): boolean {
-  return error instanceof Error && /kind does not match|artifact to update was not found/.test(error.message);
-}
-
-/**
- * Publish the deliverables a turn left in its workspace. Never throws: a
- * harvest failure must not fail a run that already finished its work. Reads
- * are bounded by a per-step timeout and the run's abort signal, new work
- * stops once the budget or the run is gone, and a publish that started is
- * finished before this returns, so finalization never overtakes a persist.
- * Returns the artifact ids published or revised.
- */
-export async function harvestTurnOutputs(
-  runId: string,
-  options: { readonly signal?: AbortSignal } = {},
-  dependencies: HarvestDependencies = defaultDependencies,
-): Promise<string[]> {
-  const startedAt = Date.now();
-  const left = () => Math.min(STEP_TIMEOUT_MS, HARVEST_BUDGET_MS - (Date.now() - startedAt));
-  const published: string[] = [];
-  const { signal } = options;
+function parseBaseline(payload: string | null): OutputBaseline {
+  let value: unknown;
   try {
-    if (signal?.aborted) return published;
-    const run = await bounded(() => getRun(runId), left(), signal, "run lookup");
-    if (!run?.orgId || !run.sandboxId) return published;
-    const workspaceRoot = await bounded(
-      () => resolveAttachedSandboxWorkspaceRoot({ sandboxId: run.sandboxId!, sandboxProvider: run.sandboxProvider }),
-      left(),
-      signal,
-      "workspace lookup",
-    );
-    const since = Math.floor(new Date(run.createdAt).getTime() / 1000) - CLOCK_SLACK_SECONDS;
-    const candidates = parseFileListing(
-      await bounded(() => dependencies.list(run, fileListCommand(workspaceRoot, since)), left(), signal, "listing"),
-      workspaceRoot,
-    );
-    for (const candidate of candidates) {
-      // New work starts only while time and the run remain; work already
-      // started below is always finished.
-      if (left() <= 0 || signal?.aborted) break;
-      try {
-        const known = await bounded(() => dependencies.known(run, candidate.path), left(), signal, "artifact lookup");
-        if (known && known.sizeBytes === candidate.size) {
-          const digest = await bounded(() => dependencies.digest(run, candidate.path), left(), signal, "digest");
-          if (digest === known.sha256) continue; // unchanged since the thread last published it
-        }
-        const base = {
-          orgId: run.orgId,
-          userId: run.userId,
-          runId: run.id,
-          threadId: run.threadId,
-          path: candidate.path,
-          purpose: "deliverable" as const,
-        };
-        // Publishing is awaited to completion: its own sandbox and storage
-        // calls bound it, and finalization must never overtake a persist.
-        let result: Awaited<ReturnType<typeof publishSandboxArtifact>>;
-        try {
-          result = await dependencies.publish(known ? { ...base, updatesArtifactId: known.id } : base);
-        } catch (error) {
-          // A changed file whose kind cannot revise the existing artifact (an
-          // image, an archive, a large office file) is published on its own.
-          if (!known || !kindMismatch(error)) throw error;
-          result = await dependencies.publish(base);
-        }
-        published.push(result.artifact.id);
-      } catch (error) {
-        if (error instanceof HarvestStopped) break;
-        // Protected paths, secrets and oversize files are refused by the publish
-        // path itself; one refusal never stops the rest.
-        console.warn(`[artifacts] harvest skipped ${candidate.path}:`, error instanceof Error ? error.message : error);
-      }
-    }
-  } catch (error) {
-    console.warn(`[artifacts] harvest ended early for run ${runId}:`, error instanceof Error ? error.message : error);
+    value = payload === null ? null : JSON.parse(payload);
+  } catch {
+    throw new Error("artifact output baseline payload is invalid");
   }
-  return published;
+  if (
+    typeof value !== "object" || value === null ||
+    !("timestamp" in value) || typeof value.timestamp !== "string" || !TIMESTAMP_PATTERN.test(value.timestamp) ||
+    !("sandboxId" in value) || typeof value.sandboxId !== "string" || !value.sandboxId ||
+    !("workdir" in value) || typeof value.workdir !== "string" ||
+    !posix.isAbsolute(value.workdir) || posix.normalize(value.workdir) !== value.workdir
+  ) {
+    throw new Error("artifact output baseline payload is invalid");
+  }
+  return { timestamp: value.timestamp, sandboxId: value.sandboxId, workdir: value.workdir };
+}
+
+/** Capture the sandbox's own clock immediately before a user turn. The stable
+ * provider-event id makes retries preserve the original first-attempt boundary. */
+export async function recordOutputBaseline(
+  runId: string,
+  sandbox: SandboxHandle,
+  workdir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const run = await awaitWithSignal(() => getRun(runId), signal);
+  if (!run) throw new Error(`run ${runId} not found`);
+  if (!run.sandboxId || run.sandboxId !== sandbox.id) throw new Error("artifact output baseline sandbox mismatch");
+  if (!posix.isAbsolute(workdir) || posix.normalize(workdir) !== workdir) {
+    throw new Error("artifact output baseline workdir is invalid");
+  }
+  const result = await awaitWithSignal(
+    () => sandbox.process.executeCommand("date +%s.%N", workdir, undefined, LISTING_TIMEOUT_SECONDS),
+    signal,
+  );
+  const timestamp = result.result?.trim() ?? "";
+  if (result.exitCode !== 0 || !TIMESTAMP_PATTERN.test(timestamp)) {
+    throw new Error("failed to capture artifact output baseline");
+  }
+  await awaitWithSignal(() => recordProviderEventIfAbsent({
+    id: `${runId}:artifact-output-baseline`,
+    runId,
+    threadId: run.threadId,
+    provider: BASELINE_PROVIDER,
+    eventType: BASELINE_EVENT_TYPE,
+    payload: { timestamp, sandboxId: sandbox.id, workdir },
+  }), signal);
+}
+
+/** Discover automatic deliverables only. Publication, digesting, revisions,
+ * and explicit output links are handled by the shared completion consumer. */
+export async function discoverTurnOutputs(
+  run: RunRow,
+  options: { readonly signal?: AbortSignal } = {},
+  dependencies: DiscoveryDependencies = defaultDependencies,
+): Promise<HarvestCandidate[]> {
+  const event = await awaitWithSignal(() => readStableProviderEvent({
+    id: `${run.id}:artifact-output-baseline`,
+    runId: run.id,
+    threadId: run.threadId,
+  }), options.signal);
+  if (!event) return [];
+  if (event.provider !== BASELINE_PROVIDER || event.eventType !== BASELINE_EVENT_TYPE) {
+    throw new Error("artifact output baseline event is invalid");
+  }
+  const baseline = parseBaseline(event.payload);
+  if (!run.sandboxId || baseline.sandboxId !== run.sandboxId) {
+    throw new Error("artifact output baseline sandbox mismatch");
+  }
+  const workspaceRoot = await awaitWithSignal(() => resolveAttachedSandboxWorkspaceRoot({
+    sandboxId: run.sandboxId!,
+    sandboxProvider: run.sandboxProvider,
+  }), options.signal);
+  if (baseline.workdir !== workspaceRoot) throw new Error("artifact output baseline workdir mismatch");
+
+  const repositories = parseRepositoryListing(
+    await awaitWithSignal(() => dependencies.list(run, repositoryListCommand(workspaceRoot)), options.signal),
+    workspaceRoot,
+  );
+  return parseFileListing(
+    await awaitWithSignal(
+      () => dependencies.list(run, fileListCommand(workspaceRoot, baseline.timestamp, repositories)),
+      options.signal,
+    ),
+    workspaceRoot,
+    repositories,
+  );
 }

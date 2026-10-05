@@ -1,137 +1,113 @@
 import { describe, expect, test } from "bun:test";
-// Importing the helpers boots the app on the throwaway database (schema included).
 import "./helpers";
-import { harvestTurnOutputs, type HarvestDependencies } from "../src/artifacts/harvest";
-import { createRun, setRunSandbox } from "../src/runs/repo";
+import {
+  discoverTurnOutputs,
+  recordOutputBaseline,
+  type DiscoveryDependencies,
+} from "../src/artifacts/harvest";
+import { createRun, getRun, setRunSandbox } from "../src/runs/repo";
+import type { SandboxHandle } from "../src/sandboxes/provider";
 import { DEV_ORG_ID } from "../src/seed";
 
-async function sandboxRun(prompt: string): Promise<string> {
+const complete = (records = "") => `${records}__USEAGENT_LISTING_COMPLETE__\0`;
+
+async function sandboxRun(): Promise<NonNullable<Awaited<ReturnType<typeof getRun>>>> {
   const runId = crypto.randomUUID();
   await createRun({
-    id: runId, prompt, model: "m", engine: "mock", orgId: DEV_ORG_ID, userId: null,
-    parentRunId: null, threadId: runId, repos: [], memoryScope: "org",
+    id: runId,
+    prompt: "make a report",
+    model: "m",
+    engine: "mock",
+    orgId: DEV_ORG_ID,
+    userId: null,
+    parentRunId: null,
+    threadId: runId,
+    repos: [],
+    memoryScope: "org",
   });
   await setRunSandbox(runId, `sb-${runId}`, { kind: "daytona", credential: "env" });
-  return runId;
+  return (await getRun(runId))!;
 }
 
-const listing = (files: string) => async () => files;
+function clockSandbox(id: string, timestamps: string[]): SandboxHandle {
+  return {
+    id,
+    process: {
+      async executeCommand(command: string) {
+        expect(command).toBe("date +%s.%N");
+        return { exitCode: 0, result: timestamps.shift() };
+      },
+    },
+  } as SandboxHandle;
+}
 
-describe("harvestTurnOutputs", () => {
-  test("publishes new deliverables, revises a changed one, skips an unchanged one and a refused one", async () => {
-    const runId = await sandboxRun("make a report");
-    const published: Array<{ path: string; updates?: string }> = [];
-    const deps: HarvestDependencies = {
-      list: listing([
-        "10\t/root/work/out/report.pdf", "20\t/root/work/secret.pdf", "30\t/root/work/notes.md",
-        "40\t/root/work/same.md", "60\t/root/work/diagram.png", "",
-      ].join("\0")),
-      known: async (_run, path) =>
-        path.endsWith("notes.md") ? { id: "art-notes", sha256: "old", sizeBytes: 30 }
-        : path.endsWith("same.md") ? { id: "art-same", sha256: "same", sizeBytes: 40 }
-        : path.endsWith("diagram.png") ? { id: "art-png", sha256: "old", sizeBytes: 60 }
-        : null,
-      digest: async (_run, path) => (path.endsWith("same.md") ? "same" : "new"),
-      publish: async (input) => {
-        if (input.path.endsWith("secret.pdf")) throw new Error("protected");
-        if (input.path.endsWith("diagram.png") && input.updatesArtifactId) {
-          throw new Error("republished file kind does not match the artifact being updated (expected document, got image)");
-        }
-        published.push({ path: input.path, updates: input.updatesArtifactId });
-        expect(input).toMatchObject({ orgId: DEV_ORG_ID, runId, threadId: runId, purpose: "deliverable" });
-        return { artifact: { id: `art-${published.length}` }, record: {}, created: true } as never;
+describe("automatic artifact discovery", () => {
+  test("uses the immutable first sandbox-clock baseline and returns candidates only", async () => {
+    const run = await sandboxRun();
+    const sandbox = clockSandbox(run.sandboxId!, ["1757000000.100000000\n", "1757000001.200000000\n"]);
+    await recordOutputBaseline(run.id, sandbox, "/root/work");
+    await recordOutputBaseline(run.id, sandbox, "/root/work");
+
+    const commands: string[] = [];
+    const deps: DiscoveryDependencies = {
+      list: async (_run, command) => {
+        commands.push(command);
+        return command.includes("-name .git")
+          ? complete("/root/work/repo\0")
+          : complete("12\t/root/work/report.txt\0" + "9\t/root/work/repo/code.json\0");
       },
     };
-    const ids = await harvestTurnOutputs(runId, {}, deps);
-    expect(published).toEqual([
-      { path: "/root/work/diagram.png", updates: undefined },
-      { path: "/root/work/notes.md", updates: "art-notes" },
-      { path: "/root/work/out/report.pdf", updates: undefined },
+    expect(await discoverTurnOutputs(run, {}, deps)).toEqual([
+      { path: "/root/work/report.txt", size: 12 },
     ]);
-    expect(ids).toEqual(["art-1", "art-2", "art-3"]);
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toContain("-newermt '@1757000000.100000000'");
   });
 
-  test("an already cancelled run never starts any sandbox work", async () => {
-    const runId = await sandboxRun("cancelled early");
-    const controller = new AbortController();
-    controller.abort();
-    let listed = 0;
-    const deps: HarvestDependencies = {
-      list: async () => { listed += 1; return ""; },
-      known: async () => null,
-      digest: async () => "x",
-      publish: async () => { throw new Error("unreachable"); },
-    };
-    expect(await harvestTurnOutputs(runId, { signal: controller.signal }, deps)).toEqual([]);
-    expect(listed).toBe(0);
-  });
-
-  test("stops at once when the run is cancelled mid-way and never throws", async () => {
-    const runId = await sandboxRun("cancelled");
-    const controller = new AbortController();
-    let listed = 0;
-    const deps: HarvestDependencies = {
-      list: async () => {
-        listed += 1;
-        controller.abort();
-        return "10\t/root/work/a.pdf\0";
-      },
-      known: async () => null,
-      digest: async () => "x",
-      publish: async () => { throw new Error("unreachable"); },
-    };
-    expect(await harvestTurnOutputs(runId, { signal: controller.signal }, deps)).toEqual([]);
-    expect(listed).toBe(1);
-  });
-
-  test("gives up on a listing that never answers", async () => {
-    const runId = await sandboxRun("stalled");
-    const deps: HarvestDependencies = {
-      list: () => new Promise(() => {}),
-      known: async () => null,
-      digest: async () => "x",
-      publish: async () => { throw new Error("unreachable"); },
-    };
-    const controller = new AbortController();
-    const pending = harvestTurnOutputs(runId, { signal: controller.signal }, deps);
-    controller.abort();
-    expect(await pending).toEqual([]);
-  });
-
-  test("a publish that started is finished even when the run is cancelled meanwhile", async () => {
-    const runId = await sandboxRun("cancelled during publish");
-    const controller = new AbortController();
-    let published = 0;
-    const deps: HarvestDependencies = {
-      list: async () => "10\t/root/work/a.pdf\0" + "20\t/root/work/b.pdf\0",
-      known: async () => null,
-      digest: async () => "x",
-      publish: async (input) => {
-        controller.abort();
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        published += 1;
-        return { artifact: { id: input.path }, record: {}, created: true } as never;
-      },
-    };
-    expect(await harvestTurnOutputs(runId, { signal: controller.signal }, deps)).toEqual(["/root/work/a.pdf"]);
-    expect(published).toBe(1);
-  });
-
-  test("does nothing for a run without a sandbox", async () => {
-    const runId = crypto.randomUUID();
-    await createRun({
-      id: runId, prompt: "chat", model: "m", engine: "mock", orgId: DEV_ORG_ID, userId: null,
-      parentRunId: null, threadId: runId, repos: [], memoryScope: "org",
-    });
+  test("returns no automatic candidates without a baseline and never lists", async () => {
+    const run = await sandboxRun();
     let listed = false;
-    const deps: HarvestDependencies = {
-      list: async () => { listed = true; return ""; },
-      known: async () => null,
-      digest: async () => "x",
-      publish: async () => { throw new Error("unreachable"); },
-    };
-    expect(await harvestTurnOutputs(runId, {}, deps)).toEqual([]);
+    expect(await discoverTurnOutputs(run, {}, {
+      list: async () => {
+        listed = true;
+        return complete();
+      },
+    })).toEqual([]);
     expect(listed).toBe(false);
-    expect(await harvestTurnOutputs("missing-run", {}, deps)).toEqual([]);
+  });
+
+  test("throws on baseline binding mismatch and listing failure", async () => {
+    const run = await sandboxRun();
+    await recordOutputBaseline(run.id, clockSandbox(run.sandboxId!, ["1757000000.1"]), "/root/work");
+    await setRunSandbox(run.id, `replacement-${run.id}`, { kind: "daytona", credential: "env" });
+    const rebound = (await getRun(run.id))!;
+    await expect(discoverTurnOutputs(rebound, {}, {
+      list: async () => complete(),
+    })).rejects.toThrow("sandbox mismatch");
+
+    const current = await sandboxRun();
+    await recordOutputBaseline(current.id, clockSandbox(current.sandboxId!, ["1757000000.2"]), "/root/work");
+    await expect(discoverTurnOutputs(current, {}, {
+      list: async () => "",
+    })).rejects.toThrow("incomplete");
+  });
+
+  test("honors cancellation before invoking sandbox work", async () => {
+    const run = await sandboxRun();
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    let executed = false;
+    const sandbox = {
+      id: run.sandboxId!,
+      process: {
+        async executeCommand() {
+          executed = true;
+          return { exitCode: 0, result: "1757000000.3" };
+        },
+      },
+    } as SandboxHandle;
+    await expect(recordOutputBaseline(run.id, sandbox, "/root/work", controller.signal))
+      .rejects.toThrow("cancelled");
+    expect(executed).toBe(false);
   });
 });

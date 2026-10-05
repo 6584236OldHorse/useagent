@@ -53,9 +53,8 @@ import {
 import { evaluateFinishedWork, finishedWorkFailureSummary } from "./finished-work";
 import { listFinishedWorkForRun } from "./finished-work-repo";
 import { finishedWorkEnforcementEnabled, finishedWorkRolloutMode } from "./finished-work-rollout";
-import { lockFinishedWorkRun, withFinishedWorkSessionLocks } from "./finished-work-lock";
-import { ARTIFACT_COMPLETION_FAILURE, completeLinkedArtifacts, runOutputLinks } from "../artifacts/completion";
-import type { OutputLink } from "../artifacts/output-links";
+import { lockFinishedWorkRun } from "./finished-work-lock";
+import { completeRunOutputs } from "../artifacts/completion";
 import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
 import { getThreadRelationship } from "./thread-relationship-repo";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
@@ -79,6 +78,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   run: RunRow,
   status: RunStatus,
   summary: string,
+  deliveryArtifactIds: readonly string[] = [],
 ): Promise<boolean> {
   const userMirror = await enqueueSlackUserMirrorForRun(run.id, tx);
   let kickSlack = userMirror.status === "ready" && userMirror.created;
@@ -199,7 +199,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     kickSlack = kickSlack || shimmerCleared;
   }
 
-  if (status === "completed") {
+  if (status === "completed" || deliveryArtifactIds.length > 0) {
     const revisedEvents = await tx
       .select({ payload: providerEvents.payload })
       .from(providerEvents)
@@ -217,9 +217,10 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
           : null;
       return typeof id === "string" ? [id] : [];
     });
+    const selectedIds = [...new Set([...revisedArtifactIds, ...deliveryArtifactIds])];
     const artifactScope =
-      revisedArtifactIds.length > 0
-        ? or(eq(artifacts.runId, run.id), inArray(artifacts.id, revisedArtifactIds))
+      selectedIds.length > 0
+        ? or(eq(artifacts.runId, run.id), inArray(artifacts.id, selectedIds))
         : eq(artifacts.runId, run.id);
     const runArtifacts = await tx
       .select({
@@ -234,7 +235,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
         workpieceRevision: artifacts.workpieceRevision,
       })
       .from(artifacts)
-      .where(and(eq(artifacts.orgId, run.orgId), artifactScope))
+      .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), artifactScope))
       .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt));
     for (const artifact of runArtifacts) {
       // Publication already enforces the artifact byte limit. Never silently
@@ -322,6 +323,9 @@ export async function resolveDurableFinalizationOutcome(
 }
 
 export interface FinalizeRunOptions {
+  readonly signal?: AbortSignal;
+  /** Non-mutating fence used before reads and inside each artifact commit. */
+  readonly publicationClaim?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<boolean>;
   /** Ownership guard evaluated INSIDE the finalization transaction, after the run row is
    *  read and before anything is written. When it returns false the transaction writes
    *  nothing and the result is `applied: false`. The reconciler passes its fenced
@@ -346,19 +350,12 @@ export async function finalizeRun(
     // durable winner, even though no publication or status write may run again.
     return commitRunFinalization(runId, status, summary, durationMs, options);
   }
-  let links: OutputLink[];
-  try {
-    links = await runOutputLinks(run, summary);
-  } catch {
-    return commitRunFinalization(runId, "failed", ARTIFACT_COMPLETION_FAILURE, durationMs, options);
-  }
-  if (links.length === 0) return commitRunFinalization(runId, status, summary, durationMs, options);
-  // The existing two-connection publication pool bounds simultaneous file
-  // finalizations. A recovery claim must remain locked until publication and
-  // settlement finish, so this path deliberately holds its transaction during
-  // bounded file I/O; a false claim performs no publication at all.
-  return withFinishedWorkSessionLocks(runId, null, () =>
-    commitRunFinalization(runId, status, summary, durationMs, options, links));
+  const outputs = await completeRunOutputs(run, summary, {
+    signal: options.signal, requiresClaim: Boolean(options.claim),
+    publicationClaim: options.publicationClaim,
+  });
+  if (outputs.status === "obsolete") return { applied: false };
+  return commitRunFinalization(runId, outputs.status, outputs.summary, durationMs, options, outputs.artifactIds);
 }
 
 async function commitRunFinalization(
@@ -367,7 +364,7 @@ async function commitRunFinalization(
   summary: string,
   durationMs: number,
   options: FinalizeRunOptions,
-  links: readonly OutputLink[] = [],
+  deliveryArtifactIds: readonly string[] = [],
 ): Promise<FinalizeRunResult> {
   const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
@@ -386,7 +383,7 @@ async function commitRunFinalization(
   let settledInternal = true; // stays true unless a customer run actually finalized
   await db.transaction(async (tx) => {
     await lockFinishedWorkRun(runId, tx);
-    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1);
+    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).for("update").limit(1);
     if (!run) return; // deleted mid-flight — nothing to finalize
     if (options.claim && !(await options.claim(tx))) return; // the caller no longer owns this settlement
     if (run.status !== "queued" && run.status !== "running") return;
@@ -396,19 +393,24 @@ async function commitRunFinalization(
     settledPrompt = run.prompt;
     settledInternal = isInternalRunOrigin(run.origin) || run.engine === "mock";
 
-    if (effectiveStatus === "completed" && run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
+    // The same row lock used by acceptRunCancel linearizes Stop against this
+    // terminal write. Remote file reads have already finished outside this tx.
+    if (run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
       effectiveStatus = "failed";
       effectiveSummary = CANCEL_SUMMARY;
-    } else if (effectiveStatus === "completed" && links.length > 0) {
-      const delivered = await completeLinkedArtifacts(run, effectiveSummary, links, tx);
-      effectiveStatus = delivered.status;
-      effectiveSummary = delivered.summary;
+      deliveryArtifactIds = [];
     }
-    // Stop can arrive while the publisher reads from a runner. Recheck its
-    // durable command before recording success, not only before engine return.
-    if (effectiveStatus === "completed" && run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
-      effectiveStatus = "failed";
-      effectiveSummary = CANCEL_SUMMARY;
+
+    if (effectiveStatus === "completed" && run.orgId) {
+      const state = await listFinishedWorkForRun(run.orgId, runId, tx);
+      const requiredOutputs = evaluateFinishedWork({
+        obligations: state.obligations.filter((row) => row.sourceKind === "sandbox_output"),
+        receipts: state.receipts,
+      });
+      if (requiredOutputs.status === "blocked" || requiredOutputs.status === "failed") {
+        effectiveStatus = "failed";
+        effectiveSummary = finishedWorkFailureSummary(requiredOutputs);
+      }
     }
 
     // Finished-work enforcement is additive and trusted-boundary-only: Phase A
@@ -492,7 +494,7 @@ async function commitRunFinalization(
     // Slack reply — durable for a Slack-originated run (resolved from the run's
     // thread, so replies + boot-reconciled runs both find it). Non-Slack runs
     // resolve null and enqueue nothing.
-    kickSlack = (await enqueueSlackTerminalDeliveryForRunTx(tx, run, effectiveStatus, effectiveSummary)) || kickSlack;
+    kickSlack = (await enqueueSlackTerminalDeliveryForRunTx(tx, run, effectiveStatus, effectiveSummary, deliveryArtifactIds)) || kickSlack;
 
     // Automation delivery (delivery.slack) — a run fired by an automation whose
     // delivery config targets Slack posts its terminal outcome to that channel,

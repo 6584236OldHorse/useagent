@@ -306,8 +306,9 @@ export async function findArtifactByOrgAndSha256(
 export async function getArtifactForOrg(
   orgId: string,
   id: string,
+  exec: Executor = db,
 ): Promise<ArtifactRecord | null> {
-  const [row] = await db
+  const [row] = await exec
     .select()
     .from(artifacts)
     .where(and(eq(artifacts.orgId, orgId), eq(artifacts.id, id)))

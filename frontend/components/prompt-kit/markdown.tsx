@@ -5,7 +5,7 @@
 
 import { marked } from "marked";
 import { memo, useEffect, useId, useMemo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ai/code-block";
@@ -165,11 +165,13 @@ function ArtifactMarkdownChip({
   );
 }
 
-/** Absolute roots a sandbox workspace or its home can live under. */
-const SANDBOX_ROOTS = /^\/(?:root|home|tmp|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
+/** Absolute roots a sandbox workspace or local host path can live under. */
+const SANDBOX_ROOTS =
+  /^\/(?:root|home|tmp|private|Users|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
 
 export function isSandboxPath(url: string): boolean {
-  if (/^file:/i.test(url)) return true;
+  if (/^(?:file|sandbox):/i.test(url)) return true;
+  if (/^[a-z]:[\\/]/i.test(url)) return true;
   if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false; // any other scheme
   if (url.startsWith("//") || url.startsWith("#") || url.startsWith("?")) return false;
   if (url.startsWith("/")) return SANDBOX_ROOTS.test(url);
@@ -243,45 +245,42 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   a: function AnchorComponent({ href, children }) {
     const url = typeof href === "string" ? href : "";
     const openWorkpiece = useOpenWorkpiece();
-    // A target the sanitizer removed (file:, data:, javascript:) is not a link
-    // anyone can open; the text stays, the dead anchor goes.
-    if (!url) return <span>{children}</span>;
     // Artifact/media links render as dense source chips (type badge + label +
     // arrow), matching the retrieval-chip grammar; ordinary links stay links.
     const isArtifact = /\/(?:api|agent)\/artifacts\//.test(url);
-    const label =
-      typeof children === "string"
-        ? children
-        : Array.isArray(children)
-          ? children.join("")
-          : "Open";
-    // A sandbox path cannot be opened from the browser, whatever its file
-    // type; the file itself is published under Session files, so the chip
-    // names it without pretending to be a link. Only recognised sandbox forms
-    // are treated this way: a file: URL, an absolute POSIX path under a
-    // sandbox root, or a bare relative path. Web URLs, protocol-relative
-    // links, our own routes and anchors stay links.
-    if (!isArtifact && isSandboxPath(url)) {
-      return (
-        <span
-          data-chip
-          title="Published under Session files"
-          className="mx-0.5 inline-flex translate-y-[-1px] items-center gap-1.5 rounded-full bg-background-secondary-default py-0.5 pl-1 pr-2 align-middle text-caption-1-medium text-text-primary"
-        >
-          <span
-            aria-hidden
-            className="flex size-4 items-center justify-center rounded-full bg-background-tertiary-default text-[9px] font-semibold leading-none text-text-secondary"
-          >
-            {(url.match(/\.([a-z0-9]+)$/i)?.[1] ?? "F").charAt(0).toUpperCase()}
-          </span>
-          <span className="max-w-56 truncate">{label}</span>
-        </span>
-      );
-    }
     const ext = (
       url.match(/\.(mp4|webm|pdf|docx|xlsx|pptx|csv|png|jpg|zip)(?:\?|$)/i)?.[1] ?? ""
     ).toUpperCase();
     if (isArtifact || ext) {
+      const label =
+        typeof children === "string"
+          ? children
+          : Array.isArray(children)
+            ? children.join("")
+            : "Open";
+      // A local filesystem path cannot be opened from the browser, so the chip
+      // names it without pretending it was published or is a working link.
+      // Only recognised local forms are treated this way: a
+      // file: URL, an absolute POSIX path under a sandbox root, or a bare
+      // relative path. Web URLs, protocol-relative links, our own routes and
+      // anchors stay links.
+      if (!isArtifact && isSandboxPath(url)) {
+        return (
+          <span
+            data-chip
+            title="Local file path - not published"
+            className="mx-0.5 inline-flex translate-y-[-1px] items-center gap-1.5 rounded-full bg-background-secondary-default py-0.5 pl-1 pr-2 align-middle text-caption-1-medium text-text-primary"
+          >
+            <span
+              aria-hidden
+              className="flex size-4 items-center justify-center rounded-full bg-background-tertiary-default text-[9px] font-semibold leading-none text-text-secondary"
+            >
+              {ext.charAt(0)}
+            </span>
+            <span className="max-w-56 truncate">{label}</span>
+          </span>
+        );
+      }
       const tone =
         ext === "PDF"
           ? "bg-red-500"
@@ -409,7 +408,11 @@ const MemoizedMarkdownBlock = memo(
     components?: Partial<Components>;
   }) {
     return (
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={components}
+        urlTransform={(url) => (isSandboxPath(url) ? url : defaultUrlTransform(url))}
+      >
         {content}
       </ReactMarkdown>
     );

@@ -22,8 +22,10 @@ export async function lockArtifactStorageKey(
 export async function withArtifactStorageKeyLock<T>(
   storageKey: string,
   action: (tx: DbTx) => Promise<T>,
+  beforeLock?: (tx: DbTx) => Promise<void>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
+    await beforeLock?.(tx);
     await lockArtifactStorageKey(tx, storageKey);
     return action(tx);
   });

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import JSZip from "jszip";
 import { renderArtifactExport } from "@useagent/artifact-formats";
@@ -6,16 +6,19 @@ import { csvToWorkbook, migrateSlidesToDeck } from "@useagent/artifact-workspace
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
 import { setOfficePreviewConverterForTest } from "../src/artifacts/office-preview";
 import { setArtifactStorageForTest, type ArtifactStorage } from "../src/artifacts/storage";
+import { recordOutputBaseline } from "../src/artifacts/harvest";
 import { acceptRunCancel } from "../src/commands/cancel";
 import { db } from "../src/db/client";
 import {
-  commands,
+  artifacts,
   finishedWorkObligations,
   finishedWorkReceipts,
   providerEvents,
 } from "../src/db/schema";
 import { finalizeRun } from "../src/runs/finalize";
 import { createRun, getRun, setRunSandbox, setRunStatus } from "../src/runs/repo";
+import * as sandboxBindings from "../src/sandboxes/binding";
+import type { SandboxHandle } from "../src/sandboxes/provider";
 import { startSlackOutbox, type SlackClient } from "../src/slack";
 import { processDue, stopSlackOutboxRelay } from "../src/slack/outbox";
 import { createSlackRunResponse, linkSlackThread } from "../src/slack/repo";
@@ -91,6 +94,24 @@ async function createSandboxRun(
   return runId;
 }
 
+async function createContinuationRun(session: OrgSession, threadId: string): Promise<string> {
+  const runId = crypto.randomUUID();
+  await createRun({
+    id: runId,
+    prompt: "Update the requested file",
+    model: "test",
+    engine: "codex",
+    orgId: session.orgId,
+    userId: session.email,
+    parentRunId: threadId,
+    threadId,
+    repos: [],
+    memoryScope: "org",
+  });
+  await setRunSandbox(runId, `sandbox-${threadId}`, { kind: "cube", credential: "env" });
+  return runId;
+}
+
 async function listArtifacts(session: OrgSession, threadId: string) {
   return json<{ artifacts: Array<{
     id: string;
@@ -117,6 +138,20 @@ function recordingSlack(uploads: Array<{ filename: string; bytes: Uint8Array }>)
       return { ok: true };
     },
   };
+}
+
+async function within<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation did not settle before publication resumed")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 describe("artifact completion", () => {
@@ -178,6 +213,52 @@ describe("artifact completion", () => {
     expect(denied.status).toBe(404);
   });
 
+  test("discovers a new sandbox output from the turn baseline before finalizing and delivering it", async () => {
+    const runId = await createSandboxRun(owner);
+    const path = "/root/work/discovered-report.pdf";
+    sandboxFiles.set(path, pdfBytes);
+    const sandbox = {
+      id: `sandbox-${runId}`,
+      process: {
+        async executeCommand(command: string) {
+          if (command === "date +%s.%N") return { exitCode: 0, result: "1757000000.100000000\n" };
+          if (command.includes("-name .git")) return { exitCode: 0, result: "__USEAGENT_LISTING_COMPLETE__\0" };
+          return {
+            exitCode: 0,
+            result: `${pdfBytes.byteLength}\t${path}\0__USEAGENT_LISTING_COMPLETE__\0`,
+          };
+        },
+      },
+    } as SandboxHandle;
+    await recordOutputBaseline(runId, sandbox, "/root/work");
+    const channel = `C${runId.slice(0, 8)}`;
+    const threadTs = `${runId.slice(0, 8)}.1`;
+    await linkSlackThread({ teamId: "T0TESTTEAM", channel, threadTs, rootRunId: runId, orgId: owner.orgId });
+    await createSlackRunResponse({ runId, teamId: "T0TESTTEAM", channel, threadTs });
+    const resolver = spyOn(sandboxBindings, "resolveRunSandbox").mockResolvedValue(sandbox as never);
+    let finalized;
+    try {
+      finalized = await finalizeRun(runId, "completed", "Done", 100);
+    } finally {
+      resolver.mockRestore();
+    }
+
+    expect(finalized).toMatchObject({ applied: true, status: "completed" });
+    const listed = await listArtifacts(owner, runId);
+    expect(listed.body.artifacts).toHaveLength(1);
+    const artifact = listed.body.artifacts[0]!;
+    if (!finalized?.applied) throw new Error("run was not finalized");
+    expect(finalized.summary).toContain(artifact.id);
+    const content = await fetchApi(`/api/artifacts/${artifact.id}/content`, { cookies: owner.cookies });
+    expect(Buffer.from(await content.arrayBuffer())).toEqual(pdfBytes);
+
+    const uploads: Array<{ filename: string; bytes: Uint8Array }> = [];
+    await processDue(recordingSlack(uploads));
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.filename).toBe("discovered-report.pdf");
+    expect(Buffer.from(uploads[0]!.bytes)).toEqual(pdfBytes);
+  });
+
   const formats = [
     { name: "PDF", provider: "box", path: "/home/user/work/output.pdf", target: "</home/user/work/output.pdf>", image: false },
     { name: "DOCX", provider: "cube", path: "/root/work/output.docx", target: "/root/work/output.docx", image: false },
@@ -187,7 +268,7 @@ describe("artifact completion", () => {
     { name: "PNG", provider: "daytona", path: "/root/work/output.png", target: "file:///root/work/output.png", image: true },
     { name: "WebM", provider: "box", path: "/home/user/work/output.webm", target: "/home/user/work/output.webm", image: false },
     { name: "ZIP", provider: "cube", path: "/root/work/output.zip", target: "sandbox:/root/work/output.zip", image: false },
-    { name: "extensionless", provider: "daytona", path: "/root/work/output", target: "/root/work/output", image: false },
+    { name: "extensionless", provider: "local", path: "/home/user/work/output", target: "/home/user/work/output", image: false },
   ] as const;
 
   test.each(formats)("publishes an explicitly linked $name file without changing its bytes", async ({ provider, path, target, image }) => {
@@ -221,13 +302,87 @@ describe("artifact completion", () => {
     expect(Buffer.from(await content.arrayBuffer())).toEqual(rendered);
   });
 
+  test.each(["png", "zip", "webm"] as const)(
+    "revises one stable artifact when a later turn changes raw %s bytes",
+    async (extension) => {
+      const initial = extension === "png"
+        ? Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64")
+        : extension === "zip"
+          ? Buffer.from(await new JSZip().file("version.txt", "one").generateAsync({ type: "uint8array" }))
+          : Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x01]);
+      const changed = extension === "zip"
+        ? Buffer.from(await new JSZip().file("version.txt", "two").generateAsync({ type: "uint8array" }))
+        : Buffer.concat([initial, Buffer.from([0x02])]);
+      const threadId = await createSandboxRun(owner);
+      const path = `/root/work/revision.${extension}`;
+      sandboxFiles.set(path, initial);
+      await finalizeRun(threadId, "completed", `Ready: [Output](${path})`, 100);
+      const [first] = await db.select().from(artifacts).where(and(
+        eq(artifacts.threadId, threadId),
+        eq(artifacts.sourcePath, path),
+      ));
+      if (!first) throw new Error("initial artifact was not published");
+      const continuation = await createContinuationRun(owner, threadId);
+      sandboxFiles.set(path, changed);
+
+      const finalized = await finalizeRun(continuation, "completed", `Updated: [Output](${path})`, 100);
+
+      expect(finalized).toMatchObject({ applied: true, status: "completed" });
+      const [revised] = await db.select().from(artifacts).where(eq(artifacts.id, first.id));
+      expect(revised).toMatchObject({
+        id: first.id,
+        workpieceRevision: first.workpieceRevision + 1,
+        sha256: createHash("sha256").update(changed).digest("hex"),
+      });
+      expect(await db.select().from(artifacts).where(and(
+        eq(artifacts.threadId, threadId),
+        eq(artifacts.sourcePath, path),
+      ))).toHaveLength(1);
+      const content = await fetchApi(`/api/artifacts/${first.id}/content`, { cookies: owner.cookies });
+      expect(Buffer.from(await content.arrayBuffer())).toEqual(changed);
+    },
+  );
+
+  test("reuses artifact identity and revision when a later turn republishes unchanged bytes", async () => {
+    const threadId = await createSandboxRun(owner);
+    const path = "/root/work/unchanged.zip";
+    const bytes = Buffer.from(await new JSZip().file("stable.txt", "same").generateAsync({ type: "uint8array" }));
+    sandboxFiles.set(path, bytes);
+    await finalizeRun(threadId, "completed", `Ready: [Output](${path})`, 100);
+    const [first] = await db.select().from(artifacts).where(and(
+      eq(artifacts.threadId, threadId),
+      eq(artifacts.sourcePath, path),
+    ));
+    if (!first) throw new Error("initial artifact was not published");
+    const continuation = await createContinuationRun(owner, threadId);
+
+    const finalized = await finalizeRun(continuation, "completed", `Still ready: [Output](${path})`, 100);
+
+    expect(finalized).toMatchObject({ applied: true, status: "completed" });
+    const [unchanged] = await db.select().from(artifacts).where(eq(artifacts.id, first.id));
+    expect(unchanged).toMatchObject({
+      id: first.id,
+      workpieceRevision: first.workpieceRevision,
+      sha256: first.sha256,
+    });
+    expect(await db.select().from(artifacts).where(and(
+      eq(artifacts.threadId, threadId),
+      eq(artifacts.sourcePath, path),
+    ))).toHaveLength(1);
+  });
+
   test("does not complete when an explicitly linked local file is missing", async () => {
     const runId = await createSandboxRun(owner);
 
-    await finalizeRun(runId, "completed", "Ready: [Download](/root/work/missing.pdf)", 100)
-      .catch(() => null);
+    const finalized = await finalizeRun(
+      runId,
+      "completed",
+      "Ready: [Download](/root/work/missing.pdf)",
+      100,
+    );
 
-    expect((await getRun(runId))?.status).not.toBe("completed");
+    expect(finalized).toMatchObject({ applied: true, status: "failed" });
+    expect((await getRun(runId))?.status).toBe("failed");
     expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
   });
 
@@ -263,6 +418,74 @@ describe("artifact completion", () => {
     expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
   });
 
+  test("a recovery owner publishes through both publication and terminal claim fences", async () => {
+    const runId = await createSandboxRun(owner);
+    sandboxFiles.set("/root/work/recovered.pdf", pdfBytes);
+    let publicationChecks = 0;
+    let terminalClaims = 0;
+
+    const finalized = await finalizeRun(
+      runId,
+      "completed",
+      "Recovered: [Download](/root/work/recovered.pdf)",
+      100,
+      {
+        publicationClaim: async () => {
+          publicationChecks += 1;
+          return true;
+        },
+        claim: async () => {
+          terminalClaims += 1;
+          return true;
+        },
+      },
+    );
+
+    expect(finalized).toMatchObject({ applied: true, status: "completed" });
+    expect(publicationChecks).toBeGreaterThanOrEqual(2);
+    expect(terminalClaims).toBe(1);
+    expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(1);
+  });
+
+  test("a recovery owner that loses its publication claim during download publishes nothing", async () => {
+    const runId = await createSandboxRun(owner);
+    await setRunStatus(runId, "running");
+    let claimHeld = true;
+    let terminalClaims = 0;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    setSandboxDownloaderForTest(async () => {
+      markStarted();
+      await released;
+      return { bytes: pdfBytes, size: pdfBytes.byteLength };
+    });
+    const finalizing = finalizeRun(
+      runId,
+      "completed",
+      "Recovered: [Download](/root/work/lost-claim.pdf)",
+      100,
+      {
+        publicationClaim: async () => claimHeld,
+        claim: async () => {
+          terminalClaims += 1;
+          return true;
+        },
+      },
+    );
+    await started;
+
+    claimHeld = false;
+    release();
+    const finalized = await finalizing;
+
+    expect(finalized).toEqual({ applied: false });
+    expect(terminalClaims).toBe(0);
+    expect((await getRun(runId))?.status).toBe("running");
+    expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
+  });
+
   test("a cancel accepted before publication prevents completed artifact delivery", async () => {
     const runId = await createSandboxRun(owner);
     sandboxFiles.set("/root/work/cancelled.pdf", pdfBytes);
@@ -283,8 +506,15 @@ describe("artifact completion", () => {
   test("a cancel accepted while publication is downloading prevents completion", async () => {
     const runId = await createSandboxRun(owner);
     await setRunStatus(runId, "running");
+    const controller = new AbortController();
+    let publicationReleased = false;
     let release!: () => void;
-    const released = new Promise<void>((resolve) => { release = resolve; });
+    const released = new Promise<void>((resolve) => {
+      release = () => {
+        publicationReleased = true;
+        resolve();
+      };
+    });
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     setSandboxDownloaderForTest(async () => {
@@ -297,23 +527,26 @@ describe("artifact completion", () => {
       "completed",
       "Ready: [Download](/root/work/cancel-race.pdf)",
       100,
+      { signal: controller.signal },
     );
     await started;
 
-    await db.insert(commands).values({
-      id: crypto.randomUUID(),
-      idempotencyKey: `cancel:${runId}`,
-      orgId: owner.orgId,
-      actorId: owner.email,
-      kind: "run.cancel",
-      runId,
-      threadId: runId,
-      state: "completed",
-      attemptCount: 0,
-    });
-    release();
-    const finalized = await finalizing;
+    const cancelling = acceptRunCancel({ orgId: owner.orgId, actorId: owner.email, runId });
+    let cancelOutcome: Awaited<typeof cancelling> | null = null;
+    let boundedError: unknown;
+    try {
+      cancelOutcome = await within(cancelling);
+      expect(publicationReleased).toBe(false);
+      controller.abort(new Error("cancel accepted"));
+    } catch (error) {
+      boundedError = error;
+    } finally {
+      release();
+    }
+    const [finalized] = await Promise.all([finalizing, cancelling]);
+    if (boundedError) throw boundedError;
 
+    expect(cancelOutcome).toMatchObject({ status: "accepted", runStatusWas: "running" });
     expect(finalized).toMatchObject({ applied: true, status: "failed" });
     expect((await getRun(runId))?.status).toBe("failed");
   });
@@ -404,10 +637,10 @@ describe("artifact completion", () => {
     sandboxFiles.set(path, pdfBytes);
     if (resolved) resolvedPaths.set(path, resolved);
 
-    await finalizeRun(runId, "completed", `Ready: [Download](${path})`, 100)
-      .catch(() => null);
+    const finalized = await finalizeRun(runId, "completed", `Ready: [Download](${path})`, 100);
 
-    expect((await getRun(runId))?.status).not.toBe("completed");
+    expect(finalized).toMatchObject({ applied: true, status: "failed" });
+    expect((await getRun(runId))?.status).toBe("failed");
     expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
   });
 });

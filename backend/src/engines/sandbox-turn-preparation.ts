@@ -220,6 +220,9 @@ export async function prepareSandboxTurn<T>(
       }
     }
     await stage("secrets_marker", () => recordSecretsInjected(ctx, secretInjection));
+    if (ctx.prepareOutputCapture) {
+      await stage("output_baseline", () => ctx.prepareOutputCapture!(sandbox, workdir));
+    }
     return {
       sandbox,
       workdir,

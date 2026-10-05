@@ -493,6 +493,7 @@ async function finalizeOwned(
 ): Promise<Awaited<ReturnType<typeof resolveDurableFinalizationOutcome>> | null> {
   let held = false;
   const finalized = await finalizeRun(entry.runId, status, summary, 0, {
+    publicationClaim: (tx) => reconcileClaimHeldForUpdate(entry.runId, entry.leaseUntil, tx),
     claim: async (tx) => {
       held = await deleteReconcile(entry.runId, entry.leaseUntil, tx);
       return held;

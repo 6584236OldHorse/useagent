@@ -32,27 +32,27 @@ describe("Markdown links", () => {
     expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
-  test("a sandbox path of any file type never becomes a link", () => {
-    for (const href of ["/root/work/notes.md", "/home/user/work/page.html", "out/chart.svg"]) {
-      const html = renderToStaticMarkup(<Markdown>{`[Report](${href})`}</Markdown>);
+  test("renders unpublished local files as honest inert chips", () => {
+    for (const href of [
+      "/home/user/work/report.pdf",
+      "output/report.pdf",
+      "file:///Users/me/report.pdf",
+      "sandbox:/root/work/report.pdf",
+      "C:/Users/me/report.pdf",
+    ]) {
+      const html = renderToStaticMarkup(<Markdown>{`[Download the PDF](${href})`}</Markdown>);
+      expect(html).toContain("Download the PDF");
+      expect(html).toContain('title="Local file path - not published"');
       expect(html).not.toContain("href=");
-      expect(html).toContain("Report");
+      expect(html).not.toContain("Published under Session files");
     }
   });
 
-  test("a file: link loses its dead anchor and keeps its text", () => {
-    const html = renderToStaticMarkup(<Markdown>{"[Report](file:///root/work/a.pdf)"}</Markdown>);
-    expect(html).toContain("Report");
-    expect(html).not.toContain("<a");
-  });
-
-  test("renders a sandbox path as a named chip, never as a dead link", () => {
+  test("keeps unsafe schemes inert", () => {
     const html = renderToStaticMarkup(
-      <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>,
+      <Markdown>{"[Open report](javascript:alert('nope'))"}</Markdown>,
     );
-    expect(html).toContain("Download the PDF");
-    expect(html).not.toContain("href=");
-    expect(html).toContain("Session files");
+    expect(html).not.toContain("javascript:");
   });
 
   test("keeps ordinary links on the plain markdown link path", () => {

@@ -1,7 +1,6 @@
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
-import { getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
-import { buildThreadPreamble, markRunPromptDelivered, threadHistoryForTurn, type ThreadHistory } from "./runs/thread-history";
+import { buildThreadPreamble, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
@@ -26,6 +25,7 @@ import {
   resolveDurableFinalizationOutcome,
   type FinalizeRunResult,
 } from "./runs/finalize";
+import { recordOutputBaseline } from "./artifacts/harvest";
 import { turnStream } from "./runs/turn-stream";
 import { publishRunLifecycleChange } from "./runs/org-signals";
 import { settleCommandForRun } from "./commands/dispatch";
@@ -289,7 +289,7 @@ async function runWorker(runId: string): Promise<void> {
         end?.();
       }
     };
-    const [providerSessionState, recall, history, skillCatalogPage, resourceSnapshot] = await Promise.all([
+    const [providerSessionState, recall, bootstrapContext, skillCatalogPage, resourceSnapshot] = await Promise.all([
       providerSessionStatePromise,
       // Layered recall (new_mem_prompt.md 6.2): Tencent L0 (immediate ground
       // evidence, incl. explicit "remember X") + L1 (distilled) searched in
@@ -298,7 +298,9 @@ async function runWorker(runId: string): Promise<void> {
       timedContextOperation("worker.memory_recall", () =>
         plan ? recallScopedMemory(run.prompt, plan.readPools) : Promise.resolve(null),
       ),
-      timedContextOperation("worker.thread_preamble", () => threadHistoryForTurn(run)),
+      timedContextOperation("worker.thread_preamble", () =>
+        run.parentRunId ? buildThreadPreamble(run.threadId, run.id) : Promise.resolve(""),
+      ),
       timedContextOperation("worker.skill_catalog", async () => {
         const state = await providerSessionStatePromise;
         const engineSessionId = state.binding?.nativeSessionId ?? state.legacySessionId ?? undefined;
@@ -342,11 +344,11 @@ async function runWorker(runId: string): Promise<void> {
       providerSessionState.legacySessionId ?? undefined;
     const { turnContext, skillCatalogContext, resourceContext } = frameTurnContexts({ recall, skillCatalogPage, resourceSnapshot, botIdentity: bot.identity });
 
-    if (turnContext || history.bootstrapContext || history.unseenTurnsContext || skillContext || skillCatalogContext || resourceContext) {
+    if (turnContext || bootstrapContext || skillContext || skillCatalogContext || resourceContext) {
       console.log(
         `[worker] run ${runId} thread ${run.threadId} scope=${plan?.scope ?? "off"}: ` +
           `turnContext ${turnContext.length} (${recall?.items.length ?? 0} memory items, ` +
-          `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${history.bootstrapContext.length} + unseenTurnsContext ${history.unseenTurnsContext.length}` +
+          `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${bootstrapContext.length}` +
           ` + skillContext ${skillContext.length} chars` +
           ` + skillCatalogContext ${skillCatalogContext.length} chars` +
           ` + resourceContext ${resourceContext.length} chars`,
@@ -395,7 +397,7 @@ async function runWorker(runId: string): Promise<void> {
         runId,
         run.engine,
         run.prompt,
-        history,
+        bootstrapContext,
         turnContext,
         plan !== null,
         resourceContext,
@@ -603,7 +605,7 @@ async function runEngine(
   runId: string,
   engineId: string,
   prompt: string,
-  history: ThreadHistory,
+  bootstrapContext: string,
   turnContext: string,
   memoryEnabled: boolean,
   resourceContext: string,
@@ -702,7 +704,7 @@ async function runEngine(
   const ctx: EngineRunContext = {
     runId,
     prompt,
-    ...history,
+    bootstrapContext,
     turnContext,
     memoryEnabled,
     resourceContext,
@@ -726,7 +728,7 @@ async function runEngine(
     commandProvider,
     commandCatalogRevision,
     saveProviderSession: createProviderSessionSaver(runId),
-    markPromptDelivered: () => markRunPromptDelivered(runId),
+    prepareOutputCapture: (sandbox, root) => recordOutputBaseline(runId, sandbox, root, signal),
     signal,
     emit,
     // In-place step enrichment (same idx → SSE clients upsert): a tool call
@@ -761,19 +763,17 @@ async function runEngine(
   try {
     const dispatched = await runProviderTurn(engineId, ctx);
     if (!dispatched) throw new Error(`provider registration disappeared: ${engineId}`);
-    // Durable cancellation DOMINATES a coincident provider completion (Blocker 2): a
-    // user cancel aborts ctx.signal, but some ACP agents (codex) finish the turn and
-    // return NORMALLY instead of erroring. `terminalOnReturn` (pure, tested) resolves
-    // the terminal: a durably-accepted cancel -> "Stopped by user" (failed); else the
-    // provider's completion. Finalize transactionally (a `completed` also enqueues the
-    // durable memory capture in one tx). Exactly ONE finalize + ONE terminal end event;
-    // the provider turn already emitted its terminal step, so no duplicate `done`.
+    // A durably accepted cancel wins even if the native provider returns normally.
+    // Finalization also checks cancellation under the terminal run-row lock.
+    // Output publication finishes before terminal success and delivery enqueue.
+    // Emit one terminal end event; the provider already emitted its terminal step.
     const outcome = terminalOnReturn(wasCancelled(), summary);
     const finalized = await finalizeRun(
       runId,
       outcome.status,
       outcome.summary,
       summaryDuration ?? Date.now() - startedAt,
+      { signal },
     );
     await emitFinalizedEnd(runId, finalized);
   } catch (err) {
