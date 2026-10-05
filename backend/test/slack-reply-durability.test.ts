@@ -38,7 +38,7 @@ import "./helpers"; // side-effect: imports src/index → migrate + seed
 // covered by slack-outbox.test.ts + slack.test.ts.
 
 const ORG = "org-skynet-dev";
-const TEAM = "T-SKYNET-DEV";
+const TEAM = "T-SKYNET-DURABLE";
 
 /** Root a Slack thread on a fresh run (channel/threadTs are the thread identity). */
 async function slackRootRun(prompt: string): Promise<{ runId: string; channel: string; ts: string }> {
@@ -54,9 +54,10 @@ async function slackRootRun(prompt: string): Promise<{ runId: string; channel: s
 // This suite proves what finalization ENQUEUES and never drains it: the relay
 // is not always running when it does, so its rows would otherwise sit pending
 // and be claimed ahead of a later suite's own rows (a single delivery pass
-// claims twenty). They are this suite's alone: remove them on the way out.
+// claims twenty). The team id is this suite's alone, so the rows keyed on it
+// are too: remove them on the way out.
 afterAll(async () => {
-  await db.delete(slackOutbox).where(like(slackOutbox.idempotencyKey, "%:T-SKYNET-DEV:%"));
+  await db.delete(slackOutbox).where(like(slackOutbox.idempotencyKey, `%:${TEAM}:%`));
 });
 
 describe("slack reply durability at finalization (GAP 3)", () => {
