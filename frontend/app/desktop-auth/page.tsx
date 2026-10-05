@@ -1,106 +1,97 @@
 "use client";
 
-import { SignIn, useAuth, useUser } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AuthForm } from "@/app/login/auth-form";
 import { AuthScreen } from "@/components/auth/auth-screen";
 import { Button } from "@/components/base/buttons/button";
-import { legacyAuthEnabled } from "@/lib/auth-mode";
+import { useSession } from "@/lib/auth";
+import { desktopAuthClient } from "@/lib/desktop-auth-client";
 
-export default function DesktopAuthPage() {
-  return legacyAuthEnabled ? (
-    <AuthScreen>
-      <p>Browser-to-desktop sign-in is unavailable with the legacy provider.</p>
-    </AuthScreen>
-  ) : (
-    <ManagedDesktopAuthPage />
-  );
+type DesktopAuthRequest = {
+  query: Record<string, string>;
+  url: string;
+};
+
+export function desktopAuthRequest(value: string): DesktopAuthRequest | null {
+  const url = new URL(value);
+  const query = Object.fromEntries(url.searchParams);
+  if (url.hash || url.searchParams.size !== 4
+    || url.searchParams.getAll("client_id").length !== 1 || query.client_id !== "electron"
+    || url.searchParams.getAll("state").length !== 1 || !/^[A-Za-z0-9]{16}$/.test(query.state ?? "")
+    || url.searchParams.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(query.code_challenge ?? "")
+    || url.searchParams.getAll("code_challenge_method").length !== 1 || query.code_challenge_method !== "S256") return null;
+  return { query, url: `${url.pathname}${url.search}` };
 }
 
-function ManagedDesktopAuthPage() {
-  const { isLoaded, userId } = useAuth();
-  const { user } = useUser();
-  const [request, setRequest] = useState<{
-    state: string;
-    challenge: string;
-    url: string;
-  } | null>();
+export function restartElectronRedirect(
+  previous: ReturnType<typeof setInterval> | null,
+  start: () => ReturnType<typeof setInterval> = () => desktopAuthClient.ensureElectronRedirect(),
+  stop: (timer: ReturnType<typeof setInterval>) => void = clearInterval,
+): ReturnType<typeof setInterval> {
+  if (previous) stop(previous);
+  return start();
+}
+
+export default function DesktopAuthPage() {
+  const { session, loading } = useSession();
+  const [request, setRequest] = useState<DesktopAuthRequest | null>();
   const [error, setError] = useState<string | null>(null);
-  const [handoffUrl, setHandoffUrl] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const redirectTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => { setRequest(desktopAuthRequest(window.location.href)); }, []);
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const state = url.searchParams.get("state") ?? "";
-    const challenge = url.searchParams.get("challenge") ?? "";
-    setRequest(
-      /^[A-Za-z0-9_-]{43}$/.test(state) && /^[A-Za-z0-9_-]{43}$/.test(challenge)
-        ? { state, challenge, url: url.href }
-        : null,
-    );
-  }, []);
-  async function connect() {
     if (!request) return;
+    redirectTimer.current = restartElectronRedirect(redirectTimer.current);
+    return () => {
+      if (redirectTimer.current) clearInterval(redirectTimer.current);
+      redirectTimer.current = null;
+    };
+  }, [request]);
+
+  async function connect() {
+    if (!request || pending) return;
     setPending(true);
     setError(null);
     try {
-      const response = await fetch("/api/auth/desktop/complete", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ state: request.state, challenge: request.challenge }),
-      });
-      if (!response.ok)
-        throw new Error(
-          response.status === 403
-            ? "Your account does not have access to a workspace."
-            : "Could not connect the desktop. Start sign-in again.",
-        );
-      const value = (await response.json()) as { url?: string };
-      if (!value.url?.startsWith("useagent://auth/callback?"))
-        throw new Error("Invalid desktop response.");
-      setHandoffUrl(value.url);
-      window.location.assign(value.url);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not connect the desktop.");
-    } finally {
-      setPending(false);
+      redirectTimer.current = restartElectronRedirect(redirectTimer.current);
+      const result = await desktopAuthClient.electron.transferUser({ fetchOptions: { query: request.query } });
+      if (!result.error && result.data?.electron_authorization_code) return;
+    } catch {
+      // The same actionable message covers network and rejected transfer failures.
     }
+    setError("Could not connect the desktop. Start sign-in again.");
+    setPending(false);
   }
+
+  if (!request) return (
+    <AuthScreen>
+      <p role={request === null ? "alert" : "status"}>
+        {request === null ? "Open sign-in from the desktop app to begin." : "Loading sign-in..."}
+      </p>
+    </AuthScreen>
+  );
+  if (!loading && !session) return (
+    <AuthForm
+      callbackURL={request.url}
+      googleAction={async () => {
+        const result = await desktopAuthClient.signIn.social({ provider: "google", fetchOptions: { query: request.query } });
+        if (result.error) throw new Error("Could not start Google sign-in.");
+      }}
+    />
+  );
   return (
     <AuthScreen>
-      {!isLoaded || request === undefined ? (
-        <p role="status">Loading sign-in...</p>
-      ) : !request ? (
-        <p role="alert">Open sign-in from the desktop app to begin.</p>
-      ) : !userId ? (
-        <SignIn routing="hash" fallbackRedirectUrl={request.url} />
-      ) : (
-        <section className="space-y-5">
-          <h1 className="text-display-sm text-text-primary">Connect your desktop</h1>
-          <p className="text-body-regular text-text-secondary">
-            Signed in as{" "}
-            {user?.primaryEmailAddress?.emailAddress ?? user?.fullName ?? "your account"}. Approve
-            only if you started this request in your UseAgent desktop app.
-          </p>
-          <Button
-            className="rounded-full"
-            disabled={pending}
-            onClick={() => (handoffUrl ? window.location.assign(handoffUrl) : void connect())}
-          >
-            {pending ? "Connecting..." : handoffUrl ? "Open UseAgent" : "Connect desktop"}
-          </Button>
-          {handoffUrl ? (
-            <p role="status" className="text-body-2-regular text-text-secondary">
-              Approve your browser’s request to open UseAgent. If no prompt appears, select Open
-              UseAgent above. If this request expires, start sign-in again from the desktop app.
-            </p>
-          ) : null}
-          {error ? (
-            <p role="alert" className="text-body-2-regular text-text-secondary">
-              {error}
-            </p>
-          ) : null}
-        </section>
-      )}
+      <section className="space-y-5">
+        <h1 className="text-display-sm text-text-primary">Connect your desktop</h1>
+        <p className="text-body-regular text-text-secondary">
+          {loading ? "Checking your session..." : `Signed in as ${session?.user.email ?? "your account"}. Approve only if you started this request in your useAgent desktop app.`}
+        </p>
+        <Button className="rounded-full" disabled={loading || pending} onClick={() => void connect()}>
+          {pending ? "Opening useAgent..." : "Connect desktop"}
+        </Button>
+        {error ? <p role="alert" className="text-body-2-regular text-text-secondary">{error}</p> : null}
+      </section>
     </AuthScreen>
   );
 }

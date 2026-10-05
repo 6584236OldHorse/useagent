@@ -1,0 +1,24 @@
+import { expect, test } from "bun:test";
+import { desktopAuthRequest, restartElectronRedirect } from "./page";
+import { desktopAuthClient } from "@/lib/desktop-auth-client";
+
+const valid = `https://plane.example/desktop-auth?client_id=electron&state=${"A".repeat(16)}&code_challenge=${"B".repeat(43)}&code_challenge_method=S256`;
+
+test("desktop auth accepts only the official client request shape", () => {
+  expect(typeof desktopAuthClient.ensureElectronRedirect).toBe("function");
+  expect(typeof desktopAuthClient.electron.transferUser).toBe("function");
+  expect(desktopAuthRequest(valid)?.query.client_id).toBe("electron");
+  expect(desktopAuthRequest(valid)?.url.startsWith("/desktop-auth?")).toBe(true);
+  expect(desktopAuthRequest(`${valid}&state=${"C".repeat(16)}`)).toBeNull();
+  expect(desktopAuthRequest(`${valid}#unexpected`)).toBeNull();
+  expect(desktopAuthRequest(valid.replace("S256", "plain"))).toBeNull();
+  expect(desktopAuthRequest(valid.replace("client_id=electron", "client_id=attacker"))).toBeNull();
+});
+
+test("desktop approval replaces an expired redirect poll with a fresh bounded poll", () => {
+  const expired = 1 as unknown as ReturnType<typeof setInterval>;
+  const fresh = 2 as unknown as ReturnType<typeof setInterval>;
+  const cleared: Array<ReturnType<typeof setInterval>> = [];
+  expect(restartElectronRedirect(expired, () => fresh, timer => cleared.push(timer))).toBe(fresh);
+  expect(cleared).toEqual([expired]);
+});

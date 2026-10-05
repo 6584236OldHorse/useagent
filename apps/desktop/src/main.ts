@@ -61,12 +61,13 @@ async function loadManifest(origin: string): Promise<{ image: string }> {
 }
 
 function configureUpdater(): void {
+  const reportFailure = (): void => console.error("[desktop:update] UPDATE_FAILED");
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
-  autoUpdater.on("error", () => undefined);
+  autoUpdater.on("error", reportFailure);
   if (!app.isPackaged) return;
-  const check = () => void autoUpdater.checkForUpdatesAndNotify().catch(() => undefined);
+  const check = () => void autoUpdater.checkForUpdatesAndNotify().catch(reportFailure);
   check();
   setInterval(check, 4 * 60 * 60_000).unref();
 }
