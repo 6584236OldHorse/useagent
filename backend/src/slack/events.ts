@@ -13,6 +13,8 @@
  *    (and shares our `channel:ts` dedupe key, so duplicates collapse anyway).
  *  - channel `message` thread reply → only if we already root that thread.
  *  - anything else                  → ignored (no channel-wide chatter).
+ *  - "(aside)" / "!aside" first     → ignored anywhere (talk for the humans).
+ *  - "mute" / "unmute" alone        → flips whether a rooted thread is heard.
  */
 import { slackConfig } from "../env";
 import { runs, type MemoryScope, type RunStatus } from "../db/schema";
@@ -29,6 +31,7 @@ import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { pumpThread } from "../worker";
 import { stageInboundSlackFiles, type SlackInboundFileMeta } from "./inbound-files";
 import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread, slackThreadCardBase } from "./repo";
+import { settleThreadControl, slackThreadControl } from "./asides";
 import { watchSlackRun } from "./watcher";
 import {
   enqueueAddReactionTx,
@@ -382,6 +385,14 @@ export async function handleSlackEvent(
     if (!isThreadReply) return { status: "permanent_noop", reason: "untargeted_channel_message" };
   }
 
+  // An aside is for the people in the thread, never for the bot: it settles
+  // here with no run, reply or reaction, so a redelivery stays quiet.
+  const control = slackThreadControl(ingressText(rawText, botUserId));
+  if (control === "aside") {
+    console.log(`[slack] aside ignored: ${teamId}:${channel}:${ts}`);
+    return { status: "permanent_noop", reason: "aside" };
+  }
+
   const orgId = options.identity.orgId;
   const botToken = await resolveSlackBotTokenForWorkspace({
     orgId,
@@ -401,6 +412,11 @@ export async function handleSlackEvent(
   });
   if (!isDm && type === "message" && isThreadReply && !link) {
     return { status: "waiting_for_root", threadTs: slackThreadTs };
+  }
+  // A muted thread hears nothing but "unmute".
+  if (link?.mutedAt && control !== "unmute") {
+    console.log(`[slack] muted thread ignored: ${teamId}:${channel}:${slackThreadTs}`);
+    return { status: "permanent_noop", reason: "thread_muted" };
   }
 
   // Workspace mapping establishes the tenant only. Every run also receives org
@@ -435,6 +451,10 @@ export async function handleSlackEvent(
       });
     }
     return { status: "permanent_noop", reason: "sender_not_linked" };
+  }
+
+  if (control) {
+    return settleThreadControl(control, { teamId, channel, ts, orgId, threadTs: slackThreadTs, rooted: Boolean(link) });
   }
 
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;

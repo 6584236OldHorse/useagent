@@ -17,6 +17,8 @@ import type { SlackStreamTaskDisplayMode } from "./streaming";
 export interface SlackThreadLink {
   rootRunId: string;
   orgId: string;
+  /** Set while a person has muted the bot in this thread. */
+  mutedAt: Date | null;
 }
 
 export interface SlackThreadTarget {
@@ -48,7 +50,7 @@ export async function findSlackThread(
   threadTs: string,
 ): Promise<SlackThreadLink | null> {
   const [row] = await db
-    .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId })
+    .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId, mutedAt: slackThreads.mutedAt })
     .from(slackThreads)
     .where(
       and(
@@ -71,7 +73,7 @@ export async function findOrAdoptSlackThread(
 ): Promise<SlackThreadLink | null> {
   return await db.transaction(async (tx) => {
     const [exact] = await tx
-      .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId })
+      .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId, mutedAt: slackThreads.mutedAt })
       .from(slackThreads)
       .where(
         and(
@@ -84,7 +86,7 @@ export async function findOrAdoptSlackThread(
     if (exact) return exact.orgId === input.orgId ? exact : null;
 
     const legacyRows = await tx
-      .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId })
+      .select({ rootRunId: slackThreads.rootRunId, orgId: slackThreads.orgId, mutedAt: slackThreads.mutedAt })
       .from(slackThreads)
       .where(
         and(
@@ -166,6 +168,25 @@ export async function findSlackThreadForProductThread(
 
 /** Link a Slack thread to the run that rooted it. Idempotent: a duplicate
  * (channel, threadTs) from a Slack retry race is ignored, keeping the original. */
+/** Mute or unmute the bot in one rooted thread; while muted it ignores every
+ *  message there except "unmute". Scoped to the thread's own org. */
+export async function setSlackThreadMuted(
+  target: SlackThreadTarget & { orgId: string },
+  muted: boolean,
+): Promise<void> {
+  await db
+    .update(slackThreads)
+    .set({ mutedAt: muted ? new Date() : null })
+    .where(
+      and(
+        eq(slackThreads.teamId, target.teamId),
+        eq(slackThreads.channel, target.channel),
+        eq(slackThreads.threadTs, target.threadTs),
+        eq(slackThreads.orgId, target.orgId),
+      ),
+    );
+}
+
 export async function linkSlackThread(input: {
   teamId: string;
   channel: string;
