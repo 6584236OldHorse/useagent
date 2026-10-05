@@ -37,7 +37,7 @@ test("automation_run_now for a capped owner returns the allowance refusal as a s
     concurrency: null, queue: null, costLimits: null, frequencyLimits: null, approvalPolicy: null,
     enablementPolicy: null,
   });
-  await db.insert(spendAccounts).values({ orgId, userId, spentUsd: 100 });
+  await db.insert(spendAccounts).values({ orgId, userId, spentUsd: 50 });
   const claims = { orgId, userId, threadId: "thread-a", runId: "run-a", scope: "run" as const, exp: Date.now() + 60_000 };
   const store = new MemoryApprovalStore();
   const args = { id: schedule.id };
@@ -54,7 +54,7 @@ test("automation_run_now for a capped owner returns the allowance refusal as a s
   expect(result.isError).toBe(true);
   expect(result.structuredContent).toMatchObject({
     status: 402,
-    error: { error: "spend_allowance_exceeded", spent: 100, allowance: 100 },
+    error: { error: "spend_allowance_exceeded", spent: 50, allowance: 50 },
   });
   expect(result.content[0]?.text).toBe("spend_allowance_exceeded");
 });

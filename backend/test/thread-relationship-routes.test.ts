@@ -201,8 +201,8 @@ describe("thread relationship routes", () => {
 
     // A member at the allowance is refused a new continuation with the figures, never a 500.
     const [ownerMember] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, owner.orgId));
-    await db.insert(spendAccounts).values({ orgId: owner.orgId, userId: ownerMember!.userId, spentUsd: 100 })
-      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 100 } });
+    await db.insert(spendAccounts).values({ orgId: owner.orgId, userId: ownerMember!.userId, spentUsd: 50 })
+      .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd: 50 } });
     try {
       const capped = await json<{ error?: string; message?: string }>(
         `/api/threads/${childA.child.threadId}/continue-native-child`,
@@ -214,7 +214,7 @@ describe("thread relationship routes", () => {
       );
       expect(capped.status).toBe(402);
       expect(capped.body.error).toBe("spend_allowance_exceeded");
-      expect(capped.body.message).toContain("$100.00 of your $100.00");
+      expect(capped.body.message).toContain("$50.00 of your $50.00");
     } finally {
       await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, owner.orgId), eq(spendAccounts.userId, ownerMember!.userId)));
     }
