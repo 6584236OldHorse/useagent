@@ -10,10 +10,19 @@ import { CookieJar, createOrgSession, fetchApi, json, uid } from "./helpers";
  * (restored in afterAll) instead of needing a separate process.
  *
  *  - anonymous (no session) → 401 on every domain route (no dev-org fallback);
- *  - a fresh signup lands in its own personal org (created on first sign-in);
+ *  - an existing session keeps its own personal org;
  *  - a session that ends up in NO org → 403 no_organization (never the dev org).
  */
 describe("production mode: fail closed", () => {
+  async function seedInDev<T>(create: () => Promise<T>): Promise<T> {
+    process.env.USEAGENT_DEV_MODE = "true";
+    try {
+      return await create();
+    } finally {
+      process.env.USEAGENT_DEV_MODE = "false";
+    }
+  }
+
   beforeAll(() => {
     process.env.USEAGENT_DEV_MODE = "false";
   });
@@ -39,13 +48,15 @@ describe("production mode: fail closed", () => {
     expect(body).toEqual({ status: "ok" });
   });
 
-  test("a fresh signup lands in its own personal org (created on first sign-in)", async () => {
+  test("an existing session keeps its own personal org", async () => {
     const email = `${uid("personal")}@example.com`;
     const jar = new CookieJar();
-    const signUp = await fetchApi("/api/auth/sign-up/email", {
-      method: "POST",
-      body: { name: "Personal Org User", email, password: "password-1234" },
-    });
+    const signUp = await seedInDev(() =>
+      fetchApi("/api/auth/sign-up/email", {
+        method: "POST",
+        body: { name: "Personal Org User", email, password: "password-1234" },
+      }),
+    );
     expect(signUp.status).toBe(200);
     jar.absorb(signUp);
 
@@ -61,10 +72,12 @@ describe("production mode: fail closed", () => {
     // middleware must fail closed, never borrow the dev org.
     const email = `${uid("noorg")}@example.com`;
     const jar = new CookieJar();
-    const signUp = await fetchApi("/api/auth/sign-up/email", {
-      method: "POST",
-      body: { name: "No Org User", email, password: "password-1234" },
-    });
+    const signUp = await seedInDev(() =>
+      fetchApi("/api/auth/sign-up/email", {
+        method: "POST",
+        body: { name: "No Org User", email, password: "password-1234" },
+      }),
+    );
     expect(signUp.status).toBe(200);
     jar.absorb(signUp);
 
@@ -83,7 +96,7 @@ describe("production mode: fail closed", () => {
   });
 
   test("removing a member invalidates its active-organization session immediately", async () => {
-    const org = await createOrgSession("removed-active-member");
+    const org = await seedInDev(() => createOrgSession("removed-active-member"));
     const [account] = await db
       .select({ id: user.id })
       .from(user)

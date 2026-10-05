@@ -4,7 +4,6 @@ import { cors } from "hono/cors";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { ARTIFACT_FIDELITY } from "@useagent/artifact-workspace";
 import { handleAuthRequest } from "./auth/routes";
-import { authProvider } from "./auth/session";
 import { artifactRoutes } from "./artifacts/routes";
 import { internalArtifactChangeRoutes } from "./artifacts/internal-change-routes";
 import { startEmailConnector } from "./connectors/email";
@@ -366,7 +365,7 @@ app.get("/api/config", (c) => {
   const models = engineModelsForReadyEngines();
   const configuredModels = engineModelsForConfiguredEngines();
   return c.json({
-    auth: authProvider(),
+    auth: "better-auth",
     allowDevOrg: allowDevOrg(),
     release: currentReleaseFingerprint(),
     engines,
@@ -435,7 +434,7 @@ app.post("/api/config/models/refresh", async (c) => {
   });
 });
 
-// Managed identity and signed webhooks; the legacy handler is a one-release kill switch.
+// Better Auth owns login, sessions, and organization membership.
 app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a

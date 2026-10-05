@@ -134,7 +134,7 @@ RUN echo "${RELEASE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'
 LABEL org.opencontainers.image.source="https://github.com/useagenthq/useagent" \
       org.opencontainers.image.revision="${RELEASE_COMMIT}" \
       org.opencontainers.image.title="useAgent backend" \
-      io.useagent.auth.default="clerk"
+      io.useagent.auth.default="better-auth"
 
 ENV NODE_ENV=production \
     PORT=3201 \

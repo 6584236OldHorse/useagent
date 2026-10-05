@@ -175,8 +175,8 @@ export function memoryConfig(): MemoryConfig | null {
 /**
  * Google social-sign-in config for better-auth (src/auth.ts). Gated exactly like
  * slackConfig(): read per call; BOTH `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
- * must be set or the provider is off — `googleAuthConfig()` returns null, the
- * "Continue with Google" button is disabled, and email/password still works. A
+ * must be set or the provider is off — `googleAuthConfig()` returns null and the
+ * "Continue with Google" button is disabled. A
  * partial (one of the two set) is a misconfiguration: warn and stay off rather
  * than half-enable.
  *

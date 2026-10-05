@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { ClerkProvider } from "@clerk/nextjs";
 import { RiBook3Line } from "@remixicon/react";
 import {
   AppRouterContext,
@@ -10,12 +9,11 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SidebarProvider } from "@/components/sidebar-kit/sidebar";
 import { TooltipProvider } from "@/components/sidebar-kit/tooltip";
-import { legacyAuthEnabled } from "@/lib/auth-mode";
 import { AppShell } from "./app-shell";
 import { AppSidebarFrame, NavRoutes } from "./app-sidebar-frame";
 import { SidebarThreadsProvider } from "./sidebar-threads-provider";
 import { ThreadSidebar } from "./thread-sidebar";
-import { managedUserProfile } from "./user-menu";
+import { sessionUserProfile } from "./user-menu";
 
 const router = {
   push() {},
@@ -26,20 +24,16 @@ const router = {
   prefetch() {},
 } as unknown as AppRouterInstance;
 
-const TEST_PUBLISHABLE_KEY = "pk_test_Y2xlcmsudGVzdCQ";
-
 function renderSidebar(node: ReactNode, defaultOpen = false): string {
   return renderToStaticMarkup(
     <AppRouterContext.Provider value={router}>
-      <ClerkProvider publishableKey={TEST_PUBLISHABLE_KEY}>
-        <PathnameContext.Provider value="/artifacts">
-          <TooltipProvider>
-            <SidebarThreadsProvider>
-              <SidebarProvider defaultOpen={defaultOpen}>{node}</SidebarProvider>
-            </SidebarThreadsProvider>
-          </TooltipProvider>
-        </PathnameContext.Provider>
-      </ClerkProvider>
+      <PathnameContext.Provider value="/artifacts">
+        <TooltipProvider>
+          <SidebarThreadsProvider>
+            <SidebarProvider defaultOpen={defaultOpen}>{node}</SidebarProvider>
+          </SidebarThreadsProvider>
+        </TooltipProvider>
+      </PathnameContext.Provider>
     </AppRouterContext.Provider>,
   );
 }
@@ -78,17 +72,20 @@ describe("collapsed application sidebar", () => {
     expect(html).toContain('<main id="main-content"');
   });
 
-  test("uses provider identity for the menu and footer even when workspace access is unavailable", () => {
+  test("uses the backend session identity for the menu and footer", () => {
     expect(
-      managedUserProfile({
-        isLoaded: true,
-        isSignedIn: true,
-        user: {
-          fullName: "Abhishek Agarwal",
-          primaryEmailAddress: { emailAddress: "abhishek@example.com" },
-          imageUrl: "https://img.example/avatar.png",
+      sessionUserProfile(
+        {
+          user: {
+            id: "user-1",
+            name: "Abhishek Agarwal",
+            email: "abhishek@example.com",
+            image: "https://img.example/avatar.png",
+          },
+          session: { activeOrganizationId: "org-1" },
         },
-      }),
+        false,
+      ),
     ).toEqual({
       name: "Abhishek Agarwal",
       email: "abhishek@example.com",
@@ -98,13 +95,8 @@ describe("collapsed application sidebar", () => {
     });
 
     const loadingHtml = renderSidebar(<AppSidebarFrame>Navigation</AppSidebarFrame>, true);
-    if (legacyAuthEnabled) {
-      expect(loadingHtml).toContain("Guest");
-      expect(loadingHtml).toContain("Not signed in");
-    } else {
-      expect(loadingHtml).toContain("Account");
-      expect(loadingHtml).toContain("Loading account...");
-      expect(loadingHtml).not.toContain("Guest");
-    }
+    expect(loadingHtml).toContain("Account");
+    expect(loadingHtml).toContain("Loading account...");
+    expect(loadingHtml).not.toContain("Guest");
   });
 });

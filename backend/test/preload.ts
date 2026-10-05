@@ -19,8 +19,6 @@ import { testDatabaseUrl } from "./test-database";
 
 process.env.DATABASE_URL = testDatabaseUrl();
 process.env.PORT = "3211";
-// Existing HTTP fixtures use the legacy provider. Managed-identity cases select their own lane.
-process.env.AUTH ??= "better-auth";
 
 delete process.env.OPENROUTER_API_KEY;
 delete process.env.OPENAI_API_KEY;

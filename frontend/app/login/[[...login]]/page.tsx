@@ -1,7 +1,4 @@
 import type { Metadata } from "next";
-import { AuthScreen } from "@/components/auth/auth-screen";
-import { IdentityForm } from "@/components/auth/identity-form";
-import { legacyAuthEnabled } from "@/lib/auth-mode";
 import { AuthForm } from "../auth-form";
 
 export const metadata: Metadata = {
@@ -9,19 +6,21 @@ export const metadata: Metadata = {
   description: "Sign in to your useAgent workspace.",
 };
 
+function safeAuthRedirect(value: string | null): string {
+  if (!value?.startsWith("/") || value.startsWith("//")) return "/";
+  const url = new URL(value, "https://useagent.invalid");
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ redirect_url?: string | string[] }>;
 }) {
-  if (legacyAuthEnabled) return <AuthForm />;
   const { redirect_url } = await searchParams;
   return (
-    <AuthScreen>
-      <IdentityForm
-        mode="sign-in"
-        redirectTo={typeof redirect_url === "string" ? redirect_url : "/"}
-      />
-    </AuthScreen>
+    <AuthForm
+      callbackURL={safeAuthRedirect(typeof redirect_url === "string" ? redirect_url : null)}
+    />
   );
 }

@@ -1,6 +1,5 @@
 "use client";
 
-import { useAuth, useOrganizationList, useUser } from "@clerk/nextjs";
 import {
   RiApps2Line,
   RiBuilding4Line,
@@ -10,7 +9,7 @@ import {
   RiSettings3Line,
 } from "@remixicon/react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Badge } from "@/components/base/badges/badge";
 import {
@@ -20,15 +19,19 @@ import {
   DropdownMenuItem,
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
-import { invalidateSession, signOut, useSession } from "@/lib/auth";
-import { legacyAuthEnabled } from "@/lib/auth-mode";
+import {
+  type Session,
+  listOrganizations,
+  signOut,
+  switchOrganization,
+  useSession,
+} from "@/lib/auth";
 
 /**
  * Account affordance in the sidebar clusters: an avatar that opens a BoardUI
  * base dropdown menu - identity header, workspace picker, Settings / Apps,
- * sign-in/out. Managed identity comes directly from the provider; legacy auth
- * keeps using the backend-normalized session. Theme switching lives in the
- * shell ThemeMenu, not here.
+ * sign-in/out. Identity and organization membership come from the backend.
+ * Theme switching lives in the shell ThemeMenu, not here.
  */
 export interface UserMenuProfile {
   readonly name: string;
@@ -44,81 +47,69 @@ interface UserMenuProps {
 }
 
 export function UserMenu(props: UserMenuProps = {}) {
-  return legacyAuthEnabled ? <LegacyUserMenu {...props} /> : <ManagedUserMenu {...props} />;
-}
-
-function ManagedUserMenu({ trigger }: UserMenuProps) {
-  const { isLoaded: authLoaded, orgId, signOut: endSession } = useAuth();
-  const { isLoaded: userLoaded, isSignedIn, user } = useUser();
-  const { loading: workspaceLoading, session: workspaceSession } = useSession();
-  const organizations = useOrganizationList({ userMemberships: { pageSize: 100, infinite: true } });
+  const { loading, session } = useSession();
+  const [workspaces, setWorkspaces] = useState<
+    readonly { readonly id: string; readonly name: string; readonly active: boolean }[] | undefined
+  >();
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
-  const profile = managedUserProfile({
-    isLoaded: authLoaded && userLoaded,
-    isSignedIn,
-    user,
-  });
-  const workspaces = (organizations.userMemberships.data ?? [])
-    .map((membership) => ({
-      id: membership.organization.id,
-      name: membership.organization.name,
-      active: membership.organization.id === orgId,
-    }))
-    .sort(
-      (left, right) =>
-        Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
-    );
+
+  useEffect(() => {
+    if (loading || !session) {
+      if (!loading) setWorkspaces(undefined);
+      return;
+    }
+    let cancelled = false;
+    setWorkspaces(undefined);
+    setWorkspaceSwitchError(null);
+    listOrganizations()
+      .then((organizations) => {
+        if (cancelled) return;
+        const activeId = session.session.activeOrganizationId;
+        setWorkspaces(
+          organizations
+            .map((organization) => ({
+              ...organization,
+              active: organization.id === activeId,
+            }))
+            .sort(
+              (left, right) =>
+                Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
+            ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceSwitchError("Could not load workspaces");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, session]);
+
+  const profile = sessionUserProfile(session, loading);
   return (
     <UserMenuView
-      trigger={trigger}
+      {...props}
       profile={profile}
-      workspaces={profile.signedIn ? workspaces : undefined}
-      workspacesLoaded={organizations.isLoaded}
-      workspacesLoading={organizations.userMemberships.isFetching}
-      onLoadMoreWorkspaces={
-        organizations.userMemberships.hasNextPage
-          ? organizations.userMemberships.fetchNext
-          : undefined
-      }
-      workspaceAccessError={
-        workspaceSwitchError ??
-        (organizations.userMemberships.isError
-          ? "Could not load workspaces"
-          : profile.signedIn && !workspaceLoading && !workspaceSession
-            ? "Workspace access unavailable"
-            : null)
-      }
-      onSelectWorkspace={async (organization) => {
-        if (!organizations.setActive || organization === orgId) return;
+      workspaces={profile.signedIn ? (workspaces ?? []) : undefined}
+      workspacesLoaded={workspaces !== undefined}
+      workspaceAccessError={workspaceSwitchError}
+      onSelectWorkspace={async (organizationId) => {
+        if (workspaces?.some((workspace) => workspace.id === organizationId && workspace.active)) {
+          return;
+        }
         setWorkspaceSwitchError(null);
         try {
-          await organizations.setActive({ organization });
-          invalidateSession();
+          await switchOrganization(organizationId);
         } catch {
           setWorkspaceSwitchError("Could not switch workspace");
         }
-      }}
-      onSignOut={async () => {
-        await endSession();
-        invalidateSession();
       }}
     />
   );
 }
 
-export function managedUserProfile(input: {
-  readonly isLoaded: boolean;
-  readonly isSignedIn: boolean | undefined;
-  readonly user:
-    | {
-        readonly fullName: string | null;
-        readonly primaryEmailAddress: { readonly emailAddress: string } | null;
-        readonly imageUrl: string;
-      }
-    | null
-    | undefined;
-}): UserMenuProfile {
-  if (!input.isLoaded) {
+export function sessionUserProfile(session: Session | null, loading: boolean): UserMenuProfile {
+  if (loading) {
     return {
       name: "Account",
       email: "Loading account...",
@@ -127,35 +118,17 @@ export function managedUserProfile(input: {
       signedIn: false,
     };
   }
-  if (!input.isSignedIn || !input.user) {
+  if (!session) {
     return { name: "Guest", email: "Not signed in", image: null, loaded: true, signedIn: false };
   }
-  const email = input.user.primaryEmailAddress?.emailAddress ?? "Signed in";
+  const email = session.user.email;
   return {
-    name: input.user.fullName?.trim() || email,
+    name: session.user.name?.trim() || email,
     email,
-    image: input.user.imageUrl || null,
+    image: session.user.image,
     loaded: true,
     signedIn: true,
   };
-}
-
-function LegacyUserMenu(props: UserMenuProps) {
-  const { session } = useSession();
-  const signedIn = session !== null;
-  const email = session?.user.email ?? "Not signed in";
-  return (
-    <UserMenuView
-      {...props}
-      profile={{
-        name: session?.user.name?.trim() || session?.user.email || "Guest",
-        email,
-        image: session?.user.image ?? null,
-        loaded: true,
-        signedIn,
-      }}
-    />
-  );
 }
 
 function UserMenuView({
@@ -163,8 +136,6 @@ function UserMenuView({
   profile,
   workspaces,
   workspacesLoaded = true,
-  workspacesLoading = false,
-  onLoadMoreWorkspaces,
   workspaceAccessError,
   onSelectWorkspace,
   onSignOut = signOut,
@@ -172,8 +143,6 @@ function UserMenuView({
   profile: UserMenuProfile;
   workspaces?: readonly { readonly id: string; readonly name: string; readonly active: boolean }[];
   workspacesLoaded?: boolean;
-  workspacesLoading?: boolean;
-  onLoadMoreWorkspaces?: () => void;
   workspaceAccessError?: string | null;
   onSelectWorkspace?: (organization: string) => Promise<void>;
   onSignOut?: () => Promise<void>;
@@ -279,19 +248,6 @@ function UserMenuView({
               </span>
             </DropdownMenuItem>
           )
-        ) : null}
-        {onLoadMoreWorkspaces ? (
-          <DropdownMenuItem
-            id="load-workspaces"
-            textValue="Load more workspaces"
-            shouldCloseOnSelect={false}
-            isDisabled={workspacesLoading}
-            onAction={onLoadMoreWorkspaces}
-          >
-            <span className="text-body-2-medium">
-              {workspacesLoading ? "Loading workspaces..." : "Load more workspaces"}
-            </span>
-          </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem id="settings" textValue="Settings" onAction={() => go("/settings")}>
           <RiSettings3Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />

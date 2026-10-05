@@ -1,12 +1,10 @@
 "use client";
 
-// Browser auth helpers. The backend owns the local user identity returned by
-// `/api/auth/get-session`; provider IDs stay inside the provider hook below.
+// Browser auth helpers. The backend owns the local user identity and active
+// organization returned by `/api/auth/get-session`.
 
-import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useState } from "react";
 import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
-import { legacyAuthEnabled } from "./auth-mode";
 import { backendFetch } from "./backend-fetch";
 import { type CachedRequest, cachedRequest } from "./cached-request";
 
@@ -19,6 +17,12 @@ export interface SessionUser {
 
 export interface Session {
   user: SessionUser;
+  session: { activeOrganizationId?: string | null };
+}
+
+export interface Organization {
+  id: string;
+  name: string;
 }
 
 /** How long a page reuses one session answer across the components that read
@@ -30,8 +34,8 @@ async function fetchSession(fetcher: typeof backendFetch): Promise<Session | nul
   const res = await fetcher("/api/auth/get-session");
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`get-session failed: ${res.status}`);
-  const data = (await res.json()) as { user?: SessionUser } | null;
-  return data?.user ? { user: data.user } : null;
+  const data = (await res.json()) as Partial<Session> | null;
+  return data?.user ? { user: data.user, session: data.session ?? {} } : null;
 }
 
 /** One session request per page, shared by every `useSession` consumer. */
@@ -44,26 +48,6 @@ export function createSessionRequest(
 
 const sessionRequest = createSessionRequest();
 const sessionListeners = new Set<() => void>();
-let currentIdentityScope: string | undefined;
-let currentProviderIdentity: ProviderIdentity | undefined;
-let endIdentitySession: (() => Promise<void>) | null = null;
-
-interface ProviderIdentity {
-  readonly userId: string | null;
-  readonly orgId: string | null;
-}
-
-export function shouldReloadForOrganizationChange(
-  previous: ProviderIdentity | undefined,
-  next: ProviderIdentity,
-): boolean {
-  return (
-    previous !== undefined &&
-    previous.userId !== null &&
-    previous.userId === next.userId &&
-    previous.orgId !== next.orgId
-  );
-}
 
 /** The authenticated session, or null when anonymous (incl. the dev-org path,
  *  where domain APIs still work but no better-auth session cookie exists) and
@@ -101,18 +85,42 @@ export async function signInWithGoogle(callbackURL = "/"): Promise<void> {
 
 /** End the session (clears the cookie server-side). */
 export async function signOut(): Promise<void> {
-  if (!legacyAuthEnabled) {
-    if (!endIdentitySession) throw new Error("Identity session is not ready");
-    await endIdentitySession();
-    invalidateSession();
-    return;
-  }
-  await backendFetch("/api/auth/sign-out", {
+  const res = await backendFetch("/api/auth/sign-out", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+  if (!res.ok) throw new Error(`Sign-out failed (${res.status})`);
   invalidateSession();
+}
+
+export async function listOrganizations(
+  fetcher: typeof backendFetch = backendFetch,
+): Promise<Organization[]> {
+  const res = await fetcher("/api/auth/organization/list", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Workspace list failed (${res.status})`);
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error("Workspace list returned an invalid response");
+  return data as Organization[];
+}
+
+export async function switchOrganization(
+  organizationId: string,
+  fetcher: typeof backendFetch = backendFetch,
+  reload: () => void = () => window.location.replace("/"),
+  invalidate: () => void = invalidateSession,
+): Promise<void> {
+  try {
+    const res = await fetcher("/api/auth/organization/set-active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ organizationId }),
+    });
+    if (!res.ok) throw new Error(`Workspace switch failed (${res.status})`);
+  } finally {
+    invalidate();
+    reload();
+  }
 }
 
 export interface AuthConfig {
@@ -125,11 +133,11 @@ export interface AuthConfig {
 
 const FALLBACK_CONFIG: AuthConfig = {
   google: false,
-  emailPassword: true,
+  emailPassword: false,
   allowDevOrg: false,
 };
 
-/** Public legacy-provider config. It never carries any secret. */
+/** Public auth config. It never carries any secret. */
 export async function getAuthConfig(
   fetcher: typeof backendFetch = backendFetch,
 ): Promise<AuthConfig> {
@@ -139,7 +147,7 @@ export async function getAuthConfig(
     const data = (await res.json()) as Partial<AuthConfig>;
     return {
       google: Boolean(data.google),
-      emailPassword: data.emailPassword ?? true,
+      emailPassword: data.emailPassword === true,
       allowDevOrg: Boolean(data.allowDevOrg),
     };
   } catch {
@@ -187,34 +195,7 @@ function useBackendSession(): SessionState {
   return { session, loading, refresh };
 }
 
-/** Keeps backend caches aligned with the active provider identity. */
-export function IdentitySessionSync(): null {
-  const { isLoaded, orgId, sessionId, signOut: endSession, userId } = useAuth();
-  const scope = isLoaded ? `${userId ?? ""}:${sessionId ?? ""}:${orgId ?? ""}` : undefined;
-
-  useEffect(() => {
-    if (!isLoaded) return;
-    const action = () => endSession();
-    endIdentitySession = action;
-    return () => {
-      if (endIdentitySession === action) endIdentitySession = null;
-    };
-  }, [endSession, isLoaded]);
-
-  useEffect(() => {
-    if (!isLoaded || scope === undefined) return;
-    const nextIdentity = { userId, orgId };
-    const reload = shouldReloadForOrganizationChange(currentProviderIdentity, nextIdentity);
-    currentProviderIdentity = nextIdentity;
-    if (scope === currentIdentityScope) return;
-    currentIdentityScope = scope;
-    invalidateSession();
-    if (reload) window.location.replace("/");
-  }, [isLoaded, orgId, scope, userId]);
-  return null;
-}
-
-/** Backend-normalized local user session. Provider IDs are never returned. */
+/** Backend-normalized local user session. */
 export function useSession(): SessionState {
   return useBackendSession();
 }

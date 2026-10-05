@@ -74,6 +74,7 @@ describe("SSH promotion transport", () => {
 				["clerk", "clerk", "clerk", true], ["clerk", "better-auth", "clerk", false],
 				["clerk", "clerk", "better-auth", false], ["clerk", "better-auth", "better-auth", true],
 				["", "clerk", "", true], ["clerk", "", "clerk", true],
+				["better-auth", "clerk", "better-auth", true], ["better-auth", "", "clerk", false],
 			] as const) {
 				await writeFile(backendEnv, `AUTH=${backendMode}\nCLERK_SECRET_KEY=fixture-not-a-key\n`);
 				const result = Bun.spawnSync(["bash", "-c", identityReleaseValidationCommand(backendEnv, "backend-image", "frontend-image")], {
@@ -89,7 +90,7 @@ describe("SSH promotion transport", () => {
 			expect(missingSecret.exitCode).not.toBe(0);
 		} finally { await rm(directory, { recursive: true }); }
 	});
-	test("captures release auth so compensation ignores later host changes", async () => {
+		test("new releases capture Better Auth without copying retired provider secrets", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "useagent-frontend-env-"));
 		try {
 			const backendEnv = join(directory, "backend.env");
@@ -112,7 +113,7 @@ describe("SSH promotion transport", () => {
 			);
 			expect(result.exitCode).toBe(0);
 			expect(await readFile(frontendEnv, "utf8")).toBe(
-        ["AUTH=clerk", "CLERK_SECRET_KEY=sk_test_example", ""].join("\n"),
+        "AUTH=better-auth\nCLERK_SECRET_KEY=\n",
 			);
 
 			await writeFile(

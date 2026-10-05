@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSessionRequest, getAuthConfig, shouldReloadForOrganizationChange } from "./auth";
+import { createSessionRequest, getAuthConfig, listOrganizations, switchOrganization } from "./auth";
 
 function countingFetcher(responses: (() => Response)[] = []) {
   const seen: string[] = [];
@@ -58,7 +58,7 @@ test("a provider identity rejected by the backend is not an authorized session",
   await expect(request.get()).rejects.toThrow("get-session failed: 403");
 });
 
-test("legacy provider config keeps its shape on the dedicated route", async () => {
+test("provider config uses the dedicated route and fails closed", async () => {
   const seen: string[] = [];
   const fetcher = (async (path: string) => {
     seen.push(path);
@@ -71,14 +71,77 @@ test("legacy provider config keeps its shape on the dedicated route", async () =
     allowDevOrg: false,
   });
   expect(seen).toEqual(["/api/auth/provider-config"]);
+
+  const unavailable = (async () => new Response(null, { status: 503 })) as unknown as Parameters<
+    typeof getAuthConfig
+  >[0];
+  expect(await getAuthConfig(unavailable)).toEqual({
+    google: false,
+    emailPassword: false,
+    allowDevOrg: false,
+  });
 });
 
-test("only a same-user organization change requires a document reload", () => {
-  const first = { userId: "user-1", orgId: "org-1" };
-  expect(shouldReloadForOrganizationChange(undefined, first)).toBe(false);
-  expect(shouldReloadForOrganizationChange(first, first)).toBe(false);
-  expect(shouldReloadForOrganizationChange(first, { ...first, orgId: "org-2" })).toBe(true);
-  expect(shouldReloadForOrganizationChange(first, { userId: "user-2", orgId: "org-2" })).toBe(
-    false,
+test("organization list and switch use the authenticated Better Auth routes", async () => {
+  const seen: { path: string; init?: RequestInit }[] = [];
+  const fetcher = (async (path: string, init?: RequestInit) => {
+    seen.push({ path, init });
+    return path.endsWith("/list")
+      ? Response.json([{ id: "org-1", name: "Acme" }])
+      : Response.json({ session: { activeOrganizationId: "org-1" } });
+  }) as unknown as Parameters<typeof listOrganizations>[0];
+  const effects: string[] = [];
+
+  expect(await listOrganizations(fetcher)).toEqual([{ id: "org-1", name: "Acme" }]);
+  await switchOrganization(
+    "org-1",
+    fetcher,
+    () => effects.push("reload"),
+    () => effects.push("invalidate"),
   );
+
+  expect(seen[0]).toEqual({
+    path: "/api/auth/organization/list",
+    init: { cache: "no-store" },
+  });
+  expect(seen[1]?.path).toBe("/api/auth/organization/set-active");
+  expect(seen[1]?.init).toMatchObject({
+    method: "POST",
+    body: JSON.stringify({ organizationId: "org-1" }),
+  });
+  expect(effects).toEqual(["invalidate", "reload"]);
+});
+
+test("a denied organization switch clears cached UI and reloads the server-selected org", async () => {
+  const denied = (async () => new Response(null, { status: 403 })) as unknown as Parameters<
+    typeof switchOrganization
+  >[1];
+  const effects: string[] = [];
+
+  await expect(
+    switchOrganization(
+      "not-a-membership",
+      denied,
+      () => effects.push("reload"),
+      () => effects.push("invalidate"),
+    ),
+  ).rejects.toThrow("Workspace switch failed (403)");
+  expect(effects).toEqual(["invalidate", "reload"]);
+});
+
+test("an uncertain organization switch also clears cached UI and reloads", async () => {
+  const unavailable = (async () => {
+    throw new Error("network unavailable");
+  }) as unknown as Parameters<typeof switchOrganization>[1];
+  const effects: string[] = [];
+
+  await expect(
+    switchOrganization(
+      "org-2",
+      unavailable,
+      () => effects.push("reload"),
+      () => effects.push("invalidate"),
+    ),
+  ).rejects.toThrow("network unavailable");
+  expect(effects).toEqual(["invalidate", "reload"]);
 });

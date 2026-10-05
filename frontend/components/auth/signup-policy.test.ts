@@ -1,26 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import type { ReactElement } from "react";
 
+import LoginPage from "@/app/login/[[...login]]/page";
+import { AuthForm } from "@/app/login/auth-form";
 import SignupPage from "@/app/signup/[[...signup]]/page";
-import { legacyAuthEnabled } from "@/lib/auth-mode";
-import { AuthScreen } from "./auth-screen";
-import { IdentityForm } from "./identity-form";
 
 describe("self-service signup UI policy", () => {
-  test("keeps signup on the identity provider and redirects the legacy route", async () => {
-    if (legacyAuthEnabled) {
-      await expect(SignupPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
-        "NEXT_REDIRECT",
-      );
-      return;
-    }
+  test("redirects public signup to login", () => {
+    expect(() => SignupPage()).toThrow("NEXT_REDIRECT");
+  });
 
-    const screen = (await SignupPage({
+  test("keeps a safe desktop callback on native sign-in", async () => {
+    const page = (await LoginPage({
       searchParams: Promise.resolve({ redirect_url: "/agent/new?desktop=1" }),
-    })) as ReactElement<{ children: ReactElement<{ mode: string; redirectTo: string }> }>;
-    expect(screen.type).toBe(AuthScreen);
-    expect(screen.props.children.type).toBe(IdentityForm);
-    expect(screen.props.children.props.mode).toBe("sign-up");
-    expect(screen.props.children.props.redirectTo).toBe("/agent/new?desktop=1");
+    })) as ReactElement<{ callbackURL: string }>;
+    expect(page.type).toBe(AuthForm);
+    expect(page.props.callbackURL).toBe("/agent/new?desktop=1");
+
+    const external = (await LoginPage({
+      searchParams: Promise.resolve({ redirect_url: "//attacker.example/path" }),
+    })) as ReactElement<{ callbackURL: string }>;
+    expect(external.props.callbackURL).toBe("/");
   });
 });
