@@ -17,7 +17,7 @@
 // our semantic tokens.
 
 import { RiArrowDownSLine, RiCheckLine, RiCloseLine } from "@remixicon/react";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { PixelLoader } from "@/components/ai/loading-state";
 import { Thinking } from "@/components/ai/thinking";
 import { STEP_ICON } from "@/components/chat/step-icons";
@@ -235,6 +235,14 @@ export function TurnTrace({
 }) {
   const [open, setOpen] = useTurnUiState("trace", defaultOpen);
   const [showAll, setShowAll] = useTurnUiState("trace-all", false);
+  // The trace folds itself when the turn settles, unless the reader took the
+  // toggle into their own hands while it ran.
+  const touched = useRef(false);
+  const wasLive = useRef(live);
+  useEffect(() => {
+    if (wasLive.current && !live && !touched.current) setOpen(false);
+    wasLive.current = live;
+  }, [live, setOpen]);
   const hidden = showAll ? 0 : Math.max(0, rows.length - MAX_VISIBLE_TRACE_ROWS);
   const visible = hidden > 0 ? rows.slice(hidden) : rows;
 
@@ -250,7 +258,10 @@ export function TurnTrace({
         active={live}
         failed={header.failed}
         expanded={open}
-        onExpandedChange={setOpen}
+        onExpandedChange={(next) => {
+          touched.current = true;
+          setOpen(next);
+        }}
       >
         {hidden > 0 && (
           <button

@@ -213,8 +213,8 @@ const TurnBlock = memo(function TurnBlock({
   canonicalTimeline: boolean;
 }) {
   const { run, steps, status, summary, live, liveText, liveReasoning } = turn;
-  // Every thread reads like chat: the work is ONE trace, the reply is the block.
-  const trace = turnTraceContext(turn, !assistantIdentity);
+  // One trace per turn: open while a plain thread's turn works, folded once it settled (and always for a bot).
+  const trace = turnTraceContext(turn, !assistantIdentity && live);
   // Capture whether this turn was streaming when it first mounted, so its
   // summary typewriters in on arrival but settled history renders instantly.
   const [wasLive] = useState(() => live);
