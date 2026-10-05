@@ -26,9 +26,16 @@ import { importCodexNativeOutput } from "./codex-native-output-import";
 const DEFAULT_CAPABILITY_TTL_MS = 2 * 60_000;
 const RELAY_PATH_PREFIX = "/api/internal/codex-relay/";
 const CODEX_PLAN_TOOL_OVERRIDE = "tools.update_plan.enabled=true";
-// ChatGPT Apps (the codex_apps MCP) are not part of the product's tool surface,
-// and every turn waited on their startup before the first model request.
-const CODEX_APPS_OFF_OVERRIDE = "features.apps=false";
+// This app-server runs on the backend host. Every default-on feature that could
+// start a process, browser or plugin here stays off; shell and file tools reach
+// the sandbox through the run's remote environment. ChatGPT Apps (codex_apps)
+// are not part of the product's tool surface either, and every turn waited on
+// their startup. Model-written code-mode JS still runs in Codex's isolate here.
+const HOST_EXECUTION_FEATURES_OFF = [
+  "apps", "plugins", "remote_plugin", "plugin_sharing", "tool_suggest", "skill_mcp_dependency_install",
+  "hooks", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+  "in_app_browser", "in_app_local_automation", "shell_snapshot",
+].flatMap((feature) => ["-c", `features.${feature}=false`]);
 
 export interface CodexSubscriptionRelayBinding {
   readonly orgId: string;
@@ -93,8 +100,7 @@ export function codexSubscriptionAppServerArgs(
     "--stdio",
     "-c",
     CODEX_PLAN_TOOL_OVERRIDE,
-    "-c",
-    CODEX_APPS_OFF_OVERRIDE,
+    ...HOST_EXECUTION_FEATURES_OFF,
     ...(toolGateway
       ? [
           "-c",

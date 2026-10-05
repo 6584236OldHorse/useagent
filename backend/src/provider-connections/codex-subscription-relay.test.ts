@@ -40,15 +40,23 @@ import {
   type CodexSubscriptionRelayBinding,
 } from "./codex-subscription-relay";
 
+// The per-run app-server runs on the backend host: every default-on feature
+// that could start a process, browser or plugin there stays off. Shell and
+// file tools reach the sandbox through the run's remote environment.
+const HOST_EXECUTION_OFF = [
+  "apps", "plugins", "remote_plugin", "plugin_sharing", "tool_suggest", "skill_mcp_dependency_install",
+  "hooks", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
+  "in_app_browser", "in_app_local_automation", "shell_snapshot",
+].flatMap((feature) => ["-c", `features.${feature}=false`]);
+
 describe("Codex subscription relay public origin", () => {
-  test("enables the native plan tool and keeps ChatGPT Apps off on the per-run model app-server", () => {
+  test("enables the native plan tool and keeps host-side execution features off on the per-run model app-server", () => {
     expect(codexSubscriptionAppServerArgs(null)).toEqual([
       "app-server",
       "--stdio",
       "-c",
       "tools.update_plan.enabled=true",
-      "-c",
-      "features.apps=false",
+      ...HOST_EXECUTION_OFF,
     ]);
     expect(codexSubscriptionAppServerArgs({
       serverName: "useagent",
@@ -68,8 +76,7 @@ describe("Codex subscription relay public origin", () => {
       "--stdio",
       "-c",
       "tools.update_plan.enabled=true",
-      "-c",
-      "features.apps=false",
+      ...HOST_EXECUTION_OFF,
       "-c",
       'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
       "-c",
