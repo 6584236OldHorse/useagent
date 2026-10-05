@@ -32,7 +32,7 @@ async function bakeConnections(): Promise<number> {
       eq(providerConnections.authMethod, "api_key"),
     ));
   let failures = 0;
-  const name = boxNativeSnapshotName();
+  const name = await boxNativeSnapshotName();
   for (const row of rows) {
     const scope = { orgId: row.orgId, userId: row.userId };
     const snapshot = row.metadata?.snapshotName?.trim() || null;
@@ -84,7 +84,7 @@ async function bakeEnvironment(): Promise<void> {
 
 try {
   if (args.has("--check")) {
-    console.log(boxNativeSnapshotName());
+    console.log(await boxNativeSnapshotName());
   } else if (args.has("--connections")) {
     process.exitCode = (await bakeConnections()) === 0 ? 0 : 1;
   } else if (args.has("--env")) {

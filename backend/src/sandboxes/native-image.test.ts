@@ -7,11 +7,14 @@ import {
   desktopToolchainCommand,
   isNativeImageName,
   nativeImageName,
+  nativeImageNameOf,
   nativeImageSteps,
   renderNativeImageDockerfile,
   type NativeImageInputs,
+  type NativeImageStep,
 } from "./native-image";
-import type { SandboxRuntimeLayout } from "./provider";
+import { SANDBOX_PROVIDER_KINDS } from "./plugins";
+import { sandboxRuntimeLayout, type SandboxRuntimeLayout } from "./provider";
 
 const BOX_LAYOUT: SandboxRuntimeLayout = {
   home: "/home/user",
@@ -46,6 +49,31 @@ describe("native image name", () => {
     expect(isNativeImageName(name)).toBe(true);
     expect(nativeImageName(inputs())).toBe(name);
     expect(nativeImageName(inputs({ claudeEnvironment: {} }))).not.toBe(name);
+  });
+
+  test("covers every step's command and every file's bytes, for every provider layout", () => {
+    const renderings = [nativeImageSteps(CUBE_LAYOUT, inputs()), nativeImageSteps(BOX_LAYOUT, inputs())];
+    const name = nativeImageNameOf(renderings);
+    expect(nativeImageNameOf([nativeImageSteps(CUBE_LAYOUT, inputs()), nativeImageSteps(BOX_LAYOUT, inputs())])).toBe(name);
+    const changed = (r: number, s: number, change: (step: NativeImageStep) => NativeImageStep) =>
+      nativeImageNameOf(renderings.with(r, renderings[r]!.with(s, change(renderings[r]![s]!))));
+    let files = 0;
+    renderings.forEach((steps, r) => steps.forEach((step, s) => {
+      expect(changed(r, s, (it) => ({ ...it, command: `${it.command}\n` }))).not.toBe(name);
+      step.files.forEach((file, f) => {
+        files++;
+        const bytes = Buffer.concat([file.bytes, Buffer.from(" ")]);
+        expect(changed(r, s, (it) => ({ ...it, files: it.files.with(f, { ...file, bytes }) }))).not.toBe(name);
+      });
+    }));
+    // The desktop launcher and relay are among them (a launcher-only change once kept its name).
+    expect(renderings[0]!.find((step) => step.name === "desktop")!.files).toHaveLength(2);
+    expect(files).toBeGreaterThan(10);
+  });
+
+  test("is the name of this deployment's renderings for every provider kind", () => {
+    const layouts = SANDBOX_PROVIDER_KINDS.map((kind) => nativeImageSteps(sandboxRuntimeLayout(kind), inputs()));
+    expect(nativeImageName(inputs())).toBe(nativeImageNameOf(layouts));
   });
 
   test("rejects other snapshot names", () => {

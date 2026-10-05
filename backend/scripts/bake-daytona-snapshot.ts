@@ -19,7 +19,7 @@ function argument(name: string): string | undefined {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-const name = deploymentNativeImageName();
+const name = await deploymentNativeImageName();
 if (process.argv.includes("--check")) {
   console.log(name);
   process.exit(0);

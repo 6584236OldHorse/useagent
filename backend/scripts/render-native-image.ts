@@ -24,7 +24,7 @@ function argument(name: string): string | undefined {
 
 const claudeEnvironment = claudeProviderGatewayEnvironment();
 if (process.argv.includes("--check")) {
-  console.log(nativeImageName({ claudeEnvironment }));
+  console.log(nativeImageName(await loadNativeImageInputs(claudeEnvironment)));
   process.exit(0);
 }
 const out = argument("out");
@@ -47,5 +47,6 @@ for (const file of rendered.files) {
   await writeFile(join(out, file.contextPath), file.bytes);
 }
 await writeFile(join(out, "Dockerfile"), rendered.dockerfile);
-await writeFile(join(out, "name"), `${nativeImageName(inputs)}\n`);
-console.log(`${nativeImageName(inputs)} rendered to ${out} (${rendered.files.length} context files)`);
+const name = nativeImageName(inputs);
+await writeFile(join(out, "name"), `${name}\n`);
+console.log(`${name} rendered to ${out} (${rendered.files.length} context files)`);
