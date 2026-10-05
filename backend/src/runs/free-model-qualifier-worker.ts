@@ -5,7 +5,7 @@ import type {
   FreeModelProbeErrorCode,
   FreeModelRegistryStateRow,
 } from "../db/schema";
-import { getRunAdmission, type RunAdmissionState } from "../commands/admission";
+import { getRunAdmissionWithin, type RunAdmissionState } from "../commands/admission";
 import {
   claimDueFreeModelCandidates,
   loadCurrentFreeModelLane,
@@ -31,6 +31,9 @@ import type {
 } from "./free-model-qualification-driver";
 
 const QUALIFIER_LEASE_MS = 5 * 60_000;
+/** How long a tick waits for the admission lock: a deployment's exclusive hold
+ * past this ends the tick as "admission unavailable" instead of parking it. */
+export const QUALIFIER_ADMISSION_WAIT_MS = 5_000;
 const QUALIFIER_INTERVAL_MIN = 15;
 const QUALIFIER_MAX_PROBES_PER_TICK = 4;
 const QUALIFIER_BOOT_DELAY_MS = 1_000;
@@ -208,7 +211,11 @@ export interface FreeModelQualifierTickDeps {
 }
 
 export interface FreeModelQualifierTickResult {
-  readonly status: "skipped_admission_closed" | "catalog_failure" | "completed";
+  readonly status:
+    | "skipped_admission_closed"
+    | "skipped_admission_unavailable"
+    | "catalog_failure"
+    | "completed";
   readonly discovered: number;
   readonly claimed: number;
   readonly recorded: number;
@@ -220,14 +227,23 @@ export async function runFreeModelQualifierTick(
   deps: FreeModelQualifierTickDeps,
 ): Promise<FreeModelQualifierTickResult> {
   const repository = deps.repository ?? productionRepository();
-  const admission = deps.admission ?? getRunAdmission;
+  const admission = deps.admission ?? (() => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS));
   const nowMs = deps.nowMs ?? Date.now;
   const driver = deps.driver;
   const maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
   const leaseMs = deps.leaseMs ?? QUALIFIER_LEASE_MS;
-  if (!(await admission()).open) {
+  // A read that cannot get the lock in time answers "unknown", never "open".
+  const admissionOpen = async (): Promise<boolean | null> => {
+    try {
+      return (await admission()).open;
+    } catch {
+      return null;
+    }
+  };
+  const open = await admissionOpen();
+  if (!open) {
     return {
-      status: "skipped_admission_closed",
+      status: open === null ? "skipped_admission_unavailable" : "skipped_admission_closed",
       discovered: 0,
       claimed: 0,
       recorded: 0,
@@ -262,7 +278,7 @@ export async function runFreeModelQualifierTick(
   let systemFailure = false;
   for (let index = 0; index < maxProbes; index += 1) {
     if (!driver) break;
-    if (!(await admission()).open) break;
+    if (!(await admissionOpen())) break;
     const [claim] = await repository.claimDue(1, leaseMs);
     if (!claim) break;
     claimed += 1;
@@ -497,7 +513,11 @@ export async function respondToManualRefresh(
   }
   if (!discovery) {
     const outcome = await attempt.tick.result.catch(() => null);
-    const reason = outcome?.status === "skipped_admission_closed" ? "admission_closed" : "tick_failed";
+    const reason = outcome?.status === "skipped_admission_closed"
+      ? "admission_closed"
+      : outcome?.status === "skipped_admission_unavailable"
+        ? "admission_unavailable"
+        : "tick_failed";
     return { status: 502, body: { refreshed: false, stale: true, reason } };
   }
   if (!discovery.ok) {

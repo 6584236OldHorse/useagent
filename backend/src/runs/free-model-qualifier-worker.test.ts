@@ -603,4 +603,34 @@ describe("free-model qualifier worker", () => {
     await blocked.tick().result;
     expect(catalogCalls).toBe(1);
   });
+  test("an admission read that cannot get its lock ends the tick and frees the slot", async () => {
+    const { repository } = fakeRepository({ state: registryState([]), candidates: [] });
+    let reads = 0;
+    let catalogCalls = 0;
+    const worker = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: async () => {
+        catalogCalls += 1;
+        return { ok: true, candidates: [] };
+      },
+      admission: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("canceling statement due to lock timeout");
+        return openAdmission();
+      },
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!worker) throw new Error("expected the worker");
+    expect(await respondToManualRefresh(worker, { nowMs: NOW })).toEqual({
+      status: 502,
+      body: { refreshed: false, stale: true, reason: "admission_unavailable" },
+    });
+    expect(catalogCalls).toBe(0);
+    // The slot is free: the next tick reads admission again and proceeds.
+    const next = worker.tick();
+    expect((await next.result).status).toBe("completed");
+    expect(catalogCalls).toBe(1);
+  });
 });

@@ -109,6 +109,7 @@ import { freeModelLane, freeModelLaneCache } from "./runs/free-model-lane";
 import {
   freeModelQualifierEnabled,
   hydrateFreeModelLaneFromRegistry,
+  QUALIFIER_ADMISSION_WAIT_MS,
   respondToManualRefresh,
   startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
@@ -122,6 +123,7 @@ import { acceptRunCancel } from "./commands/cancel";
 import {
   deploymentInflightSnapshot,
   getRunAdmission,
+  getRunAdmissionWithin,
   setRunAdmission,
 } from "./commands/admission";
 import { getRunWithSteps } from "./runs/repo";
@@ -557,7 +559,7 @@ if (freeModelQualifierEnabled()) {
               await pumpThread(outcome.threadId);
             }
           },
-          admission: getRunAdmission,
+          admission: () => getRunAdmissionWithin(QUALIFIER_ADMISSION_WAIT_MS),
         },
       )
     : null;
