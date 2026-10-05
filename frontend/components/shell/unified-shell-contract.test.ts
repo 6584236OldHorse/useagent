@@ -27,7 +27,7 @@ describe("unified shell contract", () => {
 
     expect(appShell).toContain("<SidebarProvider");
     expect(appShell).toContain(
-      "h-[calc(100dvh-var(--desktop-titlebar-height,0px))] min-h-0 overflow-hidden bg-sidebar",
+      "h-dvh min-h-0 overflow-hidden bg-sidebar pt-[var(--desktop-titlebar-height,0px)]",
     );
     expect(appShell).toContain("<SidebarInset");
     expect(appShell).toContain("md:peer-data-[variant=inset]:mt-0");
