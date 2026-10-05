@@ -90,8 +90,17 @@ export function SessionDetailsRail({
           <Row label="Project">{project || "No repository"}</Row>
           <Row label="Runtime">
             <span className="flex min-w-0 items-center justify-end gap-2">
-              <span className="truncate">
-                {engineDisplayLabel(newest.engine)} · {modelLabel(newest.model, newest.engine)}
+              {/* The model is the one the plane asked the runtime for (the run
+                  row); no runtime reports back which model answered, so the
+                  rail says so instead of presenting the request as a fact. */}
+              <span
+                className="truncate"
+                title="The model this run asked for. The runtime does not report which model answered."
+              >
+                {engineDisplayLabel(newest.engine)} · {modelLabel(newest.model, newest.engine)}{" "}
+                <span data-testid="runtime-model-requested" className="text-text-tertiary">
+                  requested
+                </span>
               </span>
               <RunLocation run={newest} />
             </span>
