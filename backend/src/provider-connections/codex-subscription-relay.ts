@@ -26,6 +26,9 @@ import { importCodexNativeOutput } from "./codex-native-output-import";
 const DEFAULT_CAPABILITY_TTL_MS = 2 * 60_000;
 const RELAY_PATH_PREFIX = "/api/internal/codex-relay/";
 const CODEX_PLAN_TOOL_OVERRIDE = "tools.update_plan.enabled=true";
+// ChatGPT Apps (the codex_apps MCP) are not part of the product's tool surface,
+// and every turn waited on their startup before the first model request.
+const CODEX_APPS_OFF_OVERRIDE = "features.apps=false";
 
 export interface CodexSubscriptionRelayBinding {
   readonly orgId: string;
@@ -90,6 +93,8 @@ export function codexSubscriptionAppServerArgs(
     "--stdio",
     "-c",
     CODEX_PLAN_TOOL_OVERRIDE,
+    "-c",
+    CODEX_APPS_OFF_OVERRIDE,
     ...(toolGateway
       ? [
           "-c",

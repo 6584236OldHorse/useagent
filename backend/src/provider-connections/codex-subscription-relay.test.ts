@@ -41,12 +41,14 @@ import {
 } from "./codex-subscription-relay";
 
 describe("Codex subscription relay public origin", () => {
-  test("enables the native plan tool only on the per-run model app-server", () => {
+  test("enables the native plan tool and keeps ChatGPT Apps off on the per-run model app-server", () => {
     expect(codexSubscriptionAppServerArgs(null)).toEqual([
       "app-server",
       "--stdio",
       "-c",
       "tools.update_plan.enabled=true",
+      "-c",
+      "features.apps=false",
     ]);
     expect(codexSubscriptionAppServerArgs({
       serverName: "useagent",
@@ -66,6 +68,8 @@ describe("Codex subscription relay public origin", () => {
       "--stdio",
       "-c",
       "tools.update_plan.enabled=true",
+      "-c",
+      "features.apps=false",
       "-c",
       'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
       "-c",
