@@ -2,6 +2,7 @@
 // ./schema/*; this file re-exports EVERYTHING so `../db/schema` stays the single
 // import path for every consumer and drizzle-kit sees the whole schema.
 export * from "./schema/runs";
+export * from "./schema/run-feedback";
 export * from "./schema/commands";
 export * from "./schema/provider-events";
 export * from "./schema/approvals";

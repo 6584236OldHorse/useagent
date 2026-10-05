@@ -419,6 +419,20 @@ export function legacySlackEnabled(): boolean {
 }
 
 /**
+ * Where in-app run feedback is posted (runs/feedback-routes.ts): the channel
+ * `FEEDBACK_SLACK_CHANNEL` in the workspace `FEEDBACK_SLACK_TEAM_ID` (default:
+ * the legacy single workspace). Needs the Slack adapter. Null = feedback is
+ * stored but no Slack notice is sent.
+ */
+export function feedbackSlackConfig(): { channel: string; teamId: string } | null {
+  const channel = process.env.FEEDBACK_SLACK_CHANNEL?.trim();
+  const slack = slackConfig();
+  if (!channel || !slack) return null;
+  const teamId = process.env.FEEDBACK_SLACK_TEAM_ID?.trim() || slack.legacyTeamId;
+  return teamId ? { channel, teamId } : null;
+}
+
+/**
  * Email connector config (src/connectors/email/*). Gated like slackConfig():
  * read per call; the connector is a no-op unless `CONNECTOR_EMAIL_NOTIFY` is
  * `all` or `failed` (the trigger) AND a `from` + at least one allow-listed `to`
