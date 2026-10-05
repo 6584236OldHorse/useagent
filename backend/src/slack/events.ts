@@ -36,6 +36,7 @@ import {
   enqueueStartStreamTx,
   enqueueThreadStatusTx,
   kickSlackOutbox,
+  slackSpendRefusalKey,
 } from "./outbox";
 import { buildRunCard, deriveTitle, sessionUrl } from "./card";
 import { parseRepoRef } from "../github/repo-ref";
@@ -245,7 +246,7 @@ async function handleSpendRefused(input: {
   // The refusal is the answer: replied once (keyed by the message) and settled,
   // never retried, since only a raised allowance can change the outcome.
   await enqueuePostMessage({
-    idempotencyKey: `slack-spend-refused:${input.teamId}:${input.channel}:${input.ts}`,
+    idempotencyKey: slackSpendRefusalKey(input.teamId, input.channel, input.ts),
     orgId: input.orgId,
     teamId: input.teamId,
     channel: input.channel,

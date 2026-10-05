@@ -1,7 +1,9 @@
 // Public surface of the durable Slack outbox. Callers enqueue an outbound call
 // (idempotent) and the relay delivers it durably; internal repo/delivery/types
 // decomposition stays private.
-import { enqueue } from "./repo";
+import { enqueue, outboxEntryExists } from "./repo";
+
+export { outboxEntryExists };
 import { kickSlackOutbox } from "./delivery";
 import { chunkSlackText } from "../chunk";
 import { toSlackMrkdwn } from "../mrkdwn";
@@ -334,6 +336,11 @@ export async function enqueueUploadFileTx(
 /** Durably enqueue an outbound message; the relay delivers it (survives a
  *  restart). Long texts chunk exactly like enqueuePostMessageTx. Idempotent by
  *  `idempotencyKey`. */
+/** The outbox key of the one reply a spend-refused message gets; also the
+ *  durable record that it WAS refused. */
+export const slackSpendRefusalKey = (teamId: string, channel: string, ts: string): string =>
+  `slack-spend-refused:${teamId}:${channel}:${ts}`;
+
 export async function enqueuePostMessage(entry: {
   idempotencyKey: string;
   orgId?: string;

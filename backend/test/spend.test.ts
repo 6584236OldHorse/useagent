@@ -9,10 +9,12 @@ import { finalizeRun } from "../src/runs/finalize";
 import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
 import {
   accrueRunSpend,
+  assertSpendAllowance,
   priceRunUsage,
   SPEND_CHARGE_MAX_USD,
   SpendAllowanceExceededError,
   spendAllowanceDefaultUsd,
+  spendSnapshot,
 } from "../src/runs/spend";
 import { providerKeyLimitReason } from "../src/provider-gateway/key-limit";
 import { createOrgSession, fetchApi, json, uid, type OrgSession } from "./helpers";
@@ -108,6 +110,15 @@ describe("spend allowance", () => {
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "250.5" })).toBe(250.5);
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "0" })).toBe(0);
     expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "lots" })).toBe(0);
+  });
+
+  test("an allowance above the ledger's ceiling is clamped to it, so a saturated account is still refused", async () => {
+    expect(spendAllowanceDefaultUsd({ SPEND_ALLOWANCE_USD: "5000000" })).toBe(SPEND_CHARGE_MAX_USD);
+    const orgId = `spend-ceiling-${crypto.randomUUID()}`;
+    const user = `user-${crypto.randomUUID()}`;
+    await db.insert(spendAccounts).values({ orgId, userId: user, allowanceUsd: 5_000_000, spentUsd: SPEND_CHARGE_MAX_USD });
+    await expect(assertSpendAllowance(orgId, user)).rejects.toMatchObject({ spent: SPEND_CHARGE_MAX_USD, allowance: SPEND_CHARGE_MAX_USD });
+    expect((await spendSnapshot(orgId, user)).allowance).toBe(SPEND_CHARGE_MAX_USD);
   });
 
   test("settling a run charges the sum of its step-finish cost exactly once", async () => {

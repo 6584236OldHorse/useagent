@@ -32,6 +32,7 @@ import { pullsRoutes } from "./github/pulls-routes";
 import { desktopProxyRoutes } from "./runs/desktop-proxy";
 import { fleetRoutes } from "./runs/fleet-routes";
 import { spendRoutes } from "./runs/spend-routes";
+import { spendAllowanceDefaultUsd } from "./runs/spend";
 import { portProxyRoutes } from "./runs/port-proxy";
 import { recoverStaleRuns, startReconcileLoop } from "./runs/recovery";
 import {
@@ -457,6 +458,7 @@ app.route("/api/chat", chatRoutes);
 
 app.route("/api/runs", runsRoutes);
 app.route("/api/spend", spendRoutes);
+spendAllowanceDefaultUsd(); // boot-time validation of SPEND_ALLOWANCE_USD against the ledger ceiling (logged once)
 app.route("/api/capabilities", capabilityCatalogRoutes);
 // Session-authenticated human approval minting. This stays on the product API;
 // the sandbox-reachable gateway can only consume the resulting exact capability.

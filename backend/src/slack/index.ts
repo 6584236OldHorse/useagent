@@ -16,10 +16,10 @@
  * and is handled by the DM path, so runs are created without it.
  */
 import { slackConfig } from "../env";
-import { startSlackOutboxRelay } from "./outbox";
+import { outboxEntryExists, slackSpendRefusalKey, startSlackOutboxRelay } from "./outbox";
 import { startSlackSocketMode } from "./socket-mode";
 import { handleSlackEvent, slackEventIsEarlyNoop } from "./events";
-import { startSlackInboxPump, verifySlackInboxIdentity } from "./inbox";
+import { startSlackInboxPump, verifySlackInboxIdentity, type SlackInboxHandler } from "./inbox";
 
 export { slackRoutes } from "./routes";
 export { slackEnabled } from "../env";
@@ -27,20 +27,22 @@ export { setSlackClientForTest, type SlackClient } from "./client";
 export { stopSlackSocketMode } from "./socket-mode";
 export { syncSlackWorkspaceBindings } from "./workspaces";
 
-/** Start the durable outbox delivery relay (boot recovery + interval) and,
- *  when SLACK_APP_TOKEN is set, the Socket Mode ingress (WebSocket lane - no
- *  public URL required; both transports persist into the same inbox). Called
- *  from src/index.ts only when Slack is configured. No-op if unconfigured. */
-export function startSlackOutbox(): void {
-  const cfg = slackConfig();
-  if (!cfg) return;
-  startSlackOutboxRelay(cfg);
-  startSlackInboxPump(async ({ payload, checkpointStagedAttachmentIds }) => {
+/** The production inbox handler: identity, then the durable spend refusal, then
+ *  the event. Exported so tests replay claims through it, never through a copy. */
+export const slackInboxHandler: SlackInboxHandler = async ({ payload, checkpointStagedAttachmentIds }) => {
     if (slackEventIsEarlyNoop(payload.envelope)) return { status: "completed" };
     const identity = await verifySlackInboxIdentity(payload);
     if (identity.status === "ignored") return { status: "completed" };
     if (identity.status === "rebound") {
       return { status: "permanent", error: identity.error };
+    }
+    // A message refused for spend was durably answered under its own key. A
+    // claim reclaimed from a crash between that answer and the inbox marker
+    // settles the same way and is never re-admitted, even once the allowance
+    // has been raised.
+    const { team_id: teamId, event } = payload.envelope;
+    if (teamId && event?.channel && event.ts && await outboxEntryExists(slackSpendRefusalKey(teamId, event.channel, event.ts))) {
+      return { status: "completed", noop: "spend_allowance_exceeded" };
     }
     const outcome = await handleSlackEvent(payload.envelope, {
       identity,
@@ -56,6 +58,16 @@ export function startSlackOutbox(): void {
     if (outcome.status === "permanent_noop") return { status: "completed", noop: outcome.reason };
     if (outcome.status === "waiting_for_root") return { status: "waiting_for_root" };
     return { status: "retryable_unavailable", error: outcome.reason };
-  });
+};
+
+/** Start the durable outbox delivery relay (boot recovery + interval) and,
+ *  when SLACK_APP_TOKEN is set, the Socket Mode ingress (WebSocket lane - no
+ *  public URL required; both transports persist into the same inbox). Called
+ *  from src/index.ts only when Slack is configured. No-op if unconfigured. */
+export function startSlackOutbox(): void {
+  const cfg = slackConfig();
+  if (!cfg) return;
+  startSlackOutboxRelay(cfg);
+  startSlackInboxPump(slackInboxHandler);
   startSlackSocketMode();
 }

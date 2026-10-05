@@ -381,3 +381,13 @@ export async function getByKey(idempotencyKey: string): Promise<SlackOutboxRow |
     .limit(1);
   return row ?? null;
 }
+
+/** Whether an outbox entry was durably recorded under `idempotencyKey`. */
+export async function outboxEntryExists(idempotencyKey: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: slackOutbox.id })
+    .from(slackOutbox)
+    .where(eq(slackOutbox.idempotencyKey, idempotencyKey))
+    .limit(1);
+  return row !== undefined;
+}

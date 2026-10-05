@@ -44,7 +44,7 @@ import { buildRunCard } from "../src/slack/card";
 import { markdownChunksFor, openingStreamChunks, taskUpdateChunk } from "../src/slack/streaming";
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
-import { setSlackClientForTest, type SlackClient } from "../src/slack";
+import { setSlackClientForTest, slackInboxHandler, type SlackClient } from "../src/slack";
 import { bindInvitedSlackSender, requestSlackAccess } from "../src/slack/access-requests";
 import { handleSlackEvent, resetSlackDeduperForTest, type SlackEnvelope } from "../src/slack/events";
 import { setInboundFileDownloaderForTest } from "../src/slack/inbound-files";
@@ -305,24 +305,10 @@ async function deleteSlackDeliveryRows(runId: string, teamId = TEAM): Promise<vo
   `);
 }
 
+/** Claims replay through the PRODUCTION inbox handler (its markers and guards
+ *  included), never through a copy of its mapping. */
 async function replaySlackInboxClaim(claim: SlackInboxClaim): Promise<SlackInboxOutcome> {
-  const identity = await verifySlackInboxIdentity(claim.payload);
-  if (identity.status === "ignored") return { status: "completed" };
-  if (identity.status === "rebound") return { status: "permanent", error: identity.error };
-  const outcome = await handleSlackEvent(claim.payload.envelope, {
-    identity,
-    stagedAttachmentIds: claim.payload.stagedAttachmentIds,
-    checkpointStagedAttachmentIds: claim.checkpointStagedAttachmentIds,
-  });
-  if (
-    outcome.status === "accepted" ||
-    outcome.status === "replayed" ||
-    outcome.status === "permanent_noop"
-  ) {
-    return { status: "completed" };
-  }
-  if (outcome.status === "waiting_for_root") return { status: "waiting_for_root" };
-  return { status: "retryable_unavailable", error: outcome.reason };
+  return slackInboxHandler(claim);
 }
 
 function restartSlackInboxPumpForTest(): void {
@@ -1596,6 +1582,17 @@ describe("slack durable inbox", () => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       const [after] = await db.select().from(commands).where(eq(commands.id, inboxKey));
       expect(after).toMatchObject({ state: "completed", error: "permanent_noop:spend_allowance_exceeded" });
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+
+      // A crash between the refusal reply and the inbox marker leaves the row
+      // unmarked for a later reclaim; the durable reply still decides it.
+      await db.update(commands).set({ state: "queued", error: null, attemptCount: 0 }).where(eq(commands.id, inboxKey));
+      restartSlackInboxPumpForTest();
+      const reclaimed = await waitFor(async () => {
+        const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+        return row?.state === "completed" ? row : null;
+      });
+      expect(reclaimed.error).toBe("permanent_noop:spend_allowance_exceeded");
       expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
     } finally {
       await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, DEV_ORG_ID), eq(spendAccounts.userId, DEV_USER_ID)));

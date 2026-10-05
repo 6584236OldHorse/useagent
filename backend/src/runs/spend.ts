@@ -10,17 +10,37 @@ import { providerEvents, spendAccounts, spendEntries, type SpendSource } from ".
 // SPEND_ALLOWANCE_USD=0 turns the cap off (the ledger keeps accruing).
 // ---------------------------------------------------------------------------
 
-/** The deployment-wide allowance in USD; 0 (or an unusable value) disables the cap. */
+/** The most one charge or one account may carry: well inside numeric(14,6), so a
+ *  runaway figure is clamped and logged instead of rolling a settlement back. */
+export const SPEND_CHARGE_MAX_USD = 1_000_000;
+
+let ceilingWarned = false;
+
+/** The deployment-wide allowance in USD; 0 (or an unusable value) disables the
+ *  cap. An allowance above the ledger's ceiling could never be reached, since
+ *  an account saturates there, so it is clamped to the ceiling and logged once
+ *  (validated at boot by src/index.ts, and on every read). */
 export function spendAllowanceDefaultUsd(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SPEND_ALLOWANCE_USD?.trim();
   if (raw === undefined || raw === "") return 100;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  if (parsed > SPEND_CHARGE_MAX_USD) {
+    if (!ceilingWarned) {
+      ceilingWarned = true;
+      console.warn(
+        `[spend] SPEND_ALLOWANCE_USD=${raw} is above the ${SPEND_CHARGE_MAX_USD} ceiling an account can reach; using the ceiling`,
+      );
+    }
+    return SPEND_CHARGE_MAX_USD;
+  }
+  return parsed;
 }
 
-/** The most one charge or one account may carry: well inside numeric(14,6), so a
- *  runaway figure is clamped and logged instead of rolling a settlement back. */
-export const SPEND_CHARGE_MAX_USD = 1_000_000;
+/** A member's effective allowance: the override or the default, never above
+ *  the ceiling an account can reach. */
+const effectiveAllowance = (override: number | null, fallback: number): number =>
+  Math.min(override ?? fallback, SPEND_CHARGE_MAX_USD);
 /** The token column is a Postgres integer; a count past it is clamped, never a failed settlement. */
 export const SPEND_TOKENS_MAX = 2_147_483_647;
 
@@ -66,7 +86,7 @@ export async function assertSpendAllowance(
     .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, userId)))
     .limit(1);
   const spent = account?.spentUsd ?? 0;
-  const allowance = account?.allowanceUsd ?? fallback;
+  const allowance = effectiveAllowance(account?.allowanceUsd ?? null, fallback);
   if (spent >= allowance) throw new SpendAllowanceExceededError(spent, allowance);
 }
 
@@ -319,7 +339,7 @@ export async function spendSnapshot(orgId: string, userId: string | null): Promi
     : [];
   return {
     spent: row?.spentUsd ?? 0,
-    allowance: fallback > 0 ? (row?.allowanceUsd ?? fallback) : null,
+    allowance: fallback > 0 ? effectiveAllowance(row?.allowanceUsd ?? null, fallback) : null,
     runs: row?.runs ?? 0,
   };
 }

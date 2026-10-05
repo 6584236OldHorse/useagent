@@ -14,6 +14,7 @@ import {
   waitForRuntimeTurn,
   type OpenCodeSessionReloadDependencies,
 } from "./runtime-adapter";
+import { settleStoppedTurnUsage } from "./runtime-stop-accounting";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -1128,76 +1129,66 @@ describe("T3 run adapter gate", () => {
     expect(deltas).toEqual(["hello", " world"]);
   });
 
-  test("a stopped turn still lands the usage the runtime billed before it halted", async () => {
-    const stop = new AbortController();
-    const steps: Array<{ kind: string; code_json?: Record<string, unknown> | null }> = [];
-    const ctx = {
-      runId: "run-stopped-usage",
-      threadId: "thread-1",
-      signal: stop.signal,
-      emit: async (step: { kind: string; code_json?: Record<string, unknown> | null }) => {
-        steps.push(step);
-        return `step-${steps.length}`;
-      },
-      setSummary() {},
-    } as unknown as EngineRunContext;
-    const prior = turnSnapshot({ sequence: 10, turnId: "turn-prior", state: "completed", text: "old" });
-    const running = turnSnapshot({ sequence: 11, turnId: "turn-current", state: "running", text: "working" });
-    const terminal = turnSnapshot({ sequence: 12, turnId: "turn-current", state: "completed", text: "working done" });
-    const billed = {
-      ...terminal,
-      thread: {
-        ...terminal.thread,
-        activities: [{
-          id: "act-usage",
-          tone: "tool" as const,
-          kind: "task.completed",
-          summary: "Research subagent",
-          payload: {
-            taskId: "task-1",
-            agentKind: "agent",
-            status: "completed",
-            typedUsage: { inputTokens: 100, outputTokens: 20, costUsd: 0.25 },
-          },
-          turnId: "turn-current",
-          sequence: 1,
-        }],
-      },
-    };
-    let terminalReads = 0;
-    const subscribe = async (
-      _sandbox: SandboxHandle,
-      _threadId: string,
-      _afterSequence: number | undefined,
-      _signal: AbortSignal,
-      onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
-    ) => {
-      expect(await onItem({ kind: "snapshot", snapshot: running })).toBe(true);
-      // Stop lands while the terminal snapshot is still queued: the stream drops it.
-      stop.abort(new Error("Stopped by user"));
-      expect(await onItem({ kind: "snapshot", snapshot: billed })).toBe(false);
-    };
-
-    await expect(waitForRuntimeTurn(
-      ctx,
-      {} as SandboxHandle,
-      new Map(),
-      prior,
-      createSecretRedactor([]),
-      {
-        subscribeRuntimeThread: subscribe,
-        readThreadSnapshot: async (_ctx, _sandbox, signal) => {
-          terminalReads += 1;
-          expect(signal?.aborted).toBe(false); // an independent bound, not the stopped signal
-          return billed;
+  test("a stopped turn is cancelled first, then one bounded read lands the interruption's final usage", async () => {
+    const order: string[] = [];
+    let runtimeCost = 0.1; // what the running snapshot said before the stop
+    const snapshotWith = (costUsd: number): RuntimeThreadSnapshot => {
+      const base = turnSnapshot({ sequence: 12, turnId: "turn-current", state: "completed", text: "done" });
+      return {
+        ...base,
+        thread: {
+          ...base.thread,
+          activities: [{
+            id: "act-usage", tone: "tool" as const, kind: "task.completed", summary: "Research subagent",
+            payload: { taskId: "task-1", agentKind: "agent", status: "completed", typedUsage: { inputTokens: 100, outputTokens: 20, costUsd } },
+            turnId: "turn-current", sequence: 1,
+          }],
         },
+      };
+    };
+    const applied: number[] = [];
+    const landed = await settleStoppedTurnUsage({
+      cancel: async () => {
+        order.push("cancel");
+        runtimeCost = 0.2; // the interruption produces the final figure
       },
-    )).rejects.toThrow("Stopped by user");
-    expect(terminalReads).toBe(1);
-    const usage = steps.find((step) => step.kind === "task")?.code_json?.usage as
-      | { costUsd?: number }
-      | undefined;
-    expect(usage?.costUsd).toBe(0.25);
+      read: async (signal) => {
+        order.push("read");
+        expect(signal.aborted).toBe(false);
+        return snapshotWith(runtimeCost);
+      },
+      apply: async (snapshot) => {
+        order.push("apply");
+        const payload = snapshot.thread.activities[0]!.payload as { typedUsage: { costUsd: number } };
+        applied.push(payload.typedUsage.costUsd);
+      },
+    });
+    expect(landed).toBe(true);
+    expect(order).toEqual(["cancel", "read", "apply"]);
+    expect(applied).toEqual([0.2]);
+  });
+
+  test("the read and the projection are fenced by one bound: a slow read never delays the stop and never projects after it", async () => {
+    const applied: unknown[] = [];
+    const deadline = AbortSignal.timeout(5);
+    const started = Date.now();
+    const landed = await settleStoppedTurnUsage({
+      cancel: async () => undefined,
+      read: (signal) => new Promise((resolve) => {
+        // The sandbox answers only after 70 ms, well past the 5 ms bound; the
+        // signal is what the exec-based terminal read is raced on in production.
+        setTimeout(() => resolve(turnSnapshot({ sequence: 12, turnId: "turn-current", state: "completed", text: "late" })), 70);
+        signal.addEventListener("abort", () => undefined, { once: true });
+      }),
+      apply: async (snapshot) => {
+        applied.push(snapshot);
+      },
+      deadlineSignal: deadline,
+    });
+    expect(landed).toBe(false);
+    expect(Date.now() - started).toBeLessThan(60);
+    await Bun.sleep(90);
+    expect(applied).toEqual([]);
   });
 
   test("coalesces duplicate event bursts behind one authoritative snapshot refresh", async () => {
