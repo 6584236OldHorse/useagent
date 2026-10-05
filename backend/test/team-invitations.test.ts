@@ -537,3 +537,44 @@ test("owner guards answer strangers uniformly and act on the organisation that w
   expect(lastOwner.status).toBe(400);
   expect(lastOwner.body.message).toContain("at least one owner");
 });
+
+test("an invitation cannot be cancelled once accepted, and two managers inviting the same address get one live link", async () => {
+  const org = await createOrgSession("cancel-race");
+  const guest = await createOrgSession("cancel-guest");
+  const invite = await json<{ id: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: guest.email, role: "member" },
+  });
+  expect(invite.status).toBe(200);
+  const accepted = await json("/api/auth/organization/accept-invitation", { method: "POST", cookies: guest.cookies, body: { invitationId: invite.body.id } });
+  expect(accepted.status).toBe(200);
+  const late = await json<{ message?: string }>("/api/auth/organization/cancel-invitation", { method: "POST", cookies: org.cookies, body: { invitationId: invite.body.id } });
+  expect(late.status).toBe(409);
+  const [row] = await db.select({ status: invitation.status }).from(invitation).where(eq(invitation.id, invite.body.id));
+  expect(row!.status).toBe("accepted");
+  const [guestUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, guest.email));
+  expect(await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, org.orgId), eq(member.userId, guestUser!.id)))).toHaveLength(1);
+  // A plain member cannot cancel; the owner can, once, and the row says canceled.
+  const other = await json<{ id: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "someone-else@example.test", role: "member" },
+  });
+  const forbidden = await json("/api/auth/organization/cancel-invitation", { method: "POST", cookies: guest.cookies, body: { invitationId: other.body.id } });
+  expect(forbidden.status).toBe(403);
+  const cancelled = await json<{ status: string }>("/api/auth/organization/cancel-invitation", { method: "POST", cookies: org.cookies, body: { invitationId: other.body.id } });
+  expect(cancelled.status).toBe(200);
+  expect(cancelled.body.status).toBe("canceled");
+  // Two creations for one address at the same moment: one link.
+  const create = () =>
+    json("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "twice-at-once@example.test", role: "member" },
+    });
+  const [first, second] = await Promise.all([create(), create()]);
+  expect([first.status, second.status].sort()).toEqual([200, 400]);
+  const live = await db.select({ id: invitation.id }).from(invitation).where(and(eq(invitation.organizationId, org.orgId), eq(invitation.email, "twice-at-once@example.test"), eq(invitation.status, "pending")));
+  expect(live).toHaveLength(1);
+});

@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
@@ -226,26 +226,42 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     // The library trims role tokens when it validates them but stores the raw
     // string, so "admin, owner" passes as admin and lands as owner. One exact role.
     if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
-    if (typeof body.email === "string" && !selfSignupEnabled() && !googleAuthEnabled()) {
-      // On a closed deployment the manager check comes first, whatever the
-      // address, so nobody else can tell from the answer which addresses can sign in.
-      const manager = await managerFor(request, body);
-      if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-      if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
-    }
-    return auth.handler(request);
+    if (typeof body.email !== "string") return auth.handler(request);
+    // The manager check comes first, whatever the address, so nobody else can
+    // tell from the answer which addresses can sign in.
+    const manager = await managerFor(request, body);
+    if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+    if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
+    // One creation at a time per organisation and address: the library checks
+    // for an existing invitation and then inserts, and two managers inviting the
+    // same person at once would otherwise both get a live link.
+    return withOrgLock(invitationKey(manager.organizationId, body.email), () =>
+      auth.handler(pinned(request, body, manager.organizationId)),
+    );
   }
   const manager = await managerFor(request, body);
   if ("status" in manager) return c.json({ message: manager.message }, manager.status);
   const { session, organizationId, roles: mine } = manager;
   if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
+  return withOrgLock(invitationKey(organizationId, body.email), () => resend(c, session, organizationId, mine, body.email as string));
+});
+
+const invitationKey = (organizationId: string, email: string) => `${organizationId}:${email.trim().toLowerCase()}`;
+
+async function resend(
+  c: Context<AppEnv>,
+  session: Manager["session"],
+  organizationId: string,
+  mine: string[],
+  email: string,
+) {
   const live = await db
     .select({ id: invitation.id, role: invitation.role })
     .from(invitation)
     .where(
       and(
         eq(invitation.organizationId, organizationId),
-        eq(invitation.email, body.email.trim().toLowerCase()),
+        eq(invitation.email, email.trim().toLowerCase()),
         eq(invitation.status, "pending"),
         gt(invitation.expiresAt, new Date()),
       ),
@@ -255,7 +271,7 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
   }
   // Answered outside the library, so its request limiter does not apply; one
   // resend per address and organisation per minute bounds the mail it can cause.
-  if (live.length && !resendAllowed(organizationId, body.email)) {
+  if (live.length && !resendAllowed(organizationId, email)) {
     return c.json({ message: "That invitation was resent less than a minute ago. Try again shortly." }, 429);
   }
   const [renewed] = live.length
@@ -285,6 +301,47 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     console.error(`[auth] invitation ${renewed.id} could not be resent:`, (error as Error).message);
   }
   return c.json(renewed);
+}
+
+/** Cancelling is an atomic pending-to-canceled step under the organisation's
+ *  lock, so an invitation that acceptance has already claimed stays accepted
+ *  and the answer says so, instead of a canceled row beside a new member. */
+routes.post("/api/auth/organization/cancel-invitation", async (c) => {
+  const request = c.req.raw;
+  const body = await jsonBody(request);
+  if (!body || typeof body.invitationId !== "string") return auth.handler(request);
+  const [target] = await db
+    .select({ organizationId: invitation.organizationId })
+    .from(invitation)
+    .where(eq(invitation.id, body.invitationId))
+    .limit(1);
+  if (!target) return auth.handler(request); // the library reports the unknown id
+  const manager = await managerFor(request, { ...body, organizationId: target.organizationId });
+  if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+  return withOrgLock(manager.organizationId, async () => {
+    const [canceled] = await db
+      .update(invitation)
+      .set({ status: "canceled" })
+      .where(and(eq(invitation.id, body.invitationId as string), eq(invitation.organizationId, manager.organizationId), eq(invitation.status, "pending")))
+      .returning();
+    if (!canceled) return c.json({ message: "That invitation is no longer open: it was accepted or already cancelled." }, 409);
+    return c.json(canceled);
+  });
+});
+
+/** Acceptance runs under the organisation's lock too, so it cannot interleave
+ *  with a cancellation or an owner change. */
+routes.post("/api/auth/organization/accept-invitation", async (c) => {
+  const request = c.req.raw;
+  const body = await jsonBody(request);
+  if (!body || typeof body.invitationId !== "string") return auth.handler(request);
+  const [target] = await db
+    .select({ organizationId: invitation.organizationId })
+    .from(invitation)
+    .where(eq(invitation.id, body.invitationId))
+    .limit(1);
+  if (!target) return auth.handler(request);
+  return withOrgLock(target.organizationId, () => auth.handler(request));
 });
 /** The invitation a link points at, for the person it was sent to. better-auth's
  *  own preview refuses once the inviter has left the organisation, although the
