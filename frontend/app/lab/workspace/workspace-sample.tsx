@@ -57,9 +57,9 @@ const SAMPLE_DOC_HTML =
   '<p>See the <a href="https://example.com/owners">owners sheet</a> for the full list.</p>';
 
 // A themed workbook fixture (v2): a styled header row, currency + percent number
-// formats, and a Total row of =SUM / ratio formulas, plus a second sheet - so the
-// grid review shows multi-sheet tabs, computed formula cells with the raw formula
-// in the value bar, and number formatting.
+// formats, and a Total row of =SUM / ratio formulas, plus an Accounts sheet whose
+// columns read as tags, dates, a status and links - so the grid review shows the
+// sheets as views, computed formula cells, number formatting and typed columns.
 const HEADER = { bold: true, fill: "#eef2ff", color: "#1e293b" } as const;
 const SAMPLE_WORKBOOK: Workbook = {
   schemaVersion: 2,
@@ -96,15 +96,26 @@ const SAMPLE_WORKBOOK: Workbook = {
     },
     {
       id: "sheet-2",
-      name: "Notes",
-      rowCount: 3,
-      colCount: 2,
-      cells: {
-        A1: { v: "Owner", fmt: { bold: true } },
-        B1: { v: "Priya" },
-        A2: { v: "Updated", fmt: { bold: true } },
-        B2: { v: "2026-08-18" },
-      },
+      name: "Accounts",
+      rowCount: 13,
+      colCount: 5,
+      cells: Object.fromEntries(
+        [
+          ["Company", "Categories", "Last contact", "Strength", "Website"],
+          ["Alpine Churn", "B2B, Gelato, Wholesale", "2026-09-08", "Very strong", "alpine-churn.example.com"],
+          ["Amber Scoop", "Gelato, B2B", "2025-06-02", "No communication", "amber-scoop.example.com"],
+          ["Andes Snow Creamery", "Gelato, Catering", "2024-11-20", "Very weak", "andes-snow.example.com"],
+          ["Apricot Atlas", "Sorbet, Imports", "2025-10-14", "Very weak", "apricot-atlas.example.com"],
+          ["Aurora Scoops", "Gelato, Seasonal", "2026-09-07", "Very strong", "aurora-scoops.example.com"],
+          ["Baltic Berry", "Dairy-free, Seasonal, B2C", "2026-08-12", "Weak", "baltic-berry.example.com"],
+          ["Black Sesame Social", "Vegan, Cafe, B2C", "2026-09-07", "Very strong", "black-sesame.example.com"],
+          ["Blue Fig Gelato", "Gelato, Cafe", "2025-07-30", "Very weak", "blue-fig.example.com"],
+          ["Boreal Batch", "Dairy-free, Local, Seasonal", "2026-09-08", "Very strong", "boreal-batch.example.com"],
+          ["Cacao Norte", "B2B, Local, Wholesale", "2024-09-01", "No communication", "cacao-norte.example.com"],
+          ["Cape Vanilla Co.", "Wholesale, Imports", "2025-05-19", "Very weak", "cape-vanilla.example.com"],
+          ["Cedar Spoon", "Cafe, Local, Seasonal", "2026-09-10", "Very strong", "cedar-spoon.example.com"],
+        ].flatMap((row, r) => row.map((v, c) => [`${"ABCDE"[c]}${r + 1}`, { v }])),
+      ),
     },
   ],
 };

@@ -76,6 +76,8 @@ export const RECORDS_ROW =
   "group/row border-border-button-default hover:bg-background-primary-hover border-b transition-colors duration-100 last:border-0";
 export const RECORDS_CELL = "px-3 py-2.5";
 export const RECORDS_SORT_BUTTON = "flex items-center gap-1 transition-colors hover:text-text-secondary";
+/** Header cells stay put while the frame scrolls its rows. */
+export const RECORDS_HEADER_STICKY = "sticky top-0 z-20 bg-background-primary-default";
 
 export function RecordsSortMark({ direction }: { direction: 1 | -1 | null }) {
   if (direction === null) return null;
@@ -107,11 +109,42 @@ export function RecordsTag({ tag }: { tag: RecordTag }) {
   );
 }
 
+/** A tone-colored dot and its label (the connection-strength cell). */
+export function RecordsStatus({ label, tone }: { label: string; tone: StrengthTone }) {
+  return (
+    <span className="text-text-secondary inline-flex items-center gap-1.5 whitespace-nowrap text-caption-1-regular">
+      <span className={cx("size-1.5 rounded-full", strengthDot[tone])} aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+/** A link in a links cell; plain text when it has nowhere to go. */
+export function RecordsLink({ label, href }: { label: string; href?: string }) {
+  return href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-text-secondary hover:text-text-primary whitespace-nowrap text-caption-1-regular underline underline-offset-2 transition-colors"
+    >
+      {label}
+    </a>
+  ) : (
+    <span className="text-text-secondary whitespace-nowrap text-caption-1-regular">{label}</span>
+  );
+}
+
+export function RecordsHeaderIcon({ as: Icon }: { as: typeof RiTimeLine }) {
+  return <Icon className="text-text-tertiary size-3.5 shrink-0" aria-hidden />;
+}
+
 /** The frame: the bordered card, the table, and the upstream's footer row with the
  *  record count in the sticky cell. `fill` stretches the frame to its pane. */
 export function RecordsTableFrame({
   count,
   columns,
+  footerCells,
   fill = false,
   className,
   children,
@@ -120,6 +153,8 @@ export function RecordsTableFrame({
   count: number;
   /** Cells the footer spans beyond the sticky one, so its border runs the width. */
   columns: number;
+  /** What those cells hold (a calculation each); a dash when absent. */
+  footerCells?: readonly ReactNode[];
   fill?: boolean;
   className?: string;
   children: ReactNode;
@@ -135,13 +170,21 @@ export function RecordsTableFrame({
       <table className="w-full border-collapse text-left">
         {children}
         <tfoot>
-          <tr className="border-border-button-default border-t">
-            <td className={cx(RECORDS_STICKY, "px-3 py-2 text-caption-1-regular text-text-tertiary whitespace-nowrap")}>
+          <tr>
+            <td
+              className={cx(
+                RECORDS_STICKY,
+                "sticky bottom-0 z-20 border-border-button-default border-t px-3 py-2 text-caption-1-regular text-text-tertiary whitespace-nowrap",
+              )}
+            >
               <span className="text-text-secondary tabular-nums">{count}</span> count
             </td>
             {Array.from({ length: columns }, (_, index) => (
-              <td key={index} className="px-3 py-2 text-caption-1-regular text-text-tertiary">
-                -
+              <td
+                key={index}
+                className="sticky bottom-0 z-10 border-border-button-default border-t bg-background-primary-default px-3 py-2 text-caption-1-regular text-text-tertiary"
+              >
+                {footerCells?.[index] ?? "-"}
               </td>
             ))}
           </tr>
@@ -167,10 +210,6 @@ export interface RecordRow {
 export interface RecordsTableProps {
   rows: RecordRow[];
   className?: string;
-}
-
-function HeaderIcon({ as: Icon }: { as: typeof RiTimeLine }) {
-  return <Icon className="text-text-tertiary size-3.5 shrink-0" aria-hidden />;
 }
 
 export function RecordsTable({ rows, className }: RecordsTableProps) {
@@ -222,7 +261,7 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
               aria-sort={
                 sort?.key === "company" ? (sort.dir === 1 ? "ascending" : "descending") : undefined
               }
-              className={cx(RECORDS_STICKY, "bg-background-primary-default", RECORDS_HEADER_CELL)}
+              className={cx(RECORDS_STICKY, RECORDS_HEADER_STICKY, "z-30", RECORDS_HEADER_CELL)}
             >
               <div className="flex items-center gap-2.5">
                 <Checkbox
@@ -235,9 +274,9 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
                 </button>
               </div>
             </th>
-            <th className={RECORDS_HEADER_CELL}>
+            <th className={cx(RECORDS_HEADER_STICKY, RECORDS_HEADER_CELL)}>
               <span className="flex items-center gap-1.5">
-                <HeaderIcon as={RiPriceTag3Line} />
+                <RecordsHeaderIcon as={RiPriceTag3Line} />
                 Categories
               </span>
             </th>
@@ -245,10 +284,10 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
               aria-sort={
                 sort?.key === "last" ? (sort.dir === 1 ? "ascending" : "descending") : undefined
               }
-              className={RECORDS_HEADER_CELL}
+              className={cx(RECORDS_HEADER_STICKY, RECORDS_HEADER_CELL)}
             >
               <button type="button" onClick={() => toggleSort("last")} className={cx(RECORDS_SORT_BUTTON, "gap-1.5")}>
-                <HeaderIcon as={RiTimeLine} />
+                <RecordsHeaderIcon as={RiTimeLine} />
                 Last interaction
                 <SortMark column="last" />
               </button>
@@ -257,17 +296,17 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
               aria-sort={
                 sort?.key === "strength" ? (sort.dir === 1 ? "ascending" : "descending") : undefined
               }
-              className={RECORDS_HEADER_CELL}
+              className={cx(RECORDS_HEADER_STICKY, RECORDS_HEADER_CELL)}
             >
               <button type="button" onClick={() => toggleSort("strength")} className={cx(RECORDS_SORT_BUTTON, "gap-1.5")}>
-                <HeaderIcon as={RiPulseLine} />
+                <RecordsHeaderIcon as={RiPulseLine} />
                 Connection strength
                 <SortMark column="strength" />
               </button>
             </th>
-            <th className={RECORDS_HEADER_CELL}>
+            <th className={cx(RECORDS_HEADER_STICKY, RECORDS_HEADER_CELL)}>
               <span className="flex items-center gap-1.5">
-                <HeaderIcon as={RiLinksLine} />
+                <RecordsHeaderIcon as={RiLinksLine} />
                 Links
               </span>
             </th>
@@ -297,16 +336,7 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
               </td>
               <td className={RECORDS_CELL}>
                 {row.strength ? (
-                  <span className="text-text-secondary inline-flex items-center gap-1.5 whitespace-nowrap text-caption-1-regular">
-                    <span
-                      className={cx(
-                        "size-1.5 rounded-full",
-                        strengthDot[row.strength.tone],
-                      )}
-                      aria-hidden
-                    />
-                    {row.strength.label}
-                  </span>
+                  <RecordsStatus label={row.strength.label} tone={row.strength.tone} />
                 ) : (
                   <span className="text-text-tertiary">-</span>
                 )}
@@ -314,26 +344,9 @@ export function RecordsTable({ rows, className }: RecordsTableProps) {
               <td className={RECORDS_CELL}>
                 {row.links && row.links.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
-                    {row.links.map((link) =>
-                      link.href ? (
-                        <a
-                          key={link.label}
-                          href={link.href}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-text-secondary hover:text-text-primary whitespace-nowrap text-caption-1-regular underline underline-offset-2 transition-colors"
-                        >
-                          {link.label}
-                        </a>
-                      ) : (
-                        <span
-                          key={link.label}
-                          className="text-text-secondary whitespace-nowrap text-caption-1-regular"
-                        >
-                          {link.label}
-                        </span>
-                      ),
-                    )}
+                    {row.links.map((link) => (
+                      <RecordsLink key={link.label} label={link.label} href={link.href} />
+                    ))}
                   </div>
                 ) : (
                   <span className="text-text-tertiary">-</span>
