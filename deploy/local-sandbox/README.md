@@ -7,7 +7,7 @@ Two layers, both built by `.github/workflows/local-sandbox-image.yml` for
 amd64 and arm64:
 
 1. `Dockerfile.base`: what the cloud sandbox base provides, on public Debian.
-   The desktop stack (Xvfb, XFCE, x11vnc, noVNC, Chromium), Node with the
+   The desktop stack (Xorg, Budgie, x11vnc, noVNC, Chromium), Node with the
    engine command lines at the pinned versions, Bun at the sandbox version,
    `socat` for port dials, and the non-root `user` (uid 1000, home
    `/home/user`, passwordless sudo for the recipe's apt steps).

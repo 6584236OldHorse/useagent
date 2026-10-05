@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyNativeImage,
   desktopToolchainCommand,
@@ -53,6 +56,37 @@ describe("native image name", () => {
 });
 
 describe("native image steps", () => {
+  test("the desktop step's configuration survives the shell round trip", async () => {
+    const root = await mkdtemp(join(tmpdir(), "useagent-desktop-"));
+    const home = join(root, "home");
+    const command = desktopToolchainCommand({ home, workdir: `${home}/work`, runsAsRoot: true });
+    // Only the writes run: package installs and the probe are stubbed, /etc is redirected under the temp root.
+    const child = Bun.spawn(["bash", "-c", `
+command() { return 1; }
+test() { return 1; }
+apt-get() { :; }
+rm() { :; }
+dconf() { :; }
+gtk-update-icon-cache() { :; }
+install() { shift; shift; shift; mkdir -p "${root}$1"; }
+tee() { cat > "${root}$1"; }
+chmod() { :; }
+set -u
+${command.replace(/\nif .*; then exit 0; fi\n/, "\n").split("\n").filter((line) => !line.startsWith("command -v")).join("\n")}
+`], { stdout: "pipe", stderr: "pipe" });
+    await child.exited;
+    expect(await Bun.file(join(root, "etc/X11/xorg.conf.d/10-virtual-display.conf")).text()).toContain('Modeline "1920x1080_60.00"');
+    const defaults = await Bun.file(join(root, "etc/dconf/db/local.d/00-useagent-desktop")).text();
+    expect(defaults).toContain("[com/solus-project/budgie-panel]");
+    expect(defaults).toContain("name='Raven Trigger'");
+    expect(defaults).toContain("picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'");
+    expect(await Bun.file(join(root, `${home}/.config/pcmanfm/useagent/desktop-items-0.conf`)).text()).toContain("wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp");
+    const browser = await Bun.file(join(root, `${home}/Desktop/browser.desktop`)).text();
+    expect(browser).toContain("$(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox");
+    expect(await Bun.file(join(root, `${home}/Desktop/files.desktop`)).text()).toContain("Exec=pcmanfm %U");
+    await rm(root, { recursive: true, force: true });
+  });
+
   test("repairs missing desktop tools and refuses an incomplete installation", async () => {
     for (const repaired of [true, false]) {
       const child = Bun.spawn(["bash", "-c", `

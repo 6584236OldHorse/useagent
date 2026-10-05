@@ -42,16 +42,11 @@ RUN apt-get update \
       ripgrep \
       socat \
       sudo \
-      thunar \
       unzip \
       websockify \
       x11-utils \
       x11vnc \
       xdotool \
-      xfce4 \
-      xfce4-clipman-plugin \
-      xfce4-terminal \
-      xvfb \
       xz-utils \
     && mkdir -p /usr/share/useagent \
     && dpkg-query -W -f '${binary:Package}=${Version}\n' > /usr/share/useagent/base-packages.txt \
@@ -96,7 +91,7 @@ RUN useradd -m -u 1000 -s /bin/bash user \
     && printf 'user ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/user \
     && chmod 0440 /etc/sudoers.d/user \
     && test "$(id -u user)" = 1000 \
-    && command -v setfacl && command -v setpriv && command -v socat && command -v Xvfb && command -v startxfce4
+    && command -v setfacl && command -v setpriv && command -v socat
 
 USER user
 ENV HOME=/home/user

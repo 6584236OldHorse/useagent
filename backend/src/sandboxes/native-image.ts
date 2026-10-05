@@ -208,7 +208,8 @@ const DESKTOP_ITEMS = [
 
 const DESKTOP_LAUNCHERS: readonly [string, string, string, string][] = [
   ["files", "Files", "pcmanfm %U", "system-file-manager"],
-  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser)"', "web-browser"],
+  // The same flags the desktop's own browser launch needs: root and a sandbox without user namespaces.
+  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox --disable-dev-shm-usage --disable-gpu"', "web-browser"],
   ["terminal", "Terminal", "gnome-terminal", "org.gnome.Terminal"],
 ];
 
@@ -235,7 +236,7 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
     `${sudo}apt-get update -qq`,
     `${sudo}apt-get install -y -qq --no-install-recommends ` +
       "adwaita-icon-theme budgie-core dbus-x11 dconf-cli fonts-cantarell fonts-noto-mono gnome-backgrounds gnome-settings-daemon " +
-      "gnome-terminal hicolor-icon-theme libglib2.0-bin librsvg2-common novnc pcmanfm procps websockify x11-utils x11vnc xdotool " +
+      "gnome-terminal hicolor-icon-theme libglib2.0-bin librsvg2-common novnc pcmanfm procps webp-pixbuf-loader websockify x11-utils x11vnc xdotool " +
       "xserver-xorg-core xserver-xorg-legacy xserver-xorg-video-dummy",
     `if ! (command -v google-chrome || command -v chromium || command -v chromium-browser) >/dev/null 2>&1; then ${sudo}apt-get install -y -qq --no-install-recommends chromium; fi`,
     `${sudo}rm -rf /var/lib/apt/lists/*`,
