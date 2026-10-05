@@ -4,7 +4,7 @@
 
 In the same retained QA Codex thread, both Luna and Sol were explicitly asked to call the available native checklist tool rather than write a prose plan. Both reported that no native plan/checklist tool was exposed. No native plan card was created.
 
-`live-tool-unavailable.png` captures the Sol attempt. This is before-fix evidence, not a deployed-success screenshot.
+The before-fix screenshot of the Sol attempt is posted on pull request #347; it is not a deployed-success screenshot.
 
 ## Source-backed cause
 
