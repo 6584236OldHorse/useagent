@@ -24,14 +24,6 @@ export type PostMessagePayload = {
    *  posted after that message closed (`part` orders the tails). */
   readonly messageRole?: "user_mirror" | "reply_tail";
   readonly part?: number;
-  /** A reply tail: the markdown slice of the answer body starting at
-   *  `bodyStart`, converted and chunked at delivery, which skips whatever the
-   *  stream turned out to hold (its accepted offset, clamped to
-   *  [coverFloor, coverCeiling]). `chunks` appears only as a retry cursor. */
-  readonly markdownText?: string;
-  readonly bodyStart?: number;
-  readonly coverFloor?: number;
-  readonly coverCeiling?: number;
   /** A row that must reach a terminal outbox state first (the same run's user
    *  mirror before its result, the closed stream before its answer's tail). */
   readonly waitForIdempotencyKey?: string;

@@ -89,51 +89,6 @@ export async function enqueuePostMessageTx(
   );
 }
 
-/** A tail of a reply INSIDE the finalize transaction: the markdown slice of the
- *  answer body past what the streamed message holds. Delivery converts it and
- *  skips whatever the stream had actually accepted by then, so a tail fixed at
- *  finalize never repeats an append that was still in flight. Each tail waits
- *  for the row before it. Returns whether a NEW row was created. */
-export async function enqueueReplyTailTx(
-  exec: Executor,
-  entry: {
-    idempotencyKey: string;
-    orgId: string;
-    teamId: string;
-    channel: string;
-    threadTs: string;
-    runId: string;
-    markdownText: string;
-    bodyStart: number;
-    coverFloor: number;
-    coverCeiling: number;
-    part: number;
-    waitForIdempotencyKey: string;
-  },
-): Promise<boolean> {
-  return enqueue(
-    {
-      kind: "post_message",
-      idempotencyKey: entry.idempotencyKey,
-      payload: {
-        orgId: entry.orgId,
-        teamId: entry.teamId,
-        channel: entry.channel,
-        threadTs: entry.threadTs,
-        runId: entry.runId,
-        messageRole: "reply_tail",
-        part: entry.part,
-        markdownText: entry.markdownText,
-        bodyStart: entry.bodyStart,
-        coverFloor: entry.coverFloor,
-        coverCeiling: entry.coverCeiling,
-        waitForIdempotencyKey: entry.waitForIdempotencyKey,
-      },
-    },
-    exec,
-  );
-}
-
 /** Strictly increasing card revision numbers (a millisecond clock nudged past
  *  the last one handed out), so delivery tells a retried older revision from
  *  a newer one whatever order the rows arrive in. Process-local, like the
