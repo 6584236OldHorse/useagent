@@ -222,6 +222,9 @@ The important variables are:
   (needs `CONNECTOR_EMAIL_HOST` and `CONNECTOR_EMAIL_FROM`); `SIGNUP_ALLOWED_DOMAINS`
   and `SIGNUP_INVITE_CODE` narrow it.
 - `ENABLED_ENGINES` to opt extra engines into the backend picker.
+- `LAB_ACCOUNTS=owner@example.com,second@example.com` lists the accounts that may
+  open the component lab (`/lab`) in production; unset, nobody can. Development
+  mode keeps it open.
 - `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.

@@ -30,6 +30,7 @@ import { Kbd } from "@/components/base/kbd/kbd";
 import { runTitle } from "@/components/chat/types";
 import * as CommandMenu from "@/components/session-ui/command-palette";
 import { StatusDot } from "@/components/shared/status-dot";
+import { useLabAccess } from "@/lib/lab-access";
 import { cx } from "@/utils/cx";
 import { relativeTimeShort } from "@/utils/format";
 import { runPrimaryRepo } from "./sidebar-project-groups";
@@ -127,7 +128,11 @@ export function SearchCommand({ compact = false }: { compact?: boolean }) {
   }
 
   const query = search.trim().toLowerCase();
-  const matchingCommands = React.useMemo(() => filterCommandEntries(COMMANDS, query), [query]);
+  const labAllowed = useLabAccess();
+  const matchingCommands = React.useMemo(
+    () => filterCommandEntries(labAllowed ? COMMANDS : COMMANDS.filter((cmd) => cmd.href !== "/lab"), query),
+    [labAllowed, query],
+  );
   const matchingThreads = React.useMemo(() => findThreadMatches(runs, query), [runs, query]);
   const childIds = React.useMemo(
     () => new Set(relationships.filter((item) => item.parentThreadId).map((item) => item.threadId)),
