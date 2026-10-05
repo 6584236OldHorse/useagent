@@ -87,8 +87,13 @@ function slice(text: string, budget: number): string[] {
 /** Split one oversized segment on line boundaries; fenced blocks are closed at
  *  each cut and reopened with their language tag on the next part. */
 function splitSegment(seg: Segment, budget: number): string[] {
-  const open = seg.fenceLang !== null ? "```" + seg.fenceLang : "";
-  const close = seg.fenceLang !== null ? "```" : "";
+  // A language tag longer than the budget allows would carry every part past
+  // it: keep what leaves room for the fence wrapper and one code point of body.
+  const room = budget - 10;
+  const lang =
+    seg.fenceLang === null || seg.fenceLang.length <= room ? seg.fenceLang : room > 0 ? (slice(seg.fenceLang, room)[0] ?? "") : "";
+  const open = lang !== null ? "```" + lang : "";
+  const close = lang !== null ? "```" : "";
   // Room each part needs for its own fence wrapper.
   const inner = Math.max(1, budget - (open.length + close.length + 2));
   const lines =

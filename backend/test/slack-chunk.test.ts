@@ -83,4 +83,13 @@ describe("chunkSlackText", () => {
     expect(chunks.every((c) => c.isWellFormed())).toBe(true);
     expect(chunks.join("")).toContain("😀");
   });
+
+  test("an oversized language tag is cut so every piece stays within the bound", () => {
+    for (const tag of [3_900, 5_000]) {
+      const chunks = chunkSlackText("```" + "x".repeat(tag) + "\n" + "😀".repeat(3_000) + "\n```");
+      for (const c of chunks) expect(c.length).toBeLessThanOrEqual(SLACK_MSG_LIMIT);
+      expect(chunks.every((c) => c.isWellFormed())).toBe(true);
+      expect(chunks.join("")).toContain("😀");
+    }
+  });
 });
