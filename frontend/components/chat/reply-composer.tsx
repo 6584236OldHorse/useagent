@@ -36,6 +36,7 @@ export function ReplyComposer({
   enableMentions,
   enableUploads,
   repoRevisions,
+  lead,
   status,
 }: {
   engine: EngineId;
@@ -69,6 +70,8 @@ export function ReplyComposer({
   enableMentions?: boolean;
   enableUploads?: boolean;
   repoRevisions?: Readonly<Record<string, string | null>>;
+  /** Rendered above the input card (the running footer, the queued rows). */
+  lead?: ReactNode;
   /** The status row under the pill (branch, project, agent, context meter). */
   status?: ReactNode;
 }) {
@@ -77,6 +80,7 @@ export function ReplyComposer({
       {/* Full column width, like the timeline above it: the two edges line up
           however wide the conversation is dragged. */}
       <div className="w-full">
+        {lead}
         <Composer
           variant="compact"
           placeholder={placeholder}

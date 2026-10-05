@@ -20,7 +20,7 @@ import { useEffect, useRef } from "react";
 import { formatWorkingTimerNow } from "./work-entry";
 
 /** Self-ticking elapsed label; updates its own text node outside React commits. */
-function ElapsedTimer({ startedAt }: { startedAt: string }) {
+export function ElapsedTimer({ startedAt }: { startedAt: string }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const initialText = formatWorkingTimerNow(startedAt);
 

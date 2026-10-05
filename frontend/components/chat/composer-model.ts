@@ -1,6 +1,6 @@
 type ComposerAction =
   | { kind: "send"; label: "Send" }
-  | { kind: "steer"; label: "Steer" }
+  | { kind: "steer"; label: "Queue" }
   | { kind: "stop"; label: "Stop this run" };
 
 export function getComposerAction({
@@ -12,8 +12,10 @@ export function getComposerAction({
   hasDraft: boolean;
   canStop: boolean;
 }): ComposerAction {
-  if (running && hasDraft) return { kind: "steer", label: "Steer" };
-  if (running && canStop) return { kind: "stop", label: "Stop this run" };
+  // While a turn runs the draft queues behind it; Stop is the button only for a
+  // caller that gives this composer the stop action (the running footer owns it otherwise).
+  if (running && (hasDraft || !canStop)) return { kind: "steer", label: "Queue" };
+  if (running) return { kind: "stop", label: "Stop this run" };
   return { kind: "send", label: "Send" };
 }
 

@@ -121,31 +121,51 @@ function liveEvents(): StoredCanonicalEvent[] {
   ];
 }
 
-test("queued turns render the T3 queued pill with honest FIFO positions", () => {
-  const html = render(
-    [
-      makeTurn("run-live", "running", liveEvents()),
-      makeTurn("run-q1", "queued", [], "run-live"),
-      makeTurn("run-q2", "queued", [], "run-live"),
-    ],
-    { sendNowFor: "run-q1", onSendNow: () => {} },
-  );
+test("queued turns wait as numbered rows above the composer, never as transcript bubbles", () => {
+  const q1 = makeTurn("run-q1", "queued", [], "run-live");
+  q1.run.prompt = "okay keep working";
+  const q2 = makeTurn("run-q2", "queued", [], "run-live");
+  q2.run.prompt = "then run the tests";
+  const html = render([makeTurn("run-live", "running", liveEvents()), q1, q2], {
+    running: true,
+    onStop: () => {},
+    sendNowFor: "run-q1",
+    onSendNow: () => {},
+    onRemoveQueued: async () => {},
+  });
 
-  expect(html).toContain('data-session-ui="queued-message-pill"');
-  expect(html).toContain("Queued - sends after the current run");
-  expect(html).toContain("Queued #2 - 1 reply ahead");
-  // Send now steers ONLY the head queued turn (queue order preserved).
+  expect(html).toContain('data-session-ui="queued-messages"');
+  expect(html.match(/data-session-ui="queued-message"/g)).toHaveLength(2);
+  expect(html).toContain("okay keep working");
+  expect(html).toContain("then run the tests");
+  // Not in the transcript: only the running turn is a turn block.
+  expect(html.match(/data-testid="turn-block"/g)).toHaveLength(1);
+  expect(html).not.toContain('data-run-id="run-q1"');
+  expect(html).not.toContain('data-session-ui="queued-message-pill"');
+  // Send now steers ONLY the head queued turn (queue order preserved); Remove is on both.
   expect(html.split(">Send now<").length - 1).toBe(1);
-  // The old bare "queued" tag row is gone.
-  expect(html).not.toContain(">queued<");
-  // With nothing running (the reply is only waiting for admission) the pill
-  // must not claim it waits on a current run.
+  expect(html.match(/aria-label="Remove queued message \d"/g)).toHaveLength(2);
+  // The composer is in its running state.
+  expect(html).toContain('placeholder="Add context while this runs"');
+  expect(html).toContain(">Queue<");
+  // Waiting for admission (nothing running): still a row, with no Send now.
   const idle = render([makeTurn("run-done", "completed", []), makeTurn("run-q1", "queued", [], "run-done")]);
-  expect(idle).toContain("Queued - waiting to start");
-  expect(idle).not.toContain("sends after the current run");
+  expect(idle).toContain('data-session-ui="queued-messages"');
+  expect(idle).not.toContain("Send now");
+  expect(idle).not.toContain("Add context while this runs");
 });
 
-test("running thread threads runStartedAt into the composer status pill", () => {
+test("the optimistic reply is the last queued row, not a transcript bubble", () => {
+  const html = render([makeTurn("run-live", "running", liveEvents())], {
+    running: true,
+    pendingReply: "one more thing",
+  });
+  expect(html).toContain("one more thing");
+  expect(html.match(/data-session-ui="queued-message"/g)).toHaveLength(1);
+  expect(html.match(/data-testid="user-message"/g)).toHaveLength(1);
+});
+
+test("a running thread renders the running footer above the composer with the elapsed time", () => {
   const startedAt = new Date(Date.now() - 65_000).toISOString();
   const html = render([makeTurn("run-live", "running", liveEvents())], {
     running: true,
@@ -153,9 +173,13 @@ test("running thread threads runStartedAt into the composer status pill", () => 
     runStartedAt: startedAt,
   });
 
-  expect(html).toContain('data-session-ui="background-status-pill"');
+  expect(html).toContain('data-session-ui="running-footer"');
+  expect(html).not.toContain('data-session-ui="background-status-pill"');
   // The elapsed timer rendered from the provided start time (65s ago).
   expect(html).toContain("1m 5s");
+  expect(html).toContain('aria-label="Stop this run"');
+  // The phase comes from the newest turn's data: a tool step is Working with its label.
+  expect(html).toContain(">Working<");
 });
 
 test("failure banner follows the projected turn status and summary after durable reconciliation", () => {

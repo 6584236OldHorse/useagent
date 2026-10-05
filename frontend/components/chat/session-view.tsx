@@ -467,6 +467,12 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     if (!runningTurn) setStopError(null);
   }, [runningTurn]);
 
+  // The durable cancel of one run: a queued run is failed before it starts (the
+  // queued row's Remove); a running run is signalled (Send now below).
+  const cancelRun = useCallback(async (runId: string) => {
+    const response = await backendFetch(`/api/runs/${runId}/cancel`, { method: "POST" });
+    if (!response.ok) throw new Error(`backend ${response.status}`);
+  }, []);
   // Send-now steering (opencode's control, matched to our harness): cancel the
   // RUNNING turn; the per-thread command lane then auto-dispatches the head
   // queued turn immediately (FIFO promotion is already the lane's behavior).
@@ -474,17 +480,11 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   const handleSendNow = useCallback(async () => {
     if (!runningTurn) return;
     setStopError(null);
-    try {
-      const response = await backendFetch(`/api/runs/${runningTurn.run.id}/cancel`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(`backend ${response.status}`);
-    } catch (error) {
-      // The queued bubble keeps its affordance; the user can retry with an
-      // explicit failure instead of a silent no-op.
+    // The queued row keeps its affordance; a failure is explicit, never a silent no-op.
+    await cancelRun(runningTurn.run.id).catch((error: unknown) => {
       setStopError(error instanceof Error ? error.message : "Could not stop this run");
-    }
-  }, [runningTurn]);
+    });
+  }, [cancelRun, runningTurn]);
 
   // Right rail: one tabbed panel, not stacked panes. Desktop and terminal are
   // useful before the first tool call, so the rail starts open on every real
@@ -741,7 +741,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             gatewayApprovals={gatewayApprovals}
             onGatewayApprovalResolved={handleGatewayApprovalResolved}
             sendNowFor={runningTurn ? headQueuedId : null}
-            onSendNow={handleSendNow}
+            onSendNow={handleSendNow} onRemoveQueued={cancelRun}
             running={runningTurn !== null}
             runStartedAt={runningTurn?.run.created_at ?? null}
             stopping={stopping}
