@@ -486,3 +486,31 @@ describe("T3 environment client", () => {
     ]);
   });
 });
+
+describe("runtime request failures carry the runtime's own reason", () => {
+  test("an orchestration refusal reads as its reason and detail", async () => {
+    const { runtimeEnvironmentErrorDetail } = await import("./runtime-environment-client");
+    expect(
+      runtimeEnvironmentErrorDetail({
+        reason: "orchestration_dispatch_failed",
+        traceId: "27ad985f",
+        cause: {
+          _tag: "OrchestrationCommandInvariantError",
+          commandType: "thread.session.stop",
+          detail: "thread t1 was re-engaged after settle; skipping session stop",
+        },
+      }),
+    ).toBe("orchestration_dispatch_failed: thread t1 was re-engaged after settle; skipping session stop");
+  });
+
+  test("a named error body reads as its message, and an empty body adds nothing", async () => {
+    const { runtimeEnvironmentErrorDetail } = await import("./runtime-environment-client");
+    expect(runtimeEnvironmentErrorDetail({ name: "ProviderModelNotFoundError", data: { message: "Model not found: x" } })).toBe(
+      "Model not found: x",
+    );
+    expect(runtimeEnvironmentErrorDetail({ error: "boom" })).toBe("boom");
+    expect(runtimeEnvironmentErrorDetail({})).toBeUndefined();
+    expect(runtimeEnvironmentErrorDetail(undefined)).toBeUndefined();
+    expect(runtimeEnvironmentErrorDetail({ message: "x".repeat(300) })?.length).toBe(240);
+  });
+});

@@ -44,12 +44,28 @@ export interface PreparedOpenCodeConfig {
   readonly required: boolean;
 }
 
+/** OpenCode resolves model ids against the catalog it loads when its process
+ *  starts: the cache file when one exists, else the snapshot bundled at its own
+ *  build time, and it never re-reads after that. A sandbox starts with no cache,
+ *  so every model models.dev added after the snapshot (new free models, a new
+ *  Gemini) fails as "Model not found" even though OpenRouter serves it. Warming
+ *  the cache before the process starts makes the current catalog the one it
+ *  loads. Conditional on the file's date, bounded, and never fatal: a failed
+ *  fetch leaves whatever was there, and OpenCode falls back to its snapshot. */
+export const OPENCODE_CATALOG_WARM_COMMAND =
+  "mkdir -p ~/.cache/opencode && " +
+  "(curl -sfL --max-time 10 -z ~/.cache/opencode/models.json -o ~/.cache/opencode/models.json.new " +
+  "https://models.dev/api.json 2>/dev/null && [ -s ~/.cache/opencode/models.json.new ] && " +
+  "mv -f ~/.cache/opencode/models.json.new ~/.cache/opencode/models.json; " +
+  "rm -f ~/.cache/opencode/models.json.new; true)";
+
 export function buildOpencodeConfigWriteCommand(encodedConfig: string): string {
   if (!/^[A-Za-z0-9+/=]+$/.test(encodedConfig)) {
     throw new Error("opencode config must be base64 encoded");
   }
   return (
     `mkdir -p ~/.config/opencode ~/work && chmod 700 ~/.config ~/.config/opencode && ` +
+    `${OPENCODE_CATALOG_WARM_COMMAND} && ` +
     `printf %s '${encodedConfig}' | base64 -d > ~/.config/opencode/opencode.json && ` +
     `chmod 600 ~/.config/opencode/opencode.json && ` +
     `rm -f -- ~/work/opencode.json`

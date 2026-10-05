@@ -404,14 +404,33 @@ function parseRuntimeEnvironmentErrorResponse(
   }
 }
 
+/** What the runtime said, so a refusal reads as its reason and not as a bare
+ *  status: the orchestration reason plus the cause's detail (`{reason, cause:
+ *  {detail}}`), else a message or error field. Bounded; never the whole body. */
+export function runtimeEnvironmentErrorDetail(
+  body: Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  if (!body) return undefined;
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const cause = body.cause && typeof body.cause === "object" ? body.cause as Record<string, unknown> : undefined;
+  const data = body.data && typeof body.data === "object" ? body.data as Record<string, unknown> : undefined;
+  const detail = text(cause?.detail) ?? text(cause?.message) ?? text(data?.message) ?? text(body.message) ?? text(body.error);
+  const reason = text(body.reason);
+  const joined = reason && detail ? `${reason}: ${detail}` : (detail ?? reason);
+  return joined === undefined ? undefined : joined.length > 240 ? `${joined.slice(0, 239)}…` : joined;
+}
+
 function runtimeEnvironmentRequestError(
   request: RuntimeEnvironmentRequest,
   response: RuntimeEnvironmentResponse,
 ): RuntimeEnvironmentRequestError {
   const status = response.status;
   const errorResponse = parseRuntimeEnvironmentErrorResponse(response.body);
+  const detail = runtimeEnvironmentErrorDetail(errorResponse);
   return new RuntimeEnvironmentRequestError(
-    `The provider runtime ${request.method} request failed${status === undefined ? "" : ` (HTTP ${status})`}`,
+    `The provider runtime ${request.method} request failed${status === undefined ? "" : ` (HTTP ${status})`}` +
+      (detail ? `: ${detail}` : ""),
     {
       ...(status === undefined ? {} : { status }),
       ...(errorResponse === undefined ? {} : { response: errorResponse }),
