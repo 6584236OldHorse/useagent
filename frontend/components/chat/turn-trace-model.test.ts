@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { formatElapsed } from "@/utils/format";
 import type { TimelineNode } from "./timeline";
 import {
   latestPlanEntries,
@@ -228,6 +229,21 @@ describe("trace rows", () => {
     });
     // No duration in the payload, none on the row (never a guess).
     expect(stepRows(traceRowsFromWork([GIT_LOG], false))[0]?.durationMs).toBeNull();
+  });
+
+  test("the duration grammar: milliseconds under a second, tenths under an hour, hours and minutes above", () => {
+    expect([40, 999, 1_000, 4_300, 60_000, 68_500, 3_720_000, 0, -1, null].map(formatElapsed)).toEqual([
+      "40ms",
+      "999ms",
+      "1.0s",
+      "4.3s",
+      "1m",
+      "1m 8.5s",
+      "1h 2m",
+      null,
+      null,
+      null,
+    ]);
   });
 
   test("a file edit names the file in the chip and its line delta as the detail", () => {

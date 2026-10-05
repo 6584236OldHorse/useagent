@@ -233,7 +233,7 @@ describe("turn trace", () => {
     expect(html).toContain(">gateway<");
     expect(html).toContain(">3 entries<");
     expect(html).toContain('data-testid="trace-row-duration"');
-    expect(html).toContain(">0.2s<");
+    expect(html).toContain(">180ms<");
     // The pill: a listing is a tool call, timed by the run.
     expect(html).toContain(">· called 1 tool · 3m 12.0s<");
     // A step without a reported duration shows none.

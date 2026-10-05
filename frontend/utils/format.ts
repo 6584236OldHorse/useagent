@@ -59,10 +59,11 @@ export function relativeTimeShort(
   return long === "just now" ? "now" : long.replace(" ago", "");
 }
 
-/** Precise elapsed time for a work log: "4.3s", "1m 8.5s", "1h 2m". Null when
+/** Precise elapsed time for a work log: "180ms", "4.3s", "1m 8.5s", "1h 2m". Null when
  *  there is nothing to report (missing, zero or negative). */
 export function formatElapsed(ms: number | null): string | null {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
   const seconds = ms / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const minutes = Math.floor(seconds / 60);
