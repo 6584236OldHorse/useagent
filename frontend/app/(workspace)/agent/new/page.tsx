@@ -5,7 +5,8 @@ import { type DotTone, StatusDot } from "@/components/shared/status-dot";
 import { threadActivityTimestamp } from "@/components/shell/thread-discovery";
 import { backendFetch } from "@/lib/backend-fetch";
 import { relativeTimeShort } from "@/utils/format";
-import { FirstRunGate, taskPrefilled } from "./first-run-gate";
+import { FirstRunGate } from "./first-run-gate";
+import { taskPrefilled } from "./task-prefill";
 import { NewTaskComposer } from "./new-task-composer";
 import { fetchSkills } from "./skills-data";
 

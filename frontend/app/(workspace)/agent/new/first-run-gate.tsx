@@ -16,12 +16,6 @@ import { type LandingDecision, settleLanding, watchLanding } from "@/lib/first-r
  * is on its first run.
  */
 
-/** Whether the URL the page was opened with already names a task: a prompt or
- *  a repository (the parameters the page reads); blank values do not count. */
-export function taskPrefilled(task: { readonly repo: string | null; readonly prompt: string }): boolean {
-  return Boolean(task.repo) || task.prompt.trim() !== "";
-}
-
 export function FirstRunGate({
   children,
   prefilled = false,
@@ -36,6 +30,13 @@ export function FirstRunGate({
   const router = useRouter();
   const { session, loading } = useSession();
   const [decision, setDecision] = useState<LandingDecision>(initialDecision ?? (prefilled ? "stay" : "pending"));
+
+  // A task can arrive while the check is pending (a project's "New thread"
+  // changes only the query, and state survives that): settle on the composer
+  // and, through the effect below keyed on the decision, cancel the watcher.
+  useEffect(() => {
+    if (prefilled) setDecision((current) => settleLanding(current, "stay"));
+  }, [prefilled]);
 
   useEffect(() => {
     if (decision !== "pending" || loading) return;

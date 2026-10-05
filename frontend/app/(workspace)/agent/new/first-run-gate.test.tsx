@@ -4,8 +4,9 @@ import {
   type AppRouterInstance,
 } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
-import { firstRunApplies, watchLanding } from "@/lib/first-run";
-import { FirstRunGate, taskPrefilled } from "./first-run-gate";
+import { firstRunApplies, settleLanding, watchLanding } from "@/lib/first-run";
+import { FirstRunGate } from "./first-run-gate";
+import { taskPrefilled } from "./task-prefill";
 
 const router = {
   push() {},
@@ -63,4 +64,24 @@ test("a plain /agent/new still waits for the check, and a first run still opens 
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(firstRunApplies(fresh)).toBe(true);
   expect(outcomes).toEqual(["open"]);
+});
+
+test("a task chosen while the check is pending settles the gate on the composer and the check's later answer is ignored", async () => {
+  // The query changes, the component stays mounted: the decision moves from pending to stay...
+  expect(settleLanding("pending", "stay")).toBe("stay");
+  // ...and the watcher effect keyed on the decision runs its cleanup, so the answer in flight reports nothing.
+  const outcomes: string[] = [];
+  let answer: (() => void) | undefined;
+  const cleanup = watchLanding({
+    userId: "chooses-a-project",
+    listWorkspaces: () => new Promise((resolve) => { answer = () => resolve([fresh]); }),
+    settle: (outcome) => outcomes.push(outcome),
+  });
+  cleanup();
+  answer?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(outcomes).toEqual([]);
+  // A decision already settled is left alone: an opened page is not un-opened, a stay stays.
+  expect(settleLanding("open", "stay")).toBe("open");
+  expect(settleLanding("stay", "stay")).toBe("stay");
 });
