@@ -1,0 +1,62 @@
+import { describe, expect, test } from "bun:test";
+import { decodeDataFrame, encodeControlFrame, encodeDataFrame, parseControlFrame } from "./frames";
+
+describe("data frames", () => {
+  test("round-trip the stream id and payload", () => {
+    const payload = new Uint8Array([1, 2, 3, 250, 251, 252]);
+    const decoded = decodeDataFrame(encodeDataFrame(0xfedc_ba98, payload));
+    expect(decoded?.streamId).toBe(0xfedc_ba98);
+    expect([...(decoded?.payload ?? [])]).toEqual([...payload]);
+  });
+
+  test("decode from a view into a larger buffer", () => {
+    const frame = encodeDataFrame(7, new Uint8Array([9, 9]));
+    const padded = new Uint8Array(frame.byteLength + 4);
+    padded.set(frame, 2);
+    const decoded = decodeDataFrame(padded.subarray(2, 2 + frame.byteLength));
+    expect(decoded?.streamId).toBe(7);
+    expect([...(decoded?.payload ?? [])]).toEqual([9, 9]);
+  });
+
+  test("reject a short frame and an unknown tag", () => {
+    expect(decodeDataFrame(new Uint8Array([1, 0, 0]))).toBeNull();
+    expect(decodeDataFrame(new Uint8Array([2, 0, 0, 0, 1, 5]))).toBeNull();
+  });
+});
+
+describe("control frames", () => {
+  test("round-trip every frame type", () => {
+    const frames = [
+      { t: "rpc", id: 1, method: "sandbox.get", params: { sandboxId: "abc" } },
+      { t: "rpc.result", id: 1, result: null },
+      { t: "rpc.error", id: 2, code: "not_found", message: "gone" },
+      { t: "stream.open", id: 2, target: { kind: "port", sandboxId: "abc", port: 80 } },
+      { t: "stream.opened", id: 2 },
+      { t: "stream.refused", id: 4, code: "refused", message: "no" },
+      { t: "stream.credit", id: 2, bytes: 4096 },
+      { t: "stream.close", id: 2 },
+      { t: "stream.reset", id: 2, reason: "bye" },
+      { t: "event", sandboxId: null, kind: "image.refreshed", detail: { digest: "sha256:1" } },
+    ] as const;
+    for (const frame of frames) {
+      expect(parseControlFrame(encodeControlFrame(frame))).toEqual(frame);
+    }
+  });
+
+  test("ignore malformed and unknown frames", () => {
+    expect(parseControlFrame("not json")).toBeNull();
+    expect(parseControlFrame("[]")).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "later.frame", id: 1 }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "rpc", id: "1", method: "x" }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "rpc", id: -1, method: "x" }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "stream.credit", id: 1, bytes: 0 }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "stream.reset", id: 1 }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "hello" }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "welcome", protocol: 1 }))).toBeNull();
+  });
+
+  test("keep unknown optional fields for forward compatibility", () => {
+    const parsed = parseControlFrame(JSON.stringify({ t: "stream.close", id: 3, later: "field" }));
+    expect(parsed).toEqual({ t: "stream.close", id: 3, later: "field" } as never);
+  });
+});
