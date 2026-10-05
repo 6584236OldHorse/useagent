@@ -46,6 +46,34 @@ export async function fetchRunnerPolicy(fetcher: Fetcher = backendFetch): Promis
   return policy;
 }
 
+/** The deployment's sandbox provider and the name a person reads for it, from
+ *  GET /api/config; fetched once per page and shared, since every run location
+ *  on a page asks the same question. A failed read stays null and is retried
+ *  on the next ask. */
+export interface SandboxProviderName {
+  readonly provider: string;
+  readonly label: string;
+}
+
+let sandboxProviderNameRead: Promise<SandboxProviderName | null> | null = null;
+
+export function fetchSandboxProviderName(fetcher: Fetcher = backendFetch): Promise<SandboxProviderName | null> {
+  sandboxProviderNameRead ??= (async () => {
+    try {
+      const response = await fetcher("/api/config", { cache: "no-store" });
+      if (!response.ok) throw new Error(`config ${response.status}`);
+      const value = (await response.json()) as { sandbox?: { provider?: unknown; label?: unknown } };
+      const provider = value.sandbox?.provider;
+      const label = value.sandbox?.label;
+      return typeof provider === "string" && typeof label === "string" && label ? { provider, label } : null;
+    } catch {
+      sandboxProviderNameRead = null;
+      return null;
+    }
+  })();
+  return sandboxProviderNameRead;
+}
+
 export async function fetchRunnerEnabled(fetcher: Fetcher = backendFetch): Promise<boolean> {
   const response = await fetcher("/api/config", { cache: "no-store" });
   if (!response.ok) throw new Error(`config ${response.status}`);

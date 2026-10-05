@@ -55,7 +55,7 @@ import { schedulesRoutes } from "./schedules/routes";
 import { startScheduler } from "./schedules/scheduler";
 import { startCaptureDelivery } from "./memory/capture-outbox";
 import { resetStuckLearning, startLearningOutbox } from "./learning/learning-outbox";
-import { sandboxProvider, sandboxProviderApiKey, sandboxProviderKind } from "./sandboxes/provider";
+import { sandboxProvider, sandboxProviderApiKey, sandboxProviderKind, sandboxProviderLabel } from "./sandboxes/provider";
 import { userComputersEnabled } from "./sandboxes/binding";
 
 /** Where the managed sandboxes run, for the settings page; only the E2B-protocol plugin has a configurable host. */
@@ -388,8 +388,14 @@ app.get("/api/config", (c) => {
     engineReadiness,
     models,
     configuredModels,
-    // The host the managed sandboxes live on (the E2B-protocol plugin serves several).
-    sandbox: { provider: sandboxProviderKind(), host: managedSandboxHost(), userComputers: userComputersEnabled() },
+    // The host the managed sandboxes live on (the E2B-protocol plugin serves several),
+    // and the name a person reads for the provider (E2B or Cube for that plugin).
+    sandbox: {
+      provider: sandboxProviderKind(),
+      label: sandboxProviderLabel(sandboxProviderKind()),
+      host: managedSandboxHost(),
+      userComputers: userComputersEnabled(),
+    },
     // What a runner must speak and boot to lend this deployment a machine.
     runner: runnerConfigBlock(),
     // Per model provider: served from this deployment's own key (a name, never a value).

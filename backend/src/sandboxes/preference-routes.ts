@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
-import { isSandboxProviderKind, sandboxPlugin } from "./plugins";
-import { sandboxProviderKind } from "./provider";
+import { isSandboxProviderKind } from "./plugins";
+import { sandboxProviderKind, sandboxProviderLabel } from "./provider";
 import { enabledSandboxProviders, readSandboxPreference, writeSandboxPreference } from "./preference";
 
 // /api/sandbox-preference - the signed-in member's preferred sandbox provider
@@ -18,7 +18,7 @@ async function view(scope: { readonly orgId: string; readonly userId: string }) 
     // A stored vendor whose credential was removed since is not what runs; say so.
     provider: stored && enabled.includes(stored) ? stored : null,
     defaultProvider: sandboxProviderKind(),
-    enabled: enabled.map((kind) => ({ kind, label: sandboxPlugin(kind).label })),
+    enabled: enabled.map((kind) => ({ kind, label: sandboxProviderLabel(kind) })),
   };
 }
 

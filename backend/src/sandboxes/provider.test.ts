@@ -8,6 +8,7 @@ import {
   sandboxProvider,
   sandboxProviderApiKey,
   sandboxProviderKind,
+  sandboxProviderLabel,
   sandboxRuntimeLayout,
   sandboxTemplate,
 } from "./provider";
@@ -142,5 +143,25 @@ describe("sandbox preview authentication", () => {
   test("the computer-provider kinds are exactly the plugins that validate stored credentials", () => {
     const fromRegistry = SANDBOX_PROVIDER_KINDS.filter((kind) => sandboxPlugin(kind).validateCredential !== undefined);
     expect([...fromRegistry].sort()).toEqual([...COMPUTER_PROVIDER_KINDS].sort());
+  });
+});
+
+describe("sandbox provider label", () => {
+  test("the E2B-protocol plugin reads as E2B when its API URL points at e2b.app, else as its own label", () => {
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "https://api.e2b.app" })).toBe("E2B");
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "https://E2B.app/" })).toBe("E2B");
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "https://cube.internal.example:3000" })).toBe("Cube");
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "http://127.0.0.1:3000" })).toBe("Cube");
+    // Unset or unparseable: the plugin's own label, never a thrown URL error.
+    expect(sandboxProviderLabel("cube", {})).toBe("Cube");
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "not a url" })).toBe("Cube");
+    // A lookalike host is not e2b.app.
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "https://e2b.app.evil.example" })).toBe("Cube");
+    expect(sandboxProviderLabel("cube", { CUBE_API_URL: "https://notE2B.app" })).toBe("Cube");
+  });
+
+  test("the other kinds carry their plugin's label regardless of the URL", () => {
+    expect(sandboxProviderLabel("daytona", { CUBE_API_URL: "https://api.e2b.app" })).toBe(sandboxPlugin("daytona").label);
+    expect(sandboxProviderLabel("box", {})).toBe(sandboxPlugin("box").label);
   });
 });

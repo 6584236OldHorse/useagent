@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ComputerConnectionsCard } from "./computer-connections-card";
+import { ComputerConnectionsCard, managedSandboxesTitle } from "./computer-connections-card";
 import { computerFooterCopy } from "./provider-connections-data";
 import { ProviderConnectionsProvider } from "./use-provider-connections";
 
@@ -34,4 +34,13 @@ test("the footer line never claims a connection the chip does not show", () => {
   expect(computerFooterCopy("Daytona", null, false)).toBe(
     "Checking whether personal computers run your work on this server...",
   );
+});
+
+test("the managed card names the provider the deployment points at once the config says", () => {
+  // The E2B-protocol plugin keeps its id (cube); its name follows CUBE_API_URL.
+  expect(managedSandboxesTitle("E2B")).toBe("E2B sandboxes");
+  expect(managedSandboxesTitle("Cube")).toBe("Cube sandboxes");
+  expect(managedSandboxesTitle("Daytona")).toBe("Daytona sandboxes");
+  // Before the config lands, and when it cannot be read, the title stays generic.
+  expect(managedSandboxesTitle(null)).toBe("Managed sandboxes");
 });

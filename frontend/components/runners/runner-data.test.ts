@@ -4,6 +4,7 @@ import {
   localRunnerId,
   markRunnerRevoked,
   type Runner,
+  PROVIDER_NAMES,
   runnerLocationLabel,
   runnerLoginAvailable,
 } from "./runner-data";
@@ -35,6 +36,9 @@ describe("runner location", () => {
       "Unknown machine",
     );
     expect(runnerLocationLabel("sandbox_1", "cube", [runner])).toBe("Cube");
+    // The E2B-protocol plugin keeps its id; the name follows what the deployment points at.
+    expect(runnerLocationLabel("sandbox_1", "cube", [runner], { ...PROVIDER_NAMES, cube: "E2B" })).toBe("E2B");
+    expect(runnerLocationLabel("sandbox_1", "daytona", [runner], { ...PROVIDER_NAMES, cube: "E2B" })).toBe("Daytona");
     expect(runnerLocationLabel("sandbox_1", "daytona", [runner])).toBe("Daytona");
     expect(runnerLocationLabel("sandbox_1", undefined, [runner])).toBe("Unknown runtime");
   });
