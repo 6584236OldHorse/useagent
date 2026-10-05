@@ -17,7 +17,7 @@ test("a fenced live turn bypasses root-run handle and endpoint caches before any
     getPreviewLink: async () => { calls.push("expected:preview"); return { url: "https://expected.invalid" }; } } as unknown as sandboxProviders.SandboxHandle;
   const provider = { connectionFingerprint: "a".repeat(64), get: async () => { calls.push("get"); return sandbox; } } as unknown as sandboxProviders.SandboxProvider;
   const expected = sandboxBindingExpectation({ kind: "cube", credential: "env", userId: null,
-    snapshot: null, provider }, orgId, sandbox.id);
+    snapshot: null, provider, logins: [] }, orgId, sandbox.id);
   const factory = spyOn(sandboxProviders, "sandboxProviderFor").mockReturnValue(provider);
   try {
     rememberLiveThreadSandbox(threadId, stale);

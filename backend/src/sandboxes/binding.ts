@@ -51,6 +51,8 @@ export interface SandboxBinding {
   readonly userId: string | null;
   /** Version of the user connection used to build this provider instance. */
   readonly connectionUpdatedAt?: string;
+  /** Engine logins the sandbox carries from the user's own machine; empty for every hosted provider. */
+  readonly logins: readonly string[];
 }
 
 export interface SandboxBindingDeps {
@@ -98,6 +100,7 @@ function localBinding(runner: BoundRunner, logins: readonly string[], deps: Sand
     credential: "user",
     userId: runner.userId,
     connectionUpdatedAt: runner.enrolledAt,
+    logins,
   };
 }
 
@@ -193,7 +196,7 @@ export function envSandboxBinding(env: Readonly<Record<string, string | undefine
   const kind = sandboxProviderKind(env);
   const apiKey = sandboxProviderApiKey(env);
   if (apiKey === undefined) return null;
-  return { kind, provider: sandboxProviderFor(kind, apiKey, env), snapshot: null, credential: "env", userId: null };
+  return { kind, provider: sandboxProviderFor(kind, apiKey, env), snapshot: null, credential: "env", userId: null, logins: [] };
 }
 
 function requireEnvBinding(deps: SandboxBindingDeps): SandboxBinding {
@@ -209,7 +212,7 @@ function requireRecordedEnvBinding(kind: SandboxProviderKind, deps: SandboxBindi
     throw new Error(`sandbox provider credentials are unavailable for recorded ${kind} sandbox`);
   }
   const build = deps.providers?.[kind] ?? ((key: string) => sandboxProviderFor(kind, key, env));
-  return { kind, provider: build(apiKey), snapshot: null, credential: "env", userId: null };
+  return { kind, provider: build(apiKey), snapshot: null, credential: "env", userId: null, logins: [] };
 }
 
 async function userSandboxBinding(
@@ -241,6 +244,7 @@ async function userSandboxBinding(
       credential: "user",
       userId: scope.userId,
       connectionUpdatedAt: row.updatedAt,
+      logins: [],
     };
   }
   const connections = deps.connections ?? listProviderConnections;
@@ -262,6 +266,7 @@ async function userSandboxBinding(
     credential: "user",
     userId: scope.userId,
     connectionUpdatedAt: row.updatedAt.toISOString(),
+    logins: [],
   };
 }
 

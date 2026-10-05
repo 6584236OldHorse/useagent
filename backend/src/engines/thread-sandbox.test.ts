@@ -28,7 +28,7 @@ describe("shared thread sandbox lease", () => {
       get: async () => { lookedUp++; return fresh; },
     } as unknown as SandboxBinding["provider"];
     const original: SandboxBinding = {
-      kind: "cube", provider, snapshot: null, credential: "env", userId: null,
+      kind: "cube", provider, snapshot: null, credential: "env", userId: null, logins: [],
     };
     const expected = sandboxBindingExpectation(original, "org", fresh.id);
     for (const changed of [

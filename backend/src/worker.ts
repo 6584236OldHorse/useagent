@@ -11,7 +11,7 @@ import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
 import { resolveProviderRegistration, runProviderTurn } from "./engines";
-import { persistedEngineModelReadyForDispatch } from "./runs/engine-readiness";
+import { dispatchReadyForUser } from "./engines/sandbox-login";
 import type { EmitStep, EngineRunContext, RunInputFile } from "./engines/types";
 import { classifyTurnFailure } from "./engines/turn-failure-classification";
 import { recallScopedMemory } from "./memory/team-memory";
@@ -656,7 +656,7 @@ async function runEngine(
   // DB write), refuse to spawn its adapter unless the engine is explicitly enabled
   // (ENABLED_ENGINES). Fail the run closed rather than activating it.
   const engine = engineId as EngineId;
-  if (!persistedEngineModelReadyForDispatch(engine, model)) {
+  if (!(await dispatchReadyForUser({ orgId, userId }, engine, model, "persisted"))) {
     const finalized = await finalizeRun(runId, "failed", `engine/model not ready: ${engineId}/${model}`, 0);
     await emitFinalizedEnd(runId, finalized);
     return;

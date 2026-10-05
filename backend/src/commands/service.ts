@@ -13,7 +13,7 @@ import {
   type UnattendedRunOrigin,
 } from "../runs/origin";
 import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../runs/model-policy";
-import { engineModelReadyForDispatch, persistedEngineModelReadyForDispatch } from "../runs/engine-readiness";
+import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
 import { assertRunPromptLimit } from "./prompt-policy";
@@ -358,9 +358,12 @@ async function acceptRunCommandWithOrigin(
             `model ${input.run.model} is not allowed for engine ${input.run.engine}`,
           );
         }
-        const dispatchReady = persistedPolicy
-          ? persistedEngineModelReadyForDispatch(input.run.engine, input.run.model)
-          : engineModelReadyForDispatch(input.run.engine, input.run.model);
+        const dispatchReady = await dispatchReadyForUser(
+          { orgId: input.orgId, userId: input.actorId },
+          input.run.engine,
+          input.run.model,
+          persistedPolicy ? "persisted" : "accepted",
+        );
         if (!dispatchReady) {
           throw new Error(
             `engine/model not ready: ${input.run.engine}/${input.run.model}`,

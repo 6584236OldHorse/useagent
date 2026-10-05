@@ -178,7 +178,7 @@ export function providerGatewayEndpoint(provider: ProviderId, versioned: boolean
   return `${config.publicUrl}${PROVIDER_GATEWAY_PATH}/${provider}${versioned ? "/v1" : ""}`;
 }
 
-function toolGatewayDescriptor(
+export function toolGatewayDescriptor(
   ctx: EngineRunContext,
   engine: "claude" | "codex" | "pi",
 ): ToolGatewayCapabilityDescriptor | null {
@@ -252,7 +252,7 @@ export function piProviderGatewayCapability(
   return baseUrl && bearerToken ? { provider, baseUrl, bearerToken } : null;
 }
 
-function claudeMcpConfig(descriptor: ToolGatewayCapabilityDescriptor | null): string {
+export function claudeMcpConfig(descriptor: ToolGatewayCapabilityDescriptor | null): string {
   return JSON.stringify({
     mcpServers: descriptor
       ? {
@@ -400,7 +400,7 @@ export function codexProviderConfigToml(
   ].join("\n");
 }
 
-async function writePrivateFiles(
+export async function writePrivateFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
@@ -489,7 +489,7 @@ export function buildClaudeCapabilityWriteCommand(
   ].join(" && ");
 }
 
-async function writeClaudeCapabilityFiles(
+export async function writeClaudeCapabilityFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {
@@ -504,7 +504,7 @@ async function writeClaudeCapabilityFiles(
   }
 }
 
-async function writeUserClaudeCapabilityFiles(
+export async function writeUserClaudeCapabilityFiles(
   sandbox: SandboxHandle,
   files: readonly { readonly path: string; readonly content: string }[],
 ): Promise<void> {

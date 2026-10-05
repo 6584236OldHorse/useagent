@@ -522,13 +522,14 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         prepareStableProvider(sandbox) {
           return prepareStableRuntimeProvider(sandbox, ctx, engine);
         },
-        async prepareProvider(sandbox, workdir, _binding, preparation) {
+        async prepareProvider(sandbox, workdir, binding, preparation) {
           return await prepareRuntimeProviderBridge(
             sandbox,
             ctx,
             engine,
             workdir,
             preparation.stableProviderPrepared,
+            binding,
           );
         },
         closeProvider: (state) => state.close(),

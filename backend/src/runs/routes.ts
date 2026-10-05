@@ -72,9 +72,9 @@ import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
   modelProviderReadyForEngine,
-  resolveAcceptedEngine,
   USER_FACING_ENGINES,
 } from "./engine-readiness";
+import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
 import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
@@ -347,12 +347,11 @@ export async function handleRunCreate(
   if (replay?.status === "conflict") {
     return c.json({ error: "idempotency_key_reused", reason: replay.reason }, 409);
   }
-
   // Mutable authorization/readiness checks apply only to first acceptance.
   if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
     return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
   }
-  const resolvedEngine = resolveAcceptedEngine(parentEngine ?? requestedEngine);
+  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId") }, parentEngine ?? requestedEngine);
   if (!resolvedEngine.ok) {
     return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   }
@@ -365,7 +364,7 @@ export async function handleRunCreate(
   if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
-  if (!modelProviderReadyForEngine(engine, model)) {
+  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
 

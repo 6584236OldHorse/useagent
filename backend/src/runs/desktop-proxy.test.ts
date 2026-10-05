@@ -146,7 +146,7 @@ describe("desktop proxy recovery", () => {
     const provider = { connectionFingerprint: "a".repeat(64),
       get: async () => { calls.push("get"); return stale; } } as unknown as sandboxProviders.SandboxProvider;
     const expected = sandboxBindingExpectation({ kind: "cube", credential: "env", userId: null,
-      snapshot: null, provider }, orgId, "expected");
+      snapshot: null, provider, logins: [] }, orgId, "expected");
     const factory = spyOn(sandboxProviders, "sandboxProviderFor").mockReturnValue({ ...provider, connectionFingerprint: "b".repeat(64) });
     const repair = spyOn(desktop, "ensureSandboxDesktopView").mockImplementation(async () => {
       calls.push("repair");
