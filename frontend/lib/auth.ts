@@ -1,3 +1,5 @@
+"use client";
+
 // Browser auth helpers — the ONE place the frontend talks to better-auth. The
 // backend mounts better-auth at `/api/auth/*` and the Next `/api/*` rewrite
 // proxies it same-origin, so the session cookie is first-party and rides on
@@ -6,7 +8,9 @@
 // email form (app/login/auth-form.tsx).
 
 import { useCallback, useEffect, useState } from "react";
+import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import { backendFetch } from "./backend-fetch";
+import { type CachedRequest, cachedRequest } from "./cached-request";
 
 export interface SessionUser {
   id: string;
@@ -19,17 +23,46 @@ export interface Session {
   user: SessionUser;
 }
 
+/** How long a page reuses one session answer across the components that read
+ *  it; a session that expires or changes server-side is seen again within this. */
+export const SESSION_TTL_MS = 60_000;
+
+/** Anonymous is an answer (null); a failed request throws so it is never kept. */
+async function fetchSession(fetcher: typeof backendFetch): Promise<Session | null> {
+  const res = await fetcher("/api/auth/get-session");
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(`get-session failed: ${res.status}`);
+  const data = (await res.json()) as { user?: SessionUser } | null;
+  return data?.user ? { user: data.user } : null;
+}
+
+/** One session request per page, shared by every `useSession` consumer. */
+export function createSessionRequest(
+  fetcher: typeof backendFetch = backendFetch,
+  options: { readonly isShared?: () => boolean; readonly ttlMs?: number } = {},
+): CachedRequest<Session | null> {
+  return cachedRequest(() => fetchSession(fetcher), { ttlMs: SESSION_TTL_MS, ...options });
+}
+
+const sessionRequest = createSessionRequest();
+
 /** The authenticated session, or null when anonymous (incl. the dev-org path,
- *  where domain APIs still work but no better-auth session cookie exists). */
+ *  where domain APIs still work but no better-auth session cookie exists) and
+ *  when the request failed; a failure is not cached. */
 export async function getSession(): Promise<Session | null> {
   try {
-    const res = await backendFetch("/api/auth/get-session");
-    if (!res.ok) return null;
-    const data = (await res.json()) as { user?: SessionUser } | null;
-    return data?.user ? { user: data.user } : null;
+    return await sessionRequest.get();
   } catch {
     return null;
   }
+}
+
+/** The account may have changed: forget the cached session and every other
+ *  cache scoped to the actor (the capability catalog carries the actor's
+ *  provider connections), so the next reads ask the backend again. */
+export function invalidateSession(): void {
+  sessionRequest.invalidate();
+  invalidateCapabilityCatalog();
 }
 
 /** Begin the Google OAuth flow: better-auth returns the provider URL to visit,
@@ -53,6 +86,7 @@ export async function signOut(): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+  invalidateSession();
 }
 
 export interface AuthConfig {
@@ -88,16 +122,22 @@ export async function getAuthConfig(): Promise<AuthConfig> {
   }
 }
 
-/** Subscribe to the current session; `refresh()` re-fetches (e.g. after sign-out). */
+/** Subscribe to the current session; `refresh()` re-fetches (e.g. after sign-out).
+ *  Every consumer on a page shares one request; a consumer mounting after it
+ *  settled starts from the cached session instead of a loading state. */
 export function useSession(): {
   session: Session | null;
   loading: boolean;
   refresh: () => void;
 } {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = sessionRequest.peek();
+  const [session, setSession] = useState<Session | null>(cached ?? null);
+  const [loading, setLoading] = useState(cached === undefined);
   const [nonce, setNonce] = useState(0);
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    invalidateSession();
+    setNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

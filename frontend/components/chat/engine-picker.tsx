@@ -12,7 +12,7 @@ import {
   partitionModelOptions,
   selectableModelsForEngine,
 } from "@/components/chat/types";
-import { useCapabilityCatalog } from "@/hooks/use-capability-catalog";
+import { invalidateCapabilityCatalog, useCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import {
   type CapabilityCatalog,
   type CapabilityCatalogModel,
@@ -287,6 +287,7 @@ export function useEnabledEngineConfig(): {
       refreshFree: engine === undefined || normalizeEngine(engine) === "opencode",
     });
     if (!refreshed || Object.keys(refreshed.models).length === 0) return;
+    invalidateCapabilityCatalog();
     setConfig((c) => ({
       ...c,
       models: mergeEngineModelCatalog(c.models, refreshed.models, preserveModel),

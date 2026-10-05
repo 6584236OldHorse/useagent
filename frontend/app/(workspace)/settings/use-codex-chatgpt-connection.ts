@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import {
   cancelCodexChatGptLogin,
@@ -17,12 +17,23 @@ const CODEX_STATUS_POLL_MS = 2_000;
 
 type CodexConnectionAction = "connect" | "cancel" | "revoke" | "status";
 
+/** A status read reports a change only when this hook has read the auth mode
+ *  before and it differs: the first read on mount is the baseline, so opening
+ *  settings with an account already connected is not a change. */
+export function connectionChanged(
+  known: string | null | undefined,
+  next: string | null,
+): boolean {
+  return known !== undefined && known !== next;
+}
+
 export function useCodexChatGptConnection(onChanged: () => Promise<void>) {
   const [status, setStatus] = useState<CodexChatGptStatus | null>(null);
   const [login, setLogin] = useState<CodexChatGptLogin | null>(null);
   const [busy, setBusy] = useState<CodexConnectionAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const knownAuthMode = useRef<string | null | undefined>(undefined);
 
   const refreshStatus = useCallback(async () => {
     setBusy((current) => current ?? "status");
@@ -30,9 +41,12 @@ export function useCodexChatGptConnection(onChanged: () => Promise<void>) {
       const fresh = await fetchCodexChatGptStatus();
       setStatus(fresh);
       setError(null);
-      if (fresh.account?.authMode === "chatgpt") {
+      const mode = fresh.account?.authMode ?? null;
+      const changed = connectionChanged(knownAuthMode.current, mode);
+      knownAuthMode.current = mode;
+      if (mode === "chatgpt") {
         setLogin(null);
-        await onChanged();
+        if (changed) await onChanged();
       }
     } catch {
       setError("Couldn't read the ChatGPT connection status.");
