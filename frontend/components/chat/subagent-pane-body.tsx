@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { RiRobot2Line } from "@remixicon/react";
+import { RiArrowRightLine, RiRobot2Line } from "@remixicon/react";
 import { decodeApiRun } from "@useagent/agent-client";
+import Link from "next/link";
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun } from "@/lib/create-run";
 import { cx as cn } from "@/utils/cx";
@@ -26,12 +27,17 @@ import {
 } from "@/components/chat/subagent-pane";
 
 /**
- * The loaded half of the subagent pane: fetches the run, then streams it with
- * the step rows and the pass-down composer. Loaded on first open only, so the
- * composer, the run stream and their dependencies stay out of every route's
- * initial bundle (the shell in subagent-pane.tsx is what every page mounts).
+ * The loaded half of the peek pane: fetches the run, then streams its step rows.
+ * Child-only controls and the run stream stay out of every route's initial
+ * bundle (the shell in subagent-pane.tsx is what every page mounts).
  */
-export default function SubagentPaneBody({ runId }: { runId: string }) {
+export default function SubagentPaneBody({
+  runId,
+  childSession = false,
+}: {
+  runId: string;
+  childSession?: boolean;
+}) {
   const [run, setRun] = useState<ApiRun | null>(null);
   const [errored, setErrored] = useState(false);
 
@@ -57,7 +63,7 @@ export default function SubagentPaneBody({ runId }: { runId: string }) {
 
   if (errored) {
     return (
-      <PaneStub>
+      <PaneStub childSession={childSession}>
         <p className="text-body-2-regular text-text-secondary text-center">
           Couldn&apos;t load this run.
         </p>
@@ -66,7 +72,7 @@ export default function SubagentPaneBody({ runId }: { runId: string }) {
   }
   if (!run) {
     return (
-      <PaneStub>
+      <PaneStub childSession={childSession}>
         <LoadingState label="Loading run" />
       </PaneStub>
     );
@@ -92,12 +98,12 @@ function StatusPill({ status }: { status: RunStatus }) {
 }
 
 /**
- * The live inner pane once the child run is loaded. Owns the SSE subscription
- * (via `useRunStream`) so the trace streams in real time, and the pass-down
- * composer that spawns a further child and follows it in-place.
+ * The live inner pane once the run is loaded. Owns the SSE subscription so the
+ * trace streams in real time. Gateway children also get the pass-down composer.
  */
-function LoadedPane({ initialRun }: { initialRun: ApiRun }) {
+export function LoadedPane({ initialRun }: { initialRun: ApiRun }) {
   const { steps, status, summary, live } = useRunStream(initialRun);
+  const childSession = initialRun.child_session === true;
   const [sending, setSending] = useState(false);
   const activity = steps.filter((s) => s.kind !== "done");
   // Prefer native child-session grouping where available: when this run fanned
@@ -136,7 +142,9 @@ function LoadedPane({ initialRun }: { initialRun: ApiRun }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-mono-label text-text-tertiary">Subagent</span>
+            <span className="text-mono-label text-text-tertiary">
+              {childSession ? "Subagent" : "Session"}
+            </span>
             <span className="text-text-tertiary">·</span>
             <span className="text-mono-label text-text-tertiary">
               {engineLabel(initialRun.engine)}
@@ -176,13 +184,23 @@ function LoadedPane({ initialRun }: { initialRun: ApiRun }) {
       </div>
 
       <div className="border-border-button-default shrink-0 border-t p-3">
-        <Composer
-          variant="compact"
-          placeholder="Pass instructions down…"
-          defaultEngine={initialRun.engine}
-          pending={sending}
-          onSubmit={passDown}
-        />
+        {childSession ? (
+          <Composer
+            variant="compact"
+            placeholder="Pass instructions down…"
+            defaultEngine={initialRun.engine}
+            pending={sending}
+            onSubmit={passDown}
+          />
+        ) : (
+          <Link
+            href={`/session/${initialRun.thread_id}`}
+            className="text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-body-2-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+          >
+            Open thread
+            <RiArrowRightLine className="size-4 shrink-0" aria-hidden />
+          </Link>
+        )}
       </div>
     </>
   );
