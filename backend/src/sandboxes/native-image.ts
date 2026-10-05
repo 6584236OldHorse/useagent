@@ -298,10 +298,13 @@ export function renderNativeImageDockerfile(
     // directories a step later renames were created in its own layer; a COPY'd
     // directory renamed on overlayfs (classic builder) becomes copy+delete and
     // pulls the working directory out from under the step's node processes.
+    // A non-root layout runs its steps as the runtime user, who must own what
+    // COPY staged so the step can read and remove it.
+    const copy = layout.runsAsRoot ? "COPY" : "COPY --chown=1000:1000";
     const placements = step.files.map((file) => {
       const name = file.path.slice(file.path.lastIndexOf("/") + 1);
       files.push({ contextPath: `${context}/${name}`, bytes: file.bytes });
-      lines.push(`COPY ${context}/${name} ${staged}/${name}`);
+      lines.push(`${copy} ${context}/${name} ${staged}/${name}`);
       return `mkdir -p ${q(file.path.slice(0, file.path.lastIndexOf("/")))} && cp ${q(`${staged}/${name}`)} ${q(file.path)}`;
     });
     const script = `${staged}.sh`;
@@ -309,7 +312,7 @@ export function renderNativeImageDockerfile(
       contextPath: `${context}/step.sh`,
       bytes: Buffer.from(`set -eu\n${placements.join("\n")}${placements.length ? "\n" : ""}${step.command}\n`, "utf8"),
     });
-    lines.push(`COPY ${context}/step.sh ${script}`, `RUN sh ${script} && rm -rf ${script} ${staged}`);
+    lines.push(`${copy} ${context}/step.sh ${script}`, `RUN sh ${script} && rm -rf ${script} ${staged}`);
   });
   lines.push(`RUN rm -rf ${scripts}`, `LABEL org.useagent.native-image=${nativeImageName(inputs)}`);
   return { dockerfile: `${lines.filter((line) => line !== "").join("\n")}\n`, files };
