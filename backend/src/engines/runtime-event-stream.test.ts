@@ -197,6 +197,39 @@ describe("T3 native thread event stream", () => {
     expect(applied).toEqual([1]); // the snapshot queued behind the stall is fenced by the cancellation
   });
 
+  test("a socket failure after the cancellation still drains an application in flight for the stop bound", async () => {
+    const turn = new AbortController();
+    const applyStarted = Promise.withResolvers<void>();
+    let applyFinished = false;
+    const startedAt = Date.now();
+
+    await expect(followRuntimeThreadSnapshots({
+      sandbox: {} as never,
+      threadId: "skynet-thread-1",
+      initialSequence: 0,
+      signal: turn.signal,
+      stopBoundMs: 100,
+      readSnapshot: async () => {
+        throw new Error("unexpected refresh");
+      },
+      applySnapshot: async () => {
+        applyStarted.resolve();
+        await Bun.sleep(20); // a step write that takes a moment
+        applyFinished = true;
+        return true;
+      },
+      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
+        void onItem({ kind: "snapshot", snapshot: snapshot(1) });
+        await applyStarted.promise;
+        turn.abort(new Error("turn aborted"));
+        throw new Error("socket closed"); // the transport fails as Stop lands
+      },
+    })).rejects.toThrow("socket closed");
+
+    expect(applyFinished).toBe(true); // the write in flight landed within the bound
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
   test.each([true, false])("settles a pending refresh before a socket failure (terminal=%s)", async (terminal) => {
     const applied: number[] = [];
     const readStarted = Promise.withResolvers<void>();

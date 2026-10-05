@@ -209,14 +209,16 @@ export async function followRuntimeThreadSnapshots(input: {
   const awaitApplications = async () => {
     await applicationTail;
   };
-  // Work in flight is drained in full while the turn runs. Once the caller has
-  // cancelled, only for the stop bound: a projection stalled on a step write
-  // must not hold the provider cancellation behind it, and the settlement seal
-  // keeps whatever such a projection records after settlement from landing.
-  const drainWithinStopBound = () => Promise.race([
+  // Work in flight is drained in full while the turn runs (after a transport
+  // failure, for STREAM_ERROR_DRAIN_MS at most). Once the caller has cancelled,
+  // on either path, only for the stop bound: a projection stalled on a step
+  // write must not hold the provider cancellation behind it, and the
+  // settlement seal keeps whatever it records after settlement from landing.
+  const drainWithin = (transportFailed: boolean) => Promise.race([
     awaitRefresh().then(awaitApplications),
     onceAborted(input.signal).then(() =>
       delay(input.stopBoundMs ?? RUNTIME_STOP_ACCOUNTING_MS, undefined, { ref: false })),
+    ...(transportFailed ? [delay(STREAM_ERROR_DRAIN_MS, undefined, { ref: false })] : []),
   ]);
 
   let streamError: unknown;
@@ -238,17 +240,14 @@ export async function followRuntimeThreadSnapshots(input: {
         return true;
       },
     );
-    await drainWithinStopBound();
+    await drainWithin(false);
     stopped.abort();
   } catch (error) {
     streamError = error;
     // A terminal notification can beat its authoritative refresh to a broken
-    // socket. Drain work already in flight before classifying the transport
-    // failure, bounded independently of the caller's cancellation/deadline.
-    await Promise.race([
-      awaitRefresh().then(awaitApplications),
-      delay(STREAM_ERROR_DRAIN_MS, undefined, { signal }),
-    ]).catch(() => {});
+    // socket: drain work already in flight before classifying the transport
+    // failure, within the same bounds.
+    await drainWithin(true).catch(() => {});
     stopped.abort();
   }
   if (refreshError) throw refreshError;
