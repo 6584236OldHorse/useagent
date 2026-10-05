@@ -135,8 +135,8 @@ describe("learning outbox — the worker builds the candidate exactly once (cras
 
     // Running the worker AGAINST an already-done row does nothing; the draft
     // is idempotent (one per run) even if the row were somehow re-armed.
-    const second = await processDueLearning();
-    expect(second.built + second.skipped).toBe(0); // nothing pending
+    // Rows other suites left due may be claimed here; only this run's draft count is asserted.
+    await processDueLearning();
     const drafts2 = await db.select().from(knowledgeDrafts).where(eq(knowledgeDrafts.runId, id));
     expect(drafts2).toHaveLength(1); // STILL exactly one
   });
