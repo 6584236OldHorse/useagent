@@ -340,7 +340,12 @@ export async function finalizeRun(
 ): Promise<FinalizeRunResult> {
   if (status !== "completed") return commitRunFinalization(runId, status, summary, durationMs, options);
   const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
-  if (!run || (run.status !== "queued" && run.status !== "running")) return { applied: false };
+  if (!run) return { applied: false };
+  if (run.status !== "queued" && run.status !== "running") {
+    // Recovery still has to consume its owned parked row and account for the
+    // durable winner, even though no publication or status write may run again.
+    return commitRunFinalization(runId, status, summary, durationMs, options);
+  }
   let links: OutputLink[];
   try {
     links = await runOutputLinks(run, summary);
