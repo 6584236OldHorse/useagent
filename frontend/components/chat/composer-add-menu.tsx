@@ -37,7 +37,7 @@ export const CREATE_ROWS = [
 
 /** Text block for an add-menu row. `inline` lays the title and muted
  *  description on ONE line (floating-popover style); the default stacks them. */
-function RowText({
+export function RowText({
   inline,
   title,
   description,
