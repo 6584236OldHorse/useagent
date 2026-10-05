@@ -400,6 +400,15 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
         result = "no_membership";
         continue;
       }
+      // The sender may have become somebody else here in the meantime (let in
+      // again as another account whose membership is live): that identity
+      // stands, and the old invitation only closes the request.
+      const current = await findActiveSlackUser(row.teamId, row.slackUserId, tx);
+      if (current?.orgId === row.orgId && current.userId !== userId) {
+        await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
+        result = "bound";
+        continue;
+      }
       await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${invitationId}`);
       await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
       result = "bound";
@@ -517,9 +526,14 @@ async function provenIdentity(tx: Executor, row: Request): Promise<string | null
   if (!validEmail(row.email)) return null; // nothing from Slack about the address
   const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
   if (known) return known.id;
-  const id = crypto.randomUUID();
-  await tx.insert(user).values({ id, name: row.name, email: row.email, emailVerified: false, image: row.image });
-  return id;
+  // Another organisation may be creating this very address at the same moment;
+  // whoever lands first owns the row, and both admissions use it.
+  await tx
+    .insert(user)
+    .values({ id: crypto.randomUUID(), name: row.name, email: row.email, emailVerified: false, image: row.image })
+    .onConflictDoNothing({ target: user.email });
+  const [created] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
+  return created?.id ?? null;
 }
 
 /** Best effort, and only when the web has a way for them in: a Google sign-in

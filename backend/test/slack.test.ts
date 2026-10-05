@@ -3000,6 +3000,27 @@ describe("slack workspace identity (fail closed)", () => {
     expect(await db.execute(sql`select 1 from slack_users where team_id = ${movedTeam} and slack_user_id = 'U-STALE'`)).toHaveLength(0);
   });
 
+  test("an old invitation never overwrites the identity a sender has since been given", async () => {
+    const sender = `U-${uid("twice")}`;
+    // The sender is a live member here as account A.
+    const [a] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Account A', ${`${uid("a")}@example.test`}, true) returning id`);
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (a as { id: string }).id, role: "member", createdAt: new Date() });
+    await upsertSlackUser({ teamId: TEAM, slackUserId: sender, orgId: DEV_ORG_ID, userId: (a as { id: string }).id });
+    // An older request for the same sender is still linked to an invitation for account B.
+    const bEmail = `${uid("b")}@example.test`;
+    const inv = crypto.randomUUID();
+    await db.execute(sql`insert into invitation (id, organization_id, email, role, status, expires_at, inviter_id) values (${inv}, ${DEV_ORG_ID}, ${bEmail}, 'member', 'accepted', now() + interval '1 day', ${DEV_USER_ID})`);
+    const requestId = crypto.randomUUID();
+    await db.execute(sql`insert into slack_access_requests (id, team_id, slack_user_id, org_id, name, status, invitation_id) values (${requestId}, ${TEAM}, ${sender}, ${DEV_ORG_ID}, 'Twice', 'invited', ${inv})`);
+    const [b] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Account B', ${bEmail}, true) returning id`);
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (b as { id: string }).id, role: "member", createdAt: new Date() });
+    expect(await bindInvitedSlackSender(inv, (b as { id: string }).id)).toBe("bound");
+    const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${sender}`);
+    expect((binding as { user_id: string }).user_id).toBe((a as { id: string }).id); // A stands
+    const [row] = await db.execute(sql`select status from slack_access_requests where id = ${requestId}`);
+    expect((row as { status: string }).status).toBe("allowed"); // and the old request is closed
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;
