@@ -17,6 +17,7 @@ export const THREAD_FRAME_TYPES = [
   "canonical",
   "canonical-complete",
   "done",
+  "resume",
 ] as const;
 export type ThreadFrameType = (typeof THREAD_FRAME_TYPES)[number];
 
@@ -41,6 +42,17 @@ export interface CanonicalCompleteFrame {
   readonly lostFrames: number;
 }
 
+/** The first frame of every connection: which resume cursors the server honoured.
+ *  `reset` means the client's cursors were ahead of what that backend holds (a
+ *  rollback, a different database): the replay that follows is from zero and the
+ *  client must drop what it retained before applying it. Every field defaults to a
+ *  from-zero replay with nothing to drop, which is also what an older backend does. */
+export interface ResumeFrame {
+  readonly canonicalAfter: number;
+  readonly nativeAfter: Readonly<Record<string, number>>;
+  readonly reset: boolean;
+}
+
 /** A decoded thread frame. `native`/`run`/`step`/`delta`/`snapshot` carry raw product
  *  payloads the useAgent hook still projects natively; the client library validates +
  *  owns only the canonical lane. `unknown` is a forward-compatible catch-all: an
@@ -48,7 +60,8 @@ export interface CanonicalCompleteFrame {
 export type DecodedFrame =
   | { kind: "canonical"; event: CanonicalThreadEvent }
   | { kind: "canonical-complete"; complete: CanonicalCompleteFrame }
-  | { kind: "raw"; type: Exclude<ThreadFrameType, "canonical" | "canonical-complete">; payload: Record<string, unknown> }
+  | { kind: "resume"; resume: ResumeFrame }
+  | { kind: "raw"; type: Exclude<ThreadFrameType, "canonical" | "canonical-complete" | "resume">; payload: Record<string, unknown> }
   | { kind: "unknown"; type: string; payload: Record<string, unknown> }
   | { kind: "malformed"; type: string };
 
@@ -109,6 +122,23 @@ export function validateCanonicalComplete(
  *  invalid canonical envelope yields a `malformed`/dropped frame rather than throwing -
  *  a bad frame never tears down the connection. Unknown future `event:` names surface as
  *  `unknown`. */
+/** Lenient by design: a missing or junk `resume` body is a from-zero replay. */
+export function validateResume(raw: unknown): ResumeFrame {
+  const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const nativeAfter: Record<string, number> = {};
+  const native = obj.nativeAfter;
+  if (native !== null && typeof native === "object" && !Array.isArray(native)) {
+    for (const [runId, seq] of Object.entries(native as Record<string, unknown>)) {
+      if (isFiniteNumber(seq) && seq >= 0) nativeAfter[runId] = seq;
+    }
+  }
+  return {
+    canonicalAfter: isFiniteNumber(obj.canonicalAfter) && obj.canonicalAfter >= 0 ? obj.canonicalAfter : 0,
+    nativeAfter,
+    reset: obj.reset === true,
+  };
+}
+
 export function decodeFrame(event: string, data: string): DecodedFrame {
   let parsed: unknown;
   try {
@@ -130,8 +160,9 @@ export function decodeFrame(event: string, data: string): DecodedFrame {
     const complete = validateCanonicalComplete(obj.complete, obj.threadId);
     return complete ? { kind: "canonical-complete", complete } : { kind: "malformed", type: event };
   }
+  if (event === "resume") return { kind: "resume", resume: validateResume(obj.resume) };
   if ((THREAD_FRAME_TYPES as readonly string[]).includes(event)) {
-    return { kind: "raw", type: event as Exclude<ThreadFrameType, "canonical" | "canonical-complete">, payload: obj };
+    return { kind: "raw", type: event as Exclude<ThreadFrameType, "canonical" | "canonical-complete" | "resume">, payload: obj };
   }
   return { kind: "unknown", type: event, payload: obj };
 }

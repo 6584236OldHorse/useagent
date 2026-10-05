@@ -14,8 +14,11 @@ distributed pub/sub, and that shapes how it scales.
 <CardGroup cols={2}>
   <Card title="Thread stream" icon="messages-square">
     `GET /api/runs/:rootRunId/thread-events`, one connection per conversation,
-    replayable. Reconnects get a fresh durable snapshot then live frames. This
-    is the session view's lifeline.
+    replayable. Every connection starts with a `resume` frame, then the durable
+    snapshot, then only the native and canonical frames above the cursors the
+    browser sent (`canonicalAfter`, `nativeAfter`); a cursor the backend cannot
+    prove makes it replay from zero and say `reset`, so the browser drops what it
+    retained. This is the session view's lifeline.
   </Card>
   <Card title="Org-change stream" icon="bell">
     `GET /api/runs/changes`, one authenticated org stream carrying live

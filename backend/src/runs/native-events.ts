@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { and, asc, count, eq, gt } from "drizzle-orm";
+import { and, asc, count, eq, gt, max } from "drizzle-orm";
 import { NATIVE_SCHEMA_VERSION } from "@useagent/agent-client/wire";
 import type { NativeFrame } from "@useagent/agent-client/wire";
 import { db } from "../db/client";
@@ -118,6 +118,15 @@ export async function getNativeFramesSince(
     .orderBy(asc(providerEvents.seq));
   const rows = limit === undefined ? await base : await base.limit(limit);
   return rows.map(rowToNativeFrame);
+}
+
+/** Newest native seq per run of a thread; a run without frames is absent. */
+export async function maxNativeSeqByRun(threadId: string): Promise<Map<string, number>> {
+  const rows = await db.select({ runId: providerEvents.runId, seq: max(providerEvents.seq) })
+    .from(providerEvents)
+    .where(eq(providerEvents.threadId, threadId))
+    .groupBy(providerEvents.runId);
+  return new Map(rows.flatMap((r) => (r.seq === null ? [] : [[r.runId, r.seq] as const])));
 }
 
 export async function countNativeFrames(runId: string): Promise<number> {

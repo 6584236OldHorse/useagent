@@ -146,6 +146,15 @@ export async function persistCanonicalEvents(
   return inserted.map(rowToDelivered);
 }
 
+/** The thread's newest delivery cursor (0 when it has no canonical rows yet). */
+export async function maxCanonicalDeliverySeq(threadId: string): Promise<number> {
+  const [row] = await db
+    .select({ seq: max(canonicalEvents.deliverySeq) })
+    .from(canonicalEvents)
+    .where(eq(canonicalEvents.threadId, threadId));
+  return row?.seq ?? 0;
+}
+
 /** Publish already-persisted events to their thread channel (persist-before-publish
  *  is the caller's responsibility). */
 export function publishDelivered(delivered: readonly DeliveredCanonicalEvent[]): void {

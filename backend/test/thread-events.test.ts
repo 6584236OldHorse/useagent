@@ -8,6 +8,8 @@ import { bus, channel } from "../src/worker";
 import { turnStream } from "../src/runs/turn-stream";
 import { publishThreadChange } from "../src/runs/thread-signals";
 import { acceptRunCommand } from "../src/commands";
+import { persistAndPublish } from "../src/runs/canonical-events";
+import { translateOpenCode, type OpenCodeFrame } from "../src/engines/opencode-canonical";
 
 // Deterministic tests for the ADDITIVE thread SSE stream
 // (GET /api/runs/:rootRunId/thread-events, final_fix.md §4.2/§5.2). These drive
@@ -425,5 +427,85 @@ describe("thread-events — post-open isolation (fail-closed after the stream is
     const c = await open(`/api/runs/${rootA}/thread-events`, orgA.cookies);
     await c.waitFrame((f) => f.some((x) => x.event === "snapshot"));
     await assertNoLeak(c, rootA, rootB);
+  });
+});
+
+// ── Resume cursors: a browser that already holds part of the thread asks only for
+//    what is newer; cursors this backend cannot prove are refused as a whole.
+describe("thread-events — resume cursors", () => {
+  async function seedResumable() {
+    const org = await createOrgSession();
+    const root = await seedRun({ orgId: org.orgId, status: "completed" });
+    for (const i of [0, 1, 2]) {
+      await recordProviderEvent({ id: `${root}::n${i}`, runId: root, threadId: root, provider: "opencode", eventType: "part.tool.completed", nativePartId: `n${i}`, payload: { i } });
+    }
+    const frames: OpenCodeFrame[] = [0, 1, 2].map((i) => ({
+      eventId: `${root}-c${i}`, seq: i, provider: "opencode", eventType: "part.text",
+      native: { sessionId: "ses", parentSessionId: null, messageId: `${root}-m`, partId: `${root}-p${i}`, callId: null }, payload: { text: `c${i}` },
+    }));
+    const delivered = await persistAndPublish(translateOpenCode(frames, { runId: root, threadId: root }).events);
+    const seqs = delivered.map((d) => d.deliverySeq).sort((a, b) => a - b);
+    return { org, root, seqs };
+  }
+  const nativeSeqs = (c: StreamClient, runId: string): number[] =>
+    c.frames.filter((f) => f.event === "native" && f.data.runId === runId).map((f) => f.data.frame.seq as number);
+  const canonicalSeqs = (c: StreamClient): number[] =>
+    c.frames.filter((f) => f.event === "canonical").map((f) => f.data.event.deliverySeq as number);
+  const eventIndex = (c: StreamClient, event: string): number => c.frames.findIndex((f) => f.event === event);
+
+  test("without cursors the first frame is a from-zero resume and everything replays", async () => {
+    const { org, root, seqs } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events`, org.cookies);
+    await c.waitFrame((f) => f.some((x) => x.event === "canonical-complete") || canonicalSeqs(c).length === seqs.length);
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { threadId: root, resume: { canonicalAfter: 0, nativeAfter: {}, reset: false } } });
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+    expect(canonicalSeqs(c)).toEqual(seqs);
+  });
+
+  test("honoured cursors replay only what is newer, in the documented order", async () => {
+    const { org, root, seqs } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?canonicalAfter=${seqs[1]}&nativeAfter=${root}:1`, org.cookies);
+    await c.waitFrame((f) => f.some((x) => x.event === "canonical" && x.data.event.deliverySeq === seqs[2]));
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: seqs[1], nativeAfter: { [root]: 1 }, reset: false } } });
+    expect(nativeSeqs(c, root)).toEqual([2]);
+    expect(canonicalSeqs(c)).toEqual([seqs[2]]);
+    expect(eventIndex(c, "resume")).toBeLessThan(eventIndex(c, "snapshot"));
+    expect(eventIndex(c, "snapshot")).toBeLessThan(eventIndex(c, "native"));
+    expect(eventIndex(c, "native")).toBeLessThan(eventIndex(c, "canonical"));
+  });
+
+  test("a cursor ahead of the durable state is refused as a whole: reset + from-zero replay", async () => {
+    const { org, root, seqs } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?canonicalAfter=${seqs[2] + 1000}&nativeAfter=${root}:1`, org.cookies);
+    await c.waitFrame((f) => canonicalSeqs(c).length === seqs.length && f.some((x) => x.event === "native" && x.data.frame.seq === 2));
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: 0, nativeAfter: {}, reset: true } } });
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+    expect(canonicalSeqs(c)).toEqual(seqs);
+  });
+
+  test("a native cursor for a run this thread has no frames for is refused as a whole", async () => {
+    const { org, root, seqs } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?canonicalAfter=${seqs[0]}&nativeAfter=${crypto.randomUUID()}:0`, org.cookies);
+    await c.waitFrame((f) => canonicalSeqs(c).length === seqs.length);
+    expect(c.frames[0]!.data.resume).toMatchObject({ canonicalAfter: 0, reset: true });
+  });
+
+  test("malformed cursors read as absent", async () => {
+    const { org, root, seqs } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?canonicalAfter=-5&nativeAfter=junk,${root}:x`, org.cookies);
+    await c.waitFrame((f) => canonicalSeqs(c).length === seqs.length);
+    expect(c.frames[0]!.data.resume).toEqual({ canonicalAfter: 0, nativeAfter: {}, reset: false });
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+  });
+
+  test("live frames at or below the native cursor are suppressed; newer ones pass", async () => {
+    const { org, root } = await seedResumable();
+    const c = await open(`/api/runs/${root}/thread-events?nativeAfter=${root}:2`, org.cookies);
+    await c.waitFrame((f) => f.some((x) => x.event === "snapshot"));
+    const base = { provider: "opencode", eventType: "part.tool.completed", sessionId: null, parentSessionId: null, messageId: null, partId: "live", callId: null, payloadText: null } as const;
+    publishNativeFrame(root, makeNativeFrame({ ...base, eventId: `${root}::n1`, seq: 1 }));
+    publishNativeFrame(root, makeNativeFrame({ ...base, eventId: `${root}::live`, seq: 7 }));
+    await c.waitFrame((f) => f.some((x) => x.event === "native" && x.data.frame.seq === 7));
+    expect(nativeSeqs(c, root)).toEqual([7]);
   });
 });

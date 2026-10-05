@@ -52,11 +52,8 @@ import { bus, channel, pumpThread, signalCancel, type BusEvent } from "../worker
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
 import { settleZombieCancel } from "./zombie-cancel";
-import {
-  getNativeFramesSince,
-  subscribeNative,
-  type NativeFrame,
-} from "./native-events";
+import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
+import { FROM_ZERO, parseResumeCursors, type ResolvedResume, resolveResumeCursors, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -775,6 +772,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
+  const requested = parseResumeCursors(c.req.query("canonicalAfter"), c.req.query("nativeAfter"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;
@@ -881,13 +879,13 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         for (const s of steps) m.set(s.idx, `${s.id}|${s.code_json ?? ""}`);
       };
 
-      // Emit a native frame if it advances its eventId's seq (dedupe replay/live).
+      // Emit a native frame if it lies above the browser's resume cursor for that run
+      // and advances its eventId's seq (dedupe replay/live).
+      let resume: ResolvedResume = FROM_ZERO;
       const sendNative = (runId: string, frame: NativeFrame): void => {
+        if (frame.seq <= (resume.nativeAfter.get(runId) ?? -1)) return;
         let m = nativeSeenByRun.get(runId);
-        if (!m) {
-          m = new Map();
-          nativeSeenByRun.set(runId, m);
-        }
+        if (!m) nativeSeenByRun.set(runId, (m = new Map()));
         if ((m.get(frame.eventId) ?? -1) >= frame.seq) return;
         m.set(frame.eventId, frame.seq);
         sendFrame("native", { threadId, runId, frame });
@@ -967,43 +965,45 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         attachRun(runId);
         seedStepDedupe(runId, run.steps);
         sendFrame("run", { threadId, run });
-        for (const frame of await getNativeFramesSince(runId, -1)) {
+        for (const frame of await getNativeFramesSince(runId, resume.nativeAfter.get(runId) ?? -1)) {
           if (closed) return;
           sendNative(runId, frame);
         }
       };
 
       void (async () => {
-        // 1. Load the authoritative thread (oldest→newest), attaching every run's
-        //    live sources FIRST so frames produced during replay queue up.
+        // 1. Load the authoritative thread (oldest→newest), attaching every run's live
+        //    sources FIRST so frames produced during replay queue up.
         const thread = await getThreadForRun(orgId, rootRunId);
         if (closed) return;
         if (!thread) return cleanup(); // resolved above; defensive
         for (const run of thread) attachRun(run.id);
 
-        // 2. Emit the authoritative snapshot (runs carry their durable steps) BEFORE
-        //    draining queued live frames, then seed step dedupe from it.
+        // 2. Say which resume cursors are honoured (a refused set replays from zero and
+        //    tells the browser to drop what it retained), then emit the authoritative
+        //    snapshot BEFORE draining queued live frames, and seed step dedupe from it.
+        resume = await resolveResumeCursors(threadId, requested);
+        canonicalCursor = resume.canonicalAfter;
+        sendFrame("resume", resumeFramePayload(threadId, resume));
         sendFrame("snapshot", { threadId, runs: thread });
         for (const run of thread) seedStepDedupe(run.id, run.steps);
 
-        // 3. Replay each run's durable native frames (deduped by eventId+seq).
+        // 3. Replay each run's durable native frames above its cursor (deduped by eventId+seq).
         for (const run of thread) {
-          for (const frame of await getNativeFramesSince(run.id, -1)) {
+          for (const frame of await getNativeFramesSince(run.id, resume.nativeAfter.get(run.id) ?? -1)) {
             if (closed) return;
             sendNative(run.id, frame);
           }
         }
 
-        // 3b. Replay the thread's durable canonical events (deduped by deliverySeq).
-        //     Thread-scoped + ordered; a reconnect resumes from canonicalCursor.
-        for (const event of await loadCanonicalThread(threadId, 0)) {
+        // 3b. Replay the thread's durable canonical events above the cursor (deduped by deliverySeq).
+        for (const event of await loadCanonicalThread(threadId, resume.canonicalAfter)) {
           if (closed) return;
           sendCanonical(event);
         }
 
-        // 3c. Replay which runs are canonicalization-COMPLETE (H2). React trusts the
-        //     canonical lane for a run ONLY after this, so a reload converges on the
-        //     same gate as a live client - never on the presence of provisional rows.
+        // 3c. Replay which runs are canonicalization-COMPLETE (H2): React trusts a run's
+        //     canonical lane ONLY after this, never on the presence of provisional rows.
         for (const complete of await completeCanonicalRuns(threadId)) {
           if (closed) return;
           sendCanonicalComplete({ ...complete, threadId });

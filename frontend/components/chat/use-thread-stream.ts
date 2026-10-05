@@ -45,18 +45,74 @@ export interface ThreadStreamState {
   mergeRuns: (runs: readonly ApiRun[]) => void;
 }
 
-/** Create + seed a store for a thread. Seeds from `initialThread` ONLY when it
- *  actually belongs to this root, so a stale SSR payload from a previously-viewed
- *  thread never bleeds into a new one (Codex finding 2). Pure + testable. */
-export function seedThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+/** Stores retained across navigation, keyed by root thread id and ordered oldest to
+ *  most recently used. Leaving a thread and coming back mounts the store it already
+ *  had, and the reconnect asks the server only for what is newer than it holds.
+ *  Bounded to the last few threads so memory stays flat. */
+const RETAINED_STORES = 4;
+const retained = new Map<string, ThreadStore>();
+
+/** A new store for this root, replacing whatever was retained for it. */
+export function freshThreadStore(rootRunId: string): ThreadStore {
   const store = createThreadStore({
     rootThreadId: rootRunId,
     executionSummaryEnabled: EXECUTION_SUMMARY_ROLLOUT_MODE !== "off",
   });
+  retained.delete(rootRunId);
+  retained.set(rootRunId, store);
+  while (retained.size > RETAINED_STORES) retained.delete(retained.keys().next().value as string);
+  return store;
+}
+
+/** Test seam: forget every retained store. */
+export function resetRetainedThreadStoresForTest(): void {
+  retained.clear();
+}
+
+/** The retained store for a thread, or a fresh one, seeded from `initialThread` ONLY
+ *  when it actually belongs to this root, so a stale SSR payload from a previously
+ *  viewed thread never bleeds into a new one (Codex finding 2). Pure + testable. */
+export function seedThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+  const kept = retained.get(rootRunId);
+  if (kept) {
+    retained.delete(rootRunId);
+    retained.set(rootRunId, kept);
+  }
+  const store = kept ?? freshThreadStore(rootRunId);
   if (initialThread.length && initialThread[0]?.id === rootRunId) {
     store.applySnapshot([...initialThread]);
   }
   return store;
+}
+
+export interface ResumeCursors {
+  readonly canonicalAfter: number;
+  readonly nativeAfter: ReadonlyMap<string, number>;
+}
+
+/** What the store already holds, as the server's resume cursors: the newest canonical
+ *  delivery seq across the thread and the newest native seq per run. */
+export function resumeCursors(snapshot: ThreadSnapshot): ResumeCursors {
+  let canonicalAfter = 0;
+  const nativeAfter = new Map<string, number>();
+  for (const view of snapshot.byId.values()) {
+    for (const e of view.canonical) if (e.deliverySeq > canonicalAfter) canonicalAfter = e.deliverySeq;
+    let seq = -1;
+    for (const f of view.native.nativeFrames) if (f.seq > seq) seq = f.seq;
+    if (seq >= 0) nativeAfter.set(view.run.id, seq);
+  }
+  return { canonicalAfter, nativeAfter };
+}
+
+/** The stream URL, carrying only the cursors that are above zero. */
+export function threadEventsUrl(rootRunId: string, cursors: ResumeCursors): string {
+  const params = new URLSearchParams();
+  if (cursors.canonicalAfter > 0) params.set("canonicalAfter", String(cursors.canonicalAfter));
+  if (cursors.nativeAfter.size > 0) {
+    params.set("nativeAfter", [...cursors.nativeAfter].map(([runId, seq]) => `${runId}:${seq}`).join(","));
+  }
+  const query = params.toString();
+  return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;
 }
 
 /** Whether an accepted optimistic reply can be retired: only once its durable run
@@ -145,6 +201,10 @@ export function applyDecodedFrame(store: ThreadStore, frame: DecodedFrame): void
       }
       return;
     }
+    case "resume":
+      // A reset is handled by the flush that owns the store swap; an honoured resume
+      // needs nothing: the frames that follow are exactly what the store lacks.
+      return;
     case "unknown":
     case "malformed":
       return;
@@ -193,7 +253,6 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
   }, []);
 
   useEffect(() => {
-    const active = storeRef.current;
     // Coalesce SSE frames: opening a long SETTLED run replays hundreds of native
     // frames back-to-back (this run: 463 frames / ~1MB). Applying each immediately
     // notifies the store per frame -> a full re-render + timeline rebuild of the
@@ -205,18 +264,12 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
     let conn: ThreadConnection | null = null;
     const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : null;
     const caf = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : null;
-    const flushFrames = (): void => {
-      scheduled = null;
-      if (buffer.length === 0) return;
-      const burst = buffer;
-      buffer = [];
-      active.batch(() => {
-        for (const f of burst) {
-          const frame = decodeFrame(f.event, f.data);
-          applyDecodedFrame(active, frame);
-          if (
-            frame.kind === "canonical-complete"
-          ) {
+    const applyBurst = (target: ThreadStore, frames: readonly DecodedFrame[]): void => {
+      if (frames.length === 0) return;
+      target.batch(() => {
+        for (const frame of frames) {
+          applyDecodedFrame(target, frame);
+          if (frame.kind === "canonical-complete") {
             conn?.requestSettlementReconcile(frame.complete.runId);
           } else if (frame.kind === "raw" && frame.type === "done") {
             const runId = frame.payload.runId;
@@ -224,6 +277,30 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
           }
         }
       });
+    };
+    const flushFrames = (): void => {
+      scheduled = null;
+      if (buffer.length === 0) return;
+      const burst = buffer;
+      buffer = [];
+      let target = storeRef.current;
+      let pending: DecodedFrame[] = [];
+      for (const f of burst) {
+        const frame = decodeFrame(f.event, f.data);
+        if (frame.kind === "resume" && frame.resume.reset) {
+          // The server refused what this store held (a rollback, another database):
+          // finish the frames before the reset on the old store, then replace it and
+          // apply the from-zero replay that follows to the fresh one.
+          applyBurst(target, pending);
+          pending = [];
+          target = freshThreadStore(rootRunId);
+          storeRef.current = target;
+          setStore(target);
+          continue;
+        }
+        pending.push(frame);
+      }
+      applyBurst(target, pending);
     };
     const onFrame = (event: string, data: string): void => {
       buffer.push({ event, data });
@@ -233,19 +310,22 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
     const reconcileSettlement = async (runId: string): Promise<boolean> => {
       const runs = await fetchThread(rootRunId);
       if (!runs) return false;
-      active.applySnapshot(runs);
+      storeRef.current.applySnapshot(runs);
       const run = runs.find((candidate) => candidate.id === runId);
       return !!run && run.status !== "queued" && run.status !== "running";
     };
     conn = createThreadConnection({
-      url: `/api/runs/${rootRunId}/thread-events`,
+      // Recomputed on every (re)connect: the store's cursors tell the server what
+      // to skip, so a reconnect or a return to a retained thread replays only the
+      // newer frames instead of the whole history.
+      url: () => threadEventsUrl(rootRunId, resumeCursors(storeRef.current.getSnapshot())),
       frameTypes: THREAD_FRAME_TYPES,
       healthFrame: "snapshot",
       createEventSource: browserEventSource,
       onFrame,
       poll: () => {
         void fetchThread(rootRunId).then((runs) => {
-          if (runs) active.applySnapshot(runs);
+          if (runs) storeRef.current.applySnapshot(runs);
         });
       },
       reconcileSettlement,
