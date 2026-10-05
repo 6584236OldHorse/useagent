@@ -171,8 +171,10 @@ describe("run feedback Slack notice", () => {
 
   // Only the explicit processDue() calls below deliver, so each assertion reads
   // exactly what the route queued.
-  beforeAll(() => {
+  beforeAll(async () => {
     stopSlackOutboxRelay();
+    // Earlier suites' due rows must not consume this test's twenty-row delivery pass.
+    await db.delete(slackOutbox);
     process.env.FEEDBACK_SLACK_CHANNEL = channel;
     process.env.FEEDBACK_SLACK_TEAM_ID = teamId;
   });
