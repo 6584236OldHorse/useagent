@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { DecryptedSecrets } from "./store";
 import {
   buildInjection,
+  isProtectedInjectedSecretPath,
   materializeSecretInjection,
   PROVIDER_SECRET_NAMES,
   sandboxSecretMode,
@@ -19,6 +20,56 @@ const decrypted: DecryptedSecrets = {
   names: ["CUSTOM_TOKEN", "CUSTOM_CERT", "OPENAI_API_KEY"],
   skipped: [],
 };
+
+describe("injected secret path protection", () => {
+  test("rejects non-canonical configured directories before materialization", () => {
+    for (const directory of [
+      "/root/work/secret-staging/../custom-secrets",
+      "$HOME/work/../.custom/secrets",
+      "/root/..",
+      "$HOME/../secrets",
+      "$HOME/./secrets",
+    ]) {
+      const child = Bun.spawnSync([
+        process.execPath,
+        "--eval",
+        `await import(${JSON.stringify(new URL("./inject.ts", import.meta.url).href)});`,
+      ], {
+        env: { ...process.env, SECRETS_FILE_DIR: directory },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 5_000,
+      });
+      expect(child.exitCode).not.toBe(0);
+      expect(child.stderr.toString()).toContain("SECRETS_FILE_DIR must not contain . or .. path components");
+    }
+  });
+
+  test("protects canonical, legacy, and configured directories together", () => {
+    for (const namespace of [".useagent", ".skynet"]) {
+      for (const home of ["$HOME", "~", "/root", "/home/daytona"]) {
+        const directory = `${home}/${namespace}/secrets`;
+        expect(isProtectedInjectedSecretPath(directory)).toBe(true);
+        expect(isProtectedInjectedSecretPath(`${directory}/credential.json`)).toBe(true);
+        expect(isProtectedInjectedSecretPath(`${home}/work/../${namespace}/secrets/key`)).toBe(true);
+      }
+    }
+    expect(isProtectedInjectedSecretPath(SECRET_FILE_DIR)).toBe(true);
+    expect(isProtectedInjectedSecretPath(`${SECRET_FILE_DIR}/credential.json`)).toBe(true);
+    expect(isProtectedInjectedSecretPath("\\root\\.useagent\\secrets\\key")).toBe(true);
+    expect(isProtectedInjectedSecretPath("/root/work/.env.production")).toBe(true);
+  });
+
+  test("keeps sibling directories and ordinary deliverables publishable", () => {
+    for (const namespace of [".useagent", ".skynet"]) {
+      expect(isProtectedInjectedSecretPath(`/root/${namespace}/secrets-backup/report.pdf`)).toBe(false);
+      expect(isProtectedInjectedSecretPath(`/home/daytona/${namespace}/artifacts/report.pdf`)).toBe(false);
+    }
+    expect(isProtectedInjectedSecretPath("/root/work/report.pdf")).toBe(false);
+    expect(isProtectedInjectedSecretPath("/root/work/.environment.txt")).toBe(false);
+    expect(isProtectedInjectedSecretPath(`${SECRET_FILE_DIR}-backup/report.pdf`)).toBe(false);
+  });
+});
 
 describe("sandbox secret delivery mode", () => {
   test("defaults production to gateway-only while development keeps compatibility", () => {
@@ -82,12 +133,13 @@ describe("sandbox secret delivery mode", () => {
     expect(injection.createEnv).toEqual({ BASH_ENV: SECRET_DOTENV_PATH });
     expect(injection.names).toEqual(["CUSTOM_TOKEN", "CUSTOM_CERT"]);
     expect(injection.redactionValues).toEqual(["custom-secret-value", "custom-file-value"]);
+    const pathQuote = SECRET_FILE_DIR.startsWith("$HOME/") ? '"' : "'";
     expect(injection.files).toEqual([
       {
         path: SECRET_DOTENV_PATH,
         content:
           `export CUSTOM_TOKEN='custom-secret-value'\n` +
-          `export CUSTOM_CERT="${SECRET_FILE_DIR}/CUSTOM_CERT"\n`,
+          `export CUSTOM_CERT=${pathQuote}${SECRET_FILE_DIR}/CUSTOM_CERT${pathQuote}\n`,
       },
       { path: `${SECRET_FILE_DIR}/CUSTOM_CERT`, content: "custom-file-value" },
     ]);

@@ -281,21 +281,27 @@ describe("artifact gateway contract", () => {
       throw new Error("publisher must not be called");
     });
 
-    const rejected = await executeArtifactTool(
-      {
-        orgId: "org-1",
-        userId: "user-1",
-        threadId: "thread-1",
-        runId: "run-1",
-        scope: "run",
-        exp: Date.now() + 60_000,
-      },
-      "artifact_publish",
+    for (const args of [
       { path: "/root/work/../.skynet/secrets/credential.json" },
-    );
+      { path: "/home/daytona/work/../.useagent/secrets/credential.json" },
+      { path: "/root/work/report.docx", editable_path: "$HOME/.useagent/secrets/credential.html" },
+    ]) {
+      const rejected = await executeArtifactTool(
+        {
+          orgId: "org-1",
+          userId: "user-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          scope: "run",
+          exp: Date.now() + 60_000,
+        },
+        "artifact_publish",
+        args,
+      );
 
-    expect(rejected.isError).toBe(true);
-    expect(rejected.content[0]?.text).toContain("Protected secret paths");
+      expect(rejected.isError).toBe(true);
+      expect(rejected.content[0]?.text).toContain("Protected secret paths");
+    }
     expect(called).toBe(false);
   });
 
