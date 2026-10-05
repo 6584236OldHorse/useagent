@@ -222,6 +222,31 @@ function provider(
 }
 
 describe("Box sandbox provider", () => {
+  test("connection identity pins endpoint, environment, and key", async () => {
+    const identity = boxSandboxProvider(config).connectionFingerprint;
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(boxSandboxProvider({ ...config }).connectionFingerprint).toBe(identity);
+    for (const changed of [
+      { apiUrl: "https://other-box.example.test/api/box/v1" },
+      { environment: "another-environment" },
+      { apiKey: "another-key" },
+    ]) {
+      expect(boxSandboxProvider({ ...config, ...changed }).connectionFingerprint).not.toBe(identity);
+    }
+    const mutable = { ...config };
+    const captured = boxSandboxProvider(mutable, {
+      fetchImpl: async (url, init) => {
+        expect(url).toBe(`${config.apiUrl}/boxes/pinned`);
+        expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${config.apiKey}`);
+        return Response.json({ box: { id: "pinned", state: "running" } });
+      },
+    });
+    mutable.apiUrl = "https://changed.example.test";
+    mutable.apiKey = "changed-key";
+    await captured.get("pinned");
+    expect(captured.connectionFingerprint).toBe(identity);
+  });
+
   test("translates only a missing top-level box record into the neutral absence error", async () => {
     const api = fakeBoxApi([]);
     await expect(provider(api).provider.get("bx_missing")).rejects

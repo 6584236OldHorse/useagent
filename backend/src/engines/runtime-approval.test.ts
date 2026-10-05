@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertRuntimeApprovalPending,
+  resolveRuntimeApprovalSandbox,
   RuntimeApprovalError,
   validateRuntimeApprovalDecision,
 } from "./runtime-approval";
@@ -39,6 +40,38 @@ function snapshot(resolved = false): RuntimeThreadSnapshot {
 }
 
 describe("T3 native approvals", () => {
+  test("strictly resolves a constrained run without consulting the preview cache", async () => {
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: "sandbox-1",
+      provider: "cube" as const,
+      credential: "env" as const,
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "a".repeat(64),
+    };
+    let expectedCalls = 0;
+    let previewCalls = 0;
+    const dependencies = {
+      expected: async (expected, threadId) => {
+        expectedCalls += 1;
+        expect(expected).toEqual(expectedSandbox);
+        expect(threadId).toBe("thread-1");
+        return {} as never;
+      },
+      preview: async () => {
+        previewCalls += 1;
+        return {} as never;
+      },
+    } satisfies Parameters<typeof resolveRuntimeApprovalSandbox>[2];
+    await resolveRuntimeApprovalSandbox("thread-1", expectedSandbox, dependencies);
+    expect(expectedCalls).toBe(1);
+    expect(previewCalls).toBe(0);
+    await resolveRuntimeApprovalSandbox("thread-1", null, dependencies);
+    expect(expectedCalls).toBe(1);
+    expect(previewCalls).toBe(1);
+  });
+
   test("accepts only T3's native decisions", () => {
     expect(validateRuntimeApprovalDecision("acceptForSession")).toBe("acceptForSession");
     expect(() => validateRuntimeApprovalDecision("always")).toThrow(RuntimeApprovalError);

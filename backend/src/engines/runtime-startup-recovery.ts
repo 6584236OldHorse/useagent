@@ -10,6 +10,10 @@ import {
 } from "./runtime-orchestration.js";
 import type { RuntimeProviderBridgeLease } from "./runtime-provider-bridge.js";
 import type { EngineRunContext } from "./types.js";
+import {
+  ExpectedSandboxMismatchError,
+  resolveExpectedSandbox,
+} from "../sandboxes/binding.js";
 
 const CODEX_STUCK_START_RECOVERY_MS = 30_000;
 
@@ -31,11 +35,12 @@ export interface StuckCodexStartRecoveryDependencies {
   readonly invalidateAccess: typeof invalidateRuntimeEnvironmentAccess;
   readonly cleanupSignal: () => AbortSignal;
   readonly warn: (message: string, context: Record<string, unknown>) => void;
+  readonly resolveExpectedSandbox?: typeof resolveExpectedSandbox;
 }
 
 export interface StuckCodexStartRecoveryInput {
   readonly error: unknown;
-  readonly ctx: Pick<EngineRunContext, "runId" | "threadId" | "signal">;
+  readonly ctx: Pick<EngineRunContext, "runId" | "threadId" | "signal" | "expectedSandbox">;
   readonly sandbox: SandboxHandle;
   readonly lease: Pick<RuntimeProviderBridgeLease, "authPath" | "close">;
   readonly priorTurnId: string | null;
@@ -69,8 +74,18 @@ export async function recoverStuckCodexSubscriptionStart(
   const threadId = runtimeThreadId(input.ctx);
   let stuckStartConfirmed = false;
   try {
+    let sandbox = input.sandbox;
+    if (input.ctx.expectedSandbox) {
+      if (sandbox.id !== input.ctx.expectedSandbox.sandboxId) {
+        throw new ExpectedSandboxMismatchError();
+      }
+      sandbox = await (dependencies.resolveExpectedSandbox ?? resolveExpectedSandbox)(
+        input.ctx.expectedSandbox,
+        input.ctx.threadId ?? input.ctx.runId,
+      );
+    }
     const snapshot = await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
-      input.sandbox,
+      sandbox,
       { method: "GET", path: `/api/orchestration/threads/${encodeURIComponent(threadId)}` },
       signal,
     );
@@ -82,7 +97,7 @@ export async function recoverStuckCodexSubscriptionStart(
       return { error: input.error, stuckStartConfirmed: false };
     }
     const shell = await dependencies.requestEnvironment<RuntimeShellSnapshot>(
-      input.sandbox,
+      sandbox,
       { method: "GET", path: "/api/orchestration/shell" },
       signal,
     );
@@ -91,8 +106,8 @@ export async function recoverStuckCodexSubscriptionStart(
     }
     stuckStartConfirmed = true;
     await input.lease.close();
-    await dependencies.restart(input.sandbox, signal);
-    dependencies.invalidateAccess(input.sandbox);
+    await dependencies.restart(sandbox, signal);
+    dependencies.invalidateAccess(sandbox);
   } catch (recoveryError) {
     dependencies.warn("Codex stuck-start runtime recovery failed", {
       runId: input.ctx.runId,

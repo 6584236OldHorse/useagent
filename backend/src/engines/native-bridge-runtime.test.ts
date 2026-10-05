@@ -492,14 +492,31 @@ describe("native bridge turn settlement", () => {
     const captured: ProviderEventInput[] = [];
     let listener: ((frame: unknown) => void) | undefined;
     const cancelledSessions: string[] = [];
+    const controls: unknown[] = [];
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: "box",
+      provider: "box" as const,
+      credential: "env" as const,
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "d".repeat(64),
+    };
     const turn = runNativeBridgeTurn({
-      ctx: { runId: "run", threadId: "thread", signal: controller.signal } as never,
+      ctx: {
+        runId: "run",
+        threadId: "thread",
+        expectedSandbox,
+        signal: controller.signal,
+      } as never,
       driver: {
-        steer: async () => {
+        steer: async (request: { metadata?: unknown }) => {
+          controls.push(request.metadata);
           started.resolve();
           return { status: "ok" };
         },
-        cancel: async (session: { nativeSessionId: string }) => {
+        cancel: async (session: { nativeSessionId: string }, _reason: string, metadata: unknown) => {
+          controls.push(metadata);
           cancelledSessions.push(session.nativeSessionId);
           setTimeout(() => {
             listener?.({ bodies: [{ kind: "turn.failed", error: "Pi turn aborted" }] });
@@ -526,6 +543,10 @@ describe("native bridge turn settlement", () => {
 
     await expect(turn).rejects.toThrow("Pi turn aborted");
     expect(cancelledSessions).toEqual(["/sessions/pi.jsonl"]);
+    expect(controls).toEqual([
+      { expectedSandbox, threadId: "thread" },
+      { expectedSandbox, threadId: "thread" },
+    ]);
     expect(captured.some((event) => event.eventType === "pi.turn.failed")).toBe(true);
   });
 

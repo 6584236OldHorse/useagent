@@ -8,6 +8,7 @@ import {
   type StepKind,
 } from "@useagent/agent-client/wire";
 import type { RunResource } from "../../resources/types";
+import type { ExpectedSandboxBinding } from "../../sandboxes/expected-binding";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { sql } from "drizzle-orm";
 import {
@@ -80,6 +81,7 @@ export const runs = pgTable(
     // the sandbox resolve the same provider. Null for runs before this record.
     sandboxProvider: text("sandbox_provider").$type<SandboxProviderKind>(),
     sandboxCredential: text("sandbox_credential").$type<"env" | "user">(),
+    expectedSandbox: jsonb("expected_sandbox").$type<ExpectedSandboxBinding>(),
     // The GitHub repository this run works in ("owner/name"), chosen in the New
     // Task composer and validated against GET /api/repos. Nullable — a run with
     // no repo works in a bare sandbox workdir. Inherited across a thread (a reply

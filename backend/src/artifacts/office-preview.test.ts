@@ -7,6 +7,44 @@ afterEach(() => {
 });
 
 describe("Office preview conversion isolation", () => {
+  test("uses accepted run authority instead of resolving a current binding", async () => {
+    const sandbox = {
+      id: "sandbox-a",
+      process: { executeCommand: async () => ({ exitCode: 1, result: "" }) },
+    };
+    const run = {
+      orgId: "org-a",
+      threadId: "thread-a",
+      sandboxId: "sandbox-a",
+      expectedSandbox: {
+        version: 1 as const,
+        sandboxId: "sandbox-a",
+        provider: "daytona" as const,
+        credential: "env" as const,
+        ownerOrgId: "org-a",
+        ownerUserId: null,
+        credentialGeneration: "a".repeat(64),
+      },
+    };
+    const strictResolver = spyOn(bindings, "resolveRunSandbox").mockResolvedValue(sandbox as never);
+    const legacyResolver = spyOn(bindings, "resolveSandboxBindingForSandbox");
+    try {
+      expect(await convertOfficeToPdf({
+        sandboxId: "sandbox-a",
+        run,
+        sourceName: "report.docx",
+        sourceBytes: new TextEncoder().encode("source"),
+        timeoutSeconds: 30,
+        maxBytes: 1_024,
+      })).toBeNull();
+      expect(strictResolver).toHaveBeenCalledWith(run);
+      expect(legacyResolver).not.toHaveBeenCalled();
+    } finally {
+      strictResolver.mockRestore();
+      legacyResolver.mockRestore();
+    }
+  });
+
   test("concurrent conversions upload and download distinct byte snapshots", async () => {
     const uploaded = new Map<string, Uint8Array>();
     const outputs = new Map<string, Uint8Array>();

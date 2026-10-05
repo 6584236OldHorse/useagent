@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   SandboxCreateOptions,
   SandboxExecuteResult,
@@ -837,13 +838,19 @@ class BoxSandboxHandle implements SandboxHandle {
 class BoxProvider implements SandboxProvider {
   private readonly api: BoxApi;
   private readonly labels: SandboxLabelStore;
+  private readonly config: BoxApiConfig;
+  readonly connectionFingerprint: string;
 
   constructor(
-    private readonly config: BoxApiConfig,
+    config: BoxApiConfig,
     options: BoxProviderOptions,
   ) {
+    this.config = Object.freeze({ ...config });
+    this.connectionFingerprint = createHash("sha256").update(JSON.stringify([
+      "box", config.apiUrl, config.environment ?? null, config.apiKey,
+    ])).digest("hex");
     this.api = new BoxApi(
-      config,
+      this.config,
       options.fetchImpl ?? ((input, init) => fetch(input, init)),
       options.sleep ?? defaultSleep,
       options.now ?? Date.now,

@@ -17,9 +17,15 @@ import { engineModelReadyForDispatch, persistedEngineModelReadyForDispatch } fro
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
 import { assertRunPromptLimit } from "./prompt-policy";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { commands, runs } from "../db/schema";
 import { db, type Executor } from "../db/client";
+import {
+  ExpectedSandboxMismatchError,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
+
+export { ExpectedSandboxMismatchError };
 
 // ---------------------------------------------------------------------------
 // Command acceptance orchestration (north star "Durable Commands"). Decides,
@@ -43,6 +49,7 @@ function serializeRunCommandPayload(
   fingerprint: string,
   source: ConnectorRunSource | null,
 ): string {
+  const auditIntent = { ...intent, expectedSandbox: undefined };
   const full = {
     source,
     botHandoff: input.botHandoff ?? null,
@@ -61,14 +68,14 @@ function serializeRunCommandPayload(
     commandProvider: input.run.commandProvider,
     commandSessionId: input.run.commandSessionId,
     commandCatalogRevision: input.run.commandCatalogRevision,
-    intent,
+    intent: auditIntent,
   };
   const serialized = JSON.stringify(full);
   if (payloadBytes(serialized) <= PAYLOAD_CAP) return serialized;
 
   const withoutDuplicatePrompt = JSON.stringify({
     ...full,
-    intent: { ...intent, prompt: undefined },
+    intent: { ...auditIntent, prompt: undefined },
     _audit: { omitted: ["intent.prompt"] },
   });
   if (payloadBytes(withoutDuplicatePrompt) <= PAYLOAD_CAP) return withoutDuplicatePrompt;
@@ -93,6 +100,70 @@ function serializeRunCommandPayload(
 
 export class StaleThreadHeadError extends Error {
   readonly code = "stale_thread_head" as const;
+}
+
+function sameExpectedSandbox(
+  left: ExpectedSandboxBinding | null | undefined,
+  right: ExpectedSandboxBinding | null | undefined,
+): boolean {
+  if (!left || !right) return left == null && right == null;
+  return left.version === right.version &&
+    left.sandboxId === right.sandboxId &&
+    left.provider === right.provider &&
+    left.credential === right.credential &&
+    left.ownerOrgId === right.ownerOrgId &&
+    left.ownerUserId === right.ownerUserId &&
+    left.credentialGeneration === right.credentialGeneration;
+}
+
+async function assertExpectedSandboxMapping(
+  input: RunCommandInput,
+  expected: ExpectedSandboxBinding,
+  tx: Executor,
+): Promise<void> {
+  if (expected.ownerOrgId !== input.orgId || !input.run.parentRunId) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  const [parent] = await tx.select({ id: runs.id, origin: runs.origin }).from(runs).where(and(
+    eq(runs.id, input.run.parentRunId),
+    eq(runs.orgId, input.orgId),
+    eq(runs.threadId, input.run.threadId),
+  )).limit(1);
+  if (!parent || !isInternalRunOrigin(parent.origin)) {
+    throw new ExpectedSandboxMismatchError();
+  }
+
+  const [mapping] = await tx.select({
+    sandboxId: runs.sandboxId,
+    sandboxProvider: runs.sandboxProvider,
+    sandboxCredential: runs.sandboxCredential,
+    expectedSandbox: runs.expectedSandbox,
+  }).from(runs).where(and(
+    eq(runs.orgId, input.orgId),
+    eq(runs.threadId, input.run.threadId),
+    isNotNull(runs.sandboxId),
+  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+  if (
+    !mapping ||
+    mapping.sandboxId !== expected.sandboxId ||
+    mapping.sandboxProvider !== expected.provider ||
+    mapping.sandboxCredential !== expected.credential ||
+    (mapping.expectedSandbox && !sameExpectedSandbox(mapping.expectedSandbox, expected))
+  ) {
+    throw new ExpectedSandboxMismatchError();
+  }
+
+  if (expected.credential === "user") {
+    const [owner] = await tx.select({ userId: runs.userId }).from(runs).where(and(
+      eq(runs.orgId, input.orgId),
+      eq(runs.sandboxId, expected.sandboxId),
+      eq(runs.sandboxProvider, expected.provider),
+      eq(runs.sandboxCredential, expected.credential),
+    )).orderBy(asc(runs.createdAt), asc(runs.id)).limit(1);
+    if (owner?.userId !== expected.ownerUserId) {
+      throw new ExpectedSandboxMismatchError();
+    }
+  }
 }
 
 /** Classify a keyed submission against an existing command: same fingerprint →
@@ -235,7 +306,14 @@ async function acceptRunCommandWithOrigin(
   priority = 0,
   source: ConnectorRunSource | null = null,
 ): Promise<RunCommandOutcome> {
-  const intent = input.intent ?? runIntentFromAcceptedRun(input.run);
+  const expectedSandbox = input.expectedSandbox ?? null;
+  const intent = input.intent ?? {
+    ...runIntentFromAcceptedRun(input.run),
+    ...(expectedSandbox ? { expectedSandbox } : {}),
+  };
+  if (!sameExpectedSandbox(intent.expectedSandbox, expectedSandbox)) {
+    throw new ExpectedSandboxMismatchError();
+  }
   const fingerprint = acceptedFingerprint(intent, input.threadRelationship);
   const payload = serializeRunCommandPayload(input, intent, fingerprint, source);
   const commandId = crypto.randomUUID();
@@ -258,6 +336,7 @@ async function acceptRunCommandWithOrigin(
           )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
           if (head?.id !== input.expectedThreadHeadRunId) throw new StaleThreadHeadError();
         }
+        if (expectedSandbox) await assertExpectedSandboxMapping(input, expectedSandbox, tx);
 
         // Shared transaction lock closes the preflight-vs-insert race: a deploy
         // close waits for already-accepting transactions, then every later new
@@ -297,6 +376,7 @@ async function acceptRunCommandWithOrigin(
             payloadFingerprint: fingerprint,
             payload,
             run: input.run,
+            expectedSandbox,
             origin,
             priority,
             threadRelationship: input.threadRelationship,

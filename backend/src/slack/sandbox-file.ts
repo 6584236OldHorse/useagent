@@ -8,23 +8,39 @@
  * The downloader is swappable for tests (setSandboxDownloaderForTest) so the
  * tool + outbox can be exercised without a live sandbox.
  */
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import { resolveRunSandbox, resolveSandboxBindingForSandbox } from "../sandboxes/binding";
 
 export interface SandboxFile {
   bytes: Buffer;
   size: number;
 }
 
-export type SandboxDownloader = (sandboxId: string, path: string, maxBytes: number) => Promise<SandboxFile>;
-export type SandboxPathResolver = (sandboxId: string, path: string) => Promise<string>;
+type RunSandboxAuthority = Parameters<typeof resolveRunSandbox>[0];
+
+export type SandboxDownloader = (
+  sandboxId: string,
+  path: string,
+  maxBytes: number,
+  run?: RunSandboxAuthority,
+) => Promise<SandboxFile>;
+export type SandboxPathResolver = (
+  sandboxId: string,
+  path: string,
+  run?: RunSandboxAuthority,
+) => Promise<string>;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-async function providerResolvePath(sandboxId: string, path: string): Promise<string> {
-  const provider = (await resolveSandboxBindingForSandbox(sandboxId)).provider;
-  const sandbox = await provider.get(sandboxId);
+async function providerResolvePath(
+  sandboxId: string,
+  path: string,
+  run?: RunSandboxAuthority,
+): Promise<string> {
+  const sandbox = run
+    ? await resolveRunSandbox(run)
+    : await (await resolveSandboxBindingForSandbox(sandboxId)).provider.get(sandboxId);
   const result = await sandbox.process.executeCommand(`realpath -e -- ${shellQuote(path)}`);
   const resolved = result.result?.replace(/\r?\n$/, "") ?? "";
   if ((result.exitCode ?? 1) !== 0 || !resolved.startsWith("/")) {
@@ -33,9 +49,15 @@ async function providerResolvePath(sandboxId: string, path: string): Promise<str
   return resolved;
 }
 
-async function providerDownload(sandboxId: string, path: string, maxBytes: number): Promise<SandboxFile> {
-  const provider = (await resolveSandboxBindingForSandbox(sandboxId)).provider;
-  const sandbox = await provider.get(sandboxId);
+async function providerDownload(
+  sandboxId: string,
+  path: string,
+  maxBytes: number,
+  run?: RunSandboxAuthority,
+): Promise<SandboxFile> {
+  const sandbox = run
+    ? await resolveRunSandbox(run)
+    : await (await resolveSandboxBindingForSandbox(sandboxId)).provider.get(sandboxId);
   const info = await sandbox.fs.getFileDetails(path);
   const declared = Number((info as { size?: number }).size ?? 0);
   if (declared > maxBytes) {
@@ -63,15 +85,24 @@ export function setSandboxPathResolverForTest(fn: SandboxPathResolver | null): v
 }
 
 /** Resolve the actual sandbox target before crossing the file-download boundary. */
-export function resolveSandboxFilePath(sandboxId: string, path: string): Promise<string> {
-  if (resolverOverride) return resolverOverride(sandboxId, path);
+export function resolveSandboxFilePath(
+  sandboxId: string,
+  path: string,
+  run?: RunSandboxAuthority,
+): Promise<string> {
+  if (resolverOverride) return resolverOverride(sandboxId, path, run);
   // Downloader overrides are test-only and historically did not require a live
   // sandbox. Preserve that seam unless a test installs an explicit resolver.
   if (override) return Promise.resolve(path);
-  return providerResolvePath(sandboxId, path);
+  return providerResolvePath(sandboxId, path, run);
 }
 
 /** Download `path` from `sandboxId`, rejecting anything over `maxBytes`. */
-export function downloadSandboxFile(sandboxId: string, path: string, maxBytes: number): Promise<SandboxFile> {
-  return (override ?? providerDownload)(sandboxId, path, maxBytes);
+export function downloadSandboxFile(
+  sandboxId: string,
+  path: string,
+  maxBytes: number,
+  run?: RunSandboxAuthority,
+): Promise<SandboxFile> {
+  return (override ?? providerDownload)(sandboxId, path, maxBytes, run);
 }

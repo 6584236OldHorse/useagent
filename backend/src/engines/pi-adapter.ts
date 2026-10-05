@@ -35,9 +35,6 @@ export function makePiAdapter(dependencies: PiAdapterDependencies = defaults): E
     id: "pi",
     async run(ctx) {
       if (!providerGatewayWired()) throw new Error("Pi requires a configured provider gateway");
-      if (ctx.providerSession?.provider === "pi") {
-        await dependencies.bridges.awaitTeardown(ctx.providerSession.nativeSessionId);
-      }
       const startedAt = Date.now();
       await ctx.emit({ kind: "task", label: "Preparing Pi runtime and integrations…", chip: "pi" });
       const prepared = await dependencies.prepareTurn(ctx, {
@@ -48,7 +45,8 @@ export function makePiAdapter(dependencies: PiAdapterDependencies = defaults): E
         requiredLabels: { [RUNTIME_GENERATION_LABEL]: RUNTIME_GENERATION },
         timingPrefix: "pi",
         providerAfterResources: true,
-        prepareSandbox: (sandbox) => dependencies.bridges.prepare?.(sandbox) ?? Promise.resolve(),
+        prepareSandbox: (sandbox) =>
+          dependencies.bridges.prepare?.(sandbox, ctx.expectedSandbox ?? undefined) ?? Promise.resolve(),
         prepareProvider: (sandbox, workdir, binding) =>
           preparePiRuntime(sandbox, ctx, workdir, sandboxRuntimeLayout(binding.kind)),
       });

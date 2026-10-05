@@ -31,9 +31,10 @@ import { FleetQueueLimitError } from "../fleet/intake";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
+  ExpectedSandboxMismatchError,
   preflightInternalRunCommandReplay,
 } from "../commands/service";
-import type { InternalRunOrigin } from "./origin";
+import { expectedSandboxRunOrigin, type InternalRunOrigin } from "./origin";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../commands/cancel";
 import { resolveSkillSelection } from "../skills/repo";
 import { buildNativeCommandPrompt, validateCommandIntent, type CommandIntent } from "./command-intent";
@@ -74,7 +75,7 @@ import {
   resolveAcceptedEngine,
   USER_FACING_ENGINES,
 } from "./engine-readiness";
-import { releaseRunSandbox } from "./sandbox-release";
+import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
 import { registerRunReadRoutes } from "./read-routes.js";
@@ -92,6 +93,7 @@ export async function handleRunCreate(
   options: {
     readonly body?: RunCreateBody;
     readonly origin?: InternalRunOrigin;
+    readonly expectedSandbox?: RunCommandIntent["expectedSandbox"]; // Trusted operator only, never the public body.
     /** The bot whose home thread this root run opens (stamped with the run, see
      *  RunCommandInput.botHome); a lost race answers 409 with no run created. */
     readonly botHome?: { readonly botId: string };
@@ -151,6 +153,7 @@ export async function handleRunCreate(
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
   let parentEngine: EngineId | null = null;
+  let parentOrigin: string | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
   // reply resumes the thread's live session). A native-command intent's client-supplied session
   // id is validated against THIS, never trusted on its own.
@@ -173,6 +176,7 @@ export async function handleRunCreate(
     parentScope = parent.memoryScope;
     parentModel = parent.model;
     parentEngine = parent.engine;
+    parentOrigin = parent.origin;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
       parent.engineSessionId ?? null;
   }
@@ -308,15 +312,20 @@ export async function handleRunCreate(
     commandProvider: requestedCommand?.provider ?? null,
     commandSessionId: requestedCommand?.sessionId ?? null,
     commandCatalogRevision: requestedCommand?.catalogRevision ?? null,
+    expectedSandbox: options.expectedSandbox ?? null,
   };
   let replay;
   try {
-    replay = options.origin
+    const replayOrigin = options.expectedSandbox
+      ? expectedSandboxRunOrigin(parentOrigin)
+      : options.origin;
+    if (options.expectedSandbox && !replayOrigin) throw new ExpectedSandboxMismatchError();
+    replay = replayOrigin
       ? await preflightInternalRunCommandReplay({
           orgId: c.get("orgId"),
           idempotencyKey,
           intent,
-          origin: options.origin,
+          origin: replayOrigin,
         })
       : await preflightRunCommandReplay({
           orgId: c.get("orgId"),
@@ -327,6 +336,7 @@ export async function handleRunCreate(
     if (error instanceof RunAdmissionClosedError) {
       return c.json({ error: error.code, retryable: true }, 503);
     }
+    if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     throw error;
   }
   if (replay?.status === "replayed") {
@@ -431,6 +441,7 @@ export async function handleRunCreate(
       orgId: c.get("orgId"),
       actorId: c.get("userId"),
       intent,
+      expectedSandbox: options.expectedSandbox ?? null,
       run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
@@ -447,6 +458,7 @@ export async function handleRunCreate(
       return c.json({ error: "upload_unavailable" }, 409);
     }
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
+    if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
       return c.json(
         { error: error.code, reason: "Another message opened this bot's thread first. Send yours again into that thread." },
@@ -533,19 +545,7 @@ runsRoutes.post("/:id/cancel", async (c) => {
   }
 });
 
-// Explicit eval/test cleanup. Product threads remain warm by default; callers
-// release only when they no longer need resume state. Org scope + active-run
-// checks prevent cross-tenant deletion or tearing down a live turn.
-runsRoutes.delete("/:id/sandbox", async (c) => {
-  const result = await releaseRunSandbox(c.get("orgId"), c.req.param("id"));
-  if (!result.ok) {
-    if (result.reason === "not_found") return c.json({ error: "run not found" }, 404);
-    if (result.reason === "thread_active") return c.json({ error: "thread is active" }, 409);
-    return c.json({ error: "sandbox release failed" }, 502);
-  }
-  return c.json(result);
-});
-
+registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);
 registerExecutionGraphRoutes(runsRoutes);

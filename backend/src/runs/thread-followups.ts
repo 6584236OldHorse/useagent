@@ -8,6 +8,7 @@ import {
   preflightInternalRunCommandReplay,
   preflightRunCommandReplay,
   preflightUnattendedRunCommandReplay,
+  ExpectedSandboxMismatchError,
   StaleThreadHeadError,
 } from "../commands/service";
 import type { RunCommandIntent, RunCommandOutcome } from "../commands/types";
@@ -40,6 +41,12 @@ export async function acceptResolvedThreadFollowup(input: {
     eq(runs.id, input.expectedParentRunId),
   )).limit(1);
   if (!parent) return { status: "not_found" };
+  if (input.command.expectedSandbox && !isInternalRunOrigin(parent.origin)) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  if (parent.origin === "internal:hosted-infra-soak" && !input.command.expectedSandbox) {
+    throw new ExpectedSandboxMismatchError();
+  }
   if (input.requireCurrentHead) {
     const [latest] = await db.select({ id: runs.id }).from(runs).where(and(
       eq(runs.orgId, input.orgId), eq(runs.threadId, input.command.run.threadId),

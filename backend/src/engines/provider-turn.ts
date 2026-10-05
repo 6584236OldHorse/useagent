@@ -32,6 +32,7 @@ export interface EstablishProviderSessionInput {
     | "threadId"
     | "engineSessionId"
     | "providerSession"
+    | "expectedSandbox"
     | "model"
     | "signal"
     | "timing"
@@ -135,6 +136,13 @@ export async function establishProviderSession(
   const protocol = providerProtocolIdentity(input.driver.descriptor.protocol);
   const generation = input.generation ?? 1;
   const authEpoch = input.authEpoch ?? null;
+  const metadata = input.ctx.expectedSandbox
+    ? {
+        ...input.startMetadata,
+        expectedSandbox: input.ctx.expectedSandbox,
+        threadId: input.ctx.threadId ?? input.ctx.runId,
+      }
+    : input.startMetadata;
   const priorSessionId = resumableProviderSessionId({
     binding: input.ctx.providerSession,
     legacySessionId: input.priorSessionId ?? input.ctx.engineSessionId,
@@ -153,7 +161,7 @@ export async function establishProviderSession(
     try {
       resumed = await input.driver.resume({
         session: candidate,
-        metadata: input.startMetadata,
+        metadata,
         signal: input.ctx.signal,
       });
     } catch (error) {
@@ -192,7 +200,7 @@ export async function establishProviderSession(
       threadId: input.ctx.threadId ?? input.ctx.runId,
       runtime: input.runtime,
       model: input.ctx.model,
-      metadata: input.startMetadata,
+      metadata,
       signal: input.ctx.signal,
     });
   } catch (error) {

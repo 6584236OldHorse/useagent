@@ -246,7 +246,7 @@ export async function childSessionToolsEnabled(
   claims: ToolTokenClaims,
 ): Promise<boolean> {
   const run = await getRunForOrg(claims.orgId, claims.runId);
-  if (!run || run.status !== "running") return false;
+  if (!run || run.status !== "running" || run.expectedSandbox) return false;
   // Gateway child sessions are engine-independent product commands. The rollout
   // decides whether creation uses legacy deferred turns or independently
   // dispatchable child threads; neither requires a provider-native session id.

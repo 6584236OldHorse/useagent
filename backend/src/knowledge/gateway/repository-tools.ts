@@ -8,7 +8,7 @@ import type { RunResource } from "../../resources/types";
 import { getRunForOrg } from "../../runs/repo";
 import { executeGithubBackedOperation } from "./github-operation-bridge";
 import type { ToolTokenClaims } from "./token";
-import { resolveSandboxBindingForThread } from "../../sandboxes/binding";
+import { resolveRunSandbox } from "../../sandboxes/binding";
 import { sandboxRuntimeLayout } from "../../sandboxes/provider";
 
 interface ToolResult {
@@ -208,9 +208,10 @@ const productionService: RepositoryService = {
       );
     }
     if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
-    const binding = await resolveSandboxBindingForThread(claims.orgId, run.threadId);
-    const sandbox = await binding.provider.get(run.sandboxId);
-    const runtimeLayout = sandboxRuntimeLayout(binding.kind);
+    const sandbox = await resolveRunSandbox(run);
+    const provider = run.expectedSandbox?.provider ?? run.sandboxProvider ?? sandbox.providerKind;
+    if (!provider) throw new Error("sandbox provider is unavailable for this run");
+    const runtimeLayout = sandboxRuntimeLayout(provider);
     const fullName = target.fullName;
     if (target.revision && branch && target.revision !== branch) {
       throw new Error(

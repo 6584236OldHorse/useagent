@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  ConnectionConfig,
   Sandbox as E2BSandbox,
   SandboxNotFoundError as E2BSandboxNotFoundError,
   type CommandHandle,
@@ -35,6 +37,8 @@ export function cubePreviewAuthHeaders(token: string): Record<string, string> {
 
 interface CubeConnectionOptions {
   apiKey?: string;
+  accessToken?: string;
+  sandboxUrl?: string;
   apiUrl: string;
   debug: boolean;
   domain: string;
@@ -254,7 +258,7 @@ function cubeConnectionOptions(apiKey: string): CubeConnectionOptions {
       `Cube E2B adapter requires the public proxy on ${scheme} port ${expectedPort}; got ${proxyPort}`,
     );
   }
-  return {
+  const options: CubeConnectionOptions = {
     ...(apiKey ? { apiKey } : {}),
     apiUrl: (process.env.CUBE_API_URL?.trim() || "http://127.0.0.1:3000").replace(/\/+$/, ""),
     debug: scheme === "http",
@@ -262,6 +266,18 @@ function cubeConnectionOptions(apiKey: string): CubeConnectionOptions {
     requestTimeoutMs: positiveInteger(process.env.CUBE_REQUEST_TIMEOUT_MS, 30_000),
     validateApiKey: false,
   };
+  const effective = new ConnectionConfig(options);
+  return { ...options, apiKey: effective.apiKey, accessToken: effective.accessToken, sandboxUrl: effective.sandboxUrl };
+}
+
+function assertCubeConnectionCurrent(connection: CubeConnectionOptions): void {
+  // Missing SDK options can consult ambient state again. Never let a captured
+  // anonymous connection silently gain credentials or a different data plane.
+  const effective = new ConnectionConfig(connection);
+  if (effective.apiKey !== connection.apiKey || effective.accessToken !== connection.accessToken ||
+    effective.sandboxUrl !== connection.sandboxUrl) {
+    throw new Error("Cube SDK connection changed");
+  }
 }
 
 function cubeState(state: SandboxInfo["state"]): string {
@@ -485,6 +501,7 @@ class CubeSandboxHandle implements SandboxHandle {
 
   private async connected(): Promise<E2BSandbox> {
     if (!this.sandbox) {
+      assertCubeConnectionCurrent(this.connection);
       this.sandbox = await E2BSandbox.connect(this.id, this.connection);
       this.state = "started";
     }
@@ -496,6 +513,7 @@ class CubeSandboxHandle implements SandboxHandle {
   }
 
   async delete(): Promise<void> {
+    assertCubeConnectionCurrent(this.connection);
     await E2BSandbox.kill(this.id, this.connection);
     this.sandbox = null;
     this.state = "deleted";
@@ -514,12 +532,18 @@ class CubeSandboxHandle implements SandboxHandle {
 
 class CubeProvider implements SandboxProvider {
   private readonly connection: CubeConnectionOptions;
+  readonly connectionFingerprint: string;
 
   constructor(
     apiKey: string,
     private readonly options: CubeProviderOptions,
   ) {
     this.connection = cubeConnectionOptions(apiKey);
+    this.connectionFingerprint = createHash("sha256").update(JSON.stringify([
+      "cube", this.connection.apiUrl, this.connection.domain,
+      this.connection.debug, this.connection.apiKey ?? "",
+      this.connection.accessToken ?? "", this.connection.sandboxUrl ?? "",
+    ])).digest("hex");
   }
 
   async create(options: SandboxCreateOptions = {}): Promise<SandboxHandle> {
@@ -550,7 +574,9 @@ class CubeProvider implements SandboxProvider {
       secure: true,
       timeoutMs: timeoutMinutes * 60_000,
     };
+    assertCubeConnectionCurrent(this.connection);
     const sandbox = await E2BSandbox.create(template, createOptions);
+    assertCubeConnectionCurrent(this.connection);
     const info = await E2BSandbox.getInfo(sandbox.sandboxId, this.connection);
     const handle = new CubeSandboxHandle(info, this.connection, sandbox);
     try {
@@ -567,6 +593,7 @@ class CubeProvider implements SandboxProvider {
   }
 
   async get(sandboxId: string): Promise<SandboxHandle> {
+    assertCubeConnectionCurrent(this.connection);
     let info: SandboxInfo;
     try {
       info = await E2BSandbox.getInfo(sandboxId, this.connection);
@@ -574,6 +601,7 @@ class CubeProvider implements SandboxProvider {
       if (error instanceof E2BSandboxNotFoundError) throw new SandboxNotFoundError(error);
       throw error;
     }
+    if (info.sandboxId !== sandboxId) throw new Error("Cube sandbox metadata identity mismatch");
     const handle = new CubeSandboxHandle(info, this.connection, null);
     // A retained workspace belongs to the user even when this runtime cannot use it.
     await assertCubeRuntimeIdentity(handle, this.options.identityPreflightCommand);
@@ -581,6 +609,7 @@ class CubeProvider implements SandboxProvider {
   }
 
   async *list(): AsyncIterable<SandboxHandle> {
+    assertCubeConnectionCurrent(this.connection);
     const paginator = E2BSandbox.list(this.connection);
     while (paginator.hasNext) {
       const items = await paginator.nextItems();

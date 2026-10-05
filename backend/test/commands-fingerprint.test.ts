@@ -55,6 +55,27 @@ describe("runIntentFingerprint", () => {
     expect(other).toBe(runIntentFingerprint(runIntentFromAcceptedRun(base)));
   });
 
+  test("keeps ordinary hashes stable while binding constrained replays", () => {
+    const intent = runIntentFromAcceptedRun(base);
+    const ordinary = runIntentFingerprint(intent);
+    expect(runIntentFingerprint({ ...intent, expectedSandbox: null })).toBe(ordinary);
+    const expectedSandbox = {
+      version: 1,
+      sandboxId: "sandbox-1",
+      provider: "cube",
+      credential: "env",
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "a".repeat(64),
+    } as const;
+    const constrained = runIntentFingerprint({ ...intent, expectedSandbox });
+    expect(constrained).not.toBe(ordinary);
+    expect(runIntentFingerprint({
+      ...intent,
+      expectedSandbox: { ...expectedSandbox, credentialGeneration: "b".repeat(64) },
+    })).not.toBe(constrained);
+  });
+
   test("changes when any intent field changes", () => {
     const intent = runIntentFromAcceptedRun(base);
     const fp = runIntentFingerprint(intent);

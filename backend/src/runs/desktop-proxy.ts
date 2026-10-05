@@ -16,6 +16,8 @@ import {
 import { ensureSandboxDesktopView } from "../engines/desktop";
 import { sandboxPreviewHeaders } from "../sandboxes/provider";
 import { errorMessage } from "../util/error-message";
+import { getThreadExpectedSandbox } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
 // DESKTOP PROXY — same-origin bridge to the noVNC GUI running INSIDE a thread's
@@ -72,21 +74,23 @@ export function desktopClientQueryRedirect(
 /** Old retained sandboxes may predate desktop provisioning, and a stopped box
  * may wake without its process session. Repair exactly once per thread while
  * concurrent iframe/static/WebSocket requests wait on the same promise. */
-async function ensureDesktopPreview(threadId: string): Promise<void> {
-  if ((desktopReadyUntil.get(threadId) ?? 0) > Date.now()) return;
-  desktopReadyUntil.delete(threadId);
-  const existing = desktopRepairs.get(threadId);
-  if (existing) return existing;
+async function ensureDesktopPreview(threadId: string, expectedSandbox?: ExpectedSandboxBinding | null): Promise<void> {
+  if (!expectedSandbox) {
+    if ((desktopReadyUntil.get(threadId) ?? 0) > Date.now()) return;
+    desktopReadyUntil.delete(threadId);
+    const existing = desktopRepairs.get(threadId);
+    if (existing) return existing;
+  }
 
   const repair = (async () => {
-    const sandbox = await resolvePreviewSandbox(threadId);
+    const sandbox = await resolvePreviewSandbox(threadId, expectedSandbox);
     const desktop = await ensureSandboxDesktopView(sandbox, AbortSignal.timeout(120_000));
     if (!desktop.available) {
       throw new Error(desktop.reason ?? "desktop service unavailable");
     }
-    desktopReadyUntil.set(threadId, Date.now() + DESKTOP_READY_TTL_MS);
-  })().finally(() => desktopRepairs.delete(threadId));
-  desktopRepairs.set(threadId, repair);
+    if (!expectedSandbox) desktopReadyUntil.set(threadId, Date.now() + DESKTOP_READY_TTL_MS);
+  })().finally(() => { if (!expectedSandbox) desktopRepairs.delete(threadId); });
+  if (!expectedSandbox) desktopRepairs.set(threadId, repair);
   return repair;
 }
 
@@ -112,10 +116,12 @@ desktopProxyRoutes.get(
         void (async () => {
           try {
             // Org gate: threadId IS its root run's id.
-            if (!(await getRunForOrg(orgId, threadId))) throw new Error("thread not found");
+            const run = await getRunForOrg(orgId, threadId);
+            if (!run) throw new Error("thread not found");
+            const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId);
 
-            await ensureDesktopPreview(threadId);
-            const ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT);
+            await ensureDesktopPreview(threadId, expectedSandbox);
+            const ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT, false, expectedSandbox);
             const wsUrl = `${ep.baseUrl.replace(/^http/, "ws")}/websockify${search}`;
             // Bun's WebSocket client takes custom headers (browsers can't) — this
             // is how the Daytona preview token rides the upstream socket.
@@ -190,11 +196,14 @@ desktopProxyRoutes.get(
 // that follows reuses the short readiness lease and fetches the HTML exactly once.
 desktopProxyRoutes.get("/:threadId/ready", async (c) => {
   const threadId = c.req.param("threadId") ?? "";
-  if (!(await getRunForOrg(c.get("orgId"), threadId))) {
+  const orgId = c.get("orgId");
+  const run = await getRunForOrg(orgId, threadId);
+  if (!run) {
     return c.json({ error: "thread not found" }, 404);
   }
   try {
-    await ensureDesktopPreview(threadId);
+    const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId);
+    await ensureDesktopPreview(threadId, expectedSandbox);
     return c.body(null, 204);
   } catch (error) {
     const message = errorMessage(error);
@@ -213,20 +222,22 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
   const threadId = c.req.param("threadId") ?? "";
   const orgId = c.get("orgId");
 
-  if (!(await getRunForOrg(orgId, threadId))) {
+  const run = await getRunForOrg(orgId, threadId);
+  if (!run) {
     return c.json({ error: "thread not found" }, 404);
   }
 
   const url = new URL(c.req.url);
   const prefix = `/api/desktop-proxy/${threadId}`;
   const subpath = url.pathname.slice(prefix.length) || "/";
+  const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId);
 
   // React uses /ready as its lifecycle probe. Keep direct vnc.html loads as a
   // fallback lifecycle boundary for non-React clients and old open tabs,
   // without repeating Daytona health checks for every noVNC JS/CSS asset.
   if (subpath === "/vnc.html") {
     try {
-      await ensureDesktopPreview(threadId);
+      await ensureDesktopPreview(threadId, expectedSandbox);
     } catch (err) {
       const message = errorMessage(err);
       if (message === "no-sandbox") {
@@ -250,7 +261,7 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
     });
 
   try {
-    let ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT);
+    let ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT, false, expectedSandbox);
     if (subpath === "/vnc.html") {
       const redirect = desktopClientQueryRedirect(url, ep.clientQuery);
       if (redirect) return c.redirect(redirect, 302);
@@ -266,9 +277,9 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
     // cookie) as a 401/403 — re-resolve once (wakes the box, fresh auth) and retry.
     if (isStalePreviewResponse(upstream)) {
       invalidateDesktopPreview(threadId);
-      await ensureDesktopPreview(threadId);
+      await ensureDesktopPreview(threadId, expectedSandbox);
       invalidatePreviewEndpoint(threadId, DESKTOP_PORT);
-      ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT, true);
+      ep = await resolvePreviewEndpoint(threadId, DESKTOP_PORT, true, expectedSandbox);
       if (subpath === "/vnc.html") {
         const redirect = desktopClientQueryRedirect(url, ep.clientQuery);
         if (redirect) return c.redirect(redirect, 302);

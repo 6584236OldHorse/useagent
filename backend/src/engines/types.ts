@@ -1,6 +1,7 @@
 import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import type {
   HarnessSession,
   ProviderSessionBinding,
@@ -120,6 +121,8 @@ export interface EngineRunContext {
   /** Complete durable provider/runtime authority for current rows. Legacy rows
    * may carry only `engineSessionId`; recovery must not infer missing fields. */
   providerSession?: ProviderSessionBinding;
+  /** Durable operator-only fence for the exact sandbox binding this run may use. */
+  expectedSandbox?: ExpectedSandboxBinding | null;
   /** Set ONLY when this run is a VALIDATED native provider command (its name was checked
    *  against the active session catalog at acceptance). When present, the run's `prompt` is
    *  already the exact `/name args` bytes and {@link composeTurnPrompt} delivers it verbatim

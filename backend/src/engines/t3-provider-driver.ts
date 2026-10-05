@@ -31,9 +31,15 @@ import {
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
 import {
+  ExpectedSandboxMismatchError,
   PersonalSandboxConnectionUnavailableError,
+  resolveExpectedSandbox,
   resolveSandboxBindingForSandbox,
 } from "../sandboxes/binding";
+import {
+  parseExpectedSandboxBinding,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
 
 const RUNTIME_POLL_INTERVAL_MS = 125;
 export const T3_SESSION_GENERATION = 2;
@@ -84,8 +90,13 @@ function driverError(code: string, message: string): {
   return { status: "error", code, message };
 }
 
-async function resolveRuntime(runtime: HarnessRuntime): Promise<SandboxHandle | null> {
+async function resolveRuntime(
+  runtime: HarnessRuntime,
+  expected?: ExpectedSandboxBinding,
+  threadId?: string,
+): Promise<SandboxHandle | null> {
   if (runtime.kind !== "sandbox") return null;
+  if (expected) return await resolveExpectedSandbox(expected, threadId!);
   return await (await resolveSandboxBindingForSandbox(runtime.id)).provider.get(runtime.id);
 }
 
@@ -102,11 +113,30 @@ const defaultT3ProviderDriverDependencies = {
 async function resolveDriverRuntime(
   dependencies: T3ProviderDriverDependencies,
   runtime: HarnessRuntime,
+  metadata?: Record<string, unknown>,
+  threadId?: string,
 ): Promise<SandboxHandle | null> {
   try {
-    return await dependencies.resolveRuntime(runtime);
+    const expected = parseExpectedSandboxBinding(metadata?.expectedSandbox);
+    if (expected && (
+      runtime.kind !== "sandbox" ||
+      runtime.id !== expected.sandboxId ||
+      !threadId
+    )) {
+      throw new ExpectedSandboxMismatchError();
+    }
+    const sandbox = expected
+      ? await dependencies.resolveRuntime(runtime, expected, threadId)
+      : await dependencies.resolveRuntime(runtime);
+    if (expected && sandbox?.id !== expected.sandboxId) {
+      throw new ExpectedSandboxMismatchError();
+    }
+    return sandbox;
   } catch (error) {
-    if (error instanceof PersonalSandboxConnectionUnavailableError) throw error;
+    if (
+      error instanceof PersonalSandboxConnectionUnavailableError ||
+      error instanceof ExpectedSandboxMismatchError
+    ) throw error;
     throw new Error("The provider runtime sandbox could not be resolved", { cause: error });
   }
 }
@@ -148,8 +178,15 @@ async function readThreadSnapshot(
   dependencies: T3ProviderDriverDependencies,
   currentSession: HarnessSession,
   signal: AbortSignal,
+  metadata?: Record<string, unknown>,
+  threadId?: string,
 ): Promise<{ readonly sandbox: SandboxHandle; readonly snapshot: RuntimeThreadSnapshot } | null> {
-  const sandbox = await resolveDriverRuntime(dependencies, currentSession.runtime);
+  const sandbox = await resolveDriverRuntime(
+    dependencies,
+    currentSession.runtime,
+    metadata,
+    threadId,
+  );
   if (!sandbox) return null;
   const snapshot = await dependencies.requestEnvironment<RuntimeThreadSnapshot>(
     sandbox,
@@ -246,7 +283,12 @@ export function makeT3ProviderDriver(
       const signal = request.signal ?? AbortSignal.timeout(30_000);
       const ctx = { runId: request.runId, threadId: request.threadId, model: request.model };
       try {
-        const sandbox = await resolveDriverRuntime(dependencies, request.runtime);
+        const sandbox = await resolveDriverRuntime(
+          dependencies,
+          request.runtime,
+          request.metadata,
+          request.threadId,
+        );
         if (!sandbox) {
           return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         }
@@ -299,7 +341,9 @@ export function makeT3ProviderDriver(
         return { status: "ok", value: session(driver, request.runtime, threadId) };
       } catch (error) {
         return driverError(
-          "session_create_failed",
+          error instanceof ExpectedSandboxMismatchError
+            ? error.code
+            : "session_create_failed",
           error instanceof Error ? error.message : "unknown provider runtime session create error",
         );
       }
@@ -314,6 +358,8 @@ export function makeT3ProviderDriver(
           dependencies,
           request.session,
           request.signal ?? AbortSignal.timeout(10_000),
+          request.metadata,
+          typeof request.metadata?.threadId === "string" ? request.metadata.threadId : undefined,
         );
         if (!result) return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         const { snapshot } = result;
@@ -322,7 +368,9 @@ export function makeT3ProviderDriver(
           : driverError("session_invalid", "The provider runtime thread identity changed");
       } catch (error) {
         return driverError(
-          isRuntimeEnvironmentMissingSessionError(error)
+          error instanceof ExpectedSandboxMismatchError
+            ? error.code
+            : isRuntimeEnvironmentMissingSessionError(error)
             ? "session_invalid"
             : "session_resume_failed",
           error instanceof Error ? error.message : "The provider runtime thread is not available",
@@ -343,6 +391,8 @@ export function makeT3ProviderDriver(
           dependencies,
           request.session,
           request.signal ?? AbortSignal.timeout(10_000),
+          request.metadata,
+          request.checkpoint?.eventContext?.threadId,
         );
         if (!result) return { status: "unreachable" };
         const { snapshot } = result;
@@ -371,7 +421,10 @@ export function makeT3ProviderDriver(
           };
         }
         return { status: "no_change" };
-      } catch {
+      } catch (error) {
+        if (error instanceof ExpectedSandboxMismatchError) {
+          return { status: "failed", summary: error.message };
+        }
         return { status: "unreachable" };
       }
     },
@@ -388,7 +441,12 @@ export function makeT3ProviderDriver(
         );
       }
       try {
-        const sandbox = await resolveDriverRuntime(dependencies, request.session.runtime);
+        const sandbox = await resolveDriverRuntime(
+          dependencies,
+          request.session.runtime,
+          request.metadata,
+          request.threadId,
+        );
         if (!sandbox) {
           return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         }
@@ -415,13 +473,13 @@ export function makeT3ProviderDriver(
         return { status: "ok" };
       } catch (error) {
         return driverError(
-          "steer_failed",
+          error instanceof ExpectedSandboxMismatchError ? error.code : "steer_failed",
           error instanceof Error ? error.message : "unknown provider runtime steer error",
         );
       }
     },
 
-    async cancel(currentSession): Promise<HarnessOperationResult> {
+    async cancel(currentSession, _reason, metadata): Promise<HarnessOperationResult> {
       if (!providerSessionMatchesDriver(driver, currentSession)) {
         return driverError("stale_session", "Provider runtime session protocol or generation is stale");
       }
@@ -431,6 +489,8 @@ export function makeT3ProviderDriver(
           dependencies,
           currentSession,
           signal,
+          metadata,
+          typeof metadata?.threadId === "string" ? metadata.threadId : undefined,
         );
         if (!result) return driverError("runtime_unreachable", "The provider runtime sandbox is unreachable");
         const { sandbox, snapshot } = result;
@@ -449,7 +509,7 @@ export function makeT3ProviderDriver(
         return { status: "ok" };
       } catch (error) {
         return driverError(
-          "cancel_failed",
+          error instanceof ExpectedSandboxMismatchError ? error.code : "cancel_failed",
           error instanceof Error ? error.message : "unknown provider runtime cancel error",
         );
       }

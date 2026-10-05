@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createOperatorRoutes } from "./operator-routes";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 const SECRET = "operator-test-secret-with-at-least-32-chars";
 
@@ -8,7 +9,7 @@ function makeApp() {
     pump: string[];
     cancel: Array<[string, string]>;
     approve: string[];
-    admit: Array<[string, string]>;
+    admit: Array<[string, string, ExpectedSandboxBinding | null]>;
     admission: Array<{ open: boolean; operationId: string; actor: string; reason: string }>;
     inflight: number;
   } = {
@@ -47,8 +48,8 @@ function makeApp() {
       calls.approve.push(requestId);
       return { approved: true };
     },
-    admitReleaseParity: async (c, body) => {
-      calls.admit.push([c.get("orgId"), c.get("userId") ?? ""]);
+    admitReleaseParity: async (c, body, expectedSandbox) => {
+      calls.admit.push([c.get("orgId"), c.get("userId") ?? "", expectedSandbox]);
       return c.json({ orgId: c.get("orgId"), userId: c.get("userId"), prompt: body.prompt }, 201);
     },
   });
@@ -205,7 +206,57 @@ describe("operator dispatch bridge", () => {
     );
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ orgId: "org-1", userId: "user-1", prompt: "probe" });
-    expect(calls.admit).toEqual([["org-1", "user-1"]]);
+    expect(calls.admit).toEqual([["org-1", "user-1", null]]);
+  });
+
+  test("accepts the expected sandbox only from the operator envelope", async () => {
+    const { app, calls } = makeApp();
+    const expectedSandbox: ExpectedSandboxBinding = {
+      version: 1,
+      sandboxId: "sandbox-1",
+      provider: "cube",
+      credential: "env",
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "a".repeat(64),
+    };
+    const headers = { authorization: `Bearer ${SECRET}` };
+    expect((await fetchOperator(app, post("/admit-release-eval", {
+      orgId: "org-1",
+      userId: "user-1",
+      expectedSandbox,
+      run: { prompt: "constrained" },
+    }, headers))).status).toBe(201);
+    expect((await fetchOperator(app, post("/admit-release-eval", {
+      orgId: "org-1",
+      userId: "user-1",
+      run: { prompt: "ordinary", expectedSandbox },
+    }, headers))).status).toBe(201);
+    expect(calls.admit).toEqual([
+      ["org-1", "user-1", expectedSandbox],
+      ["org-1", "user-1", null],
+    ]);
+  });
+
+  test("rejects an invalid expected sandbox with the stable code", async () => {
+    const { app, calls } = makeApp();
+    const response = await fetchOperator(app, post("/admit-release-eval", {
+      orgId: "org-1",
+      userId: "user-1",
+      expectedSandbox: {
+        version: 1,
+        sandboxId: "sandbox-1",
+        provider: "cube",
+        credential: "user",
+        ownerOrgId: "org-1",
+        ownerUserId: 123,
+        credentialGeneration: "a".repeat(64),
+      },
+      run: { prompt: "invalid" },
+    }, { authorization: `Bearer ${SECRET}` }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_expected_sandbox_binding" });
+    expect(calls.admit).toEqual([]);
   });
 
   test("approves a gateway approval request through the canary hook", async () => {

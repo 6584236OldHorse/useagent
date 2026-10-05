@@ -33,7 +33,7 @@ export function runIntentFromAcceptedRun(
  * (prompt, model, engine, parent, repos, skill) participates.
  */
 export function runIntentFingerprint(intent: RunCommandIntent): string {
-  const canonical = JSON.stringify([
+  const fields: unknown[] = [
     intent.prompt,
     intent.model,
     intent.engine,
@@ -64,6 +64,18 @@ export function runIntentFingerprint(intent: RunCommandIntent): string {
     intent.commandProvider,
     intent.commandSessionId,
     intent.commandCatalogRevision,
-  ]);
+  ];
+  if (intent.expectedSandbox) {
+    fields.push([
+      intent.expectedSandbox.version,
+      intent.expectedSandbox.sandboxId,
+      intent.expectedSandbox.provider,
+      intent.expectedSandbox.credential,
+      intent.expectedSandbox.ownerOrgId,
+      intent.expectedSandbox.ownerUserId,
+      intent.expectedSandbox.credentialGeneration,
+    ]);
+  }
+  const canonical = JSON.stringify(fields);
   return new Bun.CryptoHasher("sha256").update(canonical).digest("hex");
 }

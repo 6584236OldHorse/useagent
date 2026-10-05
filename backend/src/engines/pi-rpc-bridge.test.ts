@@ -6,6 +6,7 @@ import type { ProviderEventInput } from "../runs/provider-events";
 import { createPiRpcFrameMapper } from "./pi-canonical";
 import { runNativeBridgeTurn } from "./native-bridge-runtime";
 import { DefaultPiBridgeManager } from "./pi-rpc-bridge";
+import { ExpectedSandboxMismatchError } from "../sandboxes/binding";
 import {
   cleanupOwnedPiTransports,
   piProcessSessionPrefix,
@@ -2155,5 +2156,67 @@ describe("Pi RPC frame parsing", () => {
       resumeSessionFile: first.sessionFile,
     })).rejects.toThrow("delete rejected");
     expect(control.lifecycle.filter((value) => value.startsWith("create:"))).toHaveLength(1);
+  });
+
+  test("rejects a cached bridge from another expected binding without teardown", async () => {
+    const { sandbox, control } = processSessionSandbox();
+    const manager = new DefaultPiBridgeManager();
+    const runtime = {
+      model: { provider: "openai" as const, modelId: "gpt-5.6-luna", selector: "openai/gpt-5.6-luna" },
+      fingerprint: "runtime",
+      knowledgeTools: false,
+      executable: "/opt/useagent/pi-runtime/cli.js",
+      bunExecutable: "/opt/useagent/pi-runtime/bun",
+      runAsUser: "useagent-pi",
+      home: "/home/useagent-pi",
+    };
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: sandbox.id,
+      provider: "box" as const,
+      credential: "env" as const,
+      ownerOrgId: "org-1",
+      ownerUserId: null,
+      credentialGeneration: "a".repeat(64),
+    };
+    const first = await manager.ensure({
+      sandbox,
+      workdir: "/work",
+      runtime,
+      expectedSandbox,
+    });
+    expect(await manager.ensure({
+      sandbox,
+      workdir: "/work",
+      runtime,
+      resumeSessionFile: first.sessionFile,
+      expectedSandbox,
+    })).toBe(first);
+    const teardownCount = () => control.lifecycle.filter(
+      (value) => value.startsWith("delete:") || value === "delete-session",
+    ).length;
+    const beforeTeardown = teardownCount();
+
+    await expect(manager.ensure({
+      sandbox,
+      workdir: "/work",
+      runtime,
+      resumeSessionFile: first.sessionFile,
+      expectedSandbox: {
+        ...expectedSandbox,
+        credentialGeneration: "b".repeat(64),
+      },
+    })).rejects.toBeInstanceOf(ExpectedSandboxMismatchError);
+    expect(teardownCount()).toBe(beforeTeardown);
+    expect(control.writerAlive()).toBe(true);
+    expect(manager.get(first.sessionFile)).toBe(first);
+    await expect(manager.remove(first.sessionFile, {
+      ...expectedSandbox,
+      credentialGeneration: "b".repeat(64),
+    })).rejects.toBeInstanceOf(ExpectedSandboxMismatchError);
+    expect(teardownCount()).toBe(beforeTeardown);
+    expect(control.writerAlive()).toBe(true);
+    expect(manager.get(first.sessionFile)).toBe(first);
+    await first.dispose();
   });
 });

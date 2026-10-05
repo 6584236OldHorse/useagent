@@ -12,6 +12,8 @@ import {
   type PreviewEndpoint,
 } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
+import { getThreadExpectedSandbox } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
 // PORT PROXY - same-origin bridge to ANY port an agent serves inside a thread's
@@ -42,8 +44,8 @@ export function rewriteProxyLocation(location: string | null, prefix: string): s
 }
 
 export interface PortProxyDeps {
-  readonly threadVisible: (orgId: string, threadId: string) => Promise<boolean>;
-  readonly resolveEndpoint: (threadId: string, port: number, force?: boolean) => Promise<PreviewEndpoint>;
+  readonly threadBinding: (orgId: string, threadId: string) => Promise<{ expectedSandbox: ExpectedSandboxBinding | null } | null>;
+  readonly resolveEndpoint: typeof resolvePreviewEndpoint;
   readonly invalidateEndpoint: (threadId: string, port: number) => void;
   readonly fetch: typeof fetch;
 }
@@ -67,7 +69,8 @@ export function createPortProxyRoutes(
     if (port === null) return c.json({ error: "port must be a number from 1 to 65535" }, 400);
     // Org gate: a thread id IS its root run's id, so this both authorizes the org
     // and 404s a cross-org or unknown thread (indistinguishable, as elsewhere).
-    if (!(await deps.threadVisible(c.get("orgId"), threadId))) {
+    const binding = await deps.threadBinding(c.get("orgId"), threadId);
+    if (!binding) {
       return c.json({ error: "thread not found" }, 404);
     }
 
@@ -87,7 +90,7 @@ export function createPortProxyRoutes(
       });
 
     try {
-      let ep = await deps.resolveEndpoint(threadId, port);
+      let ep = await deps.resolveEndpoint(threadId, port, false, binding.expectedSandbox);
       let upstream: Response;
       try {
         upstream = await forward(ep);
@@ -98,7 +101,7 @@ export function createPortProxyRoutes(
       // credential answers 401/403/5xx: re-resolve once (wakes the box, fresh
       // auth) and retry before reporting the port as dead.
       if (isStalePreviewResponse(upstream)) {
-        ep = await deps.resolveEndpoint(threadId, port, true);
+        ep = await deps.resolveEndpoint(threadId, port, true, binding.expectedSandbox);
         upstream = await forward(ep);
       }
       if (upstream.status === 502) {
@@ -127,7 +130,10 @@ export function createPortProxyRoutes(
 }
 
 export const portProxyRoutes = createPortProxyRoutes({
-  threadVisible: async (orgId, threadId) => Boolean(await getRunForOrg(orgId, threadId)),
+  threadBinding: async (orgId, threadId) => {
+    const run = await getRunForOrg(orgId, threadId);
+    return run ? { expectedSandbox: run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId) } : null;
+  },
   resolveEndpoint: resolvePreviewEndpoint,
   invalidateEndpoint: invalidatePreviewEndpoint,
   fetch,

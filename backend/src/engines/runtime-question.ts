@@ -1,4 +1,6 @@
 import { resolvePreviewSandbox } from "../runs/preview-proxy";
+import { resolveExpectedSandbox } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import {
   providerEventExists,
   recordProviderEvent,
@@ -18,6 +20,19 @@ import {
 } from "./runtime-orchestration";
 
 const RUNTIME_QUESTION_TIMEOUT_MS = 15_000;
+
+export function resolveRuntimeQuestionSandbox(
+  threadId: string,
+  expectedSandbox: ExpectedSandboxBinding | null | undefined,
+  dependencies = {
+    expected: resolveExpectedSandbox,
+    preview: resolvePreviewSandbox,
+  },
+) {
+  return expectedSandbox
+    ? dependencies.expected(expectedSandbox, threadId)
+    : dependencies.preview(threadId);
+}
 
 function record(value: unknown): Readonly<Record<string, unknown>> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -104,11 +119,12 @@ export async function replyToRuntimeQuestion(input: {
   readonly answers: unknown;
   readonly signal: AbortSignal;
   readonly redact: Pick<SecretRedactor, "text" | "unknown">;
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
 }): Promise<{ alreadyAnswered: boolean }> {
   const resolvedEventId = questionEventId(input.runId, input.questionId, "replied");
   if (await providerEventExists(resolvedEventId)) return { alreadyAnswered: true };
 
-  const sandbox = await resolvePreviewSandbox(input.threadId);
+  const sandbox = await resolveRuntimeQuestionSandbox(input.threadId, input.expectedSandbox);
   const signal = AbortSignal.any([
     input.signal,
     AbortSignal.timeout(RUNTIME_QUESTION_TIMEOUT_MS),

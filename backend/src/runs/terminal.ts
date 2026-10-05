@@ -8,7 +8,7 @@ import { resolvePreviewSandbox } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
 import { createTerminalChunkDecoder } from "./terminal-decode";
 import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
-import { PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
+import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
 
 /** The notice line the pane recognizes as a declared capability gap (no reconnect loop). */
 export const TERMINAL_UNAVAILABLE_NOTICE = "[useAgent] terminal unavailable:";
@@ -73,7 +73,8 @@ terminalRoutes.get(
                 `run not found (${runId.slice(0, 8) || "no id"} org=${orgId ?? "none"})`,
               );
             }
-            const sandbox = await resolvePreviewSandbox(run.threadId);
+            const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, run.threadId);
+            const sandbox = await resolvePreviewSandbox(run.threadId, expectedSandbox);
             const sandboxId = sandbox.id;
             const state = (sandbox as { state?: string }).state;
             if (state === "stopped" || state === "paused" || state === "archived") {

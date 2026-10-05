@@ -7,6 +7,7 @@ import { replyToRuntimeQuestion } from "../engines/runtime-question";
 import type { AppEnv } from "../http";
 import { strictOrgSecretRedactor } from "../secrets/store";
 import { getRunForOrg } from "./repo";
+import { getThreadExpectedSandbox } from "../sandboxes/binding";
 
 /** Register control traffic for a provider session already running inside a
  * turn. These replies unblock the resident session; they never enqueue a run. */
@@ -48,6 +49,7 @@ export function registerProviderSessionRoutes(routes: Hono<AppEnv>): void {
         answers: body.answers,
         signal: c.req.raw.signal,
         redact,
+        expectedSandbox: run.expectedSandbox ?? await getThreadExpectedSandbox(c.get("orgId"), run.threadId),
       });
       return c.json({ ok: true, already_answered: result.alreadyAnswered });
     } catch (error) {
@@ -87,6 +89,7 @@ export function registerProviderSessionRoutes(routes: Hono<AppEnv>): void {
         requestId: c.req.param("requestId"),
         decision: body.decision,
         signal: c.req.raw.signal,
+        expectedSandbox: run.expectedSandbox ?? await getThreadExpectedSandbox(c.get("orgId"), run.threadId),
       });
       return c.json({ ok: true, already_answered: result.alreadyAnswered });
     } catch (error) {

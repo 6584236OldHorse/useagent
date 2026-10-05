@@ -30,7 +30,7 @@ function harness(overrides: Partial<PortProxyDeps> & {
     resolvedAt: Date.now(),
   });
   const deps: PortProxyDeps = {
-    threadVisible: async (orgId, threadId) => orgId === "org-a" && threadId === "thread-1",
+    threadBinding: async (orgId, threadId) => orgId === "org-a" && threadId === "thread-1" ? { expectedSandbox: null } : null,
     resolveEndpoint: async (threadId, port, force = false) => {
       resolves.push({ threadId, port, force });
       return endpoint(port);
@@ -121,7 +121,16 @@ describe("port proxy", () => {
   });
 
   test("a stale link is re-resolved once, and a dead port is reported by number", async () => {
+    const expectedSandbox = { version: 1 as const, sandboxId: "box-1", provider: "box" as const,
+      credential: "env" as const, ownerOrgId: "org-a", ownerUserId: null, credentialGeneration: "a".repeat(64) };
+    const bindings: unknown[] = [];
     const { app, calls, resolves } = harness({
+      threadBinding: async () => ({ expectedSandbox }),
+      resolveEndpoint: async (threadId, port, force = false, binding) => {
+        bindings.push(binding);
+        resolves.push({ threadId, port, force });
+        return { sandboxId: "box-1", baseUrl: "https://fixture.invalid", token: "", headers: {}, resolvedAt: Date.now() };
+      },
       answer: () => new Response("bad gateway", { status: 502 }),
     });
     const res = await app.request("/api/port-proxy/thread-1/8080/");
@@ -131,6 +140,7 @@ describe("port proxy", () => {
     });
     expect(calls).toHaveLength(2);
     expect(resolves.map((r) => r.force)).toEqual([false, true]);
+    expect(bindings).toEqual([expectedSandbox, expectedSandbox]);
   });
 
   test("an app's absolute redirect stays inside the bridge", async () => {

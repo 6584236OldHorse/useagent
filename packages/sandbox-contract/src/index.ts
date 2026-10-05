@@ -233,6 +233,10 @@ export interface SandboxTemplateStatus {
 }
 
 export interface SandboxProvider {
+  /** Backend-only SHA-256 of the captured transport namespace and credential.
+   * Missing means the provider cannot attest an execution binding. Never sent
+   * to a sandbox or used as a credential. */
+  readonly connectionFingerprint?: string;
   create(options?: SandboxCreateOptions): Promise<SandboxHandle>;
   get(sandboxId: string): Promise<SandboxHandle>;
   list(): AsyncIterable<SandboxHandle>;
