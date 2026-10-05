@@ -56,6 +56,8 @@ export interface MuxStream {
   reset(reason: string): void;
   /** Settles when both directions are done (resolve) or the stream was reset (reject). */
   readonly done: Promise<void>;
+  /** Why the stream failed, or null while it is healthy or finished cleanly. */
+  readonly failure: Error | null;
 }
 
 export interface MuxHandlers {
@@ -94,6 +96,8 @@ interface StreamState {
   stream: MuxStream;
   /** Why the stream finished early, for writers that wake up after the fact. */
   error: Error | null;
+  /** Set only by an abnormal finish (reset, refusal, link closed). */
+  failure: Error | null;
   controller: ReadableStreamDefaultController<Uint8Array> | null;
   /** Bytes received and not yet handed to the consumer. */
   inbound: Uint8Array[];
@@ -219,7 +223,7 @@ export class Mux {
     const data = decodeDataFrame(bytes);
     if (!data) return;
     const state = this.streams.get(data.streamId);
-    if (!state || state.remoteClosed) return;
+    if (!state || state.remoteClosed || data.payload.byteLength === 0) return;
     state.recvOutstanding += data.payload.byteLength;
     if (state.recvOutstanding > this.window) {
       this.finishStream(state, new Error("peer exceeded the stream window"));
@@ -342,14 +346,17 @@ export class Mux {
       this.send({ t: "rpc.error", id, code: "unsupported", message: `no handler for ${method}` });
       return;
     }
+    let encoded: string;
     try {
       const result = await this.handlers.onRpc(method, params);
-      this.send({ t: "rpc.result", id, result: result ?? null });
+      encoded = encodeControlFrame({ t: "rpc.result", id, result: result ?? null });
     } catch (error) {
       const code = error instanceof RpcError ? error.code : "internal";
       const message = error instanceof Error ? error.message : String(error);
       this.send({ t: "rpc.error", id, code, message });
+      return;
     }
+    this.sendRaw(encoded);
   }
 
   private async acceptStream(id: number, target: unknown): Promise<void> {
@@ -391,6 +398,7 @@ export class Mux {
       remoteClosed: false,
       finished: false,
       error: null,
+      failure: null,
       settle,
     };
     const readable = new ReadableStream<Uint8Array>(
@@ -423,6 +431,7 @@ export class Mux {
           if (!state.finished) mux.send({ t: "stream.credit", id, bytes: chunk.byteLength });
         },
         cancel() {
+          state.inbound = [];
           mux.finishStream(state, new Error("readable cancelled"));
         },
       },
@@ -432,6 +441,9 @@ export class Mux {
       id,
       readable,
       done: settle.promise,
+      get failure() {
+        return state.failure;
+      },
       async write(bytes) {
         let offset = 0;
         while (offset < bytes.byteLength) {
@@ -486,6 +498,7 @@ export class Mux {
     if (state.finished) return;
     state.finished = true;
     state.error = error;
+    state.failure = error;
     state.inbound = [];
     this.streams.delete(state.id);
     if (notifyPeer && !this.closed && !(state.localClosed && state.remoteClosed)) {
@@ -507,45 +520,51 @@ export class Mux {
 /**
  * Write every chunk of `source` to `stream`, then half-close it (unless
  * `end` is false, for callers that decide the ending themselves). A failure on
- * either side ends the pipe: the source is cancelled when the stream fails, the
- * stream is reset when the source fails, even while a write waits for credit.
+ * either side ends the pipe: the source is cancelled when the stream fails,
+ * the stream is reset when the source fails, even while a write waits for
+ * credit or a read is idle. One subscription per side, however many chunks.
  */
 export async function pipeToStream(
   source: ReadableStream<Uint8Array>,
   stream: MuxStream,
   options: { readonly end?: boolean } = {},
 ): Promise<void> {
-  const failure = stream.done.then(
-    () => new Promise<never>(() => {}),
-    (error: unknown) => {
-      throw error instanceof Error ? error : new Error(String(error));
-    },
-  );
-  failure.catch(() => {});
-  let reader: ReturnType<ReadableStream<Uint8Array>["getReader"]> | undefined;
-  let ahead: ReturnType<NonNullable<typeof reader>["read"]> | undefined;
+  const reader = source.getReader();
+  let sourceFailure: Error | null = null;
+  // A failed destination ends the pending read; a failed source ends the pending write.
+  const onStreamFailure = stream.done.catch((error: unknown) => {
+    void reader.cancel(error).catch(() => {});
+  });
+  const onSourceFailure = reader.closed.catch((error: unknown) => {
+    sourceFailure = error instanceof Error ? error : new Error(String(error));
+    stream.reset(`source failed: ${sourceFailure.message}`);
+  });
+  const check = () => {
+    if (sourceFailure) throw sourceFailure;
+    if (stream.failure) throw stream.failure;
+  };
   try {
-    reader = source.getReader();
-    ahead = reader.read();
     for (;;) {
-      const { value, done } = await Promise.race([ahead, failure]);
+      const { value, done } = await reader.read();
+      check();
       if (done) break;
-      // Read ahead so a source that dies while the write waits for credit is seen.
-      ahead = reader.read();
-      const aheadFailure = ahead.then(() => new Promise<never>(() => {}));
-      aheadFailure.catch(() => {});
-      await Promise.race([stream.write(value), failure, aheadFailure]);
+      await stream.write(value);
+      check();
     }
-    if (options.end !== false) stream.end();
+    if (options.end !== false) {
+      stream.end();
+      // end() reports a transport failure through the stream, not by throwing.
+      await Promise.resolve();
+      check();
+    }
   } catch (error) {
     stream.reset(`source failed: ${error instanceof Error ? error.message : String(error)}`);
-    ahead?.catch(() => {});
-    void reader?.cancel(error).catch(() => {});
+    void reader.cancel(error).catch(() => {});
     throw error;
   } finally {
-    ahead?.catch(() => {});
+    await Promise.allSettled([onStreamFailure, onSourceFailure].map((p) => Promise.race([p, Promise.resolve()])));
     try {
-      reader?.releaseLock();
+      reader.releaseLock();
     } catch {
       /* a read may still be pending on a cancelled reader */
     }

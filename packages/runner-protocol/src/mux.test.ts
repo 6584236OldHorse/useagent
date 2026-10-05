@@ -288,6 +288,73 @@ describe("review findings", () => {
     expect(sent.some((m) => m.includes('"stream.reset"') && m.includes("window"))).toBe(true);
   });
 
+  test("pipeToStream fails when the source dies behind a buffered chunk while the destination is stalled", async () => {
+    const { plane, runner } = connectPair({}, { onStreamOpen: () => {} }, { window: 1 });
+    const stream = await plane.openStream({});
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const source = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+        c.enqueue(new Uint8Array(10));
+        c.enqueue(new Uint8Array(1));
+      },
+    });
+    const pipe = pipeToStream(source, stream).then(() => "resolved", (e: unknown) => String(e));
+    await settled();
+    controller.error(new Error("container died"));
+    expect(await pipe).toMatch(/container died/);
+    expect(source.locked).toBe(false);
+    expect(plane.openStreams).toBe(0);
+    await settled();
+    expect(runner.openStreams).toBe(0);
+  });
+
+  test("pipeToStream fails when the final half-close cannot be sent", async () => {
+    let runner!: Mux;
+    const plane = new Mux("plane", {
+      send: (m) => {
+        if (typeof m === "string" && m.includes('"stream.close"')) throw new Error("socket gone");
+        queueMicrotask(() => runner.receive(m));
+      },
+    });
+    runner = new Mux("runner", { send: (m) => queueMicrotask(() => plane.receive(m)) }, { onStreamOpen: () => {} });
+    const stream = await plane.openStream({});
+    const source = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array(3));
+        c.close();
+      },
+    });
+    const pipe = await pipeToStream(source, stream).then(() => "resolved", (e: unknown) => String(e));
+    expect(pipe).toMatch(/transport failed/);
+    expect(plane.isClosed).toBe(true);
+  });
+
+  test("empty data frames are ignored, not queued", async () => {
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, { onStreamOpen: () => {} }, { window: 8 });
+    plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {} }));
+    await settled();
+    for (let i = 0; i < 1000; i += 1) plane.receive(new Uint8Array([1, 0, 0, 0, 1]));
+    expect(plane.openStreams).toBe(1);
+    expect(sent.some((m) => m.includes('"stream.reset"'))).toBe(false);
+  });
+
+  test("an unserialisable rpc result answers that call with an error and keeps the link", async () => {
+    let calls = 0;
+    const { plane, runner } = connectPair({}, {
+      onRpc: async () => {
+        calls += 1;
+        return calls === 1 ? { x: 1n } : { ok: true };
+      },
+    });
+    const first = await plane.rpc("x", {}).catch((e: unknown) => e);
+    expect((first as RpcError).code).toBe("internal");
+    expect((first as RpcError).message).toMatch(/BigInt|serialis/i);
+    expect(runner.isClosed).toBe(false);
+    await expect(plane.rpc("x", {})).resolves.toEqual({ ok: true });
+  });
+
   test("pipeToStream fails when the source dies while a write waits for credit", async () => {
     let received: Promise<unknown> = Promise.resolve();
     const { plane } = connectPair({}, {
