@@ -18,11 +18,12 @@ export type SandboxReleaseResult =
   | { ok: true; released: false; reason: "no_sandbox" }
   | { ok: true; released: false; reason: "connection_revoked"; sandboxId: string }
   | { ok: true; released: true; sandboxId: string }
-  | { ok: false; reason: "not_found" | "thread_active" | "provider_error" };
+  | { ok: false; reason: "not_found" | "thread_active" | "provider_error" | "expected_sandbox_mismatch" };
 
 interface SandboxReleaseDeps {
   readonly provider?: SandboxProvider;
   readonly removePiBridge?: (sessionFile: string) => Promise<void>;
+  readonly expectedSandboxId?: string;
 }
 
 /**
@@ -48,6 +49,9 @@ export async function releaseRunSandbox(
       return { ok: false as const, reason: "thread_active" as const };
     }
     const sandboxId = await getThreadSandboxForOrg(orgId, lockedRun.threadId, tx);
+    if (deps.expectedSandboxId !== undefined && deps.expectedSandboxId !== sandboxId) {
+      return { ok: false as const, reason: "expected_sandbox_mismatch" as const };
+    }
     if (!sandboxId) return { ok: true as const, released: false as const, reason: "no_sandbox" as const };
 
     let provider: SandboxProvider;

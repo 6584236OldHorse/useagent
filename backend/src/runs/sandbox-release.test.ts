@@ -55,8 +55,10 @@ async function runFixture(status: "running" | "completed" = "completed"): Promis
 function fakeProvider(liveIds: Set<string>, getFails = false): {
   provider: SandboxProvider;
   deleted: string[];
+  calls: { get: string[]; list: number; delete: string[] };
 } {
   const deleted: string[] = [];
+  const calls = { get: [] as string[], list: 0, delete: deleted };
   const handle = (id: string): SandboxHandle => ({
     id,
     cpu: 1,
@@ -72,13 +74,16 @@ function fakeProvider(liveIds: Set<string>, getFails = false): {
   });
   return {
     deleted,
+    calls,
     provider: {
       create: async () => handle("created"),
       get: async (id) => {
+        calls.get.push(id);
         if (getFails || !liveIds.has(id)) throw new Error("not found");
         return handle(id);
       },
       async *list() {
+        calls.list += 1;
         for (const id of liveIds) yield handle(id);
       },
     },
@@ -111,6 +116,62 @@ describe("explicit sandbox release", () => {
       engineSessionId: null,
       providerSession: null,
     });
+  });
+
+  test("rejects a differing expected sandbox id without cleanup side effects", async () => {
+    const fixture = await runFixture();
+    const sessionFile = `/sessions/${crypto.randomUUID()}.jsonl`;
+    await db.update(runs).set({ engine: "pi" }).where(eq(runs.id, fixture.runId));
+    await setRunEngineSession(fixture.runId, sessionFile);
+    const unrelatedSandboxId = `sandbox-${crypto.randomUUID()}`;
+    const live = new Set([fixture.sandboxId, unrelatedSandboxId]);
+    const { provider, calls } = fakeProvider(live);
+    const removed: string[] = [];
+
+    expect(await releaseRunSandbox(fixture.orgId, fixture.runId, {
+      provider,
+      expectedSandboxId: `sandbox-${crypto.randomUUID()}`,
+      removePiBridge: async (value) => { removed.push(value); },
+    })).toEqual({ ok: false, reason: "expected_sandbox_mismatch" });
+    expect(calls).toEqual({ get: [], list: 0, delete: [] });
+    expect(removed).toEqual([]);
+    expect(await getThreadSandbox(fixture.runId)).toBe(fixture.sandboxId);
+    expect(live).toEqual(new Set([fixture.sandboxId, unrelatedSandboxId]));
+  });
+
+  test("rejects a missing mapping when an expected sandbox id is supplied", async () => {
+    const fixture = await runFixture();
+    const sessionFile = `/sessions/${crypto.randomUUID()}.jsonl`;
+    await db
+      .update(runs)
+      .set({ engine: "pi", engineSessionId: sessionFile, sandboxId: null })
+      .where(eq(runs.id, fixture.runId));
+    const live = new Set([fixture.sandboxId]);
+    const { provider, calls } = fakeProvider(live);
+    const removed: string[] = [];
+
+    expect(await releaseRunSandbox(fixture.orgId, fixture.runId, {
+      provider,
+      expectedSandboxId: fixture.sandboxId,
+      removePiBridge: async (value) => { removed.push(value); },
+    })).toEqual({ ok: false, reason: "expected_sandbox_mismatch" });
+    expect(calls).toEqual({ get: [], list: 0, delete: [] });
+    expect(removed).toEqual([]);
+    expect(await getThreadSandbox(fixture.runId)).toBeNull();
+    expect(live).toEqual(new Set([fixture.sandboxId]));
+  });
+
+  test("releases normally when the expected sandbox id matches", async () => {
+    const fixture = await runFixture();
+    const live = new Set([fixture.sandboxId]);
+    const { provider, calls } = fakeProvider(live);
+
+    expect(await releaseRunSandbox(fixture.orgId, fixture.runId, {
+      provider,
+      expectedSandboxId: fixture.sandboxId,
+    })).toEqual({ ok: true, released: true, sandboxId: fixture.sandboxId });
+    expect(calls).toEqual({ get: [fixture.sandboxId], list: 0, delete: [fixture.sandboxId] });
+    expect(await getThreadSandbox(fixture.runId)).toBeNull();
   });
 
   test("removes a retained Pi bridge after deleting its sandbox", async () => {
