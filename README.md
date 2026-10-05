@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://app.useagent.org"><b>Try the hosted app</b></a> ·
+  <a href="#use-the-hosted-app"><b>Try the hosted app</b></a> ·
   <a href="#self-hosting"><b>Self-host</b></a> ·
   <a href="https://useagent.org/#demo"><b>Watch the demo</b></a> ·
   <a href="https://useagent.org/docs/"><b>Docs</b></a> ·
@@ -78,6 +78,24 @@ change engines.
 
 > **Alpha software.** UseAgent runs real daily workloads, but APIs and schemas
 > can change between releases. Pin a tag if you need stability.
+
+## Use the hosted app
+
+No install, no credit card. Start here:
+
+1. **Sign up** at [app.useagent.org](https://app.useagent.org) with your email.
+2. **Start a thread** from the home page and say what you want done: a website,
+   a research report, a spreadsheet, a fix in one of your repositories.
+3. **Pick a model.** Free models are always available. Choose one from the
+   Free list in the model menu and go.
+4. **Bring the plan you already have.** Open **Settings → Provider connections**
+   and connect your ChatGPT account to run Codex on your own plan. In India, the
+   free ChatGPT Go plan works too.
+5. **Add more models when you want them.** Paste an API key in the same place.
+   Keys are write-only and never enter the agent's sandbox.
+
+Watch the agent work in its browser and terminal, answer it when it asks, and
+open the files it makes.
 
 ## Features
 
@@ -189,8 +207,7 @@ your configuration. See the [engine guide](https://useagent.org/docs/concepts/en
 
 ## Get started
 
-**Hosted.** The fastest way to try it: sign up at
-[app.useagent.org](https://app.useagent.org) and start a thread.
+**Hosted.** Follow [Use the hosted app](#use-the-hosted-app) above.
 
 **From source.** You need [bun](https://bun.sh) and Postgres 16+ with
 [pgvector](https://github.com/pgvector/pgvector). No Postgres handy? One container does it:
