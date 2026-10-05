@@ -54,7 +54,6 @@ export function unavailableModelOptions(
     .map((entry) => ({
       value: entry.id,
       label: entry.displayName ?? modelLabel(entry.id, engine),
-      tint: "text-text-tertiary",
       disabled: true,
       description: entry.degradationReason === "model_not_allowed"
         ? "Discovered for this account; blocked by deployment policy"
@@ -339,16 +338,16 @@ export function useEnabledEngines(): EngineId[] {
   return useEnabledEngineConfig().engines;
 }
 
-/**
- * The `✳ <engine> ⌄` model picker from the HeyRico hero — an orange asterisk +
- * the current engine label + a dropdown of the sandbox engines. This is the
- * engine selector integrated "next to the model" per spec.
- */
 function RowMark({ option }: { option: string }) {
   const Mark = vendorMarkForModel(option);
   return <Mark className="text-foreground-icon-secondary size-4 shrink-0" aria-hidden />;
 }
 
+/**
+ * The `<mark> <model> ⌄` model picker: the selected model's vendor mark, its
+ * label, and a dropdown of the models this engine accepts, each row led by
+ * its own vendor mark.
+ */
 export function ModelPicker({
   engine,
   model,

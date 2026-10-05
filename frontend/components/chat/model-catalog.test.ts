@@ -191,19 +191,19 @@ describe("engine model catalog", () => {
 
   test("backend-configured catalogs filter and preserve exact submitted ids", () => {
     expect(modelOptionsForEngine("codex", ["gpt-5.6-luna", "gpt-5.4"])).toEqual([
-      { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast", tint: "text-sky-500" },
-      { value: "gpt-5.4", label: "gpt-5.4", tint: "text-text-secondary" },
+      { value: "gpt-5.6-luna", label: "GPT-5.6 Luna · Fast" },
+      { value: "gpt-5.4", label: "gpt-5.4" },
     ]);
     expect(modelOptionsForEngine("opencode", ["openai/gpt-5.6-sol"])[0]?.value).toBe(
       "openai/gpt-5.6-sol",
     );
     expect(modelOptionsForEngine("claude", ["claude-opus-5"])).toEqual([
-      { value: "claude-opus-5", label: "Opus 5", tint: "text-orange-500" },
+      { value: "claude-opus-5", label: "Opus 5" },
     ]);
     expect(modelOptionsForEngine("codex", ["gpt-future"], [
       { id: "gpt-future", displayName: "Future Model" },
     ])).toEqual([
-      { value: "gpt-future", label: "Future Model", tint: "text-text-secondary" },
+      { value: "gpt-future", label: "Future Model" },
     ]);
   });
 
@@ -237,7 +237,6 @@ describe("engine model catalog", () => {
       {
         value: "openai/gpt-5.6-sol",
         label: "GPT-5.6 Sol",
-        tint: "text-text-tertiary",
         disabled: true,
         description: "Currently unavailable",
       },

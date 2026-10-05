@@ -1,12 +1,11 @@
 import type { ComponentType } from "react";
-import { RiChat1Line } from "@remixicon/react";
-import { AsteriskMark } from "@/components/foundations/brand/asterisk-mark";
+import { RiChat1Line, RiCpuLine } from "@remixicon/react";
 import { cn } from "@/utils/cn";
 
 /**
  * Vendor marks for the engine and model pickers, one shape per vendor so a
  * row is recognisable before its label is read. Named by shape; the shapes
- * are the vendors' own marks: the knot (OpenAI), the starburst (Anthropic)
+ * are the vendors' own marks: the knot (OpenAI), the starburst (Claude)
  * and the spark (Google Gemini) from the simple-icons set (CC0), the terminal
  * block (OpenCode) and the quad (Pi) from abhishek.it. All draw in
  * currentColor so they take the row's icon colour like every other icon.
@@ -46,7 +45,7 @@ export function SparkMark({ className, "aria-hidden": ariaHidden = true }: MarkP
 export function TerminalBlockMark({ className, "aria-hidden": ariaHidden = true }: MarkProps) {
   return (
     // biome-ignore lint/a11y/noSvgWithoutTitle: presentational vendor mark, labelled by its row
-    <svg viewBox="96 64 288 384" fill="currentColor" aria-hidden={ariaHidden} className={cn("size-4", className)}>
+    <svg viewBox="128 96 256 320" fill="currentColor" aria-hidden={ariaHidden} className={cn("size-4", className)}>
       <path d={'M320 224V352H192V224H320Z'} />
       <path d={'M384 416H128V96H384V416ZM320 160H192V352H320V160Z'} fillRule="evenodd" clipRule="evenodd" />
     </svg>
@@ -56,7 +55,7 @@ export function TerminalBlockMark({ className, "aria-hidden": ariaHidden = true 
 export function QuadMark({ className, "aria-hidden": ariaHidden = true }: MarkProps) {
   return (
     // biome-ignore lint/a11y/noSvgWithoutTitle: presentational vendor mark, labelled by its row
-    <svg viewBox="0 0 800 800" fill="currentColor" aria-hidden={ariaHidden} className={cn("size-4", className)}>
+    <svg viewBox="165 165 470 470" fill="currentColor" aria-hidden={ariaHidden} className={cn("size-4", className)}>
       <path d={'M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z'} fillRule="evenodd" clipRule="evenodd" />
       <path d={'M517.36 400 H634.72 V634.72 H517.36 Z'} />
     </svg>
@@ -69,10 +68,19 @@ const MODEL_VENDOR_MARKS: Record<string, IconComponent> = {
   google: SparkMark,
 };
 
-/** The mark for a model id such as `openai/gpt-5.6-luna`; unknown vendors get the useAgent asterisk. */
+/** Bare ids (the Claude and Codex catalogs, discovered rows) name their family in the first token. */
+function familyOfBareId(modelId: string): string {
+  const head = modelId.toLowerCase();
+  if (head.startsWith("claude")) return "anthropic";
+  if (head.startsWith("gpt") || /^o\d/.test(head)) return "openai";
+  if (head.startsWith("gemini")) return "google";
+  return "";
+}
+
+/** The mark for a model id such as `openai/gpt-5.6-luna` or `claude-opus-5`; unknown vendors get a neutral glyph. */
 export function vendorMarkForModel(modelId: string): IconComponent {
-  const vendor = modelId.includes("/") ? modelId.slice(0, modelId.indexOf("/")) : "";
-  return MODEL_VENDOR_MARKS[vendor] ?? AsteriskMark;
+  const vendor = modelId.includes("/") ? modelId.slice(0, modelId.indexOf("/")) : familyOfBareId(modelId);
+  return MODEL_VENDOR_MARKS[vendor] ?? RiCpuLine;
 }
 
 const ENGINE_MARKS: Record<string, IconComponent> = {
@@ -83,7 +91,7 @@ const ENGINE_MARKS: Record<string, IconComponent> = {
   chat: RiChat1Line,
 };
 
-/** The mark for an engine id; unknown engines get the useAgent asterisk. */
+/** The mark for an engine id; unknown engines get a neutral glyph. */
 export function engineMarkFor(engineId: string): IconComponent {
-  return ENGINE_MARKS[engineId] ?? AsteriskMark;
+  return ENGINE_MARKS[engineId] ?? RiCpuLine;
 }
