@@ -11,15 +11,8 @@ import { captureChatExchange } from "./capture";
 import { chatModelCatalog } from "./models";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
-import { chatModel, newChatAccount, streamChat, type ChatMessage } from "./stream";
-import { chargeChatTurn, noteChatGeneration } from "./turn";
-import {
-  assertSpendAllowance,
-  discardSpendCharge,
-  openSpendCharge,
-  SpendAllowanceExceededError,
-} from "../runs/spend";
-import { errorMessage } from "../util/error-message";
+import { chatModel, streamChat, type ChatMessage } from "./stream";
+import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 
 /**
  * Lightweight Chat API (#122) - mounted at /api/chat. A NO-SANDBOX conversational
@@ -89,9 +82,9 @@ chatRoutes.post("/", async (c) => {
   const orgId = c.get("orgId");
   // The identity orgScope verified, carried through rather than resolved a
   // second time (a failed second lookup must never turn a member into nobody
-  // and hand them an uncharged, house-keyed answer). The dev fallback is
-  // anonymous here: no member credential, no allowance, no charge, and
-  // personal-scope retrieval fails closed. Anything else fails closed.
+  // and hand them a house-keyed answer past their allowance). The dev fallback
+  // is anonymous here: no member credential, no allowance, and personal-scope
+  // retrieval fails closed. Anything else fails closed.
   const identitySource = c.get("identitySource");
   if (identitySource !== "session" && identitySource !== "dev") {
     return c.json({ error: "unauthorized" }, 401);
@@ -106,28 +99,12 @@ chatRoutes.post("/", async (c) => {
     return c.json({ error: "chat is not configured (no OpenRouter credential)" }, 503);
   }
   // The same allowance every run ingress enforces, before any model call: a
-  // member at the cap is refused here too, and the turn below is charged.
+  // member at the cap is refused here too. The turn itself is not metered yet.
   try {
     await assertSpendAllowance(orgId, userId);
   } catch (error) {
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     throw error;
-  }
-  // The member's charge is opened BEFORE any model call, so the intent to
-  // charge is durable from the start: a completion that fails to write leaves
-  // a pending entry the sweep settles, never a lost figure. A ledger that
-  // cannot take the intent takes no turn.
-  const charge = userId ? { key: `chat:${crypto.randomUUID()}`, orgId, userId } : null;
-  if (charge) {
-    try {
-      await openSpendCharge(charge);
-    } catch (error) {
-      console.error(`[spend] could not open chat charge ${charge.key}:`, errorMessage(error));
-      return c.json(
-        { error: "ledger_unavailable", message: "The spend ledger is unavailable. Try again in a moment." },
-        503,
-      );
-    }
   }
   console.info(`[chat] org ${orgId} served by ${resolved.source}`);
 
@@ -169,16 +146,8 @@ chatRoutes.post("/", async (c) => {
           /* already closed */
         }
       };
-      if (signal.aborted) {
-        // Gone before any model call: the open charge is dropped, not left pending.
-        if (charge) void discardSpendCharge(charge.key).catch((error) => {
-          console.error(`[spend] could not drop chat charge ${charge.key}:`, errorMessage(error));
-        });
-        return cleanup();
-      }
+      if (signal.aborted) return cleanup();
       signal.addEventListener("abort", cleanup);
-      const account = newChatAccount();
-      let completed = false;
 
       void (async () => {
         try {
@@ -210,20 +179,11 @@ chatRoutes.post("/", async (c) => {
           ].filter(Boolean).join("\n\n");
           const llmMessages: ChatMessage[] = [{ role: "system", content: system }, ...messages];
           let answer = "";
-          let generationNoted = false;
-          for await (const delta of streamChat(llmMessages, model, resolved.value, signal, account)) {
+          for await (const delta of streamChat(llmMessages, model, resolved.value, signal)) {
             if (closed) return;
-            if (charge && !generationNoted && account.generationId) {
-              // Noted as soon as the stream names it (retried, and remembered
-              // for the sweep if it will not land), so a charge this process
-              // never completes can still be priced from the provider's record.
-              generationNoted = true;
-              void noteChatGeneration(charge, account.generationId);
-            }
             answer += delta;
             sendEvent("delta", { delta });
           }
-          completed = true;
           if (!closed) {
             sendEvent("done", {});
             // Governed capture parity (item 7): a COMPLETED exchange (never an
@@ -235,8 +195,6 @@ chatRoutes.post("/", async (c) => {
         } catch {
           if (!closed) sendEvent("error", { error: "chat request failed" });
         } finally {
-          // Charged however the stream ended; the response never waits on it.
-          if (charge) void chargeChatTurn({ ...charge, account, credential: resolved, completed });
           cleanup();
         }
       })();
