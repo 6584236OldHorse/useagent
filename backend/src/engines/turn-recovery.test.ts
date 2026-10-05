@@ -41,7 +41,7 @@ describe("turn recovery policy", () => {
     expect(source).toContain("runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),");
     expect(source).toContain("throw new RuntimeTurnFailedError(applied.error);");
     // The continuation baseline and the late re-read share the first attempt's projector.
-    expect(source).toContain("projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen() });");
+    expect(source).toContain("projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen(), steps: projector.steps() });");
     expect(source).toContain("priorTurnId: turnBase.thread.latestTurn?.turnId ?? null,");
   });
 

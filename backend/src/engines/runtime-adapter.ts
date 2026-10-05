@@ -711,7 +711,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               }
               await ctx.emit({ kind: "task", label: recovery.label, chip: `runtime:${engine}` });
               turnBase = settledSnapshot;
-              projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen() });
+              projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen(), steps: projector.steps() });
               turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
             }
           }

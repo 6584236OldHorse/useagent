@@ -22,6 +22,8 @@ export interface TurnProjector {
   apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void): Promise<AppliedSnapshot>;
   /** Activity revisions applied so far, or handed in as already seen. */
   seen(): ReadonlyMap<string, string>;
+  /** The step each activity key was recorded under, so a later revision updates it instead of adding another. */
+  steps(): ReadonlyMap<string, string>;
   readonly publishedText: string;
   readonly finalText: string;
 }
@@ -49,10 +51,11 @@ export function createTurnProjector(input: {
   readonly redact: ReturnType<typeof createSecretRedactor>;
   readonly engine: RuntimeEngineId | null;
   readonly seen: ReadonlyMap<string, string>;
+  readonly steps?: ReadonlyMap<string, string>;
 }): TurnProjector {
   const { ctx, redact, engine } = input;
   const revisions = new Map(input.seen);
-  const steps = new Map<string, string>();
+  const steps = new Map(input.steps ?? []);
   const threadId = runtimeThreadId(ctx);
   let publishedText = "";
   let finalText = "";
@@ -60,6 +63,7 @@ export function createTurnProjector(input: {
     get publishedText() { return publishedText; },
     get finalText() { return finalText; },
     seen: () => revisions,
+    steps: () => steps,
     async apply(snapshot, observe) {
       const toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
       for (const activity of snapshot.thread.activities) {
