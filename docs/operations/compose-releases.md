@@ -98,7 +98,12 @@ Flags:
   runs that were interrupted.
 
 The final stdout line is one JSON object with `status`, `gates`, `drain`, and
-the timing metrics; gate output goes to stderr.
+the timing metrics; gate output goes to stderr. Each gate has a 15-minute
+budget and is killed on expiry; a gate that times out or cannot launch counts
+as failed. After a failed gate, `status` is `rolled-back`, the rollback's own
+`compensated` or `failed-closed`, or `rollback-error`, and `error` names both
+the gate and any recovery problem. `--gates` is refused on a bootstrap
+promotion because there is no previous release to roll back to.
 
 Certification on demand and on a schedule lives in the `gates.yml` workflow. It
 runs the full canary matrix against the promoted release and reports the
