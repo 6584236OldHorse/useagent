@@ -31,7 +31,7 @@ import type { NativeFrame } from "@/components/chat/native-events";
 import { ProductChildDetail } from "@/components/chat/product-child-detail";
 import type { SubagentCard } from "@/components/chat/subagents";
 import type { ThreadRelationship } from "@useagent/agent-client";
-import { type ApiStep } from "@/components/chat/types";
+import { type ApiStep, type EngineId } from "@/components/chat/types";
 import { useProductChildGraphs } from "@/components/chat/use-product-child-graphs";
 import { formatDuration } from "@/utils/format";
 import type { ChildKind } from "@/components/chat/child-labels";
@@ -191,8 +191,10 @@ export function AgentsRail({
   focusExecutionRunId = null,
   onClearProductFocus,
   onClearNativeSessionFocus,
+  engine = null,
 }: {
   rootRunId?: string | null;
+  engine?: EngineId | null;
   parentThreadId?: string | null;
   steps: ApiStep[];
   live: boolean;
@@ -276,8 +278,9 @@ export function AgentsRail({
       delegationEdges: executionSummary?.delegationEdges,
       canonicalEvents,
       runLive,
+      engine,
     }),
-    [cards, fidelity, childSessions, productChildren, productGraphs, graph, executionSummary, canonicalEvents, runLive],
+    [cards, fidelity, childSessions, productChildren, productGraphs, graph, executionSummary, canonicalEvents, runLive, engine],
   );
   const visible = useMemo(() => visibleChildNodes(tree, collapsed), [tree, collapsed]);
   const allNodes = useMemo(() => {

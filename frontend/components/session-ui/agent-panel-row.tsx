@@ -216,9 +216,7 @@ export function AgentPanelRow({
   const meta = [
     agent.engine
       ? formatChildEngineModel(agent.engine, agent.model)
-      : [agent.provider ?? null, formatSubagentModelLabel(agent.model, null)]
-          .filter((value): value is string => value !== null)
-          .join(" · ") || null,
+      : formatSubagentModelLabel(agent.model, null),
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : null,
     agent.usage?.costUsd !== undefined ? formatSubagentCostUsd(agent.usage.costUsd) : null,
   ].filter((value): value is string => value !== null);

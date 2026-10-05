@@ -1,3 +1,4 @@
+import type { EngineId } from "./types";
 import type { MergedChildFidelity } from "./canonical-children";
 import type { CanonicalEventLike } from "./canonical-timeline";
 import type {
@@ -66,6 +67,8 @@ export interface ProjectChildTreeInput {
   readonly delegationEdges?: readonly { readonly parentId: string; readonly childId: string }[];
   readonly canonicalEvents?: readonly CanonicalEventLike[];
   readonly runLive: boolean;
+  /** The engine of the run whose native children these are; a native child runs under its parent's engine. */
+  readonly engine?: EngineId | null;
 }
 
 const ACTIVE = new Set<ChildStatus>(["pending", "running", "waiting"]);
@@ -311,10 +314,10 @@ export function projectChildTree(input: ProjectChildTreeInput): ChildTreeNode[] 
     flat.set(id, {
       id,
       lane: "native",
-      title: card?.title ?? fidelity?.prompt?.split("\n", 1)[0]?.trim() ?? fidelity?.role ?? `${execution.provider} child`,
+      title: card?.title ?? fidelity?.prompt?.split("\n", 1)[0]?.trim() ?? fidelity?.role ?? "Subagent",
       prompt: fidelity?.prompt ?? null,
       provider: execution.provider,
-      engine: null,
+      engine: input.engine ?? null,
       model: fidelity?.model ?? null,
       role: fidelity?.role ?? null,
       progress: ACTIVE.has(status) ? fidelity?.progress ?? null : null,
