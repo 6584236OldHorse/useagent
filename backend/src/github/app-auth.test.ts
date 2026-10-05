@@ -3,6 +3,8 @@ import { generateKeyPairSync } from "node:crypto";
 import type { GithubAppConfig } from "../env";
 import {
 	clearInstallationTokenCache,
+	getInstallationToken,
+	getInstallationTokenForId,
 	getRepositoryInstallationTokenForId,
 	getRepositoryPublicationTokenForId,
 } from "./app-auth";
@@ -15,6 +17,28 @@ afterEach(() => {
 });
 
 describe("GitHub repository installation token permissions", () => {
+	test("both installation-wide read paths explicitly exclude publication writes", async () => {
+		const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2_048 });
+		const config: GithubAppConfig = {
+			appId: "4689651",
+			privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			org: "acme",
+		};
+		const requests: unknown[] = [];
+		globalThis.fetch = (async (input, init) => {
+			if (String(input).endsWith("/app/installations")) {
+				return Response.json([{ id: 123, account: { login: "acme" } }]);
+			}
+			requests.push(init?.body ? JSON.parse(String(init.body)) : null);
+			return Response.json({ token: "fixture-token", expires_at: "2099-01-01T00:00:00.000Z" });
+		}) as typeof fetch;
+		await getInstallationToken(config);
+		await getInstallationTokenForId(123, config);
+		expect(requests).toEqual([0, 1].map(() => ({ permissions: {
+			contents: "read", issues: "read", metadata: "read", pull_requests: "read",
+		} })));
+	});
+
 	test("caches read and publication credentials separately with least privilege", async () => {
 		const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2_048 });
 		const config: GithubAppConfig = {

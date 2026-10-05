@@ -40,6 +40,12 @@ const REPOSITORY_READ_PERMISSIONS = {
   metadata: "read",
 } as const satisfies GithubInstallationPermissions;
 
+const INSTALLATION_READ_PERMISSIONS = {
+  ...REPOSITORY_READ_PERMISSIONS,
+  issues: "read",
+  pull_requests: "read",
+} as const satisfies GithubInstallationPermissions;
+
 const REPOSITORY_PUBLICATION_PERMISSIONS = {
   contents: "write",
   metadata: "read",
@@ -175,7 +181,7 @@ async function mintInstallationToken(
   const installations = (await insRes.json()) as GhInstallation[];
   const chosen = pickInstallation(installations, cfg.org);
 
-  return mintInstallationAccessToken(cfg, chosen.id);
+  return mintInstallationAccessToken(cfg, chosen.id, { permissions: INSTALLATION_READ_PERMISSIONS });
 }
 
 async function mintInstallationAccessToken(
@@ -349,7 +355,7 @@ export async function getInstallationTokenForId(
   if (active) return active;
   const mint = (async () => {
     try {
-      const token = await mintInstallationAccessToken(cfg, installationId);
+      const token = await mintInstallationAccessToken(cfg, installationId, { permissions: INSTALLATION_READ_PERMISSIONS });
       installationTokenCache.set(key, token);
       return token;
     } finally {
