@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StoredCanonicalEvent } from "./canonical-timeline";
-import type { ApiRun, RunStatus } from "./types";
+import type { ApiRun, ApiStep, RunStatus } from "./types";
 import { WorkspaceOpenProvider } from "./workspace-open-context";
 
 // The canonical-timeline flag is read at module load; flip it on BEFORE importing
@@ -176,6 +176,57 @@ test("settled answers carry the hover copy affordance; live turns do not", () =>
 
   const live = render([makeTurn("run-live", "running", liveEvents())]);
   expect(live).not.toContain('data-session-ui="message-copy-button"');
+});
+
+test("a tool-only native timeline renders the finalized summary once with its citations", () => {
+  const turn = makeTurn("run-settled", "completed", [
+    ev("tool.completed", {
+      toolCallId: "tool-1",
+      name: "bash",
+      input: { command: "bun run typecheck" },
+      output: "ok",
+    }),
+  ]);
+  const done: ApiStep = {
+    id: "step-done",
+    run_id: turn.run.id,
+    idx: 0,
+    kind: "done",
+    label: "Done",
+    chip: null,
+    code_json: '{"citations":[{"title":"Retry policy","source":"wiki"}]}',
+    created_at: "2026-08-17T09:01:00Z",
+  };
+  turn.steps = [done];
+  turn.run.steps = [done];
+
+  const html = render([turn]);
+
+  expect(html.match(/data-testid="agent-answer"/g)).toHaveLength(1);
+  expect(html).toContain("Scoped the retry budget per attempt chain.");
+  expect(html).toContain('data-testid="chat-sources"');
+  expect(html).toContain("Retry policy");
+});
+
+test("a stopped failed turn keeps its partial native reply instead of replacing it with the stop reason", () => {
+  const turn = makeTurn("run-stopped", "failed", [
+    ev("message.started", {
+      messageId: "message-1",
+      identity: { nativeSessionId: "session-1", nativeSeq: 1 },
+    }),
+    ev("message.delta", {
+      messageId: "message-1",
+      text: "I updated the parser before the run stopped.",
+      identity: { nativeSessionId: "session-1", nativePartId: "part-1", nativeSeq: 2 },
+    }),
+  ]);
+  turn.summary = "Stopped by user.";
+  turn.run.summary = turn.summary;
+
+  const html = render([turn]);
+
+  expect(html).toContain("I updated the parser before the run stopped.");
+  expect(html.match(/data-testid="agent-answer"/g)).toHaveLength(1);
 });
 
 test("image artifacts get the click-to-expand affordance; other artifacts do not", () => {

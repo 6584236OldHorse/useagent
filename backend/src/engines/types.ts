@@ -2,6 +2,7 @@ import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
+import type { SandboxHandle } from "../sandboxes/provider";
 import type {
   HarnessSession,
   ProviderSessionBinding,
@@ -150,6 +151,8 @@ export interface EngineRunContext {
   /** Persist the complete provider session atomically with its legacy native-id
    * mirror before dispatch. */
   saveProviderSession?(session: HarnessSession, authEpoch?: string | null): Promise<void>;
+  /** Persist the sandbox-clock output baseline after setup, before execution. */
+  prepareOutputCapture?(sandbox: SandboxHandle, workdir: string): Promise<void>;
   /** Delivery evidence, separate from session authority: called once the engine
    *  runtime ACCEPTED the composed prompt (the steer returned ok), never on
    *  session binding alone. */

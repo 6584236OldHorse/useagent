@@ -26,6 +26,7 @@ import {
   resolveDurableFinalizationOutcome,
   type FinalizeRunResult,
 } from "./runs/finalize";
+import { recordOutputBaseline } from "./artifacts/harvest";
 import { turnStream } from "./runs/turn-stream";
 import { publishRunLifecycleChange } from "./runs/org-signals";
 import { settleCommandForRun } from "./commands/dispatch";
@@ -726,6 +727,7 @@ async function runEngine(
     commandProvider,
     commandCatalogRevision,
     saveProviderSession: createProviderSessionSaver(runId),
+    prepareOutputCapture: (sandbox, root) => recordOutputBaseline(runId, sandbox, root, signal),
     markPromptDelivered: () => markRunPromptDelivered(runId),
     signal,
     emit,
@@ -761,19 +763,17 @@ async function runEngine(
   try {
     const dispatched = await runProviderTurn(engineId, ctx);
     if (!dispatched) throw new Error(`provider registration disappeared: ${engineId}`);
-    // Durable cancellation DOMINATES a coincident provider completion (Blocker 2): a
-    // user cancel aborts ctx.signal, but some ACP agents (codex) finish the turn and
-    // return NORMALLY instead of erroring. `terminalOnReturn` (pure, tested) resolves
-    // the terminal: a durably-accepted cancel -> "Stopped by user" (failed); else the
-    // provider's completion. Finalize transactionally (a `completed` also enqueues the
-    // durable memory capture in one tx). Exactly ONE finalize + ONE terminal end event;
-    // the provider turn already emitted its terminal step, so no duplicate `done`.
+    // A durably accepted cancel wins even if the native provider returns normally.
+    // Finalization also checks cancellation under the terminal run-row lock.
+    // Output publication finishes before terminal success and delivery enqueue.
+    // Emit one terminal end event; the provider already emitted its terminal step.
     const outcome = terminalOnReturn(wasCancelled(), summary);
     const finalized = await finalizeRun(
       runId,
       outcome.status,
       outcome.summary,
       summaryDuration ?? Date.now() - startedAt,
+      { signal },
     );
     await emitFinalizedEnd(runId, finalized);
   } catch (err) {

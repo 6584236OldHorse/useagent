@@ -11,6 +11,7 @@ import {
   slackPlainLabel,
 } from "../src/slack/mrkdwn";
 import { composeSlackReplyText } from "../src/slack/reply";
+import { explicitOutputLinks, replaceOutputLinks } from "../src/artifacts/output-links";
 
 describe("toSlackMrkdwn — required cases", () => {
   test("**bold** -> *bold* (the literal-asterisks bug)", () => {
@@ -33,6 +34,11 @@ describe("toSlackMrkdwn — required cases", () => {
     expect(toSlackMrkdwn("1. first\n2. second")).toBe("1. first\n2. second"); // ordered left alone
   });
 
+  test("a link to a sandbox path keeps only its label (the file arrives as an upload)", () => {
+    expect(toSlackMrkdwn("[Download the PDF](/home/user/work/report.pdf)")).toBe("Download the PDF");
+    expect(toSlackMrkdwn("[Docs](https://useagent.org/docs)")).toBe("<https://useagent.org/docs|Docs>");
+  });
+
   test("`code` spans pass through untouched", () => {
     expect(toSlackMrkdwn("run `git **status**` now")).toBe("run `git **status**` now");
     expect(toSlackMrkdwn("`echo hi` and text")).toBe("`echo hi` and text");
@@ -42,11 +48,34 @@ describe("toSlackMrkdwn — required cases", () => {
     expect(toSlackMrkdwn("see [GitHub](https://github.com)")).toBe("see <https://github.com|GitHub>");
     expect(toSlackMrkdwn("[plain](https://x.io)")).toBe("<https://x.io|plain>");
     expect(toSlackMrkdwn("![alt](https://x.io/a.png)")).toBe("<https://x.io/a.png|alt>");
+    expect(toSlackMrkdwn(String.raw`[report\[final\].pdf](https://x.test/d)`)).toBe(
+      "<https://x.test/d|report[final].pdf>",
+    );
   });
 
   test("fenced code block passes through untouched", () => {
     const fenced = "```\n# not a header\n- not a bullet\n**not bold**\n```";
     expect(toSlackMrkdwn(fenced)).toBe(fenced);
+  });
+
+  test("decodes serializer escapes without activating Slack formatting or broadcasts", () => {
+    const input = String.raw`Done\. \*not bold\* \# not a heading \<\!channel\> \`not code\``;
+    const output = toSlackMrkdwn(input);
+    expect(output).not.toContain("\\");
+    expect(output).toContain("Done.");
+    expect(output).not.toContain("*not bold*");
+    expect(output).not.toContain("<!channel>");
+    expect(output).not.toContain("`not code`");
+  });
+
+  test("converts actual rewritten artifact Markdown without visible escape slashes", () => {
+    const markdown = String.raw`Done. Report: [report\[final\].pdf](result.pdf)`;
+    const links = explicitOutputLinks(markdown, "/work");
+    const rewritten = replaceOutputLinks(markdown, links, new Map([
+      ["/work/result.pdf", { preview: "https://files.test/preview", download: "https://files.test/download" }],
+    ]));
+    expect(rewritten).toContain("Done\\.");
+    expect(toSlackMrkdwn(rewritten)).toBe("Done. Report: <https://files.test/download|report[final].pdf>");
   });
 });
 
