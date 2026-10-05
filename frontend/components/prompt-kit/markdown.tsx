@@ -243,6 +243,9 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   a: function AnchorComponent({ href, children }) {
     const url = typeof href === "string" ? href : "";
     const openWorkpiece = useOpenWorkpiece();
+    // A target the sanitizer removed (file:, data:, javascript:) is not a link
+    // anyone can open; the text stays, the dead anchor goes.
+    if (!url) return <span>{children}</span>;
     // Artifact/media links render as dense source chips (type badge + label +
     // arrow), matching the retrieval-chip grammar; ordinary links stay links.
     const isArtifact = /\/(?:api|agent)\/artifacts\//.test(url);

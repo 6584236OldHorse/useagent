@@ -32,6 +32,12 @@ describe("Markdown links", () => {
     expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
+  test("a file: link loses its dead anchor and keeps its text", () => {
+    const html = renderToStaticMarkup(<Markdown>{"[Report](file:///root/work/a.pdf)"}</Markdown>);
+    expect(html).toContain("Report");
+    expect(html).not.toContain("<a");
+  });
+
   test("renders a sandbox path as a named chip, never as a dead link", () => {
     const html = renderToStaticMarkup(
       <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>,

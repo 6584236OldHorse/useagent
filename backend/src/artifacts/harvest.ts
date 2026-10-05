@@ -7,7 +7,7 @@
  * Slack uploads and the artifact hub all see it. Files inside cloned
  * repositories are code changes, not deliverables, and stay out; a file the
  * thread already holds with the same bytes is skipped, and a changed file
- * becomes a new revision of the thread's artifact rather than a duplicate.
+ * becomes a new revision of the thread's artifact where the kinds allow it.
  */
 import { createHash } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
@@ -35,10 +35,8 @@ const CLOCK_SLACK_SECONDS = 120;
 export const MAX_HARVESTED_FILES = 20;
 /** Records a listing may carry before the sandbox stops printing. */
 const MAX_LISTING_RECORDS = 3000;
-/** Nested repositories the file pass prunes; more than this and the rest are filtered after listing. */
-const MAX_PRUNED_REPOSITORIES = 64;
 const LISTING_TIMEOUT_SECONDS = 30;
-const PUBLISH_TIMEOUT_MS = 30_000;
+const STEP_TIMEOUT_MS = 30_000;
 const HARVEST_BUDGET_MS = 90_000;
 
 export interface HarvestCandidate {
@@ -50,62 +48,34 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-const pruneClause = (names: readonly string[]) => names.map((name) => `-name ${shellQuote(name)}`).join(" -o ");
-
-/** Pass one: every nested repository root (a `.git` directory or worktree
- *  file) below the workspace, one NUL-terminated path each. The workspace
- *  root itself is not a nested repository even when it is one. */
-export function repositoryListCommand(workspaceRoot: string): string {
+/** One traversal: dependency and state directories are pruned by name from
+ *  depth one, any directory below the root holding a `.git` entry (directory
+ *  or worktree file) is pruned as a repository, and the deliverable files
+ *  changed since the turn started print as `size TAB path` NUL-terminated
+ *  records, so any file name survives intact. */
+export function fileListCommand(workspaceRoot: string, sinceEpochSeconds: number): string {
   const root = shellQuote(workspaceRoot);
-  return (
-    `find ${root} -xdev -mindepth 2 \\( ${pruneClause(PRUNED_DIRECTORIES.filter((n) => n !== ".git"))} \\) -prune ` +
-    `-o -name .git -printf '%h\\0' -prune 2>/dev/null | head -z -n ${MAX_LISTING_RECORDS}`
-  );
-}
-
-/** Pass two: deliverable files changed since the turn started, outside the
- *  pruned directories and the repositories pass one found; one record per
- *  file, `size TAB path`, NUL-terminated so any file name survives intact. */
-export function fileListCommand(
-  workspaceRoot: string,
-  sinceEpochSeconds: number,
-  repositoryRoots: readonly string[],
-): string {
-  const root = shellQuote(workspaceRoot);
-  const repos = repositoryRoots.slice(0, MAX_PRUNED_REPOSITORIES).map((r) => `-path ${shellQuote(r)}`);
-  const prune = [pruneClause(PRUNED_DIRECTORIES), ...repos].join(" -o ");
+  const prune = PRUNED_DIRECTORIES.map((name) => `-name ${shellQuote(name)}`).join(" -o ");
   const names = DELIVERABLE_EXTENSIONS.map((ext) => `-iname ${shellQuote(`*.${ext}`)}`).join(" -o ");
   return (
-    `find ${root} -xdev \\( ${prune} \\) -prune -o -type f -newermt ${shellQuote(`@${sinceEpochSeconds}`)} ` +
-    `-size -${MAX_ARTIFACT_BYTES + 1}c \\( ${names} \\) -printf '%s\\t%p\\0' 2>/dev/null | head -z -n ${MAX_LISTING_RECORDS}`
+    `find ${root} -xdev \\( ${prune} \\) -prune ` +
+    `-o \\( ! -path ${root} -type d -exec test -e '{}/.git' \\; \\) -prune ` +
+    `-o -type f -newermt ${shellQuote(`@${sinceEpochSeconds}`)} -size -${MAX_ARTIFACT_BYTES + 1}c ` +
+    `\\( ${names} \\) -printf '%s\\t%p\\0' 2>/dev/null | head -z -n ${MAX_LISTING_RECORDS}`
   );
 }
 
-/** Repository roots from pass one: absolute paths strictly below the workspace. */
-export function parseRepositoryListing(output: string, workspaceRoot: string): string[] {
-  return output
-    .split("\0")
-    .filter((path) => path.startsWith(`${workspaceRoot}/`))
-    .toSorted();
-}
-
-/** Candidates from pass two. Repositories are filtered again here (pass two
- *  prunes at most MAX_PRUNED_REPOSITORIES of them), then sorted by path so a
- *  rerun is stable, then capped. */
-export function parseFileListing(
-  output: string,
-  workspaceRoot: string,
-  repositoryRoots: readonly string[],
-): HarvestCandidate[] {
+/** Candidates from the listing, sorted by path so a rerun is stable, capped. */
+export function parseFileListing(output: string, workspaceRoot: string): HarvestCandidate[] {
   const candidates: HarvestCandidate[] = [];
   for (const record of output.split("\0")) {
     const tab = record.indexOf("\t");
     if (tab <= 0) continue;
-    const size = Number(record.slice(0, tab));
+    const digits = record.slice(0, tab);
+    const size = Number(digits);
     const path = record.slice(tab + 1);
-    if (!/^\d+$/.test(record.slice(0, tab)) || !Number.isSafeInteger(size) || size <= 0) continue;
+    if (!/^\d+$/.test(digits) || !Number.isSafeInteger(size) || size <= 0) continue;
     if (!path.startsWith(`${workspaceRoot}/`) || path.includes("\n")) continue;
-    if (repositoryRoots.some((root) => path === root || path.startsWith(`${root}/`))) continue;
     candidates.push({ path, size });
   }
   return candidates.toSorted((a, b) => a.path.localeCompare(b.path)).slice(0, MAX_HARVESTED_FILES);
@@ -121,9 +91,9 @@ export interface KnownArtifact {
 }
 
 export interface HarvestDependencies {
-  /** Runs one listing command in the run's sandbox and returns its stdout. */
+  /** Runs the listing command in the run's sandbox and returns its stdout. */
   readonly list: (run: RunRow, command: string) => Promise<string>;
-  /** The newest artifact of the thread published from this workspace path. */
+  /** The most recently published artifact of the thread from this workspace path. */
   readonly known: (run: RunRow, path: string) => Promise<KnownArtifact | null>;
   /** The file's current sha256, read from the sandbox. */
   readonly digest: (run: RunRow, path: string) => Promise<string>;
@@ -142,7 +112,7 @@ async function knownThreadArtifact(run: RunRow, path: string): Promise<KnownArti
     .select({ id: artifacts.id, sha256: artifacts.sha256, sizeBytes: artifacts.sizeBytes })
     .from(artifacts)
     .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), eq(artifacts.sourcePath, path)))
-    .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt))
+    .orderBy(desc(artifacts.createdAt), desc(artifacts.workpieceRevision))
     .limit(1);
   return row ?? null;
 }
@@ -162,22 +132,36 @@ const defaultDependencies: HarvestDependencies = {
 
 class HarvestStopped extends Error {}
 
-/** Resolve `work` within `ms`, or throw; an aborted signal throws at once. */
-function bounded<T>(work: Promise<T>, ms: number, signal: AbortSignal | undefined, what: string): Promise<T> {
+/** Start `work` unless the run is already cancelled, then wait at most `ms`
+ *  for it. A late result or failure of work we stopped waiting for is
+ *  dropped: the sandbox and publish calls cannot be cancelled themselves
+ *  (ponytail: publish has no abort signal; a publish that outlives the wait
+ *  still lands in the database, only its Slack upload is missed). */
+function bounded<T>(work: () => Promise<T>, ms: number, signal: AbortSignal | undefined, what: string): Promise<T> {
   if (signal?.aborted) return Promise.reject(new HarvestStopped("run cancelled"));
+  if (ms <= 0) return Promise.reject(new HarvestStopped(`${what} has no time left`));
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new HarvestStopped(`${what} exceeded ${ms} ms`)), ms);
-    timer.unref?.();
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new HarvestStopped("run cancelled"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    work.then(resolve, reject).finally(() => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-    });
+      fn();
+    };
+    const onAbort = () => finish(() => reject(new HarvestStopped("run cancelled")));
+    const timer = setTimeout(() => finish(() => reject(new HarvestStopped(`${what} exceeded ${ms} ms`))), ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work().then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
   });
+}
+
+function kindMismatch(error: unknown): boolean {
+  return error instanceof Error && /kind does not match|artifact to update was not found/.test(error.message);
 }
 
 /**
@@ -192,10 +176,11 @@ export async function harvestTurnOutputs(
   dependencies: HarvestDependencies = defaultDependencies,
 ): Promise<string[]> {
   const startedAt = Date.now();
-  const remaining = () => HARVEST_BUDGET_MS - (Date.now() - startedAt);
+  const left = () => Math.min(STEP_TIMEOUT_MS, HARVEST_BUDGET_MS - (Date.now() - startedAt));
   const published: string[] = [];
   const { signal } = options;
   try {
+    if (signal?.aborted) return published;
     const run = await getRun(runId);
     if (!run?.orgId || !run.sandboxId) return published;
     const workspaceRoot = await resolveAttachedSandboxWorkspaceRoot({
@@ -203,43 +188,44 @@ export async function harvestTurnOutputs(
       sandboxProvider: run.sandboxProvider,
     });
     const since = Math.floor(new Date(run.createdAt).getTime() / 1000) - CLOCK_SLACK_SECONDS;
-    const repositories = parseRepositoryListing(
-      await bounded(dependencies.list(run, repositoryListCommand(workspaceRoot)), LISTING_TIMEOUT_SECONDS * 1000, signal, "repository listing"),
-      workspaceRoot,
-    );
     const candidates = parseFileListing(
-      await bounded(dependencies.list(run, fileListCommand(workspaceRoot, since, repositories)), LISTING_TIMEOUT_SECONDS * 1000, signal, "file listing"),
+      await bounded(() => dependencies.list(run, fileListCommand(workspaceRoot, since)), left(), signal, "listing"),
       workspaceRoot,
-      repositories,
     );
     for (const candidate of candidates) {
-      const budget = Math.min(PUBLISH_TIMEOUT_MS, remaining());
-      if (budget <= 0 || signal?.aborted) break;
       try {
-        const known = await bounded(dependencies.known(run, candidate.path), budget, signal, "artifact lookup");
+        const known = await bounded(() => dependencies.known(run, candidate.path), left(), signal, "artifact lookup");
         if (known && known.sizeBytes === candidate.size) {
-          const digest = await bounded(dependencies.digest(run, candidate.path), budget, signal, "digest");
+          const digest = await bounded(() => dependencies.digest(run, candidate.path), left(), signal, "digest");
           if (digest === known.sha256) continue; // unchanged since the thread last published it
         }
-        const { artifact } = await bounded(
-          dependencies.publish({
-            orgId: run.orgId,
-            userId: run.userId,
-            runId: run.id,
-            threadId: run.threadId,
-            path: candidate.path,
-            purpose: "deliverable",
-            ...(known ? { updatesArtifactId: known.id } : {}),
-          }),
-          budget,
-          signal,
-          "publish",
-        );
-        published.push(artifact.id);
+        const base = {
+          orgId: run.orgId,
+          userId: run.userId,
+          runId: run.id,
+          threadId: run.threadId,
+          path: candidate.path,
+          purpose: "deliverable" as const,
+        };
+        let result: Awaited<ReturnType<typeof publishSandboxArtifact>>;
+        try {
+          result = await bounded(
+            () => dependencies.publish(known ? { ...base, updatesArtifactId: known.id } : base),
+            left(),
+            signal,
+            "publish",
+          );
+        } catch (error) {
+          // A changed file whose kind cannot revise the existing artifact (an
+          // image, an archive, a large office file) is published on its own.
+          if (!known || !kindMismatch(error)) throw error;
+          result = await bounded(() => dependencies.publish(base), left(), signal, "publish");
+        }
+        published.push(result.artifact.id);
       } catch (error) {
         if (error instanceof HarvestStopped) break;
-        // Protected paths, secrets, oversize files and kind mismatches are
-        // refused by the publish path itself; one refusal never stops the rest.
+        // Protected paths, secrets and oversize files are refused by the publish
+        // path itself; one refusal never stops the rest.
         console.warn(`[artifacts] harvest skipped ${candidate.path}:`, error instanceof Error ? error.message : error);
       }
     }

@@ -11,6 +11,7 @@ import {
 } from "@useagent/agent-harness/control";
 import type { EngineRunContext, HarnessAdapter } from "./types";
 import type { RuntimeEngineId } from "./runtime-orchestration";
+import { harvestTurnOutputs } from "../artifacts/harvest";
 import { piAdapter } from "./pi-adapter";
 import { piHarness, piProviderDriver } from "./pi-provider-driver";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
@@ -133,10 +134,12 @@ export async function runProviderTurn(
       throw new Error(`Engine driver has unsupported provider '${driver.provider}'`);
     }
     await makeRuntimeAdapter(driver.provider, driver).run(ctx);
-    return true;
+  } else {
+    await registration.execution.run(ctx, driver);
   }
-
-  await registration.execution.run(ctx, driver);
+  // Deliverables the agent left in the workspace become artifacts whether or
+  // not it called the publish tool: the plane looks at the workspace itself.
+  await harvestTurnOutputs(ctx.runId, { signal: ctx.signal });
   return true;
 }
 
