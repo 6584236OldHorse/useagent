@@ -19,6 +19,17 @@ import type { SidebarRun } from "./working-project-status";
 const SidebarThreadsContext = createContext<readonly SidebarRun[] | null>(null);
 const SidebarThreadRelationshipsContext = createContext<readonly ThreadRelationship[] | null>(null);
 
+/** How long a mount waits for the invalidation stream to open before it takes
+ *  its snapshot anyway (a blocked or slow stream must not leave the shell empty). */
+export const STREAM_OPEN_GRACE_MS = 1_500;
+
+/** The last snapshot this page loaded: a remounted shell (every page hop today)
+ *  renders it at once and corrects it after the stream is open again. */
+let lastSnapshot: {
+  runs: SidebarRun[];
+  relationships: readonly ThreadRelationship[];
+} = { runs: [], relationships: [] };
+
 export function refreshesSidebarThreads(change: OrgChange): boolean {
   return (
     change.type === "run" ||
@@ -30,8 +41,10 @@ export function refreshesSidebarThreads(change: OrgChange): boolean {
 
 /** Owns the shell's single thread snapshot and refreshes it from the shared SSE. */
 export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
-  const [runs, setRuns] = useState<SidebarRun[]>([]);
-  const [relationships, setRelationships] = useState<readonly ThreadRelationship[]>([]);
+  const [runs, setRuns] = useState<SidebarRun[]>(lastSnapshot.runs);
+  const [relationships, setRelationships] = useState<readonly ThreadRelationship[]>(
+    lastSnapshot.relationships,
+  );
 
   const load = useCallback(async (revalidate = false) => {
     try {
@@ -39,8 +52,12 @@ export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
         fetchSidebarRuns({ revalidate }),
         fetchThreadRelationshipIndex({ revalidate }),
       ]);
-      if (nextRuns.status === "fulfilled") setRuns(nextRuns.value);
+      if (nextRuns.status === "fulfilled") {
+        lastSnapshot = { ...lastSnapshot, runs: nextRuns.value };
+        setRuns(nextRuns.value);
+      }
       if (nextRelationships.status === "fulfilled") {
+        lastSnapshot = { ...lastSnapshot, relationships: nextRelationships.value.relationships };
         setRelationships(nextRelationships.value.relationships);
       }
     } catch {
@@ -48,24 +65,32 @@ export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // The mount load below is the authoritative snapshot for the stream's first
-  // open; only a later open (a reconnect that may have missed changes) reloads.
-  const streamOpened = useRef(false);
+  // One snapshot per mount, taken once the invalidation stream is open, so no
+  // change can land unseen between the snapshot's read and the stream; a
+  // reconnect takes one again. If the stream is slow or blocked, the grace
+  // timer takes the snapshot anyway and the open that follows revalidates it.
+  const grace = useRef<ReturnType<typeof setTimeout> | null>(null);
   useOrgChanges(
     (change) => {
       if (refreshesSidebarThreads(change)) void load(true);
     },
     () => {
-      if (!streamOpened.current) {
-        streamOpened.current = true;
-        return;
+      if (grace.current !== null) {
+        clearTimeout(grace.current);
+        grace.current = null;
       }
       void load(true);
     },
   );
 
   useEffect(() => {
-    void load();
+    grace.current = setTimeout(() => {
+      grace.current = null;
+      void load();
+    }, STREAM_OPEN_GRACE_MS);
+    return () => {
+      if (grace.current !== null) clearTimeout(grace.current);
+    };
   }, [load]);
 
   return (
