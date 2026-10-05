@@ -368,6 +368,10 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           },
         });
         const session = established.session;
+        // The session's native command list, recorded with the session so the
+        // reply composer's typed commands and Compact authorize against it. Best
+        // effort and independent of the snapshot read below, so the two overlap.
+        const commandCatalog = recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         // `start()` may adopt a thread the runtime already projected even when
         // the durable provider lifecycle is fresh. Always capture its current
         // turn before steering so an initialization greeting cannot be mistaken
@@ -393,9 +397,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           source: engine,
           resumed: established.resumed,
         });
-        // The session's native command list, recorded with the session so the
-        // reply composer's typed commands and Compact authorize against it.
-        await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
+        await commandCatalog;
         let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
