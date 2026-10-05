@@ -25,7 +25,11 @@ import {
   startSlackInboxPump,
   verifySlackInboxIdentity,
 } from "./inbox";
-import { stampSlackTurnIdentity } from "./turn-identity";
+import {
+  recordSlackTurnIdentityIntent,
+  recoverSlackTurnIdentities,
+  stampSlackTurnIdentity,
+} from "./turn-identity";
 
 export { slackRoutes } from "./routes";
 export { slackEnabled } from "../env";
@@ -34,10 +38,11 @@ export { stopSlackSocketMode } from "./socket-mode";
 export { syncSlackWorkspaceBindings } from "./workspaces";
 
 /** Process one durably accepted inbox claim: verify the ingress-time identity,
- *  hand the event to the run mapper, then start the stamp of an accepted (or
- *  replayed) run with who sent it and where, so the web can show the sender and
- *  link back. The stamp is best effort and not awaited: the inbox processes
- *  events serially, so a Slack lookup must never hold the next event. */
+ *  hand the event to the run mapper, record durably what the identity stamp of
+ *  an accepted (or replayed) run still owes, then start that stamp so the web
+ *  can show the sender and link back. The stamp is not awaited: the inbox
+ *  processes events serially, so a Slack lookup must never hold the next event;
+ *  the recorded intent survives a crash and the boot sweep finishes it. */
 export async function handleSlackInboxClaim({
   payload,
   checkpointStagedAttachmentIds,
@@ -56,14 +61,8 @@ export async function handleSlackInboxClaim({
   if (outcome.status === "accepted" || outcome.status === "replayed") {
     const { teamId, channel, messageTs, slackUserId } = payload.identity;
     if (teamId && channel && messageTs) {
-      void stampSlackTurnIdentity({
-        runId: outcome.runId,
-        orgId: identity.orgId,
-        teamId,
-        channel,
-        messageTs,
-        slackUserId,
-      });
+      await recordSlackTurnIdentityIntent({ runId: outcome.runId, teamId, channel, messageTs, slackUserId });
+      void stampSlackTurnIdentity(outcome.runId);
     }
     return { status: "completed" };
   }
@@ -80,6 +79,7 @@ export function startSlackOutbox(): void {
   const cfg = slackConfig();
   if (!cfg) return;
   startSlackOutboxRelay(cfg);
+  void recoverSlackTurnIdentities();
   startSlackInboxPump(handleSlackInboxClaim);
   startSlackSocketMode();
 }

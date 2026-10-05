@@ -116,10 +116,10 @@ const CONNECTOR_LABELS: Record<string, string> = {
 
 /** The mark for the connector a turn arrived through; unknown connectors get a neutral glyph. */
 export function connectorMarkFor(source: string): IconComponent {
-  return CONNECTOR_MARKS[source] ?? RiChat1Line;
+  return Object.hasOwn(CONNECTOR_MARKS, source) ? CONNECTOR_MARKS[source] : RiChat1Line;
 }
 
 /** The connector's name as people know it; an unknown id reads as itself. */
 export function connectorLabel(source: string): string {
-  return CONNECTOR_LABELS[source] ?? source;
+  return Object.hasOwn(CONNECTOR_LABELS, source) ? CONNECTOR_LABELS[source] : source;
 }

@@ -34,6 +34,18 @@ test("no link is rendered without a permalink or for a thread typed in the produ
   expect(renderToStaticMarkup(<OriginLink />)).toBe("");
 });
 
+test("a source spelled like an inherited object property still falls back", () => {
+  for (const source of ["constructor", "__proto__", "toString"]) {
+    const html = renderToStaticMarkup(
+      <OriginLink
+        connector={{ source, sender_name: null, sender_avatar_url: null, permalink: "https://x.example/1" }}
+      />,
+    );
+    expect(html).toContain(`aria-label="Open in ${source}"`);
+    expect(html).not.toContain(PINWHEEL);
+  }
+});
+
 test("an unknown connector still links, labelled by its id with a neutral mark", () => {
   const html = renderToStaticMarkup(
     <OriginLink

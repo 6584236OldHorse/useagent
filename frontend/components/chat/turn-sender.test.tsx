@@ -44,6 +44,16 @@ test("an unknown connector keeps its id as the label and a neutral mark", () => 
   expect(html).not.toContain(PINWHEEL);
 });
 
+test("a source spelled like an inherited object property still falls back", () => {
+  const html = renderToStaticMarkup(
+    <TurnSender
+      connector={{ source: "constructor", sender_name: null, sender_avatar_url: null, permalink: null }}
+    />,
+  );
+  expect(html).toContain("constructor member");
+  expect(html).not.toContain(PINWHEEL);
+});
+
 test("a turn typed in the product renders nothing", () => {
   expect(renderToStaticMarkup(<TurnSender connector={null} />)).toBe("");
   expect(renderToStaticMarkup(<TurnSender connector={undefined} />)).toBe("");
