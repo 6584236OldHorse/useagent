@@ -217,6 +217,9 @@ The important variables are:
   `BETTER_AUTH_SECRET` for session signing. Set `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET` for Google sign-in. Production accepts existing users
   only; their email/password sign-in remains available while Google is optional.
+- `SIGNUP_OPEN=1` opens email/password sign-up behind a mailed confirmation
+  (needs `CONNECTOR_EMAIL_HOST` and `CONNECTOR_EMAIL_FROM`); `SIGNUP_ALLOWED_DOMAINS`
+  and `SIGNUP_INVITE_CODE` narrow it.
 - `ENABLED_ENGINES` to opt extra engines into the backend picker.
 - `SANDBOX_PROVIDER=daytona|cube|box` to choose the sandbox provider (Box: `BOX_API_KEY`, optional `BOX_SNAPSHOT`, `BOX_MACHINE_TYPE`; or per-user keys via Settings with `USER_COMPUTERS=on`). A developer's own machine (`local`) is never the deployment default: it is chosen per run while that user's enrolled runner is connected.
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).

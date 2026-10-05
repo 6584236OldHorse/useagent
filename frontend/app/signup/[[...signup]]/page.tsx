@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: "Create your useAgent workspace account.",
 };
 
+/** One card serves both; a closed deployment shows sign-in whatever the mode. */
 export default function SignupPage() {
-  redirect("/login");
+  redirect("/login?mode=signup");
 }

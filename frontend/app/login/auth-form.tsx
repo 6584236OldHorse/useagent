@@ -1,75 +1,124 @@
 "use client";
 
-import { RiLockLine, RiMailLine } from "@remixicon/react";
+import { RiKeyLine, RiLockLine, RiMailLine, RiUserLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useState } from "react";
 import { AuthScreen } from "@/components/auth/auth-screen";
+import { CheckYourEmail } from "@/components/auth/check-your-email";
 import { DesktopSignIn } from "@/components/auth/desktop-sign-in";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
+import type { VerificationNotice } from "@/components/auth/verification-notice";
 import { Button } from "@/components/base/buttons/button";
 import { Divider } from "@/components/base/divider/divider";
 import { Input } from "@/components/base/input/input";
-import { invalidateSession, useAuthConfig } from "@/lib/auth";
+import { type AuthConfig, invalidateSession, useAuthConfig } from "@/lib/auth";
 import { backendFetch } from "@/lib/backend-fetch";
 import { desktopBridge, type DesktopBridge } from "@/lib/desktop-bridge";
 
+export type AuthMode = "signin" | "signup";
+
 const COPY = {
-  title: "Welcome back",
-  subtitle: "Enter your credentials to continue",
-  submit: "Sign in",
-  pending: "Signing in…",
-  endpoint: "/api/auth/sign-in/email",
+  signin: {
+    title: "Welcome back",
+    subtitle: "Enter your credentials to continue",
+    submit: "Sign in",
+    pending: "Signing in…",
+    endpoint: "/api/auth/sign-in/email",
+    switch: "New here? Create an account",
+  },
+  signup: {
+    title: "Create your account",
+    subtitle: "We will email you a link to confirm your address",
+    submit: "Create account",
+    pending: "Creating account…",
+    endpoint: "/api/auth/sign-up/email",
+    switch: "Already have an account? Sign in",
+  },
 } as const;
 
 export function AuthForm({
   callbackURL = "/",
   googleAction,
   initialDesktopBridge,
+  initialAuthConfig,
+  initialMode = "signin",
+  notice = null,
 }: {
   callbackURL?: string;
   googleAction?: () => Promise<void>;
   initialDesktopBridge?: DesktopBridge | null;
+  /** The server's answer when already known (tests); otherwise fetched on mount. */
+  initialAuthConfig?: AuthConfig | null;
+  initialMode?: AuthMode;
+  /** What a confirmation link that landed here has to say. */
+  notice?: VerificationNotice | null;
 }) {
   const router = useRouter();
-  const authConfig = useAuthConfig();
+  const fetchedConfig = useAuthConfig();
+  const authConfig = initialAuthConfig ?? fetchedConfig;
   const [desktop, setDesktop] = useState<DesktopBridge | null | undefined>(initialDesktopBridge);
 
+  const [mode, setMode] = useState<AuthMode>(initialMode);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  /** An account waiting for its mail, and the request that makes the mail go out again. */
+  const [awaiting, setAwaiting] = useState<{ email: string; kind: AuthMode } | null>(null);
 
   useEffect(() => {
     if (initialDesktopBridge === undefined) setDesktop(desktopBridge());
   }, [initialDesktopBridge]);
+
+  // A closed deployment ignores a request for the sign-up card.
+  const signup = authConfig?.emailPassword ? authConfig.signup : null;
+  const kind: AuthMode = signup && mode === "signup" ? "signup" : "signin";
+  const copy = COPY[kind];
+
+  /** One attempt of either kind; the problem to show, or null when the card has moved on. */
+  async function attempt(which: AuthMode): Promise<string | null> {
+    try {
+      const res = await backendFetch(COPY[which].endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(which === "signup" ? { name, email, password, inviteCode } : { email, password }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        message?: string;
+        code?: string;
+        token?: string | null;
+      } | null;
+      // The right password for an address that has not confirmed its mail: the
+      // server has just sent the link again.
+      if (res.status === 403 && data?.code === "EMAIL_NOT_VERIFIED") {
+        setAwaiting({ email, kind: which });
+        return null;
+      }
+      if (!res.ok) return data?.message ?? "Something went wrong. Please try again.";
+      // An open sign-up has no session until the address is confirmed.
+      if (which === "signup" && !data?.token) {
+        setAwaiting({ email, kind: which });
+        return null;
+      }
+      invalidateSession();
+      router.push(callbackURL);
+      router.refresh();
+      return null;
+    } catch {
+      // Network failure / backend down — keep the page usable, surface inline.
+      return "Couldn't reach the server. Please try again in a moment.";
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     setError(null);
     setPending(true);
-
     try {
-      const res = await backendFetch(COPY.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          message?: string;
-        } | null;
-        setError(data?.message ?? "Something went wrong. Please try again.");
-        return;
-      }
-
-      invalidateSession();
-      router.push(callbackURL);
-      router.refresh();
-    } catch {
-      // Network failure / backend down — keep the page usable, surface inline.
-      setError("Couldn't reach the server. Please try again in a moment.");
+      setError(await attempt(kind));
     } finally {
       setPending(false);
     }
@@ -77,19 +126,42 @@ export function AuthForm({
 
   if (desktop === undefined) return <AuthScreen><p role="status">Loading sign-in...</p></AuthScreen>;
   if (desktop) return <AuthScreen><DesktopSignIn openExternal={desktop.openExternal} /></AuthScreen>;
+  if (awaiting) {
+    return (
+      <AuthScreen>
+        <CheckYourEmail
+          email={awaiting.email}
+          onResend={() => attempt(awaiting.kind)}
+          onBack={() => {
+            setAwaiting(null);
+            setMode("signin");
+          }}
+        />
+      </AuthScreen>
+    );
+  }
   return (
     <AuthScreen>
       <div className="mx-auto w-full max-w-[360px]">
-        <h1 className="text-title-2-medium text-text-primary">{COPY.title}</h1>
-        <p className="mt-1.5 text-body-regular text-text-secondary">{COPY.subtitle}</p>
+        <h1 className="text-title-2-medium text-text-primary">{copy.title}</h1>
+        <p className="mt-1.5 text-body-regular text-text-secondary">{copy.subtitle}</p>
 
-        {authConfig?.google && (
+        {notice && (
+          <p
+            role={notice.tone === "problem" ? "alert" : "status"}
+            className={`mt-4 text-body-2-regular ${notice.tone === "problem" ? "text-text-error-primary" : "text-text-secondary"}`}
+          >
+            {notice.text}
+          </p>
+        )}
+
+        {authConfig?.google && kind === "signin" && (
           <div className="mt-8">
             <GoogleSignInButton enabled callbackURL={callbackURL} action={googleAction} />
           </div>
         )}
 
-        {authConfig?.google && authConfig.emailPassword && (
+        {authConfig?.google && authConfig.emailPassword && kind === "signin" && (
           <Divider
             aria-hidden
             className="my-6"
@@ -101,10 +173,23 @@ export function AuthForm({
 
         {authConfig?.emailPassword && (
           <form
-            className={`flex flex-col gap-4 ${authConfig.google ? "" : "mt-8"}`}
+            className={`flex flex-col gap-4 ${authConfig.google && kind === "signin" ? "" : "mt-8"}`}
             onSubmit={handleSubmit}
             noValidate
           >
+            {kind === "signup" && (
+              <Input
+                name="name"
+                type="text"
+                label="Name"
+                placeholder="Your name"
+                autoComplete="name"
+                leadingIcon={RiUserLine}
+                value={name}
+                onChange={setName}
+                isRequired
+              />
+            )}
             <Input
               name="email"
               type="email"
@@ -114,6 +199,11 @@ export function AuthForm({
               leadingIcon={RiMailLine}
               value={email}
               onChange={setEmail}
+              hint={
+                kind === "signup" && signup?.domains.length
+                  ? `Only ${signup.domains.map((domain) => `@${domain}`).join(", ")} addresses can sign up.`
+                  : undefined
+              }
               isRequired
             />
             <Input
@@ -121,12 +211,25 @@ export function AuthForm({
               type="password"
               label="Password"
               placeholder="••••••••"
-              autoComplete="current-password"
+              autoComplete={kind === "signup" ? "new-password" : "current-password"}
               leadingIcon={RiLockLine}
               value={password}
               onChange={setPassword}
               isRequired
             />
+            {kind === "signup" && signup?.inviteCode && (
+              <Input
+                name="inviteCode"
+                type="text"
+                label="Invite code"
+                placeholder="The code you were given"
+                autoComplete="off"
+                leadingIcon={RiKeyLine}
+                value={inviteCode}
+                onChange={setInviteCode}
+                isRequired
+              />
+            )}
 
             {error && (
               <p role="alert" className="text-body-2-regular text-text-error-primary">
@@ -135,9 +238,24 @@ export function AuthForm({
             )}
 
             <Button type="submit" className="mt-2 w-full" disabled={pending}>
-              {pending ? COPY.pending : COPY.submit}
+              {pending ? copy.pending : copy.submit}
             </Button>
           </form>
+        )}
+
+        {signup && (
+          <div className="mt-6">
+            <Button
+              variant="ghost"
+              size="small"
+              onClick={() => {
+                setError(null);
+                setMode(kind === "signup" ? "signin" : "signup");
+              }}
+            >
+              {copy.switch}
+            </Button>
+          </div>
         )}
 
         {authConfig && !authConfig.google && !authConfig.emailPassword && (

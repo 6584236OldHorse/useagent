@@ -2,10 +2,11 @@ import { and, eq, gt, isNotNull } from "drizzle-orm";
 import { sendSmtp } from "./connectors/email/smtp";
 import { db, type Executor } from "./db/client";
 import { account, invitation, user } from "./db/auth-schema";
-import { env, googleAuthEnabled, selfSignupEnabled } from "./env";
+import { env, googleAuthEnabled, type InvitationMailConfig, invitationMailConfig, selfSignupEnabled } from "./env";
 
 /**
- * Organisation invitations. Production creates no accounts on its own; a
+ * Organisation invitations, and the sign-up verification mail that shares
+ * their transport. A closed deployment creates no accounts on its own; a
  * pending invitation is the one door in. The invite goes out as an email when
  * the deployment has an SMTP host, and is always available as a link the
  * inviter can hand over themselves.
@@ -37,43 +38,6 @@ export async function invitedSignupAllowed(
 /** Where an invitation is accepted: the accept page lives on the frontend. */
 export function invitationLink(id: string, origin: string = env.FRONTEND_ORIGIN): string {
   return new URL(`/accept-invitation/${encodeURIComponent(id)}`, origin).toString();
-}
-
-export interface InvitationMailConfig {
-  readonly host: string;
-  readonly port: number;
-  readonly secure: boolean;
-  readonly user?: string;
-  readonly pass?: string;
-  readonly from: string;
-}
-
-/**
- * Account mail reuses the connector's SMTP settings (host, port, login, from)
- * without its recipient allow-list, since an invitation goes to a new address
- * by definition. The SMTP client speaks implicit TLS, so the default port is 465.
- * Null means no delivery: the UI shows the link instead.
- */
-export function invitationMailConfig(
-  source: Record<string, string | undefined> = process.env,
-): InvitationMailConfig | null {
-  const host = source.CONNECTOR_EMAIL_HOST?.trim();
-  const from = source.CONNECTOR_EMAIL_FROM?.trim();
-  if (!host || !from) return null;
-  const port = Number(source.CONNECTOR_EMAIL_PORT ?? 465);
-  if (!Number.isInteger(port) || port <= 0) return null;
-  return {
-    host,
-    port,
-    secure: source.CONNECTOR_EMAIL_SECURE === "true" || port === 465,
-    user: source.CONNECTOR_EMAIL_USER?.trim() || undefined,
-    pass: source.CONNECTOR_EMAIL_PASS || undefined,
-    from,
-  };
-}
-
-export function invitationMailEnabled(): boolean {
-  return invitationMailConfig() !== null;
 }
 
 export interface InvitationNotice {
@@ -152,6 +116,51 @@ export async function deliverInvitation(
   );
   console.log(`[auth] invitation ${data.id} emailed to ${data.email}`);
   return "sent";
+}
+
+/** The library's link names the address; the account id binds it to the
+ *  registration that asked for it, so a link from a claim that a later sign-up
+ *  replaced cannot verify the newer claim (auth/signup-routes.ts checks it). */
+export function verificationLink(url: string, userId: string): string {
+  return `${url}&account=${encodeURIComponent(userId)}`;
+}
+
+export function verificationMessage(link: string): { subject: string; text: string } {
+  return {
+    subject: "Confirm your useAgent sign-up",
+    text: [
+      "You signed up for useAgent with this address. Confirm it to sign in:",
+      "",
+      link,
+      "",
+      "The link works for one hour. If you did not sign up just now, ignore this",
+      "mail: without your confirmation the address opens no account.",
+    ].join("\n"),
+  };
+}
+
+export async function deliverVerification(
+  email: string,
+  link: string,
+  config: InvitationMailConfig | null = invitationMailConfig(),
+  send: typeof sendSmtp = sendSmtp,
+): Promise<void> {
+  // Open sign-up is refused without a transport (env.ts), so this only guards a
+  // transport removed after boot; the person can ask again from the card.
+  if (!config) throw new Error("no mail transport for sign-up verification");
+  const message = verificationMessage(link);
+  await send(
+    {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      user: config.user,
+      pass: config.pass,
+      timeoutMs: INVITATION_MAIL_TIMEOUT_MS,
+    },
+    { from: config.from, to: [email], subject: message.subject, text: message.text },
+  );
+  console.log(`[auth] sign-up verification emailed to ${email}`);
 }
 
 export const NO_WAY_IN =

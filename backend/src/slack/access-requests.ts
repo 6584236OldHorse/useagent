@@ -12,13 +12,13 @@
  * address can never claim somebody else's identity. Deny is remembered.
  */
 import { and, eq, gt, isNull, lte, ne, notExists, or } from "drizzle-orm";
-import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
+import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe } from "../auth-invitations";
 import { createPersonalOrgForUser } from "../auth-hooks";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { slackAccessRequests, slackUsers, slackWorkspaces } from "../db/schema";
-import { env, googleAuthEnabled } from "../env";
+import { env, googleAuthEnabled, invitationMailConfig } from "../env";
 import { withOrgLock } from "../org-lock";
 import type { SlackClient } from "./client";
 import { kickSlackOutbox } from "./outbox/delivery";

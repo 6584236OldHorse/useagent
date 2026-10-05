@@ -3,15 +3,17 @@ import { like } from "drizzle-orm";
 
 await import("./helpers");
 const { db } = await import("../src/db/client");
-const { env } = await import("../src/env");
+const { env, invitationMailConfig } = await import("../src/env");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
   deliverInvitation,
+  deliverVerification,
   headerSafe,
   invitationLink,
-  invitationMailConfig,
   invitationMessage,
   invitedSignupAllowed,
+  verificationLink,
+  verificationMessage,
 } = await import("../src/auth-invitations");
 
 const prefix = `invite-${crypto.randomUUID()}`;
@@ -97,6 +99,26 @@ describe("invitation mail configuration", () => {
     expect(await deliverInvitation(data, config, send as never)).toBe("sent");
     // A blank inviter name falls back to the inviter's email.
     expect(sent).toEqual([{ to: ["new@example.test"], subject: "dana@example.test invited you to Acme on useAgent", from: "hello@example.test" }]);
+  });
+});
+
+describe("sign-up verification mail", () => {
+  test("binds the link to the account, says what to do when it was not you, and needs a transport", async () => {
+    const link = verificationLink("http://localhost:3211/api/auth/verify-email?token=t&callbackURL=x", "user 1");
+    expect(link).toBe("http://localhost:3211/api/auth/verify-email?token=t&callbackURL=x&account=user%201");
+    const message = verificationMessage(link);
+    expect(message.subject).toBe("Confirm your useAgent sign-up");
+    expect(message.text).toContain(link);
+    expect(message.text).toContain("If you did not sign up just now, ignore this");
+    await expect(deliverVerification("new@example.test", link, null)).rejects.toThrow("no mail transport");
+    const sent: Array<{ to: string[]; subject: string; from: string }> = [];
+    const config = { host: "smtp.example.test", port: 465, secure: true, from: "hello@example.test" };
+    const send = async (cfg: { timeoutMs?: number }, msg: { to: string[]; subject: string; from: string }) => {
+      expect(cfg.timeoutMs).toBe(20_000);
+      sent.push({ to: msg.to, subject: msg.subject, from: msg.from });
+    };
+    await deliverVerification("new@example.test", link, config, send as never);
+    expect(sent).toEqual([{ to: ["new@example.test"], subject: "Confirm your useAgent sign-up", from: "hello@example.test" }]);
   });
 });
 

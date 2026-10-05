@@ -1,0 +1,36 @@
+/**
+ * What the login card says about a confirmation link that landed here. The
+ * backend sends every verifying click to `/login?verified=1`, and the auth
+ * library appends `error=<code>` when the link was not good.
+ */
+export interface VerificationNotice {
+  readonly tone: "ok" | "problem";
+  readonly text: string;
+}
+
+export function verificationNotice(params: {
+  verified?: string | string[];
+  error?: string | string[];
+}): VerificationNotice | null {
+  const error = typeof params.error === "string" ? params.error : null;
+  if (error === "signup_replaced") {
+    return {
+      tone: "problem",
+      text: "That confirmation link is from an earlier sign-up that a newer one replaced. Sign up again to get a fresh link.",
+    };
+  }
+  if (error === "TOKEN_EXPIRED") {
+    return {
+      tone: "problem",
+      text: "That confirmation link has expired. Sign in with your password and we will send a new one.",
+    };
+  }
+  if (error) {
+    return {
+      tone: "problem",
+      text: "That confirmation link is not valid. Sign in with your password and we will send a new one.",
+    };
+  }
+  if (params.verified === "1") return { tone: "ok", text: "Your email address is confirmed. Sign in to continue." };
+  return null;
+}

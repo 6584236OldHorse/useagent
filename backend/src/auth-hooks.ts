@@ -1,5 +1,7 @@
 import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
+import { withOrgLock } from "./org-lock";
+import { firstOrgForUser } from "./seed";
 
 /**
  * Signup side-effects for better-auth. One job: give every newly-created user
@@ -43,6 +45,16 @@ export async function createPersonalOrgForUser(user: {
     );
     return null;
   }
+}
+
+/** The personal organisation for a sign-up that verified its address, once:
+ *  two clicks on the same link report the verification twice, and a person
+ *  who already belongs somewhere (a provisioned account verifying late) keeps
+ *  what they have. */
+export async function ensurePersonalOrgForUser(user: { id: string; name?: string | null; email: string }): Promise<void> {
+  await withOrgLock(`user:${user.id}`, async () => {
+    if (!(await firstOrgForUser(user.id))) await createPersonalOrgForUser(user);
+  });
 }
 
 /** Lowercase, hyphenate, and bound a label into a DNS-ish org slug stem. */
