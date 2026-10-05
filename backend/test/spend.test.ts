@@ -331,7 +331,7 @@ describe("spend allowance", () => {
     const batchUser = await memberOf(batchSession.orgId);
     const parent = await post({ prompt: "parent before the cap", engine: "mock" }, {}, batchSession.cookies);
     expect(parent.status).toBe(201);
-    await setSpent(batchSession.orgId, batchUser, 100);
+    await setSpent(batchSession.orgId, batchUser, 50);
 
     const previousRollout = process.env.FLEET_BATCH_ROLLOUT;
     process.env.FLEET_BATCH_ROLLOUT = "write";
@@ -347,7 +347,7 @@ describe("spend allowance", () => {
     }
     expect(batch.status).toBe(402);
     expect(batch.body.error).toBe("spend_allowance_exceeded");
-    expect(batch.body.message).toContain("$100.00 of your $100.00");
+    expect(batch.body.message).toContain("$50.00 of your $50.00");
 
     await expect(acceptProductChildBatch({
       orgId: batchSession.orgId, actorId: batchUser, parentRunId: parent.body.id!, parentThreadId: parent.body.id!,
