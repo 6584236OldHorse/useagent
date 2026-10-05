@@ -51,17 +51,6 @@ async function invitationState(id: string | null, exec: Executor): Promise<Invit
   return row?.status === "pending" && row.expiresAt > new Date() ? "open" : "gone";
 }
 
-/** The account that accepted the invitation: the library admits only the
- *  person whose address it names, so that address's user is the acceptor. */
-async function acceptorOf(invitationId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ id: user.id })
-    .from(invitation)
-    .innerJoin(user, eq(user.email, invitation.email))
-    .where(eq(invitation.id, invitationId))
-    .limit(1);
-  return row?.id ?? null;
-}
 
 /** Record the request once and tell the admins who are reachable on Slack. The
  *  row and the notices commit together, so a failed notice is never lost behind
@@ -166,27 +155,16 @@ async function settleAccepted(
   invitationId: string,
 ): Promise<AccessRequestVerdict> {
   // The organisation's turn: acceptance holds it from the library's write to
-  // the binding, so by the time this runs the membership is there or truly gone.
+  // the binding, so by the time this runs an acceptance has finished with every
+  // linked request. One still marked invited was never confirmed by the
+  // acceptor (or the acceptance broke off): nobody has agreed to let this
+  // sender act as that person, so the admins decide again.
   return withOrgLock(input.orgId, async () => {
-    // Read again under the turn: the library restores pending when its own
-    // membership write fails, and that invitation is still live.
     const state = await invitationState(invitationId, db);
     if (state === "open") return "invited";
-    if (state === "gone") {
-      await reopenInvitedRequest(invitationId);
-      return "waiting";
-    }
-    const acceptor = await acceptorOf(invitationId);
-    const bound = acceptor ? await bindInvitedSlackSender(invitationId, acceptor) : "no_membership";
-    if (bound === "bound") return "already_in";
-    if (bound === "none") {
-      // The acceptance finished its own binding while this waited for the turn.
-      const active = await findActiveSlackUser(input.teamId, input.slackUserId);
-      if (active?.orgId === input.orgId) return "already_in";
-    }
-    // Accepted, but nobody to bind: the membership was removed again, or the
-    // account is gone. Never created here; the admins decide again.
-    if (bound === "no_membership") await reopenInvitedRequest(invitationId);
+    const active = await findActiveSlackUser(input.teamId, input.slackUserId);
+    if (active?.orgId === input.orgId) return "already_in";
+    await reopenInvitedRequest(invitationId);
     return "waiting";
   });
 }
@@ -364,12 +342,29 @@ export async function decideAccessRequest(input: {
 
 /** The person who accepted an invitation an admin sent on a Slack sender's
  *  behalf now owns that sender: bind them and tell them on Slack. */
+export interface LinkedSlackSender {
+  readonly id: string;
+  readonly name: string;
+  readonly teamId: string;
+}
+
+/** The Slack senders an acceptance of this invitation would let act as the
+ *  recipient. Shown before accepting; the acceptance names the same ids. */
+export async function linkedSlackSenders(invitationId: string): Promise<LinkedSlackSender[]> {
+  return db
+    .select({ id: slackAccessRequests.id, name: slackAccessRequests.name, teamId: slackAccessRequests.teamId })
+    .from(slackAccessRequests)
+    .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")));
+}
+
 export type InvitedBinding = "bound" | "no_membership" | "none";
 
-export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<InvitedBinding> {
+export async function bindInvitedSlackSender(invitationId: string, userId: string, confirmed: readonly string[]): Promise<InvitedBinding> {
   const bound = await db.transaction(async (tx): Promise<InvitedBinding> => {
     // Several senders may share one invitation (one address, several workspaces);
-    // each linked request is judged on its own, by its exact id.
+    // each linked request is judged on its own, by its exact id. Only the senders
+    // the acceptor saw and confirmed are bound; any other goes back to the
+    // admins, since nobody has agreed to let it act as this person.
     const linked = await tx
       .select({ id: slackAccessRequests.id, teamId: slackAccessRequests.teamId, orgId: slackAccessRequests.orgId })
       .from(slackAccessRequests)
@@ -377,6 +372,13 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
     if (!linked.length) return "none";
     let result: InvitedBinding = "none";
     for (const candidate of linked) {
+      if (!confirmed.includes(candidate.id)) {
+        await tx
+          .update(slackAccessRequests)
+          .set({ status: "pending", invitationId: null, decidedBy: null, decidedAt: null })
+          .where(and(eq(slackAccessRequests.id, candidate.id), eq(slackAccessRequests.status, "invited")));
+        continue;
+      }
       // Workspace first, then the request, as in decideAccessRequest: an old
       // invitation must not overwrite the binding a rebound workspace made.
       const [workspace] = await tx
@@ -433,7 +435,11 @@ export async function reopenInvitedRequest(invitationId: string): Promise<void> 
  *  here cannot go through the library, which would insert a second membership.
  *  The matching, signed-in recipient consumes it directly and keeps their
  *  membership; anyone else is left to the library's own checks. */
-export async function acceptLinkedInvitationAsMember(invitationId: string, who: { id: string; email: string }): Promise<string | null> {
+export async function acceptLinkedInvitationAsMember(
+  invitationId: string,
+  who: { id: string; email: string },
+  confirmed: readonly string[],
+): Promise<string | null> {
   const consumed = await db.transaction(async (tx): Promise<string | null> => {
     const [row] = await tx
       .select({ id: invitation.id, email: invitation.email, role: invitation.role, organizationId: invitation.organizationId })
@@ -458,7 +464,7 @@ export async function acceptLinkedInvitationAsMember(invitationId: string, who: 
     return row.organizationId;
   });
   if (!consumed) return null;
-  if ((await bindInvitedSlackSender(invitationId, who.id)) === "no_membership") await reopenInvitedRequest(invitationId);
+  if ((await bindInvitedSlackSender(invitationId, who.id, confirmed)) === "no_membership") await reopenInvitedRequest(invitationId);
   return consumed;
 }
 

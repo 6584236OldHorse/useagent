@@ -2,7 +2,7 @@ import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
-import { acceptLinkedInvitationAsMember, bindInvitedSlackSender, reopenInvitedRequest } from "../slack/access-requests";
+import { acceptLinkedInvitationAsMember, bindInvitedSlackSender, linkedSlackSenders, reopenInvitedRequest } from "../slack/access-requests";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
@@ -391,6 +391,9 @@ routes.get("/api/auth/invitation-preview", async (c) => {
     organizationName: row.organizationName,
     inviterEmail: row.inviterEmail,
     expiresAt: row.expiresAt.toISOString(),
+    // Accepting also lets these Slack senders act as the recipient; the
+    // acceptance must name the same ids, so nothing attached later is covered.
+    slackSenders: await linkedSlackSenders(id),
   });
 });
 /** Acceptance runs under the organisation's lock, the direct path, the library
@@ -411,13 +414,16 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
     .limit(1);
   if (!target) return auth.handler(request);
   const session = await auth.api.getSession({ headers: request.headers });
+  // The Slack senders the person saw on the accept page and agreed to; any
+  // other sender linked to the invitation is sent back to the admins.
+  const confirmed = Array.isArray(body.slackRequestIds) ? body.slackRequestIds.filter((id): id is string => typeof id === "string") : [];
   return withOrgLock(target.organizationId, async () => {
     if (session) {
       // Already a member here, invited on a Slack sender's behalf: the library
       // would add a second membership, so the invitation is consumed directly,
       // behind the same source check the library applies.
       if (!trustedOrigin(request)) return c.json({ message: "Invalid origin" }, 403);
-      const organizationId = await acceptLinkedInvitationAsMember(invitationId, { id: session.user.id, email: session.user.email });
+      const organizationId = await acceptLinkedInvitationAsMember(invitationId, { id: session.user.id, email: session.user.email }, confirmed);
       if (organizationId) {
         await auth.api.setActiveOrganization({ headers: request.headers, body: { organizationId } }).catch(() => undefined);
         return c.json({ status: "accepted", organizationId });
@@ -425,7 +431,7 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
     }
     const response = await auth.handler(request);
     if (response.ok && session) {
-      const bound = await bindInvitedSlackSender(invitationId, session.user.id);
+      const bound = await bindInvitedSlackSender(invitationId, session.user.id, confirmed);
       // Accepted, but the membership is already gone (removed in between): the
       // request goes back to the admins rather than waiting for nothing.
       if (bound === "no_membership") await reopenInvitedRequest(invitationId);

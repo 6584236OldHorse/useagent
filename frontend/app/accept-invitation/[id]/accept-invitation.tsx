@@ -14,17 +14,38 @@ import { invitationProblem } from "./invitation-problem";
  * to join, then land in that workspace.
  */
 
+export interface SlackSender {
+  readonly id: string;
+  readonly name: string;
+  readonly teamId: string;
+}
+
 export interface InvitationView {
   readonly organizationName: string;
   /** Null once the inviter has left the organisation; the invitation still stands. */
   readonly inviterEmail: string | null;
   readonly email: string;
   readonly role: string;
+  /** Slack identities that will act as this person once they accept; shown, and confirmed by id. */
+  readonly slackSenders?: readonly SlackSender[];
 }
 
-async function fetchInvitation(id: string): Promise<{ view: InvitationView } | { problem: string }> {
+/** What accepting also authorises, said plainly, or nothing when nothing is attached. */
+export function slackSendersNotice(senders: readonly SlackSender[] | undefined): string | null {
+  if (!senders?.length) return null;
+  const names = senders
+    .map((sender) => `${sender.name} (Slack workspace ${sender.teamId})`)
+    .join(", ");
+  return `Joining also lets ${names} use useAgent from Slack as you. If you do not know ${senders.length === 1 ? "this person" : "these people"}, do not join.`;
+}
+
+async function fetchInvitation(
+  id: string,
+): Promise<{ view: InvitationView } | { problem: string }> {
   try {
-    const res = await backendFetch(`/api/auth/invitation-preview?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const res = await backendFetch(`/api/auth/invitation-preview?id=${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    });
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { message?: string } | null;
       return { problem: invitationProblem(res.status, body?.message ?? null) };
@@ -36,12 +57,12 @@ async function fetchInvitation(id: string): Promise<{ view: InvitationView } | {
   }
 }
 
-async function accept(id: string): Promise<string | null> {
+async function accept(id: string, slackRequestIds: readonly string[]): Promise<string | null> {
   try {
     const res = await backendFetch("/api/auth/organization/accept-invitation", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ invitationId: id }),
+      body: JSON.stringify({ invitationId: id, slackRequestIds }),
     });
     if (res.ok) return null;
     const body = (await res.json().catch(() => null)) as { message?: string } | null;
@@ -76,8 +97,12 @@ export function AcceptInvitation({ id }: { id: string }) {
   }, [attempt, id, loading, router, session]);
 
   const join = async () => {
+    if (state === null || "problem" in state) return;
     setJoining(true);
-    const problem = await accept(id);
+    const problem = await accept(
+      id,
+      (state.view.slackSenders ?? []).map((sender) => sender.id),
+    );
     if (problem) {
       setState({ problem });
       setJoining(false);
@@ -95,7 +120,9 @@ export function AcceptInvitation({ id }: { id: string }) {
           <p className="text-body-2-regular text-text-secondary">Checking your invitation...</p>
         ) : "problem" in state ? (
           <>
-            <p role="alert" className="text-body-2-regular text-text-error-primary">{state.problem}</p>
+            <p role="alert" className="text-body-2-regular text-text-error-primary">
+              {state.problem}
+            </p>
             <div className="flex gap-2">
               <Button variant="secondary" size="small" onClick={() => setAttempt((n) => n + 1)}>
                 Try again
@@ -107,12 +134,32 @@ export function AcceptInvitation({ id }: { id: string }) {
           </>
         ) : (
           <>
-            <h1 className="text-title-3-medium text-text-primary">Join {state.view.organizationName}</h1>
+            <h1 className="text-title-3-medium text-text-primary">
+              Join {state.view.organizationName}
+            </h1>
             <p className="text-body-2-regular text-text-secondary">
               {state.view.inviterEmail ?? "A teammate"} invited {state.view.email} as{" "}
-              {state.view.role === "admin" ? "an admin" : state.view.role === "owner" ? "an owner" : "a member"}.
+              {state.view.role === "admin"
+                ? "an admin"
+                : state.view.role === "owner"
+                  ? "an owner"
+                  : "a member"}
+              .
             </p>
-            <Button variant="primary" size="medium" disabled={joining || joined} onClick={() => void join()}>
+            {slackSendersNotice(state.view.slackSenders) && (
+              <p
+                className="text-body-2-regular text-text-primary"
+                data-testid="slack-senders-notice"
+              >
+                {slackSendersNotice(state.view.slackSenders)}
+              </p>
+            )}
+            <Button
+              variant="primary"
+              size="medium"
+              disabled={joining || joined}
+              onClick={() => void join()}
+            >
               {joined ? "Joined" : joining ? "Joining..." : "Join workspace"}
             </Button>
           </>
