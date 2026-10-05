@@ -25,7 +25,7 @@ export const GATEWAY_GRANTS: readonly string[] = [
   "GRANT SELECT ON runs, skills, skill_revisions, secrets, artifacts, provider_gateway_audit, slack_threads, thread_relationships TO useagent_gateway",
   "GRANT UPDATE (skill_id, skill_version, skill_content_hash, updated_at) ON runs TO useagent_gateway",
   "GRANT UPDATE (usage_count, last_run_at, updated_at) ON skills TO useagent_gateway",
-  "GRANT SELECT (id, run_id, seq, event_type, payload) ON provider_events TO useagent_gateway",
+  "GRANT SELECT (id, run_id, thread_id, seq, provider, event_type, payload) ON provider_events TO useagent_gateway",
   "GRANT INSERT (id, run_id, thread_id, seq, provider, event_type, native_session_id, native_parent_session_id, native_message_id, native_part_id, native_call_id, payload, created_at) ON provider_events TO useagent_gateway",
   "GRANT UPDATE (seq, event_type, payload, created_at) ON provider_events TO useagent_gateway",
   "GRANT SELECT, INSERT ON artifacts TO useagent_gateway",

@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { providerEvents } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
@@ -155,6 +155,40 @@ export async function providerEventExists(id: string): Promise<boolean> {
     .where(eq(providerEvents.id, id))
     .limit(1);
   return !!row;
+}
+
+export interface StableProviderEvent {
+  readonly id: string;
+  readonly runId: string;
+  readonly threadId: string;
+  readonly provider: string;
+  readonly eventType: string;
+  readonly payload: string | null;
+}
+
+/** Read one stable lifecycle event only inside its exact run/thread scope. */
+export async function readStableProviderEvent(input: {
+  readonly id: string;
+  readonly runId: string;
+  readonly threadId: string;
+}, exec: Executor = db): Promise<StableProviderEvent | null> {
+  const [row] = await exec
+    .select({
+      id: providerEvents.id,
+      runId: providerEvents.runId,
+      threadId: providerEvents.threadId,
+      provider: providerEvents.provider,
+      eventType: providerEvents.eventType,
+      payload: providerEvents.payload,
+    })
+    .from(providerEvents)
+    .where(and(
+      eq(providerEvents.id, input.id),
+      eq(providerEvents.runId, input.runId),
+      eq(providerEvents.threadId, input.threadId),
+    ))
+    .limit(1);
+  return row ?? null;
 }
 
 /** Highest seq already persisted for a run (−1 when none) — seeds the counter so
