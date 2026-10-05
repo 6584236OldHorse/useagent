@@ -51,7 +51,7 @@ function ManagedUserMenu({ trigger }: UserMenuProps) {
   const { isLoaded: authLoaded, orgId, signOut: endSession } = useAuth();
   const { isLoaded: userLoaded, isSignedIn, user } = useUser();
   const { loading: workspaceLoading, session: workspaceSession } = useSession();
-  const organizations = useOrganizationList({ userMemberships: { pageSize: 100 } });
+  const organizations = useOrganizationList({ userMemberships: { pageSize: 100, infinite: true } });
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
   const profile = managedUserProfile({
     isLoaded: authLoaded && userLoaded,
@@ -74,6 +74,12 @@ function ManagedUserMenu({ trigger }: UserMenuProps) {
       profile={profile}
       workspaces={profile.signedIn ? workspaces : undefined}
       workspacesLoaded={organizations.isLoaded}
+      workspacesLoading={organizations.userMemberships.isFetching}
+      onLoadMoreWorkspaces={
+        organizations.userMemberships.hasNextPage
+          ? organizations.userMemberships.fetchNext
+          : undefined
+      }
       workspaceAccessError={
         workspaceSwitchError ??
         (organizations.userMemberships.isError
@@ -157,6 +163,8 @@ function UserMenuView({
   profile,
   workspaces,
   workspacesLoaded = true,
+  workspacesLoading = false,
+  onLoadMoreWorkspaces,
   workspaceAccessError,
   onSelectWorkspace,
   onSignOut = signOut,
@@ -164,6 +172,8 @@ function UserMenuView({
   profile: UserMenuProfile;
   workspaces?: readonly { readonly id: string; readonly name: string; readonly active: boolean }[];
   workspacesLoaded?: boolean;
+  workspacesLoading?: boolean;
+  onLoadMoreWorkspaces?: () => void;
   workspaceAccessError?: string | null;
   onSelectWorkspace?: (organization: string) => Promise<void>;
   onSignOut?: () => Promise<void>;
@@ -206,7 +216,7 @@ function UserMenuView({
       <DropdownMenu
         aria-label="Account menu"
         placement="bottom end"
-        className="w-72"
+        className="max-h-[min(32rem,80vh)] w-72 overflow-y-auto"
         header={
           <>
             <div className="flex items-center gap-3 px-2 py-1.5">
@@ -269,6 +279,19 @@ function UserMenuView({
               </span>
             </DropdownMenuItem>
           )
+        ) : null}
+        {onLoadMoreWorkspaces ? (
+          <DropdownMenuItem
+            id="load-workspaces"
+            textValue="Load more workspaces"
+            shouldCloseOnSelect={false}
+            isDisabled={workspacesLoading}
+            onAction={onLoadMoreWorkspaces}
+          >
+            <span className="text-body-2-medium">
+              {workspacesLoading ? "Loading workspaces..." : "Load more workspaces"}
+            </span>
+          </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem id="settings" textValue="Settings" onAction={() => go("/settings")}>
           <RiSettings3Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
