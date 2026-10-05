@@ -2,7 +2,7 @@ import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
-import { acceptLinkedInvitationAsMember, bindInvitedSlackSender } from "../slack/access-requests";
+import { acceptLinkedInvitationAsMember, bindInvitedSlackSender, reopenInvitedRequest } from "../slack/access-requests";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
@@ -411,7 +411,10 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
   }
   const response = await auth.handler(request);
   if (response.ok && session && body && typeof body.invitationId === "string") {
-    await bindInvitedSlackSender(body.invitationId, session.user.id);
+    const bound = await bindInvitedSlackSender(body.invitationId, session.user.id);
+    // Accepted, but the membership is already gone (removed in between): the
+    // request goes back to the admins rather than waiting for nothing.
+    if (bound === "no_membership") await reopenInvitedRequest(body.invitationId);
   }
   return response;
 });

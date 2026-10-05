@@ -297,7 +297,9 @@ export function decisionEmail(
   request: Pick<AccessRequest, "email" | "account">,
   typed: string,
 ): string | null {
-  return request.email ?? request.account ?? (typed.trim() || null);
+  // An account the sender already owns here wins: Allow restores it whatever
+  // Slack says now or an admin types.
+  return request.account ?? request.email ?? (typed.trim() || null);
 }
 
 /** A Slack sender nobody has let in yet. When Slack shared their address, Allow
@@ -332,8 +334,9 @@ function AccessRequestRow({
       <div className="min-w-0 flex-1">
         <p className="truncate text-body-2-medium text-text-primary">{request.name}</p>
         <p className="truncate text-caption-1-regular text-text-secondary">
-          {request.email ??
-            (request.account ? `previously let in as ${request.account}` : "Email unknown")}{" "}
+          {request.account
+            ? `previously let in as ${request.account}`
+            : (request.email ?? "Email unknown")}{" "}
           · asked {relTime(request.createdAt)}
         </p>
       </div>

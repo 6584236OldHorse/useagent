@@ -158,10 +158,13 @@ export async function requestSlackAccess(input: {
  *  landed between the library's acceptance and our binding): finish the binding now. */
 async function settleAccepted(invitationId: string): Promise<AccessRequestVerdict> {
   const acceptor = await acceptorOf(invitationId);
-  // The library marks the invitation accepted before it writes the membership;
-  // until that membership exists there is nothing to bind to, and it is never
-  // created here: a membership an admin removed must not come back this way.
-  return acceptor && (await bindInvitedSlackSender(invitationId, acceptor)) ? "already_in" : "waiting";
+  if (!acceptor) return "waiting";
+  const bound = await bindInvitedSlackSender(invitationId, acceptor);
+  if (bound === "bound") return "already_in";
+  // Accepted, but no membership to bind to: it was removed again, or the
+  // acceptance never finished. Never created here; the admins decide again.
+  if (bound === "no_membership") await reopenInvitedRequest(invitationId);
+  return "waiting";
 }
 
 export interface AccessRequestRow {
@@ -284,14 +287,16 @@ export async function decideAccessRequest(input: {
 
 /** The person who accepted an invitation an admin sent on a Slack sender's
  *  behalf now owns that sender: bind them and tell them on Slack. */
-export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<boolean> {
-  const bound = await db.transaction(async (tx) => {
+export type InvitedBinding = "bound" | "no_membership" | "none";
+
+export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<InvitedBinding> {
+  const bound = await db.transaction(async (tx): Promise<InvitedBinding> => {
     const [linked] = await tx
       .select({ teamId: slackAccessRequests.teamId, orgId: slackAccessRequests.orgId })
       .from(slackAccessRequests)
       .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
       .limit(1);
-    if (!linked) return false;
+    if (!linked) return "none";
     // Workspace first, then the request, as in decideAccessRequest: an old
     // invitation must not overwrite the binding a rebound workspace made.
     const [workspace] = await tx
@@ -299,26 +304,35 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
       .from(slackWorkspaces)
       .where(eq(slackWorkspaces.teamId, linked.teamId))
       .for("update");
-    if (workspace?.orgId !== linked.orgId) return false;
+    if (workspace?.orgId !== linked.orgId) return "none";
     const [row] = await tx
       .select()
       .from(slackAccessRequests)
       .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
       .for("update");
-    if (!row) return false;
+    if (!row) return "none";
     // Acceptance binds a membership that exists; it never creates one.
     const [membership] = await tx
       .select({ id: member.id })
       .from(member)
       .where(and(eq(member.organizationId, row.orgId), eq(member.userId, userId)))
       .limit(1);
-    if (!membership) return false;
+    if (!membership) return "no_membership";
     await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${invitationId}`);
     await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
-    return true;
+    return "bound";
   });
-  if (bound) kickSlackOutbox();
+  if (bound === "bound") kickSlackOutbox();
   return bound;
+}
+
+/** An accepted invitation whose membership is gone again (removed in between)
+ *  leaves nothing to bind: the request goes back to the admins' list. */
+export async function reopenInvitedRequest(invitationId: string): Promise<void> {
+  await db
+    .update(slackAccessRequests)
+    .set({ status: "pending", invitationId: null, decidedBy: null, decidedAt: null })
+    .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")));
 }
 
 /** An invitation sent for a Slack sender to someone who is already a member
@@ -383,6 +397,7 @@ async function provenIdentity(tx: Executor, row: Request): Promise<string | null
   const [bound] = await tx
     .select({ userId: slackUsers.userId })
     .from(slackUsers)
+    .innerJoin(user, eq(user.id, slackUsers.userId)) // a binding to a deleted account is no identity
     .where(and(eq(slackUsers.teamId, row.teamId), eq(slackUsers.slackUserId, row.slackUserId), eq(slackUsers.orgId, row.orgId)))
     .limit(1);
   if (bound) return bound.userId; // the account this sender already owns here
