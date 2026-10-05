@@ -104,7 +104,7 @@ export function PlanChecklist({
     <section
       aria-label={title}
       data-testid={testId}
-      className={cx("flex w-full flex-col", className)}
+      className={cx("flex flex-col", className)}
     >
       {/* The same pill as the Thinking header it sits under: content-hugging,
           rounded, hairline ring, 16px mark, caret at the end. */}
@@ -115,9 +115,9 @@ export function PlanChecklist({
         className="inline-flex w-fit max-w-full cursor-pointer items-center gap-2 rounded-full bg-background-secondary-default px-2.5 py-1 text-left ring-1 ring-inset ring-border-button-default/60 transition-colors duration-100 hover:bg-background-secondary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
       >
         <CompletionMark done={done} total={total} />
-        <span className="shrink-0 text-body-2-medium text-text-secondary">{title}</span>
+        <span className="min-w-0 truncate text-body-2-medium text-text-secondary">{title}</span>
         <span
-          className="text-body-2-regular tabular-nums text-lime-600"
+          className="shrink-0 text-body-2-regular tabular-nums text-lime-600"
           aria-label={`${done} of ${total} complete`}
           role="img"
         >
