@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { deriveThreadContext } from "@/components/chat/native-events";
+import type { ConversationContext } from "./composer-status-bar";
 import { contextSegments, minutesLimit, spendLimit, UsageCard } from "./usage-card";
 
 const T3 = { used: 18_357, cached: 17_152, window: 258_400, input: 18_336, output: 21, reasoning: 0, cacheWrite: 0 };
@@ -24,8 +26,17 @@ describe("usage card figures", () => {
       "Output",
       "Cache write",
     ]);
-    // A frame that carried only a total names no bucket: nothing to draw.
+    // A frame that carried only a total names no bucket: nothing to draw, also
+    // through the parser, which reads every missing bucket as 0.
     expect(contextSegments({ used: 500, cached: 0, window: null })).toEqual([]);
+    const bare = deriveThreadContext(
+      [{ schemaVersion: 1, eventId: "u1", seq: 1, provider: "opencode", eventType: "part.step-finish", native: { sessionId: "ses_root", parentSessionId: null, messageId: null, partId: null, callId: null }, payload: { tokens: { total: 500 } } }],
+      new Set(),
+    );
+    expect(bare?.used).toBe(500);
+    expect(contextSegments(bare as ConversationContext)).toEqual([]);
+    // A direct caller that gives no input names no fresh bucket: only what it gave is drawn.
+    expect(contextSegments({ used: 500, cached: 100, window: 1000 })).toEqual([{ label: "Cached input", tokens: 100 }]);
   });
 
   test("the minutes row reads x of y with a share while a cap is set, x alone without", () => {
@@ -69,6 +80,12 @@ describe("UsageCard", () => {
     const html = renderToStaticMarkup(<UsageCard context={PI} minutes={{ used: 0, cap: 600 }} />);
     expect(html).toContain("42k / 1M");
     expect(html).toContain("(4%)");
+  });
+
+  test("a bare total under a known window shows the readout and no track", () => {
+    const html = renderToStaticMarkup(<UsageCard context={{ used: 500, cached: 0, window: 1000 }} minutes={null} />);
+    expect(html).toContain("500 / 1k");
+    expect(html).not.toContain("bg-chart-track");
   });
 
   test("OpenCode reports no window: the token readout only, no bar, no invented max", () => {
