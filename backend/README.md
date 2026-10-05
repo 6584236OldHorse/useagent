@@ -233,7 +233,13 @@ The important variables are:
   generation it published. Probe runs belong to `FREE_MODEL_QUALIFIER_ORG_ID`,
   else the deployment's primary organization (`USEAGENT_PRIMARY_ORG_ID`);
   without either the lane only discovers. `FREE_MODEL_QUALIFIER=off` is the
-  kill switch (the lane then stays at its last generation).
+  kill switch (the lane then stays at its last generation). OpenCode Zen's
+  free models join the lane once the deployment can run them: set
+  `OPENCODE_API_KEY` and `PROVIDER_HEALTH_OPENCODE=verified`; they reach the
+  sandbox through the provider gateway like every other provider. Zen's free
+  marker is the lane's own, not Zen's, so the deployment's Zen account must
+  hold no credit balance with auto-reload off: a model Zen reprices then fails
+  there until the next catalog read drops it, instead of billing the house.
 
 ## Deploy and Terraform
 

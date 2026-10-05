@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  discoverOpenCodeZenFreeModels,
   discoverOpenRouterFreeModels,
   FREE_MODEL_LANE_SEED,
   FreeModelLaneCache,
@@ -27,14 +28,15 @@ describe("discoverOpenRouterFreeModels (catalog filter)", () => {
         entry("vendor/no-tools:free", 200_000, ["temperature"]),
         entry("vendor/paid", 200_000),
         entry("vendor/tiny-context:free", 32_000),
+        entry("opencode/big-pickle:free", 500_000), // a Zen lane id shape, never OpenRouter's
         { id: "vendor/string-context:free", context_length: "big", supported_parameters: ["tools"] },
         { context_length: 100_000, supported_parameters: ["tools"] },
         null,
         "garbage",
       ],
     })).toEqual([
-      { id: "vendor/bigger-agent:free", contextLength: 1_000_000 },
-      { id: "vendor/new-agent:free", contextLength: 200_000 },
+      { id: "vendor/bigger-agent:free", contextLength: 1_000_000, provider: "openrouter" },
+      { id: "vendor/new-agent:free", contextLength: 200_000, provider: "openrouter" },
     ]);
   });
 
@@ -51,6 +53,53 @@ describe("discoverOpenRouterFreeModels (catalog filter)", () => {
     const many = Array.from({ length: 120 }, (_, index) => entry(`vendor/model-${index}:free`, 2_000_000 - index));
     expect(discoverOpenRouterFreeModels({ data: many })).toHaveLength(100);
     expect(discoverOpenRouterFreeModels({ data: many }, 3)).toHaveLength(3);
+  });
+});
+
+describe("discoverOpenCodeZenFreeModels (models.dev catalog)", () => {
+  const zen = (id: string, overrides: Record<string, unknown> = {}) => [id, {
+    cost: { input: 0, output: 0 },
+    tool_call: true,
+    limit: { context: 262_144, output: 32_768 },
+    ...overrides,
+  }] as const;
+
+  test("keeps free, tool-capable, current Zen models under our lane id, largest context first", () => {
+    const catalog = {
+      opencode: {
+        models: Object.fromEntries([
+          zen("big-pickle", { limit: { context: 200_000, output: 32_768 } }),
+          zen("nemotron-3-ultra-free", { limit: { context: 1_000_000, output: 32_768 } }),
+          zen("glm-5-free", { status: "deprecated" }),
+          zen("claude-sonnet-5", { cost: { input: 2, output: 10 } }),
+          zen("cheap-input", { cost: { input: 0, output: 0.5 } }),
+          zen("no-tools-free", { tool_call: false }),
+          zen("tiny-free", { limit: { context: 32_000, output: 4_096 } }),
+          zen("weird id/free", {}),
+          zen("responses-api-free", { provider: { npm: "@ai-sdk/openai" } }),
+          zen("explicit-compatible-free", { provider: { npm: "@ai-sdk/openai-compatible" }, limit: { context: 150_000, output: 8_192 } }),
+          ["missing-cost", { tool_call: true, limit: { context: 262_144 } }],
+        ]),
+      },
+      openrouter: { models: Object.fromEntries([zen("router-free")]) },
+    };
+    expect(discoverOpenCodeZenFreeModels(catalog)).toEqual([
+      { id: "opencode/nemotron-3-ultra-free:free", contextLength: 1_000_000, provider: "opencode" },
+      { id: "opencode/big-pickle:free", contextLength: 200_000, provider: "opencode" },
+      { id: "opencode/explicit-compatible-free:free", contextLength: 150_000, provider: "opencode" },
+    ]);
+  });
+
+  test("a catalog without Zen's model list is unreadable; one with nothing free is an answer", () => {
+    expect(discoverOpenCodeZenFreeModels({})).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: {} })).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: { models: [] } })).toBeNull();
+    expect(discoverOpenCodeZenFreeModels(null)).toBeNull();
+    expect(discoverOpenCodeZenFreeModels("html error page")).toBeNull();
+    expect(discoverOpenCodeZenFreeModels({ opencode: { models: {} } })).toEqual([]);
+    expect(discoverOpenCodeZenFreeModels({
+      opencode: { models: { "was-free": { cost: { input: 1, output: 2 }, tool_call: true, limit: { context: 262_144 } } } },
+    })).toEqual([]);
   });
 });
 

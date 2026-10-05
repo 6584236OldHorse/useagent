@@ -2,6 +2,7 @@ import type { EngineId } from "../db/schema";
 import { chatModelCatalog } from "../chat/models";
 import { chatModel } from "../chat/stream";
 import { freeModelLane, isAllowedFreeModel } from "./free-model-lane";
+import { openCodeZenModelId } from "../provider-gateway/provider";
 
 export const KIMI_K3_MODEL = "moonshotai/kimi-k3";
 export const DEEPSEEK_V4_FLASH_MODEL = "deepseek/deepseek-v4-flash";
@@ -166,8 +167,14 @@ export function openCodeRuntimeModelId(model: string): string {
 
   const provider = model.slice(0, separator);
   if (OPENCODE_PROVIDER_IDS.has(provider)) return model;
-  if (isPersistedModelAllowedForEngine("opencode", model)) return `openrouter/${model}`;
-  throw new Error(`Unsupported OpenCode model provider: ${provider}`);
+  if (!isPersistedModelAllowedForEngine("opencode", model)) {
+    throw new Error(`Unsupported OpenCode model provider: ${provider}`);
+  }
+  // Free-lane ids carry the ":free" marker. OpenRouter's runtime ids do too;
+  // OpenCode Zen's own ids do not.
+  return provider === "opencode"
+    ? `opencode/${openCodeZenModelId(model)}`
+    : `openrouter/${model}`;
 }
 
 /** A reply may inherit its durable parent's accepted model after a restart;

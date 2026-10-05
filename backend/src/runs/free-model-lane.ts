@@ -7,6 +7,8 @@
  */
 
 export const OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models";
+/** The public catalog OpenCode maintains; its "opencode" provider is OpenCode Zen. */
+export const MODELS_DEV_CATALOG_URL = "https://models.dev/api.json";
 export const OPENROUTER_CATALOG_TIMEOUT_MS = 10_000;
 const MIN_CONTEXT_LENGTH = 65_536;
 const DISCOVERY_CAP = 100;
@@ -25,22 +27,29 @@ const FREE_MODEL_LANE_SEED_SET = new Set<string>(FREE_MODEL_LANE_SEED);
 /** Minimal fetch seam so tests inject a fixture catalog (never live network). */
 export type CatalogFetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
-export interface OpenRouterFreeModelCandidate {
+export type FreeModelProvider = "openrouter" | "opencode";
+
+export interface FreeModelCandidate {
+  /** Our lane id: OpenRouter's slug as is, or "opencode/<zen id>:free". */
   readonly id: string;
   readonly contextLength: number;
+  readonly provider: FreeModelProvider;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 /** Public-catalog discovery only. Qualification is a separate full-agent run. */
 export function discoverOpenRouterFreeModels(
   catalog: unknown,
   cap = DISCOVERY_CAP,
-): OpenRouterFreeModelCandidate[] {
-  const data =
-    catalog && typeof catalog === "object" && !Array.isArray(catalog)
-      ? (catalog as { data?: unknown }).data
-      : null;
+): FreeModelCandidate[] {
+  const data = record(catalog)?.data;
   if (!Array.isArray(data)) return [];
-  const candidates: OpenRouterFreeModelCandidate[] = [];
+  const candidates: FreeModelCandidate[] = [];
   for (const raw of data) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const entry = raw as {
@@ -49,6 +58,8 @@ export function discoverOpenRouterFreeModels(
       supported_parameters?: unknown;
     };
     if (typeof entry.id !== "string" || !entry.id.endsWith(":free")) continue;
+    // "opencode/<id>:free" is the lane id shape of OpenCode Zen's models.
+    if (entry.id.startsWith("opencode/")) continue;
     if (
       typeof entry.context_length !== "number" ||
       entry.context_length < MIN_CONTEXT_LENGTH
@@ -61,7 +72,41 @@ export function discoverOpenRouterFreeModels(
     ) {
       continue;
     }
-    candidates.push({ id: entry.id, contextLength: entry.context_length });
+    candidates.push({ id: entry.id, contextLength: entry.context_length, provider: "openrouter" });
+  }
+  return candidates
+    .toSorted((a, b) => b.contextLength - a.contextLength)
+    .slice(0, cap);
+}
+
+/** The runtime adapter the provider gateway's Zen route speaks (chat
+ * completions). A Zen model pinned to another adapter would call an endpoint
+ * the gateway does not proxy, so it is not a candidate. */
+const ZEN_GATEWAY_ADAPTER = "@ai-sdk/openai-compatible";
+
+/** OpenCode Zen's free models from the models.dev catalog: zero cost both
+ * ways, tool calls, a usable context, not retired, on the adapter the gateway
+ * proxies. Zen ids are plain words; anything else cannot become a lane id.
+ * Null when the catalog carries no Zen model list at all (a malformed read);
+ * an empty list is a real answer: nothing on Zen is free right now. */
+export function discoverOpenCodeZenFreeModels(
+  catalog: unknown,
+  cap = DISCOVERY_CAP,
+): FreeModelCandidate[] | null {
+  const models = record(record(record(catalog)?.opencode)?.models);
+  if (!models) return null;
+  const candidates: FreeModelCandidate[] = [];
+  for (const [id, raw] of Object.entries(models)) {
+    const entry = record(raw);
+    const cost = record(entry?.cost);
+    const context = record(entry?.limit)?.context;
+    const adapter = record(entry?.provider)?.npm;
+    if (!entry || !cost || cost.input !== 0 || cost.output !== 0) continue;
+    if (entry.tool_call !== true || entry.status === "deprecated") continue;
+    if (adapter !== undefined && adapter !== ZEN_GATEWAY_ADAPTER) continue;
+    if (typeof context !== "number" || context < MIN_CONTEXT_LENGTH) continue;
+    if (!/^[a-z0-9][a-z0-9.-]*$/i.test(id)) continue;
+    candidates.push({ id: `opencode/${id}:free`, contextLength: context, provider: "opencode" });
   }
   return candidates
     .toSorted((a, b) => b.contextLength - a.contextLength)

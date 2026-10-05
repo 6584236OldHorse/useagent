@@ -25,7 +25,7 @@ export type EngineModelCatalogStatuses = Partial<Record<EngineId, CapabilityMode
 export interface EngineReadinessStatus {
   readonly ready: boolean;
   readonly reason: "enabled" | "disabled" | "provider_unhealthy" | "gateway_unconfigured" | "not_proven";
-  readonly provider?: "anthropic" | "openai" | "openrouter" | "cerebras";
+  readonly provider?: "anthropic" | "openai" | "openrouter" | "cerebras" | "opencode";
   readonly providerHealth?: string;
   readonly message?: string;
 }

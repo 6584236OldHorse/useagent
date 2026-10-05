@@ -145,6 +145,31 @@ describe("resolveProviderCredentialForRun precedence", () => {
     expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
   });
 
+  test("an OpenCode Zen free model runs on the house Zen account only, never a tenant's funded key", async () => {
+    const funded = deps({
+      resolveUserConnection: async () => "zen-user",
+      resolveOrgSecret: async () => "zen-org",
+      env: { OPENCODE_API_KEY: "zen-house", OPENROUTER_API_KEY: "sk-house" },
+      devModeEnabled: () => false,
+    });
+    const free = { orgId: "org-a", userId: "user-a", provider: "opencode" as const, model: "opencode/big-pickle:free" };
+    // Even with a user connection and an org secret present, the free model meets the house account.
+    expect(await resolveProviderCredentialForRun(free, funded))
+      .toEqual({ value: "zen-house", source: "backend_env" });
+    // Zen's paid models keep the tenant precedence and never fall back to the house.
+    expect(await resolveProviderCredentialForRun({ ...free, model: "opencode/claude-opus-5" }, funded))
+      .toEqual({ value: "zen-user", source: "user_connection" });
+    expect(await resolveProviderCredentialForRun(
+      { ...free, model: "opencode/claude-opus-5" },
+      deps({ resolveUserConnection: async () => null, resolveOrgSecret: async () => null, env: { OPENCODE_API_KEY: "zen-house" }, devModeEnabled: () => false }),
+    )).toBeNull();
+    // Without a house key a Zen free model has no credential at all.
+    expect(await resolveProviderCredentialForRun(
+      free,
+      deps({ resolveUserConnection: async () => "zen-user", resolveOrgSecret: async () => "zen-org", env: {}, devModeEnabled: () => false }),
+    )).toBeNull();
+  });
+
   test("production house fallback is restricted to provider-qualified OpenRouter free models", async () => {
     const free = await resolveProviderCredentialForRun(
       {

@@ -87,7 +87,9 @@ function unavailableMessage(readiness: EngineReadiness): string {
       ? "OpenAI"
       : readiness.provider === "cerebras"
         ? "Cerebras"
-        : "OpenRouter";
+        : readiness.provider === "opencode"
+          ? "OpenCode Zen"
+          : "OpenRouter";
   if (readiness.reason === "provider_unhealthy" && readiness.provider) {
     if (readiness.providerHealth === "insufficient_credit") {
       return `${label} is configured, but ${provider} reports insufficient credits. Add credits or update the provider key in Settings, then retry.`;
@@ -120,6 +122,14 @@ function explicitEngineHealth(engine: string, env: Record<string, string | undef
 
 function providerHealth(provider: ProviderId, env: Record<string, string | undefined>): string | null {
   return healthFlag(`PROVIDER_HEALTH_${provider.toUpperCase()}`, env);
+}
+
+/** Whether a provider carries positive release evidence (PROVIDER_HEALTH_*). */
+export function providerProven(
+  provider: ProviderId,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return providerHealthStatus(provider, env) === "ready";
 }
 
 function providerHealthStatus(
@@ -182,6 +192,8 @@ export function modelProviderReadinessErrorBody(
         ? "OpenRouter"
         : provider === "cerebras"
           ? "Cerebras"
+          : provider === "opencode"
+            ? "OpenCode Zen"
         : "The selected model provider";
   const action = health === "insufficient_credit"
     ? "Add credits or update the provider key in Settings, then retry."

@@ -7,7 +7,9 @@ import type { ClaimedFreeModelCandidate } from "./free-model-registry-repo";
 import type { FreeModelQualificationResult } from "./free-model-qualification-driver";
 import {
   desiredPublishedLane,
+  discoverFreeModelCandidates,
   fetchOpenRouterFreeModelCandidates,
+  openCodeZenSourceEnabled,
   freeModelQualifierEnabled,
   QUALIFIER_ADMISSION_WAIT_MS,
   respondToManualRefresh,
@@ -137,11 +139,23 @@ function fakeRepository(input: {
   return { repository, records, publishes };
 }
 
-function discovery(...ids: string[]) {
-  return async () => ({
+function discovered(ids: readonly string[], sources: readonly ("openrouter" | "opencode")[] = ["openrouter"]) {
+  return {
     ok: true as const,
-    candidates: ids.map((id, index) => ({ id, contextLength: 200_000 - index })),
-  });
+    candidates: ids.map((id, index) => ({
+      id,
+      contextLength: 200_000 - index,
+      provider: id.startsWith("opencode/") ? "opencode" as const : "openrouter" as const,
+    })),
+    sources,
+  };
+}
+
+function discovery(...ids: string[]) {
+  const sources = ids.some((id) => id.startsWith("opencode/"))
+    ? ["openrouter", "opencode"] as const
+    : ["openrouter"] as const;
+  return async () => discovered(ids, sources);
 }
 
 function driver(result: FreeModelQualificationResult) {
@@ -213,7 +227,8 @@ describe("free-model qualifier worker", () => {
       }), { status: 200 })
     )).resolves.toEqual({
       ok: true,
-      candidates: [{ id: "vendor/new:free", contextLength: 100_000 }],
+      candidates: [{ id: "vendor/new:free", contextLength: 100_000, provider: "openrouter" }],
+      sources: ["openrouter"],
     });
   });
 
@@ -306,7 +321,7 @@ describe("free-model qualifier worker", () => {
         state: registryState([first.modelId, temporarilyMissing.modelId]),
         candidates: [first, temporarilyMissing],
       },
-      [{ id: first.modelId, contextLength: 100_000 }],
+      discovered([first.modelId]),
     )).toEqual([first.modelId, temporarilyMissing.modelId]);
   });
 
@@ -478,7 +493,7 @@ describe("free-model qualifier worker", () => {
     let discoveries = 0;
     const discover = async (): Promise<CatalogDiscoveryResult> => {
       discoveries += 1;
-      return { ok: true, candidates: [] };
+      return discovered([]);
     };
     const worker = startFreeModelQualifierWorker({
       driver: null,
@@ -585,7 +600,7 @@ describe("free-model qualifier worker", () => {
       repository,
       discover: async () => {
         catalogCalls += 1;
-        return { ok: true, candidates: [] };
+        return discovered([]);
       },
       admission: async () => {
         await gate.promise;
@@ -613,7 +628,7 @@ describe("free-model qualifier worker", () => {
       repository,
       discover: async () => {
         catalogCalls += 1;
-        return { ok: true, candidates: [] };
+        return discovered([]);
       },
       admission: async () => {
         reads += 1;
@@ -658,4 +673,153 @@ describe("free-model qualifier worker", () => {
     expect((await worker.tick().result).status).toBe("completed");
     never.resolve(await openAdmission());
   }, 15_000);
+  test("OpenCode Zen joins discovery only where the deployment can run its models", async () => {
+    const openrouterCatalog = { data: [{ id: "vendor/new:free", context_length: 100_000, supported_parameters: ["tools"] }] };
+    const zenCatalog = { opencode: { models: { "big-pickle": { cost: { input: 0, output: 0 }, tool_call: true, limit: { context: 200_000 } } } } };
+    const urls: string[] = [];
+    const fetcher = async (url: string) => {
+      urls.push(url);
+      if (url.includes("openrouter")) return Response.json(openrouterCatalog);
+      return Response.json(zenCatalog);
+    };
+    expect(openCodeZenSourceEnabled({})).toBe(false);
+    expect(openCodeZenSourceEnabled({ OPENCODE_API_KEY: "zen" })).toBe(false);
+    expect(openCodeZenSourceEnabled({ OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" })).toBe(true);
+
+    const without = await discoverFreeModelCandidates(fetcher, {});
+    expect(without.ok && without.candidates.map((c) => c.id)).toEqual(["vendor/new:free"]);
+    expect(urls.filter((url) => url.includes("models.dev"))).toHaveLength(0);
+
+    const enabled = { OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" };
+    const both = await discoverFreeModelCandidates(fetcher, enabled);
+    expect(both.ok && both.candidates.map((c) => `${c.provider}:${c.id}`)).toEqual([
+      "opencode:opencode/big-pickle:free",
+      "openrouter:vendor/new:free",
+    ]);
+
+    // Zen's catalog failing costs only this tick's Zen candidates.
+    const zenDown = await discoverFreeModelCandidates(async (url: string) =>
+      url.includes("openrouter") ? Response.json(openrouterCatalog) : new Response(null, { status: 503 }), enabled);
+    expect(zenDown.ok && zenDown.candidates.map((c) => c.id)).toEqual(["vendor/new:free"]);
+    // OpenRouter failing is a catalog failure as before.
+    const routerDown = await discoverFreeModelCandidates(async () => new Response(null, { status: 503 }), enabled);
+    expect(routerDown).toEqual({ ok: false, errorCode: "provider_capacity", httpStatus: 503 });
+  });
+
+  test("the published lane caps each source separately", () => {
+    const qualified = (modelId: string, provider: string) => candidate(modelId, {
+      provider,
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const routerModels = Array.from({ length: 10 }, (_, i) => `vendor/model-${i}:free`);
+    const rows = [
+      ...routerModels.map((id) => qualified(id, "openrouter")),
+      qualified("opencode/big-pickle:free", "opencode"),
+    ];
+    const catalog = discovered(rows.map((row) => row.modelId), ["openrouter", "opencode"]);
+    const lane = desiredPublishedLane({ state: registryState(routerModels), candidates: rows }, catalog);
+    expect(lane).toHaveLength(9);
+    expect(lane.slice(0, 8)).toEqual(routerModels.slice(0, 8));
+    expect(lane[8]).toBe("opencode/big-pickle:free");
+  });
+  test("a Zen model missing from a read Zen catalog leaves the lane and is never probed", async () => {
+    const promo = candidate("opencode/promo:free", {
+      provider: "opencode",
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const router = candidate("vendor/x:free", { state: "qualified", everQualified: true, successStreak: 2 });
+    const { repository, records, publishes } = fakeRepository({
+      state: registryState([promo.modelId, router.modelId]),
+      candidates: [promo, router],
+      claims: [claim(promo)],
+    });
+    const probe = driver({ classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null });
+    const result = await runFreeModelQualifierTick({
+      driver: probe.driver,
+      repository,
+      // The Zen catalog was read and no longer lists promo: repriced or retired.
+      discover: async () => discovered([router.modelId], ["openrouter", "opencode"]),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(result.status).toBe("completed");
+    expect(probe.requests).toEqual([]);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ modelId: promo.modelId, outcome: "failure", errorCode: "policy_rejected" });
+    expect(publishes.at(-1)?.modelIds).toEqual([router.modelId]);
+  });
+
+  test("a Zen model missing while the Zen catalog was not read keeps its place and its probe", async () => {
+    const promo = candidate("opencode/promo:free", {
+      provider: "opencode",
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const { repository, records } = fakeRepository({
+      state: registryState([promo.modelId]),
+      candidates: [promo],
+      claims: [claim(promo)],
+    });
+    const probe = driver({ classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null });
+    const result = await runFreeModelQualifierTick({
+      driver: probe.driver,
+      repository,
+      discover: async () => discovered(["vendor/x:free"], ["openrouter"]),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(result.publishOutcome).toBe("unchanged");
+    expect(probe.requests).toEqual([promo.modelId]);
+    expect(records[0]).toMatchObject({ modelId: promo.modelId, outcome: "success" });
+  });
+  test("a Zen catalog with nothing free left is still a read, so every Zen model leaves the lane", async () => {
+    const openrouterCatalog = { data: [{ id: "vendor/new:free", context_length: 100_000, supported_parameters: ["tools"] }] };
+    const allPaid = { opencode: { models: { promo: { cost: { input: 1, output: 2 }, tool_call: true, limit: { context: 200_000 } } } } };
+    const enabled = { OPENCODE_API_KEY: "zen", PROVIDER_HEALTH_OPENCODE: "verified" };
+    const read = await discoverFreeModelCandidates(async (url: string) =>
+      Response.json(url.includes("openrouter") ? openrouterCatalog : allPaid), enabled);
+    expect(read).toEqual({
+      ok: true,
+      candidates: [{ id: "vendor/new:free", contextLength: 100_000, provider: "openrouter" }],
+      sources: ["openrouter", "opencode"],
+    });
+    // A catalog with no Zen model list at all is not a read: Zen models keep their place.
+    const unreadable = await discoverFreeModelCandidates(async (url: string) =>
+      Response.json(url.includes("openrouter") ? openrouterCatalog : { other: {} }), enabled);
+    expect(unreadable.ok && unreadable.sources).toEqual(["openrouter"]);
+  });
+
+  test("a probe batch ending in a system failure cannot keep a repriced Zen model advertised", async () => {
+    const promo = candidate("opencode/promo:free", {
+      provider: "opencode",
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const router = candidate("vendor/x:free", { state: "qualified", everQualified: true, successStreak: 2 });
+    const { repository, publishes } = fakeRepository({
+      state: registryState([promo.modelId, router.modelId]),
+      candidates: [promo, router],
+      claims: [claim(router)],
+    });
+    const adopted: string[][] = [];
+    const result = await runFreeModelQualifierTick({
+      driver: driver({ classification: "system_failure", latencyMs: 5, httpStatus: 429, errorCode: "rate_limited" }).driver,
+      repository,
+      discover: async () => discovered([router.modelId], ["openrouter", "opencode"]),
+      admission: openAdmission,
+      nowMs: () => NOW,
+      adoptPublishedLane: (state) => adopted.push([...state.currentModelIds]),
+    });
+    expect(result.systemFailure).toBe(true);
+    // The trim published before the probe; the failure then preserved the trimmed lane.
+    expect(publishes.map((p) => p.systemFailure ? "preserved" : p.modelIds.join(","))).toEqual([router.modelId, "preserved"]);
+    expect(adopted).toEqual([[router.modelId]]);
+    expect((await repository.loadRegistry()).state?.currentModelIds).toEqual([router.modelId]);
+  });
 });

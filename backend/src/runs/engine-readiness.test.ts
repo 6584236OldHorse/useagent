@@ -245,6 +245,12 @@ describe("engine readiness advertisement", () => {
       ...env,
       PROVIDER_HEALTH_CEREBRAS: "verified",
     })).toBe(true);
+    // An OpenCode Zen free model needs Zen's own release evidence.
+    expect(modelProviderReadyForEngine("opencode", "opencode/big-pickle:free", env)).toBe(false);
+    expect(modelProviderReadyForEngine("opencode", "opencode/big-pickle:free", {
+      ...env,
+      PROVIDER_HEALTH_OPENCODE: "verified",
+    })).toBe(true);
     expect(engineModelsForConfiguredEngines(env).opencode).not.toContain("claude-opus-5");
     expect(modelProviderReadinessErrorBody("opencode", "claude-opus-5", env)).toMatchObject({
       error: "model_provider_not_ready",

@@ -77,6 +77,13 @@ export async function resolveProviderCredentialForRun(
   deps: ProviderCredentialResolvers = {},
 ): Promise<ResolvedProviderCredential | null> {
   const resolveUserConnection = deps.resolveUserConnection ?? resolveGatewayProviderApiKeyCredential;
+  // A Free-lane model on OpenCode Zen runs on the deployment's Zen account
+  // only: its free marker is ours, so a model Zen reprices must meet the house
+  // account's empty balance, never a tenant's funded key.
+  if (input.provider === "opencode" && input.model?.endsWith(":free")) {
+    const houseKey = (deps.env ?? process.env).OPENCODE_API_KEY?.trim();
+    return houseKey ? { value: houseKey, source: "backend_env" } : null;
+  }
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,
@@ -89,9 +96,10 @@ export async function resolveProviderCredentialForRun(
   if (resolved) return resolved;
 
   // The public Free lane is the one production exception to the paid-provider
-  // tenant boundary: `:free` OpenRouter variants cost no shared provider quota,
-  // so the hosted key can make the advertised zero-cost lane usable without a
-  // per-user connection. Paid models remain tenant/BYOK-only in production.
+  // tenant boundary: `:free` OpenRouter variants are free upstream and cost no
+  // shared provider quota, so the hosted key can make the advertised zero-cost
+  // lane usable without a per-user connection. Paid models remain
+  // tenant/BYOK-only in production.
   if (
     input.provider === "openrouter" &&
     input.model?.includes("/") &&
