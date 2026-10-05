@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { APP_ROUTES } from "@/lib/route-chunks";
 import { librarySidebarActiveFor } from "./library-sidebar";
-import { APP_ROUTES } from "./route-prefetch";
 import { threadSidebarActiveFor } from "./thread-sidebar";
 
 const APP_DIR = join(import.meta.dir, "..", "..", "app");

@@ -1,9 +1,37 @@
-/** Which app routes' code gets warmed after the first page, and how a build's
- *  per-route client reference manifests name that code. Pure; the route handler
- *  reads the files and the client fetches the result. */
+/** Which app routes the shell prefetches and whose code gets warmed after the first
+ *  page, and how a build's per-route client reference manifests name that code. Pure;
+ *  the route handler reads the files and the client fetches the result. */
 
-/** Not reachable from the signed-in shell, so never warmed. */
-const SKIPPED_ROUTES = ["/lab", "/login", "/signup", "/desktop-auth", "/download", "/foundation", "/_not-found", "/_global-error"];
+/** Every top-level page a signed-in user can reach from the rails, except /bots: its
+ *  layout seeds the roster on the server above the loading boundary, so a router
+ *  prefetch would cache that roster for the static window and the panel does not
+ *  refresh its seed on first mount. Bots loads fresh on the hop. */
+export const APP_ROUTES = [
+  "/dashboard",
+  "/agent/new",
+  "/agent/runs",
+  "/settings",
+  "/skills",
+  "/playbooks",
+  "/agent/automations",
+  "/knowledge",
+  "/memory",
+  "/learnings",
+  "/wiki",
+  "/review",
+  "/apps",
+  "/agent/artifacts",
+  "/agent/plugins",
+  "/tasks",
+  "/secrets",
+] as const;
+
+/** The routes whose JavaScript is warmed at idle: what the rails link to (the prefetched
+ *  routes, the thread rows and the bots rows). A detail page reached from inside a page
+ *  (/wiki/[id], /agent/artifacts/[id]) and a page no rail links to (/session/new, /) load
+ *  their own chunks on the hop. Measured on 2026-09-14: warming every route downloaded
+ *  56 chunks, 603K on the wire, of which seven common hops used 26 (348K). */
+const WARMED_ROUTES: ReadonlySet<string> = new Set([...APP_ROUTES, "/session/[id]", "/bots", "/bots/[id]"]);
 
 /** The app route a page manifest belongs to, from its path under `server/app`:
  *  `(workspace)/dashboard/page_client-reference-manifest.js` is `/dashboard`.
@@ -15,7 +43,7 @@ export function routeOfManifestPath(relativePath: string): string {
 }
 
 export function isWarmedRoute(route: string): boolean {
-  return !SKIPPED_ROUTES.some((skipped) => route === skipped || route.startsWith(`${skipped}/`));
+  return WARMED_ROUTES.has(route);
 }
 
 /** The chunk URLs a client reference manifest names, each once. */
