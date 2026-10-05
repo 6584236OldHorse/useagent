@@ -9,6 +9,7 @@ import { cx } from "@/utils/cx";
 import { compactNumber, formatDuration } from "@/utils/format";
 import type { CapacityData, FleetData, MachineStats, ModelBurn } from "./fleet-data";
 import { Panel } from "./panel";
+import { EASE_OUT } from "@/lib/motion";
 
 /**
  * The "Limits" card, on the agent-limits block recipe (stacked meter bar +
@@ -19,7 +20,7 @@ import { Panel } from "./panel";
  * omitted rather than faked; every percentage is a share of today's real burn.
  */
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+const EASE = EASE_OUT;
 
 /** Thin rounded meter track; children are the fill segments (block recipe). */
 function Bar({ children, className }: { children: React.ReactNode; className?: string }) {

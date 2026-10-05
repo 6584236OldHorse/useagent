@@ -159,6 +159,9 @@
  * Figma. Direction inferred — confirm visually against Figma.
  * --------------------------------------------------------------------------- */
 :root {
+  /* The one easing curve for UI motion (entrances, reveals, the answer fade): a fast
+     start that settles softly. Import EASE_OUT from lib/motion for motion/react. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   /* Foreground (icons + on-fill content) */
   --color-foreground-full:               var(--color-white);
   --color-foreground-icon-primary:       var(--color-neutral-950);

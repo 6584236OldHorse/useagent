@@ -5,6 +5,7 @@ import { RiArrowDownSLine, RiArrowRightLine, RiArrowRightSLine } from "@remixico
 import { AnimatePresence, motion } from "motion/react";
 import { resolveTone } from "@/components/application/charts/chart-card";
 import { cx } from "@/utils/cx";
+import { EASE_OUT } from "@/lib/motion";
 
 /**
  * Agent limits card - the "how much of my agent budget is left" widget:
@@ -124,7 +125,7 @@ export function formatTokens(n: number) {
   return String(n);
 }
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+const EASE = EASE_OUT;
 
 /** Thin rounded track + fill, the same bar the earnings/steps cards use. */
 function Bar({ children, className }: { children: React.ReactNode; className?: string }) {

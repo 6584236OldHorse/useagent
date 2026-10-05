@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { MONO_TONE, resolveTone } from "@/components/application/charts/chart-card";
 import { Tab, TabList, TabPanel, Tabs } from "@/components/base/tabs/tabs";
 import { cx } from "@/utils/cx";
+import { EASE_OUT } from "@/lib/motion";
 
 /**
  * Bar list card - the analytics "breakdown" list (traffic by country, device,
@@ -128,7 +129,7 @@ function useMounted() {
   return mounted;
 }
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+const EASE = EASE_OUT;
 
 /**
  * Horizontal overflow fades for the tab strip: which edges have more tabs
