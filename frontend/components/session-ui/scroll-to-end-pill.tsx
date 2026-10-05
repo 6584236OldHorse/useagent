@@ -3,17 +3,20 @@
 // useAgent component (NOT vendored): a quiet floating "Scroll to end" pill for a
 // scoped scroll container. Self-contained - it tracks its own near-bottom state
 // off the container's scroll (and viewport resizes), renders nothing while the
-// reader is already at the bottom, and reuses the rail's reduced-motion check so
-// the jump degrades gracefully. Drop it beside MessageScrollerRail; it does not
+// reader is already at the bottom, and jumps synchronously so virtual row
+// measurements cannot interrupt it. Drop it beside MessageScrollerRail; it does not
 // touch the container's own stick-to-bottom logic (it only reads scroll offset).
 
 import { RiArrowDownLine } from "@remixicon/react";
 import { type RefObject, useEffect, useState } from "react";
-import { prefersReducedMotion } from "./message-scroller-rail";
 
 /** Distance from the bottom (px) under which the reader counts as "at the end" -
  *  matches the conversation's own stick-to-bottom threshold. */
 const NEAR_BOTTOM_PX = 80;
+
+export function jumpToEnd(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {
+  element.scrollTop = element.scrollHeight;
+}
 
 export function ScrollToEndPill({ scrollRef }: { scrollRef: RefObject<HTMLElement | null> }) {
   const [atBottom, setAtBottom] = useState(true);
@@ -43,7 +46,7 @@ export function ScrollToEndPill({ scrollRef }: { scrollRef: RefObject<HTMLElemen
   const scrollToEnd = () => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    jumpToEnd(el);
   };
 
   return (
