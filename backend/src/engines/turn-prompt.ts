@@ -115,10 +115,19 @@ function servedPortsContext(
 }
 
 /** Content hashes of the preamble blocks a native session holds: the fixed rule
- * blocks and the skill catalog page. Stored with the run that delivered them. */
+ * blocks, the skill catalog page and the bot roster. Stored with the run that
+ * delivered them; rows stored before the roster was hashed have no `bots`. */
 export interface PreambleHashes {
   readonly rules: string;
   readonly catalog: string;
+  readonly bots?: string;
+}
+
+/** Bots are reachable only through the gateway tools; a turn that cannot reach
+ * them (no gateway, or an internal origin such as Slack) must not be told to use them. */
+function botsReachable(ctx: TurnPromptContext, executionCapabilities: ExecutionCapabilitySnapshot): boolean {
+  const tools = executionCapabilities.facilities.tools;
+  return tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
 }
 
 /** The blocks a resumed session is sent only when they changed since it last
@@ -128,7 +137,7 @@ function preambleBlocks(
   ctx: TurnPromptContext,
   executionCapabilities: ExecutionCapabilitySnapshot,
   env: Readonly<Record<string, string | undefined>>,
-): { readonly rules: string; readonly catalog: string } {
+): { readonly rules: string; readonly catalog: string; readonly bots: string } {
   return {
     rules: executionCapabilityPrompt(executionCapabilities) +
       AGENT_WORKFLOW_ROUTING_RULES +
@@ -136,6 +145,7 @@ function preambleBlocks(
       servedPortsContext(ctx, executionCapabilities, env) +
       (ctx.skillContext ? "" : AGENT_SKILL_DISCOVERY_RULES),
     catalog: ctx.skillContext ? "" : (ctx.skillCatalogContext ?? ""),
+    bots: botsReachable(ctx, executionCapabilities) ? (ctx.botContext ?? "") : "",
   };
 }
 
@@ -149,14 +159,14 @@ export function turnPreambleHashes(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): PreambleHashes {
   const blocks = preambleBlocks(ctx, executionCapabilities, env);
-  return { rules: preambleHash(blocks.rules), catalog: preambleHash(blocks.catalog) };
+  return { rules: preambleHash(blocks.rules), catalog: preambleHash(blocks.catalog), bots: preambleHash(blocks.bots) };
 }
 
 /**
  * Compose the exact text sent to an engine for one turn. Fresh sessions receive
  * reconstructed thread history and global rules. Resumed sessions receive the
- * thread turns their native history lacks, the rule blocks and skill catalog
- * only when they changed since the session last received them (priorPreamble),
+ * thread turns their native history lacks, the rule blocks, skill catalog and
+ * bot roster only when they changed since the session last received them (priorPreamble),
  * then the per-turn skill, upload, and memory context before the user's prompt.
  * Validated native commands are delivered byte-verbatim.
  */
@@ -167,11 +177,8 @@ export function composeTurnPrompt(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
   if (ctx.commandName) return ctx.prompt;
-  // Bots are reachable only through the gateway tools; a turn that cannot reach them
-  // (no gateway, or an internal origin such as Slack) must not be told to use them.
   const tools = executionCapabilities.facilities.tools;
   const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway";
-  const botsReachable = gatewayReachable && ctx.origin === null;
   // Memory works through the same gateway tools on every origin (automations and
   // handoffs included); a session without them is told so rather than left to
   // invent a memory file in the sandbox. Said once per session with the operating
@@ -181,7 +188,7 @@ export function composeTurnPrompt(
   const held = resumed ? ctx.priorPreamble : null;
   const perTurn =
     (held?.rules === preambleHash(blocks.rules) ? "" : blocks.rules) +
-    (botsReachable ? (ctx.botContext ?? "") : "") +
+    (held?.bots === preambleHash(blocks.bots) ? "" : blocks.bots) +
     (ctx.skillContext ?? "") +
     (held?.catalog === preambleHash(blocks.catalog) ? "" : blocks.catalog) +
     (ctx.resourceContext ?? "") +

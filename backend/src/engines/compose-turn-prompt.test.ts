@@ -384,6 +384,19 @@ describe("resumed preamble dedupe", () => {
       .toBe(`${P}${W}${S}TURN${userRequest("USER")}`);
   });
 
+  test("a resumed session gets the bot roster again only when it changed", () => {
+    const bots = "<bot_delegation_policy>\n[]\n</bot_delegation_policy>\n";
+    const held = turnPreambleHashes(context({ botContext: bots }), EXECUTION, env);
+    expect(composeTurnPrompt({ ...context({ botContext: bots }), priorPreamble: held }, true, EXECUTION, env))
+      .toBe(`TURN${userRequest("USER")}`);
+    const changed = "<bot_delegation_policy>\n[1]\n</bot_delegation_policy>\n";
+    expect(composeTurnPrompt({ ...context({ botContext: changed }), priorPreamble: held }, true, EXECUTION, env))
+      .toBe(`${changed}TURN${userRequest("USER")}`);
+    const storedBeforeBots = { rules: held.rules, catalog: held.catalog };
+    expect(composeTurnPrompt({ ...context({ botContext: bots }), priorPreamble: storedBeforeBots }, true, EXECUTION, env))
+      .toBe(`${bots}TURN${userRequest("USER")}`);
+  });
+
   test("a fresh session gets everything whatever an earlier session held", () => {
     const priorPreamble = turnPreambleHashes(context(), EXECUTION, env);
     expect(composeTurnPrompt({ ...context(), priorPreamble }, false, EXECUTION, env))

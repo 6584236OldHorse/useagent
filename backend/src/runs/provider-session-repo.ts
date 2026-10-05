@@ -58,7 +58,7 @@ export interface ThreadProviderSessionState {
 const preambleHashesOf = (value: unknown): PreambleHashes | null => {
   const hashes = value as Partial<PreambleHashes> | null;
   return typeof hashes?.rules === "string" && typeof hashes.catalog === "string"
-    ? { rules: hashes.rules, catalog: hashes.catalog }
+    ? { rules: hashes.rules, catalog: hashes.catalog, ...(typeof hashes.bots === "string" ? { bots: hashes.bots } : {}) }
     : null;
 };
 
