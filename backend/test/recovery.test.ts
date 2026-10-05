@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { providerEvents, reconcileQueue, runs } from "../src/db/schema";
@@ -10,6 +10,7 @@ import {
   ingestReconciliationEvents,
   recoverStaleRuns,
   runDueReconciles,
+  UNRECOVERABLE_SUMMARY,
   type ReconcileProbe,
 } from "../src/runs/recovery";
 import { finalizeRun } from "../src/runs/finalize";
@@ -195,7 +196,9 @@ describe("command-lane restart recovery", () => {
     expect((await getRun(runId))?.status).toBe("failed");
   });
 
-  test("a failed Pi restart cleanup keeps the run and command fenced", async () => {
+  test("a run whose recovery throws is failed honestly and boot recovery carries on past it", async () => {
+    // A Pi cleanup against a gone sandbox used to throw out of recovery and exit
+    // the process, replaying the same command on every restart.
     const runId = crypto.randomUUID();
     await seed({
       runId,
@@ -205,28 +208,35 @@ describe("command-lane restart recovery", () => {
       runStatus: "running",
       commandState: "dispatched",
       session: "/sessions/pi.jsonl",
-      sandbox: "pi-sandbox",
+      sandbox: "pi-gone-sandbox",
     });
-    let probed = false;
+    const healthy = crypto.randomUUID();
+    await seed({ runId: healthy, threadId: healthy, parentRunId: null, engine: "opencode", runStatus: "running",
+      commandState: "dispatched", session: "ses_done", sandbox: "sb", withStep: true });
+    let probedPi = false;
 
-    await expect(recoverStaleRuns(
-      async () => {
-        probed = true;
-        return { status: "failed", summary: "must not finalize" };
-      },
-      async () => {
-        throw new Error("remote delete failed");
-      },
-    )).rejects.toThrow("remote delete failed");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await recoverStaleRuns(
+        async (handle, checkpoint) => {
+          if (handle.sandboxId === "pi-gone-sandbox") probedPi = true;
+          return fakeReconcile(handle, checkpoint);
+        },
+        async ({ sandboxId }) => {
+          if (sandboxId === "pi-gone-sandbox") throw new Error("sandbox not found");
+        },
+      );
+    } finally {
+      logged.mockRestore();
+    }
 
-    expect(probed).toBe(false);
-    expect((await getRun(runId))?.status).toBe("running");
+    expect(probedPi).toBe(false);
+    expect(await getRun(runId)).toMatchObject({ status: "failed", summary: UNRECOVERABLE_SUMMARY });
     const [command] = (await db.execute(
       sql`select state from commands where run_id=${runId} and kind='run.create'`,
     )) as unknown as [{ state: string }];
-    expect(command.state).toBe("dispatched");
-    await finalizeRun(runId, "failed", "test cleanup", 0);
-    await settleCommandForRun(runId);
+    expect(command.state).toBe("completed");
+    expect(await getRun(healthy)).toMatchObject({ status: "completed", summary: "the real answer" });
   });
 
   test("a failed Pi background cleanup cannot expire and free the interrupted run", async () => {
@@ -267,6 +277,27 @@ describe("command-lane restart recovery", () => {
     expect((await getRun(runId))?.status).toBe("running");
     await finalizeRun(runId, "failed", "test cleanup", 0);
     await settleCommandForRun(runId);
+  });
+
+  test("dropping a parked row for a run another lane settled frees its thread for the next turn", async () => {
+    // A Stop with no live worker settled the run but not its command; the drop
+    // path used to delete the parked row and leave the thread wedged.
+    const A = crypto.randomUUID();
+    const threadId = A;
+    await seed({ runId: A, threadId, parentRunId: null, engine: "mock", runStatus: "running", commandState: "dispatched" });
+    const B = await seed({ threadId, parentRunId: A, engine: "mock", runStatus: "queued", commandState: "queued" });
+    await enqueueReconcile({ runId: A, threadId, sandboxId: "sb", sessionId: "ses", sinceAt: new Date(0),
+      nextAttemptAt: new Date(Date.now() - 1_000), deadline: new Date(Date.now() + 60_000) });
+    await finalizeRun(A, "failed", "settled by another lane", 0);
+
+    const result = await runDueReconciles(async () => ({ status: "unreachable" }));
+
+    expect(result.dropped).toBeGreaterThanOrEqual(1);
+    const [command] = (await db.execute(
+      sql`select state from commands where run_id=${A} and kind='run.create'`,
+    )) as unknown as [{ state: string }];
+    expect(command.state).toBe("completed");
+    await waitFor(() => isDone(B));
   });
 
   test("a durable cancel settles the interrupted run and unblocks its queued replacement", async () => {

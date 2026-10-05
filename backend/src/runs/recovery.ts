@@ -62,6 +62,9 @@ import {
 export const INCOMPATIBLE_PROVIDER_SESSION_SUMMARY =
   "This run stopped after an engine protocol upgrade. Retry the turn to start a fresh native session.";
 
+export const UNRECOVERABLE_SUMMARY =
+  "Interrupted - this run could not be recovered after the backend restarted. Reply to continue in this thread.";
+
 // ---------------------------------------------------------------------------
 // Restart recovery of the durable command lane (north star Phase 3 "Restart
 // recovery" + Crash Recovery Matrix). On boot the in-memory workers are gone,
@@ -166,7 +169,7 @@ export async function recoverStaleRuns(
   // Phase 1 — resolve in-flight commands (concurrent; different threads are
   // independent, and a thread has at most one dispatched command).
   const dispatched = active.filter((c) => c.state === "dispatched");
-  const resolutions = await Promise.all(dispatched.map((c) => resolveDispatched(c, reconcile, cleanup)));
+  const resolutions = await Promise.all(dispatched.map((c) => resolveDispatchedOrFail(c, reconcile, cleanup)));
   const reconciled = resolutions.filter((r) => r === "reconciled").length;
   const parked = resolutions.filter((r) => r === "parked").length;
   let failed = resolutions.filter((r) => r === "failed").length;
@@ -174,7 +177,10 @@ export async function recoverStaleRuns(
   // Phase 2 — pump each distinct thread that had an active command. dispatched
   // ones are now completed/requeued, so a queued head can claim the thread.
   const threads = [...new Set(active.map((c) => c.threadId))];
-  const pumped = await Promise.all(threads.map((t) => pumpThread(t)));
+  const pumped = await Promise.all(threads.map((t) => pumpThread(t).catch((error) => {
+    console.error(`[boot] pump of thread ${t} failed; the next settle or boot pumps it:`, error);
+    return null;
+  })));
   const redispatched = pumped.filter((runId) => runId !== null).length;
 
   // Phase 3 — fail legacy/orphan non-terminal runs that never joined the lane.
@@ -183,7 +189,34 @@ export async function recoverStaleRuns(
   return { reconciled, failed, redispatched, parked };
 }
 
-type DispatchedResolution = "reconciled" | "failed" | "parked" | "settled";
+type DispatchedResolution = "reconciled" | "failed" | "parked" | "settled" | "left";
+
+/** One run never stops boot. A run whose recovery throws (a Pi cleanup against a
+ *  gone sandbox, a finalize that cannot commit) is failed with an honest reason
+ *  and its command settled, so the thread is free and the next boot does not
+ *  replay the same failure. A Pi turn on that sandbox cleans stale writers again
+ *  before it starts. When even that cannot be written, the run is left for the
+ *  next boot and recovery moves on. */
+async function resolveDispatchedOrFail(
+  cmd: ActiveCommand,
+  reconcile: ReconcileProbe,
+  cleanup: RestartTransportCleanup,
+): Promise<DispatchedResolution> {
+  try {
+    return await resolveDispatched(cmd, reconcile, cleanup);
+  } catch (error) {
+    console.error(`[boot] recovery of run ${cmd.runId} failed; failing the run:`, error);
+  }
+  try {
+    const finalized = await finalizeRun(cmd.runId, "failed", UNRECOVERABLE_SUMMARY, 0);
+    const durable = await resolveDurableFinalizationOutcome(cmd.runId, finalized);
+    await settleCommandForRun(cmd.runId);
+    return durable?.status === "completed" ? "reconciled" : durable ? "failed" : "left";
+  } catch (error) {
+    console.error(`[boot] run ${cmd.runId} could not be failed; left for the next boot:`, error);
+    return "left";
+  }
+}
 
 /** Resolve one dispatched command: reconcile / fail / PARK a still-running run,
  *  then settle its command (completed/requeued) so the thread is freed — EXCEPT a
@@ -467,8 +500,11 @@ export async function runDueReconciles(
     // worker took the thread, a cancel, a prior tick), just drop the parked row.
     const run = await getRun(entry.runId);
     if (!run || run.status !== "running") {
-      if (await settleEntry(entry)) dropped++;
-      else lost++;
+      if (await settleEntry(entry)) {
+        dropped++;
+        // The lane that settled the run may not have freed its thread.
+        await settleAndPump(entry.runId, entry.threadId);
+      } else lost++;
       continue;
     }
     const expectedSandbox = parseExpectedSandboxBinding(run.expectedSandbox);

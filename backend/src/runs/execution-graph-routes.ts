@@ -6,6 +6,7 @@ import {
   getExecutionGraphPageForRun,
   type ExecutionGraphPageCursor,
 } from "./execution-graph-repo";
+import { executionGraphGaps } from "./execution-graph-pending-repo";
 import { executionGraphEnabled } from "./execution-graph-switch";
 import { getCustomerRunForOrg } from "./repo";
 
@@ -154,7 +155,10 @@ export function registerExecutionGraphRoutes(routes: Hono<AppEnv>): void {
       }
       return c.json({ error: "cursor is invalid" }, 400);
     }
-    const graph = await getExecutionGraphPageForRun(orgId, runId, { limit, cursor });
+    const [graph, gaps] = await Promise.all([
+      getExecutionGraphPageForRun(orgId, runId, { limit, cursor }),
+      executionGraphGaps(orgId, runId),
+    ]);
     if (!graph) return c.json({ error: "run not found" }, 404);
     const hasMore = graph.executionHasMore || graph.delegationEdgeHasMore;
     const hasCursorPosition =
@@ -164,6 +168,9 @@ export function registerExecutionGraphRoutes(routes: Hono<AppEnv>): void {
       version: graph.version,
       run_id: graph.runId,
       graph_cursor: graph.graphCursor,
+      // Some provider observation could not be placed exactly (still pending on
+      // a live run, or sealed unresolved / structurally changed on a settled one).
+      incomplete: gaps.length > 0,
       executions: graph.executions.map((execution) => ({
         id: execution.id,
         run_id: execution.runId,

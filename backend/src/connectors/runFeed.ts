@@ -84,7 +84,7 @@ export function attachRunFeed(runId: string, renderer: Renderer): RunFeed {
     if (r && (r.status === "completed" || r.status === "failed")) {
       void finish(r.status);
     }
-  });
+  }).catch((err) => console.warn(`[connectors] run feed race check for run ${runId} failed; the end event still settles it:`, err));
 
   return { detach };
 }

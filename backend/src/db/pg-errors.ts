@@ -39,3 +39,18 @@ export function isUniqueViolation(err: unknown): boolean {
 export function isLockTimeout(err: unknown): boolean {
   return sqlStateOf(err) === LOCK_NOT_AVAILABLE;
 }
+
+/** Failures a retry can outlive: serialization and deadlock aborts, lock
+ *  timeouts, a server shutting down or out of connections, and the driver's or
+ *  socket's lost-connection codes. Class 08 is every connection exception. */
+const TRANSIENT_CODES = new Set([
+  "40001", "40P01", LOCK_NOT_AVAILABLE, "57P01", "57P02", "57P03", "53300",
+  "CONNECTION_CLOSED", "CONNECTION_ENDED", "CONNECTION_DESTROYED", "CONNECT_TIMEOUT",
+  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE",
+]);
+
+/** True when `err` is a database failure that the same work may survive on a retry. */
+export function isTransientDbError(err: unknown): boolean {
+  const code = sqlStateOf(err);
+  return code !== undefined && (TRANSIENT_CODES.has(code) || code.startsWith("08"));
+}

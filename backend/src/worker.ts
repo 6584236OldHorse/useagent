@@ -23,11 +23,7 @@ import {
 } from "./skills/catalog";
 import { formatSkillMarkdown, frameSkillContext } from "./skills/format";
 import { recordSkillLoaded } from "./skills/skill-loaded";
-import {
-  finalizeRun,
-  resolveDurableFinalizationOutcome,
-  type FinalizeRunResult,
-} from "./runs/finalize";
+import { finalizeRun, type FinalizeRunResult } from "./runs/finalize";
 import { recordOutputBaseline } from "./artifacts/harvest";
 import { turnStream } from "./runs/turn-stream";
 import { publishRunLifecycleChange } from "./runs/org-signals";
@@ -61,11 +57,9 @@ import { createProviderSessionSaver } from "./worker-provider-session";
 export { bus, channel, RUN_SPAWNED, type BusEvent } from "./worker-events.js";
 export { ensureRunWorkdir } from "./run-workdir";
 
+/** The run's `end` event, only from the finalizer that applied the terminal write. No I/O, so it cannot reject. */
 async function emitFinalizedEnd(runId: string, finalized: FinalizeRunResult): Promise<void> {
-  const durable = await resolveDurableFinalizationOutcome(runId, finalized);
-  if (finalized.applied && durable) {
-    bus.emit(channel(runId), { type: "end", status: durable.status } satisfies BusEvent);
-  }
+  if (finalized.applied) bus.emit(channel(runId), { type: "end", status: finalized.status } satisfies BusEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +115,10 @@ export function spawnWorker(runId: string): void {
   } catch (err) {
     console.error(`[worker] RUN_SPAWNED listener threw for run ${runId}:`, err);
   }
-  const task = runWorker(runId).finally(() => registry.delete(runId));
+  // A rejection (a DB blip before the actor's own try) is logged, never unhandled; the fleet reconciler settles a leased run once its lease lapses, boot recovery any other.
+  const task = runWorker(runId)
+    .catch((err) => console.error(`[worker] actor for run ${runId} crashed:`, err))
+    .finally(() => registry.delete(runId));
   registry.set(runId, task);
 }
 
