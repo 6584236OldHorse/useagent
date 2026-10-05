@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { providerGatewayAudit } from "../db/schema";
 import type { ProviderRequestLimits } from "./limits";
@@ -54,6 +54,19 @@ export async function beginProviderGatewayAudit(
       outcome: "started",
     });
   });
+}
+
+/** The newest upstream call the gateway made for a run, so a settled failure can name its cause. */
+export async function latestProviderGatewayOutcome(
+  runId: string,
+): Promise<{ readonly outcome: string; readonly upstreamStatus: number | null } | null> {
+  const [row] = await db
+    .select({ outcome: providerGatewayAudit.outcome, upstreamStatus: providerGatewayAudit.upstreamStatus })
+    .from(providerGatewayAudit)
+    .where(eq(providerGatewayAudit.runId, runId))
+    .orderBy(desc(providerGatewayAudit.createdAt))
+    .limit(1);
+  return row ? { outcome: row.outcome, upstreamStatus: row.upstreamStatus ?? null } : null;
 }
 
 export async function finishProviderGatewayAudit(input: {
