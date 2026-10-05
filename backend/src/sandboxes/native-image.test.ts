@@ -133,33 +133,39 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
 });
 
 describe("native image Dockerfile", () => {
-  test("copies every context file and runs every step from the base image argument", () => {
+  test("stages the context with one COPY and runs every step from the base image argument", () => {
     const rendered = renderNativeImageDockerfile(CUBE_LAYOUT, inputs());
     expect(rendered.dockerfile.startsWith(`# ${nativeImageName(inputs())}`)).toBe(true);
     expect(rendered.dockerfile).toContain("ARG USEAGENT_NATIVE_BASE_IMAGE\nFROM ${USEAGENT_NATIVE_BASE_IMAGE}\nUSER root\n");
-    expect(rendered.dockerfile).toContain("RUN mkdir -p /root/work");
+    expect(rendered.dockerfile).toContain("RUN mkdir -p /root/work\nCOPY context/ /tmp/useagent-native-image/\n");
     expect(rendered.files.map((file) => file.contextPath)).toEqual([
       "context/0-bun/bun",
-      "context/0-bun/step.sh",
+      "context/0-bun.sh",
       "context/1-native-runtime/bun.lock",
       "context/1-native-runtime/package.json",
       "context/1-native-runtime/runtime.part-0",
-      "context/1-native-runtime/step.sh",
-      "context/2-codex/step.sh",
-      "context/3-claude/step.sh",
-      "context/4-opencode/step.sh",
+      "context/1-native-runtime.sh",
+      "context/2-codex.sh",
+      "context/3-claude.sh",
+      "context/4-opencode.sh",
       "context/5-boot/useagent-sandbox-boot",
-      "context/5-boot/step.sh",
+      "context/5-boot.sh",
       "context/6-pi/package.json",
       "context/6-pi/package-lock.json",
-      "context/6-pi/step.sh",
-      "context/7-documents/step.sh",
-      "context/8-desktop/step.sh",
+      "context/6-pi.sh",
+      "context/7-documents.sh",
+      "context/8-desktop.sh",
     ]);
-    expect(rendered.dockerfile).toContain("COPY context/0-bun/bun /tmp/useagent-native-image/0-bun/bun\n");
-    expect(rendered.dockerfile).toContain(
-      "COPY context/7-documents/step.sh /tmp/useagent-native-image/7-documents.sh\nRUN sh /tmp/useagent-native-image/7-documents.sh && rm -rf /tmp/useagent-native-image/7-documents.sh /tmp/useagent-native-image/7-documents\n",
-    );
+    // Every layer on top of the base: the workdir, the staged context, one RUN per step, the cleanup.
+    // The base image already carries over a hundred layers; the runtime rejects images past its depth limit.
+    const steps = nativeImageSteps(CUBE_LAYOUT, inputs());
+    const layers = rendered.dockerfile.split("\n").filter((line) => /^(COPY|RUN)\b/.test(line));
+    expect(layers.filter((line) => line.startsWith("COPY"))).toEqual(["COPY context/ /tmp/useagent-native-image/"]);
+    expect(layers.filter((line) => line.startsWith("RUN sh "))).toEqual(steps.map((step, index) =>
+      `RUN sh /tmp/useagent-native-image/${index}-${step.name}.sh && rm -rf /tmp/useagent-native-image/${index}-${step.name}.sh /tmp/useagent-native-image/${index}-${step.name}`,
+    ));
+    expect(layers).toHaveLength(steps.length + 3);
+    expect(layers.at(-1)).toBe("RUN rm -rf /tmp/useagent-native-image");
     expect(rendered.dockerfile).not.toContain("<<");
     // The image boots its runtime: the entrypoint is the installed boot script.
     expect(rendered.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]')).toBe(true);
@@ -168,13 +174,19 @@ describe("native image Dockerfile", () => {
     expect(withCommand.dockerfile.trimEnd().endsWith('ENTRYPOINT ["/root/.local/bin/useagent-sandbox-boot"]\nCMD ["/usr/local/bin/start-sandbox.sh"]')).toBe(true);
     const boot = rendered.files.find((file) => file.contextPath === "context/5-boot/useagent-sandbox-boot")!;
     expect(boot.bytes.toString("utf8").startsWith("#!/bin/sh\n")).toBe(true);
-    const bun = rendered.files.find((file) => file.contextPath === "context/0-bun/step.sh")!;
+    const bun = rendered.files.find((file) => file.contextPath === "context/0-bun.sh")!;
     expect(bun.bytes.toString("utf8").startsWith(
       "set -eu\nmkdir -p '/root/.local/share/useagent/bun/.stage-image' && cp '/tmp/useagent-native-image/0-bun/bun' '/root/.local/share/useagent/bun/.stage-image/bun'\nset -eu\nexport HOME='/root'\n",
     )).toBe(true);
-    const documents = rendered.files.find((file) => file.contextPath === "context/7-documents/step.sh")!;
+    const documents = rendered.files.find((file) => file.contextPath === "context/7-documents.sh")!;
     expect(documents.bytes.toString("utf8").startsWith("set -eu\nset -eu\nexport HOME='/root'\n")).toBe(true);
     expect(rendered.dockerfile).toContain(`LABEL org.useagent.native-image=${nativeImageName(inputs())}\n`);
+  });
+
+  test("hands the staged context to the runtime user when the sandbox runs unprivileged", () => {
+    const rendered = renderNativeImageDockerfile(BOX_LAYOUT, inputs());
+    expect(rendered.dockerfile).toContain("\nCOPY --chown=1000:1000 context/ /tmp/useagent-native-image/\n");
+    expect(rendered.dockerfile).not.toContain("USER root");
   });
 });
 
