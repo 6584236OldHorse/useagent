@@ -9,6 +9,9 @@ import { RiBookmarkLine, RiCloseLine } from "@remixicon/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { type DragEvent, useState } from "react";
+
+/** Pinned rows shown before the "Show N more" fold. */
+const VISIBLE_BOOKMARKS = 24;
 import { chatTitle } from "@/components/shell/chat-title";
 import { bookmarks, THREAD_DRAG_TYPE } from "@/components/shell/sidebar-bookmarks-store";
 import { useSidebarThreads } from "@/components/shell/sidebar-threads-provider";
@@ -34,6 +37,9 @@ export function BookmarksSection({
   onUnpin: (id: string) => void;
 }) {
   const [over, setOver] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? rows : rows.slice(0, VISIBLE_BOOKMARKS);
+  const hidden = rows.length - shown.length;
   const carriesChat = (event: DragEvent) => event.dataTransfer.types.includes(THREAD_DRAG_TYPE);
   return (
     <section
@@ -66,7 +72,7 @@ export function BookmarksSection({
         </p>
       ) : (
         <ul className="flex flex-col">
-          {rows.map((row) => {
+          {shown.map((row) => {
             const active = row.href === activeHref;
             return (
               <li
@@ -105,6 +111,17 @@ export function BookmarksSection({
               </li>
             );
           })}
+          {(hidden > 0 || showAll) && (
+            <li>
+              <button
+                type="button"
+                onClick={() => setShowAll((value) => !value)}
+                className="flex w-full items-center gap-1 rounded-lg px-2.5 py-1 text-caption-1-regular text-text-secondary transition-colors hover:bg-background-secondary-hover hover:text-text-primary"
+              >
+                {showAll ? "Show fewer" : `Show ${hidden} more`}
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </section>

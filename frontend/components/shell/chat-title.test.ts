@@ -29,6 +29,15 @@ describe("chatTitle", () => {
     );
   });
 
+  test("only a real interjection is dropped, a filler needs a break after it, and a fence is skipped", () => {
+    expect(chatTitle("Fix it. The login is broken.")).toBe("Fix it. The login is broken");
+    expect(chatTitle("please.dev is down")).toBe("Please.dev is down");
+    expect(chatTitle("```tsx\nexport const a = 1;\n```\nWhy does this not compile?")).toBe(
+      "Why does this not compile",
+    );
+    expect(chatTitle("```tsx\nexport const a = 1;\n```")).toBe("Export const a = 1");
+  });
+
   test("an empty or missing prompt reads New chat", () => {
     expect(chatTitle("")).toBe("New chat");
     expect(chatTitle(null)).toBe("New chat");

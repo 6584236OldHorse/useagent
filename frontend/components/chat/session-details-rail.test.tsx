@@ -106,6 +106,18 @@ describe("SessionDetailsRail", () => {
     expect(html).not.toContain("not reported");
   });
 
+  test("a thread with unloaded outline turns says its plan and totals are partial", () => {
+    const html = renderToStaticMarkup(
+      <SessionDetailsRail
+        root={run()}
+        newest={run()}
+        turns={[turn(), { ...turn(), pendingOutline: { stepCount: 4, hasSummary: true } }]}
+      />,
+    );
+    expect(html).toContain('data-testid="details-partial"');
+    expect(html).toContain("Older turns are still loading");
+  });
+
   test("without a plan or reported tokens the rail says so instead of guessing", () => {
     const html = renderToStaticMarkup(
       <SessionDetailsRail

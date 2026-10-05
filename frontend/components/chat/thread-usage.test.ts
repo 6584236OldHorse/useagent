@@ -102,3 +102,18 @@ describe("threadUsage", () => {
     expect(usage.inputTokens).toBeNull();
   });
 });
+
+test("a negative count was never reported", () => {
+  const usage = threadUsage([
+    {
+      run: {},
+      status: "completed",
+      steps: [],
+      native: {
+        nativeFrames: [frame("f1", 1, { tokens: { input: -10, output: -2 } })],
+        childSessionIds: new Set<string>(),
+      },
+    },
+  ]);
+  expect(usage).toEqual({ inputTokens: null, outputTokens: null, toolCalls: 0 });
+});

@@ -25,8 +25,9 @@ export interface UsageTurn {
   };
 }
 
+// A count is a finite, non-negative number; anything else was never reported.
 const readNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
 export function threadUsage(turns: readonly UsageTurn[]): ThreadUsage {
   let input = 0;

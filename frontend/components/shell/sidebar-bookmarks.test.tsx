@@ -33,3 +33,16 @@ describe("BookmarksSection", () => {
     expect(html).not.toContain("Drag chats here to pin them");
   });
 });
+
+test("a long list of pins folds behind Show N more", () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({
+    id: `r${index}`,
+    title: `Chat ${index}`,
+    href: `/session/r${index}`,
+  }));
+  const html = renderToStaticMarkup(
+    <BookmarksSection rows={rows} activeHref={null} onPin={() => {}} onUnpin={() => {}} />,
+  );
+  expect(html.match(/data-session-ui="bookmark-row"/g)).toHaveLength(24);
+  expect(html).toContain(">Show 6 more<");
+});

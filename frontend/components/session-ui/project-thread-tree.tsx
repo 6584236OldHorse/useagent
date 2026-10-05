@@ -273,6 +273,9 @@ export function ProjectThreadList({
     rows?.[Math.max(0, Math.min(index, (rows.length ?? 1) - 1))]?.focus();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    // A row's own buttons (the pin) keep their native activation: Enter or
+    // Space on one must not open the thread instead.
+    if (event.target !== event.currentTarget && (event.target as HTMLElement).closest("button")) return;
     const rows = [...(treeRef.current?.querySelectorAll<HTMLElement>("[data-thread-tree-id]") ?? [])];
     const index = rows.indexOf(event.currentTarget);
     const id = event.currentTarget.dataset.threadTreeId ?? "";

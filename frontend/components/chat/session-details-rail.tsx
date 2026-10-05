@@ -68,16 +68,23 @@ export function SessionDetailsRail({
   root: ApiRun;
   /** The thread's newest run: its engine, model and sandbox are the runtime. */
   newest: ApiRun;
-  /** The thread's turns (the conversation's Turn satisfies both shapes). */
-  turns: readonly (PlanTurn & UsageTurn)[];
+  /** The thread's turns (the conversation's Turn satisfies both shapes). A turn
+   *  known only by its outline stub (windowed loading) carries no steps yet. */
+  turns: readonly (PlanTurn & UsageTurn & { readonly pendingOutline?: unknown })[];
 }) {
   const refs = runGitRefs(root);
+  const partial = turns.some((turn) => turn.pendingOutline);
   const project = refs.map((ref) => repoShortname(ref.repo)).join(", ");
   const branch = refs.flatMap((ref) => (ref.branch ? [ref.branch] : [])).join(", ");
   const plan = useMemo(() => latestThreadPlan(turns), [turns]);
   const usage = useMemo(() => threadUsage(turns), [turns]);
   return (
     <div data-testid="session-details" className="flex h-full flex-col gap-6 overflow-y-auto p-4">
+      {partial && (
+        <p data-testid="details-partial" className="text-caption-1-regular text-text-tertiary">
+          Older turns are still loading; the plan and the totals cover the loaded ones.
+        </p>
+      )}
       <Section title="Environment">
         <dl className="flex flex-col gap-1.5 rounded-2xl bg-background-secondary-default px-3 py-2.5">
           <Row label="Project">{project || "No repository"}</Row>
