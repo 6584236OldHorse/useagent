@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { type Connection, warmRouteChunks } from "@/lib/warm-route-chunks";
 
 /** Every top-level page a signed-in user can reach from the rails, except
  * /bots: its layout seeds the roster on the server above the loading boundary,
@@ -45,6 +46,9 @@ export function RoutePrefetch() {
     const cancel = window.cancelIdleCallback ?? window.clearTimeout;
     const handle = schedule(() => {
       for (const href of APP_ROUTES) router.prefetch(href);
+      // Then the code itself: every signed-in route's chunks, so a first hop
+      // downloads nothing (a dynamic page's prefetch stops at its loading boundary).
+      void warmRouteChunks({ connection: (navigator as Navigator & { connection?: Connection }).connection }).catch(() => undefined);
     });
     return () => cancel(handle);
   }, [router]);

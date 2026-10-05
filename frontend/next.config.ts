@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 import { PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from "next/constants";
+import { resolveDistDir as resolveBuildDist } from "./lib/build-dist";
 
 // Turbopack infers the project root as `frontend/`, but our shared libraries are
 // file:-linked from `../packages` (OUTSIDE that inferred root), so Turbopack rejected the
@@ -18,9 +19,7 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
  * caller that wants an explicitly-named isolated dir (e.g. a parallel E2E stack).
  */
 function resolveDistDir(phase: string): string {
-  if (process.env.USEAGENT_BUILD_DIST) return process.env.USEAGENT_BUILD_DIST;
-  if (phase === PHASE_PRODUCTION_BUILD || phase === PHASE_PRODUCTION_SERVER) return ".next-build";
-  return ".next";
+  return resolveBuildDist(phase === PHASE_PRODUCTION_BUILD || phase === PHASE_PRODUCTION_SERVER);
 }
 
 export default function nextConfig(phase: string): NextConfig {
