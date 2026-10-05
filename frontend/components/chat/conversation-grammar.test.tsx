@@ -454,12 +454,13 @@ test("a run that failed at boot traces its category with the full reason and cop
   expect(html).not.toContain("line-clamp");
 });
 
-test("a settled turn with a failed step folds its trace and keeps the failure on the header", () => {
+test("a settled turn with a failed step folds its trace and keeps the count, not the alarm, on the header", () => {
   const html = render([makeTurn("run-settled", "completed", settledEvents())]);
   const header = html.split('data-testid="thinking-header"')[1]?.split("</button>")[0] ?? "";
   expect(html).toContain('aria-expanded="false"');
   expect(header).toContain("1 failed");
-  expect(header).toContain("text-text-error-primary");
+  // A turn that finished is not painted as a failure because one step failed along the way.
+  expect(header).not.toContain("text-text-error-primary");
   // The failed step's x is a row inside the fold (turn-trace tests cover the row grammar);
   // its error text never renders inline.
   expect(html).not.toContain("No such file or directory");
