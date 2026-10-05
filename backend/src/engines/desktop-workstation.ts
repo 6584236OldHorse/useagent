@@ -6,24 +6,29 @@ import {
 
 export const DESKTOP_PORT = 6080;
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 export const DESKTOP_REQUIRED_BINARIES = [
-  "Xvfb",
+  "Xorg",
+  "budgie-daemon",
+  "budgie-panel",
+  "budgie-wm",
   "dbus-launch",
+  "dconf",
+  "gnome-terminal",
   "node",
+  "pcmanfm",
   "pgrep",
-  "startxfce4",
-  "thunar",
   "websockify",
   "x11vnc",
   "xdotool",
   "xdpyinfo",
-  "xfce4-clipman",
-  "xfce4-panel",
-  "xfce4-settings-manager",
-  "xfce4-terminal",
-  "xfdesktop",
-  "xfwm4",
 ] as const;
+
+/** The settings daemon lives outside PATH on Debian. */
+export const DESKTOP_SETTINGS_DAEMON = "/usr/libexec/gsd-xsettings";
 
 export function rfbProbeCommand(): string {
   // curl's telnet transport exits 28 after reading the banner when x11vnc keeps
@@ -32,10 +37,27 @@ export function rfbProbeCommand(): string {
   return "python3 -c \"import socket; s=socket.create_connection(('127.0.0.1',5900),1); assert s.recv(4)==b'RFB '\"";
 }
 
-export function xfceSessionProbeCommand(): string {
-  return ["xfce4-session", "xfwm4", "xfce4-panel", "xfdesktop", "xfce4-clipman"]
+/** The desktop session is whole: window manager, panel, daemon and the desktop icons. */
+export function desktopSessionProbeCommand(): string {
+  return ["budgie-wm", "budgie-panel", "budgie-daemon", "pcmanfm"]
     .map((process) => `pgrep -x ${process} >/dev/null`)
     .join(" && ");
+}
+
+/** The session script: Budgie's components started directly under one session bus. Budgie's own
+ *  session manager needs logind and polkit, which a sandbox does not have. */
+export function buildDesktopSessionScript(): string {
+  return [
+    "#!/bin/sh",
+    `${DESKTOP_SETTINGS_DAEMON} >"$HOME/.skynet/gsd-xsettings.log" 2>&1 &`,
+    'budgie-daemon >"$HOME/.skynet/budgie-daemon.log" 2>&1 &',
+    'budgie-wm >"$HOME/.skynet/budgie-wm.log" 2>&1 &',
+    'for i in $(seq 1 80); do xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" && break; sleep 0.25; done',
+    'budgie-panel >"$HOME/.skynet/budgie-panel.log" 2>&1 &',
+    'pcmanfm --desktop --profile useagent >"$HOME/.skynet/pcmanfm.log" 2>&1 &',
+    "wait",
+    "",
+  ].join("\n");
 }
 
 const LEGACY_CHROME_PIPE_PIDS_COMMAND =
@@ -44,7 +66,7 @@ const LEGACY_CHROME_PIPE_GONE_COMMAND = `test -z "$(${LEGACY_CHROME_PIPE_PIDS_CO
 const CDP_PORT_CLOSED_COMMAND =
   "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(1 if s.connect_ex(('127.0.0.1',9222)) == 0 else 0)\"";
 
-/** One long-lived process group owns the virtual display, XFCE workstation, browser,
+/** One long-lived process group owns the virtual display, Budgie workstation, browser,
  * VNC server, and noVNC bridge. The browser is deliberately NOT owned by an MCP
  * child, so restarting OpenCode/Claude/Codex or their MCP transport cannot close
  * the user's tabs. Chrome remains loopback-only. The provider-facing relay admits
@@ -56,16 +78,18 @@ export function buildDesktopLaunchCommand(): string {
     "set -eu",
     `export DISPLAY=${BROWSER_DISPLAY}`,
     'mkdir -p "$HOME/.skynet"',
-    'Xvfb :1 -screen 0 1440x900x24 -ac -nolisten tcp >"$HOME/.skynet/xvfb.log" 2>&1 &',
+    "export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=Budgie:GNOME LANG=C.UTF-8",
+    // A system bus, best effort: the components only warn without one, but the terminal's service needs it.
+    "pgrep -x dbus-daemon >/dev/null 2>&1 || { mkdir -p /run/dbus && dbus-daemon --system --fork >/dev/null 2>&1 || true; }",
+    // A real X server on the dummy driver (1920x1080 at 60 Hz from the image's xorg.conf.d).
+    'Xorg :1 -noreset -nolisten tcp -ac >"$HOME/.skynet/xorg.log" 2>&1 &',
     "for i in $(seq 1 40); do xdpyinfo -display :1 >/dev/null 2>&1 && break; sleep 0.25; done",
     "xdpyinfo -display :1 >/dev/null 2>&1",
-    'dbus-launch --exit-with-session startxfce4 >"$HOME/.skynet/desktop-session.log" 2>&1 &',
-    // Minimal XFCE images do not always autostart the clipboard manager even
-    // when the package is present. Start it explicitly before enforcing the
-    // complete-workstation readiness contract.
-    'xfce4-clipman >"$HOME/.skynet/clipman.log" 2>&1 &',
-    `for i in $(seq 1 80); do ${xfceSessionProbeCommand()} && break; sleep 0.25; done`,
-    xfceSessionProbeCommand(),
+    `printf '%s' ${shellQuote(buildDesktopSessionScript())} >"$HOME/.skynet/desktop-session.sh"`,
+    'chmod +x "$HOME/.skynet/desktop-session.sh"',
+    'dbus-launch --exit-with-session "$HOME/.skynet/desktop-session.sh" >"$HOME/.skynet/desktop-session.log" 2>&1 &',
+    `for i in $(seq 1 120); do ${desktopSessionProbeCommand()} && break; sleep 0.25; done`,
+    desktopSessionProbeCommand(),
     // One-time migration from the old MCP-owned Chrome (`remote-debugging-pipe`).
     // Match only Chrome's process name so this shell cannot kill itself even
     // though its command text contains the same flag.
@@ -83,7 +107,7 @@ export function buildDesktopLaunchCommand(): string {
     '    "$browser" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check ' +
       "--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 " +
       "'--remote-allow-origins=*' " +
-      '--user-data-dir="$HOME/.skynet/browser-profile" --restore-last-session --window-size=1440,900 about:blank ' +
+      '--user-data-dir="$HOME/.skynet/browser-profile" --restore-last-session --start-maximized about:blank ' +
       '>>"$HOME/.skynet/chrome.log" 2>&1 || true',
     "    sleep 0.5",
     "  done",
@@ -104,7 +128,7 @@ export function buildDesktopReadinessCommand(): string {
   return (
     `curl -fsS -m 3 -o /dev/null http://127.0.0.1:${DESKTOP_PORT}/vnc.html && ` +
     `${rfbProbeCommand()} && ` +
-    `${xfceSessionProbeCommand()} && ` +
+    `${desktopSessionProbeCommand()} && ` +
     `curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && ` +
     `${desktopCdpRelayProbeCommand()} && ` +
     providerCdpRelayProbeCommand()

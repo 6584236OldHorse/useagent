@@ -351,16 +351,16 @@ describe("Desktop product surface", () => {
 describe("Desktop probe copy", () => {
   test("names the binaries a sandbox image lacks instead of waiting forever", () => {
     expect(
-      desktopProbeStatus(502, "desktop proxy failed: missing desktop binaries: xfce4-clipman"),
+      desktopProbeStatus(502, "desktop proxy failed: missing desktop binaries: budgie-panel"),
     ).toBe(
-      "Browser is unavailable on this sandbox image: it is missing xfce4-clipman. Rebuild the image with those packages to enable it.",
+      "Browser is unavailable on this sandbox image: it is missing budgie-panel. Rebuild the image with those packages to enable it.",
     );
     expect(
       desktopProbeStatus(
         502,
-        "desktop proxy failed: missing desktop binaries: xdotool xfce4-clipman",
+        "desktop proxy failed: missing desktop binaries: xdotool budgie-panel",
       ),
-    ).toContain("missing xdotool, xfce4-clipman");
+    ).toContain("missing xdotool, budgie-panel");
   });
 
   test("keeps the waiting and no-sandbox states for every other answer", () => {

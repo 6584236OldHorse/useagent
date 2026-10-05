@@ -12,7 +12,7 @@ import {
   DESKTOP_PORT,
   DESKTOP_REQUIRED_BINARIES,
   rfbProbeCommand,
-  xfceSessionProbeCommand,
+  desktopSessionProbeCommand,
 } from "./desktop-workstation";
 import {
   desktopCdpRelayProbeCommand,
@@ -106,9 +106,9 @@ async function provisionSandboxDesktopView(
         `rfb=0; ${rfbProbeCommand()} && rfb=1; ` +
         `cdp=0; curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && cdp=1; ` +
         `cdp_relay=0; ${desktopCdpRelayProbeCommand()} && ${providerCdpRelayProbeCommand()} && cdp_relay=1; ` +
-        `xfce=0; ${xfceSessionProbeCommand()} && xfce=1; ` +
+        `session=0; ${desktopSessionProbeCommand()} && session=1; ` +
         'mcp=0; [ -x "$HOME/.local/bin/playwright-mcp" ] && mcp=1; ' +
-        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nXFCE=%s\\nMCP=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$xfce" "$mcp"',
+        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nSESSION=%s\\nMCP=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$session" "$mcp"',
       undefined,
       undefined,
       20,
@@ -124,7 +124,7 @@ async function provisionSandboxDesktopView(
       /^RFB=1$/m.test(output) &&
       /^CDP=1$/m.test(output) &&
       /^CDP_RELAY=1$/m.test(output) &&
-      /^XFCE=1$/m.test(output);
+      /^SESSION=1$/m.test(output);
     const browserTools = /^MCP=1$/m.test(output);
     if ((probe.exitCode ?? 1) !== 0 || missing) {
       return finish(RUN_TIMING_OUTCOMES.unavailable, {
@@ -185,7 +185,7 @@ async function provisionSandboxDesktopView(
         browserExecutable,
         reason: signal.aborted
           ? "run aborted while starting desktop"
-          : "noVNC, RFB, XFCE, or browser CDP failed readiness",
+          : "noVNC, RFB, the desktop session, or browser CDP failed readiness",
       });
     }
 
