@@ -13,7 +13,7 @@ import { previewViewPrefix } from "./preview-capability";
 import { betterAuthTrustedOrigins } from "../env";
 import type { AppEnv } from "../http";
 import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
-import { withFrameBridge, withoutClientControlBar, desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
+import { browserExtensionFault, withFrameBridge, withoutClientControlBar, desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
 import { terminalRoutes } from "./terminal";
 import { portProxyRoutes } from "./port-proxy";
 
@@ -285,6 +285,17 @@ describe("served desktop client page", () => {
     expect(served.indexOf("desktopConnected")).toBeLessThan(served.indexOf("app/ui.js"));
     expect(served.replace(/<script>[\s\S]*?<\/script>/, "")).toBe(page);
     expect(withFrameBridge("not html")).toBe("not html");
+  });
+
+  test("keeps browser extension errors out of noVNC's error panel", () => {
+    const metamask = "i: Failed to connect to MetaMask\n    at Object.connect (chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn/scripts/inpage.js:7:1)";
+    expect(browserExtensionFault(metamask)).toBe(true);
+    expect(browserExtensionFault(undefined, "moz-extension://abc/content.js")).toBe(true);
+    expect(browserExtensionFault("Error: closed\n    at RFB._fail (http://127.0.0.1:6080/core/rfb.js:9:1)", "http://127.0.0.1:6080/core/rfb.js")).toBe(false);
+    expect(browserExtensionFault(undefined)).toBe(false);
+    const script = withFrameBridge("<html><head></head></html>").match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+    expect(() => new Function(script)).not.toThrow();
+    expect(script).toContain('addEventListener("unhandledrejection"');
   });
 
   test("hides the floating control bar and leaves other markup alone", () => {

@@ -234,11 +234,28 @@ export function withoutClientControlBar(html: string): string {
   return html.includes("</head>") ? html.replace("</head>", `${style}</head>`) : html;
 }
 
+/** Wallets and password managers inject scripts into every page, this one
+ *  included. Their failures are not the desktop's, so they stay out of
+ *  noVNC's error panel. */
+export function browserExtensionFault(stack: unknown, file?: unknown): boolean {
+  return /^(?:chrome|moz|safari-web)-extension:/.test(String(file ?? "")) ||
+    /(?:chrome|moz|safari-web)-extension:\/\//.test(String(stack ?? ""));
+}
+
 /** The sandboxed page cannot use web storage (noVNC keeps its settings there)
  *  and the pane cannot read its document, so this runs first in vnc.html: an
- *  in-memory storage stand-in, and a message to the embedding pane whenever
+ *  in-memory storage stand-in, a filter that keeps browser extension errors
+ *  out of noVNC's error panel, and a message to the embedding pane whenever
  *  noVNC's connected marker changes. */
 const FRAME_BRIDGE = `<script>(() => {
+const fromExtension = ${browserExtensionFault.toString()};
+const dropExtensionFault = (event, stack, file) => {
+  if (!fromExtension(stack, file)) return;
+  event.stopImmediatePropagation();
+  event.preventDefault();
+};
+addEventListener("error", (event) => dropExtensionFault(event, event.error?.stack, event.filename), true);
+addEventListener("unhandledrejection", (event) => dropExtensionFault(event, event.reason?.stack), true);
 for (const name of ["localStorage", "sessionStorage"]) {
   try { void window[name].length; } catch {
     const items = new Map();
