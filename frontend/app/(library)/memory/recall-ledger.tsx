@@ -59,8 +59,17 @@ export function RecallLedger({
                 >
                   {SCOPE_META[row.memoryScope].tag}
                 </Chip>
-                <span className="text-caption-1-regular text-text-tertiary">
-                  {row.itemCount} {row.itemCount === 1 ? "item" : "items"} - {row.latencyMs}ms
+                <span
+                  className={
+                    row.degraded
+                      ? "text-caption-1-regular text-text-error-primary"
+                      : "text-caption-1-regular text-text-tertiary"
+                  }
+                >
+                  {row.degraded
+                    ? "memory unavailable"
+                    : `${row.itemCount} ${row.itemCount === 1 ? "item" : "items"}`}{" "}
+                  - {row.latencyMs}ms
                 </span>
                 <Link
                   href={`/session/${row.runId}`}

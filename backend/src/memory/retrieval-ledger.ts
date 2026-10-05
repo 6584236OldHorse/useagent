@@ -52,6 +52,9 @@ export interface RetrievalLedgerPayload {
   readonly renderedChars: number;
   readonly truncated: boolean;
   readonly latencyMs: number;
+  /** True when the memory service was unreachable for every pool searched: an
+   *  outage, not a reachable-but-empty recall. */
+  readonly degraded: boolean;
 }
 
 /** Shape the durable ledger payload from a scope plan + its recall (pure). */
@@ -80,13 +83,15 @@ export function buildRetrievalPayload(
     renderedChars: recall.rendered.length,
     truncated: recall.truncated,
     latencyMs: recall.latencyMs,
+    degraded: recall.degraded,
   };
 }
 
 /**
  * Record a run's recall as a `context.retrieved` native frame (persist + stream).
  * One frame per run (id keyed by runId). No-op when nothing was recalled — a
- * ledger of non-retrievals is noise. Fire-and-forget via recordProviderEvent, so
+ * ledger of non-retrievals is noise — unless the recall was degraded: an outage
+ * must leave a frame or it is invisible. Fire-and-forget via recordProviderEvent, so
  * it NEVER fails the run. The caller should `void` this on the hot path.
  */
 export async function recordContextRetrieval(
@@ -96,7 +101,7 @@ export async function recordContextRetrieval(
   query: string,
   recall: ScopedRecall,
 ): Promise<void> {
-  if (recall.items.length === 0) return;
+  if (recall.items.length === 0 && !recall.degraded) return;
   // Retrieval happens at run START, before any provider part, so the shared
   // per-run sequencer (provider-events.ts) mints this frame seq 0 and every
   // opencode capture a strictly higher one — no two emitters collide on a seq.
@@ -124,6 +129,8 @@ export interface RecallLedgerRow {
   readonly items: readonly { readonly content: string; readonly sourceScope: MemoryScope }[];
   readonly latencyMs: number;
   readonly truncated: boolean;
+  /** Memory service unreachable for this run's recall (false on legacy frames). */
+  readonly degraded: boolean;
   readonly createdAt: string;
 }
 
@@ -166,6 +173,7 @@ export async function listRecallsForOrg(orgId: string, limit = 30): Promise<Reca
         .map((i) => ({ content: i.content, sourceScope: i.sourceScope ?? "org" })),
       latencyMs: payload.latencyMs,
       truncated: payload.truncated,
+      degraded: payload.degraded === true,
       createdAt: new Date(r.created_at as string).toISOString(),
     });
   }
