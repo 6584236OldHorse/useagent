@@ -13,7 +13,8 @@ import {
   shouldProjectRuntimeActivity,
 } from "./runtime-orchestration";
 import { runtimeApprovalRequest } from "./runtime-approval";
-import { runtimeThreadView, v2ToolIdentity } from "./runtime-v2-view";
+import { boundedV2Record, runtimeChildThreadActivities, runtimeThreadView, v2ToolIdentity } from "./runtime-v2-view";
+import { serializeProviderPayload } from "../runs/provider-events";
 import { createSecretRedactor } from "../secrets/redact";
 import {
   v2Item, v2Message, v2Projection, v2ProviderThread, v2Run, v2Session, v2Snapshot, v2Turn,
@@ -190,5 +191,38 @@ describe("protocol 2 thread view", () => {
       ],
     })));
     expect(view.thread.activities).toEqual([]);
+  });
+
+  test("the runtime's record rides along bounded, so a huge item never blanks the payload the plane reads", () => {
+    const huge = "x".repeat(200_000);
+    const approval = v2Item({
+      id: "a-huge", type: "approval_request", status: "waiting", requestId: "req-huge", requestKind: "command",
+      prompt: huge, options: Array.from({ length: 500 }, (_, index) => ({ decision: "accept", label: `option ${index}` })),
+    });
+    const view = runtimeThreadView(v2Snapshot(1, v2Projection({
+      turnItems: [approval], runtimeRequests: [{ id: "req-huge", kind: "command", status: "pending" }],
+    })));
+    const event = runtimeActivityProviderEvent(ctx, "t", view.thread.activities[0]!, redact);
+    const stored = JSON.parse(serializeProviderPayload(event.payload)!);
+    expect(stored._truncated).toBeUndefined();
+    expect(stored).toMatchObject({ id: "req-huge", requestKind: "command" });
+
+    const tool = v2Item({ id: "t-huge", type: "dynamic_tool", status: "completed", toolName: "Read", input: { blob: huge }, output: huge });
+    const step = activityStep(runtimeThreadView(v2Snapshot(1, v2Projection({ turnItems: [tool] }))).thread.activities[0]!, "t", "claude");
+    expect(JSON.stringify(step.code_json).length).toBeLessThan(40_000);
+  });
+
+  test("message context and attachments never ride along, and an oversized record keeps only its identity", () => {
+    const message = v2Message({ id: "c-msg", text: "y".repeat(5_000), context: { files: ["secret.env"] }, attachments: [{ id: "f1" }] } as never);
+    const [childMessage] = runtimeChildThreadActivities(v2Snapshot(1, v2Projection({ messages: [message] }, "child")), "parent");
+    const record = (childMessage!.payload as { v2: Record<string, unknown> }).v2;
+    expect(record).not.toHaveProperty("context");
+    expect(record).not.toHaveProperty("attachments");
+    expect(String(record.text).length).toBeLessThanOrEqual(1_000);
+    expect((childMessage!.payload as { text: string }).text).toHaveLength(5_000);
+
+    const wide = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`field${index}`, "z".repeat(900)]));
+    expect(boundedV2Record({ id: "w", type: "dynamic_tool", status: "running", ...wide }))
+      .toEqual({ id: "w", type: "dynamic_tool", status: "running", truncated: true });
   });
 });

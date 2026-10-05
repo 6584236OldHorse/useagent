@@ -8,7 +8,7 @@
 // Activity ids are `<item id>:<phase>` (started, updated, completed): each
 // lifecycle phase is its own ledger row, and a later revision of the same
 // phase replaces its row (the ledger upserts by id). Every payload carries the
-// runtime's own record under `v2`, untouched. Command output and file diffs
+// runtime's own record under `v2`, bounded (boundedV2Record). Command output and file diffs
 // never reach the plane: the runtime strips them from its wire copy.
 import type { RuntimeActivity, RuntimeMessage, RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { v2RunSettled, type V2Projection, type V2Run, type V2ThreadSnapshot, type V2TurnItem } from "./runtime-v2-wire";
@@ -17,6 +17,14 @@ type Rec = Readonly<Record<string, unknown>>;
 type Turn = NonNullable<RuntimeThreadSnapshot["thread"]["latestTurn"]>;
 
 const DETAIL_LIMIT = 4_000;
+/** The runtime's own record rides along bounded: a durable payload over its
+ *  byte limit is replaced whole, which would lose the fields the plane reads. */
+const RECORD_STRING_LIMIT = 1_000;
+const RECORD_ARRAY_LIMIT = 50;
+const RECORD_DEPTH_LIMIT = 6;
+const RECORD_BYTE_LIMIT = 8_192;
+/** Message context and attachments stay with the runtime: the record keeps what the work was, not what was sent. */
+const RECORD_OMITTED_KEYS = new Set(["context", "attachments", "attachmentsByQuestionId", "questionAnswer"]);
 
 const record = (value: unknown): Rec | null =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Rec) : null;
@@ -26,6 +34,32 @@ const time = (value: unknown): number => {
   const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+function boundedValue(value: unknown, depth: number, stringLimit = RECORD_STRING_LIMIT): unknown {
+  if (typeof value === "string") {
+    return value.length > stringLimit ? `${value.slice(0, stringLimit - 1)}…` : value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= RECORD_DEPTH_LIMIT) return "[nested]";
+  if (Array.isArray(value)) {
+    const kept = value.slice(0, RECORD_ARRAY_LIMIT).map((entry) => boundedValue(entry, depth + 1, stringLimit));
+    return value.length > RECORD_ARRAY_LIMIT ? [...kept, `[${value.length - RECORD_ARRAY_LIMIT} more]`] : kept;
+  }
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !RECORD_OMITTED_KEYS.has(key))
+    .map(([key, entry]) => [key, boundedValue(entry, depth + 1, stringLimit)]));
+}
+
+/** A tool's input as its step shows it: every string within the detail limit. */
+const boundedInput = (value: unknown): unknown => boundedValue(value, 0, DETAIL_LIMIT);
+
+/** The runtime's record as the payload carries it: long strings cut, long lists
+ *  capped, context and attachments left out, and past the byte limit only its identity. */
+export function boundedV2Record(value: Rec): Rec {
+  const bounded = boundedValue(value, 0) as Rec;
+  if (new TextEncoder().encode(JSON.stringify(bounded)).byteLength <= RECORD_BYTE_LIMIT) return bounded;
+  return { id: value.id, type: value.type, status: value.status, truncated: true };
+}
 
 /** The thread's latest run: the turn a V1 reader called `latestTurn`. */
 export function latestV2Run(projection: V2Projection): V2Run | null {
@@ -133,7 +167,7 @@ function activity(item: V2TurnItem, kind: string, phase: string, payload: Rec, t
     tone,
     kind,
     summary: summaryOf(item, payload),
-    payload: { ...payload, v2: item },
+    payload: { ...payload, v2: boundedV2Record(item) },
     turnId: item.runId,
   };
 }
@@ -149,8 +183,8 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "command_execution",
         data: {
-          input: { command: item.input },
-          item: { id: item.id, command: item.input, ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}) },
+          input: { command: bounded(item.input) },
+          item: { id: item.id, command: bounded(item.input), ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}) },
         },
       }, tone);
     case "file_change": {
@@ -167,13 +201,13 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
     case "web_search":
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "web_search", toolName: "web_search",
-        data: { arguments: { query: Array.isArray(item.patterns) ? item.patterns.join(" ") : undefined } },
+        data: { arguments: { query: Array.isArray(item.patterns) ? bounded(item.patterns.join(" ")) : undefined } },
         detail: bounded(item.results),
       }, tone);
     case "file_search":
       return activity(item, `tool.${phase}`, phase, {
         ...base, itemType: "dynamic_tool_call", toolName: "file_search",
-        data: { arguments: { pattern: item.pattern } },
+        data: { arguments: { pattern: bounded(item.pattern) } },
         detail: bounded(item.results),
       }, tone);
     case "dynamic_tool": {
@@ -183,7 +217,7 @@ function toolActivity(item: V2TurnItem): RuntimeActivity | null {
         itemType: identity.server ? "mcp_tool_call" : "dynamic_tool_call",
         ...(identity.tool ? { toolName: identity.tool } : {}),
         ...(identity.server ? { server: identity.server } : {}),
-        data: { arguments: item.input },
+        data: { arguments: boundedInput(item.input) },
         detail: bounded(item.output),
       }, tone);
     }
@@ -232,7 +266,7 @@ function requestActivities(item: V2TurnItem, projection: V2Projection): RuntimeA
   const question = item.type === "user_input_request";
   const requested = activity(item, question ? "user-input.requested" : "approval.requested", "requested", question
     ? { requestId: item.requestId, questions: item.questions }
-    : { requestId: item.requestId, requestKind: item.requestKind, ...(text(item.prompt) ? { detail: item.prompt } : {}) },
+    : { requestId: item.requestId, requestKind: item.requestKind, ...(bounded(item.prompt) ? { detail: bounded(item.prompt) } : {}) },
   "approval");
   if (!resolved) return [requested];
   return [requested, activity(item, question ? "user-input.resolved" : "approval.resolved", "resolved", {
@@ -306,7 +340,7 @@ export function runtimeChildThreadActivities(snapshot: V2ThreadSnapshot, parentT
         text: message.text,
         status: message.streaming ? "running" : "completed",
         streamKind: "assistant_text",
-        v2: message,
+        v2: boundedV2Record(message),
       },
       turnId: message.runId,
     }));
@@ -325,7 +359,7 @@ function contextActivities(projection: V2Projection): RuntimeActivity[] {
       tone: "info" as const,
       kind: "context-window.updated",
       summary: "Context window",
-      payload: { ...usage, v2: thread },
+      payload: { ...usage, v2: boundedV2Record(thread) },
       turnId: run?.id ?? null,
     }];
   });
