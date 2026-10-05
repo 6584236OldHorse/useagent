@@ -9,6 +9,15 @@ export function frontendEnvironmentPreparationCommand(backendEnv: string, fronte
     `chmod 600 "$tmp"; mv -f -- "$tmp" ${quote(frontendEnv)}; trap - EXIT`;
 }
 
+export function rollbackIdentityPreparationCommand(frontendEnv: string, backendImage: string): string {
+  return `set -eu; snapshot=${quote(frontendEnv)}; ` +
+    `if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then test -f "$snapshot" && test -r "$snapshot" && test ! -L "$snapshot"; exit; fi; ` +
+    `backend_default=$(docker image inspect --format '{{ index .Config.Labels "io.useagent.auth.default" }}' ${quote(backendImage)}); ` +
+    `case "$backend_default" in ''|'<no value>') ;; *) echo 'rollback identity capture is missing' >&2; exit 2;; esac; ` +
+    `tmp=$(mktemp ${quote(`${frontendEnv}.XXXXXX`)}); trap 'rm -f -- "$tmp"' EXIT; ` +
+    `printf 'AUTH=better-auth\\nCLERK_SECRET_KEY=\\n' > "$tmp"; chmod 600 "$tmp"; mv -- "$tmp" "$snapshot"; trap - EXIT`;
+}
+
 /** Validate the immutable images before warming the edge or closing admission. */
 export function identityReleaseValidationCommand(backendEnv: string, backendImage: string, frontendImage: string): string {
   return `set -eu; . ${quote(backendEnv)}; ` +

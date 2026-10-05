@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import type { PromotionEffects } from "./promotion";
-import { frontendEnvironmentPreparationCommand, identityReleaseValidationCommand } from "./identity-config";
+import { frontendEnvironmentPreparationCommand, identityReleaseValidationCommand, rollbackIdentityPreparationCommand } from "./identity-config";
 import {
 	classifyMigrations,
 	type MigrationFile,
@@ -390,7 +390,7 @@ export class SshPromotionEffects implements PromotionEffects {
 		const caddy = caddyOverride ?? (await this.#renderCaddy(record));
 		await this.#remote.writeAtomic(`${directory}/release.env`, envText);
 		await this.#remote.run(
-			frontendEnvironmentPreparationCommand(
+			this.#kind === "rollback" ? rollbackIdentityPreparationCommand(`${directory}/frontend.env`, record.manifest.backend) : frontendEnvironmentPreparationCommand(
 				this.#config.backendEnvFile,
 				`${directory}/frontend.env`,
 			),
