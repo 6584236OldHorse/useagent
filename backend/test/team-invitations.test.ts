@@ -386,6 +386,15 @@ test("a deployment that cannot create accounts refuses to invite an address with
     });
     expect(unknown.status).toBe(400);
     expect(unknown.body.message).toContain("cannot create one");
+    // An account without a password (Google-only, from when Google was on) is no better.
+    const googleOnly = `google-only-${crypto.randomUUID().slice(0, 8)}@example.test`;
+    await db.insert(user).values({ id: crypto.randomUUID(), name: "Google Only", email: googleOnly, emailVerified: true });
+    const noPassword = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: googleOnly, role: "member" },
+    });
+    expect(noPassword.status).toBe(400);
     const known = await json("/api/auth/organization/invite-member", {
       method: "POST",
       cookies: org.cookies,

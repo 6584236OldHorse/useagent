@@ -1,9 +1,9 @@
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
 import { db } from "../db/client";
-import { invitation, member, organization, user } from "../db/auth-schema";
+import { account, invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
 import type { AppEnv } from "../http";
 
@@ -130,14 +130,17 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
       // one would get a link it can never use. Only a manager learns that.
       const manager = await managerFor(request, body);
       if ("status" in manager) return c.json({ message: manager.message }, manager.status);
+      // An account counts only with a password: a Google-only account from a time
+      // when Google was on has no way in either.
       const [known] = await db
         .select({ id: user.id })
         .from(user)
+        .innerJoin(account, and(eq(account.userId, user.id), eq(account.providerId, "credential"), isNotNull(account.password)))
         .where(eq(user.email, body.email.trim().toLowerCase()))
         .limit(1);
       if (!known) {
         return c.json(
-          { message: "That address has no account here, and this deployment cannot create one. Set up Google sign-in, or invite an address that already has an account." },
+          { message: "That address has no account with a password here, and this deployment cannot create one. Set up Google sign-in, or invite an address that already signs in with a password." },
           400,
         );
       }
