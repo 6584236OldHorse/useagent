@@ -61,7 +61,7 @@ describe("automatic artifact discovery", () => {
       { path: "/root/work/report.txt", size: 12 },
     ]);
     expect(commands).toHaveLength(2);
-    expect(commands[1]).toContain("-newermt '@1757000000.100000000'");
+    expect(commands[1]).toContain("-newerct '@1757000000.100000000'");
   });
 
   test("returns no automatic candidates without a baseline and never lists", async () => {
