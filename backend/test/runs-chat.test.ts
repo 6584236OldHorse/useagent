@@ -331,41 +331,23 @@ describe("durable chat runs", () => {
       row(futureId, orgId, 2),
       row(crossOrgId, crossOrg, 0),
     ]);
-    await db.insert(userUploads).values([
-      {
-        orgId,
+    const excludedUploads = [
+      { runId: unselectedId, orgId, name: "unselected.png" },
+      { runId: futureId, orgId, name: "future.png" },
+      { runId: crossOrgId, orgId: crossOrg, name: "cross.png" },
+    ].map((scope) => {
+      const digest = new Bun.CryptoHasher("sha256").update(scope.runId).digest("hex");
+      return {
+        ...scope,
         userId: "user",
-        runId: unselectedId,
-        name: "unselected.png",
         contentType: "image/png",
         sizeBytes: png.byteLength,
-        sha256: "d".repeat(64),
-        storageKey: "d".repeat(64),
+        sha256: digest,
+        storageKey: digest,
         expiresAt: new Date(Date.now() + 60_000),
-      },
-      {
-        orgId,
-        userId: "user",
-        runId: futureId,
-        name: "future.png",
-        contentType: "image/png",
-        sizeBytes: 12,
-        sha256: "a".repeat(64),
-        storageKey: "a".repeat(64),
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-      {
-        orgId: crossOrg,
-        userId: "user",
-        runId: crossOrgId,
-        name: "cross.png",
-        contentType: "image/png",
-        sizeBytes: 12,
-        sha256: "b".repeat(64),
-        storageKey: "b".repeat(64),
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-    ]);
+      };
+    });
+    await db.insert(userUploads).values(excludedUploads);
 
     expect(await buildChatUserContent(
       { id: currentId, orgId, threadId, threadSeq: 1, prompt: "current" },
@@ -378,7 +360,7 @@ describe("durable chat runs", () => {
     setArtifactStorageForTest(storage);
     const orgId = `chat-input-${crypto.randomUUID()}`;
     const runId = crypto.randomUUID();
-    const digest = "c".repeat(64);
+    const digest = new Bun.CryptoHasher("sha256").update(runId).digest("hex");
     await storage.put(digest, png);
     await db.insert(runs).values({
       id: runId,
