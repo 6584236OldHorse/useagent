@@ -1,6 +1,7 @@
 import { SandboxNotFoundError } from "@useagent/sandbox-contract";
 import { getThreadSandbox, setRunSandbox } from "../runs/repo";
-import { type SandboxHandle } from "../sandboxes/provider";
+import { sandboxProviderKind, type SandboxHandle } from "../sandboxes/provider";
+import { runtimeRunSnapshot } from "./runtime-snapshot";
 import { claimCubeWarmSandbox } from "../sandboxes/cube-warm-pool";
 import {
   providerGatewaySandboxIsCurrent,
@@ -39,6 +40,21 @@ export interface ThreadSandboxOptions {
   readonly requiredLabels?: Readonly<Record<string, string>>;
   /** Filled by acquisition from deployment policy before retained reuse. */
   readonly minimumResources?: ReturnType<typeof resolveSandboxResourceTarget>;
+}
+
+/**
+ * The template a NEW sandbox starts from: a personal computer's own snapshot;
+ * the caller's snapshot on the deployment's default provider; and, when the
+ * binding is a member's preferred provider, that provider's own runtime
+ * template, since the default provider's template name means nothing there.
+ */
+export function snapshotForBinding(
+  binding: SandboxBinding,
+  snapshot: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  if (binding.credential === "user") return binding.snapshot ?? "";
+  return binding.kind === sandboxProviderKind(env) ? snapshot : runtimeRunSnapshot(env, binding.kind);
 }
 
 export function sandboxHasRequiredLabels(
@@ -181,7 +197,7 @@ export async function acquireThreadSandbox(
         sandbox = (await provisionSandbox({
           ctx,
           binding,
-          snapshot: binding.credential === "user" ? (binding.snapshot ?? "") : options.snapshot,
+          snapshot: snapshotForBinding(binding, options.snapshot),
           chip: options.chip,
           create: {
             labels: {
