@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { sidebarNativeAgentRows } from "@/components/session-ui/native-agent-rows";
-import { runTitle } from "@/components/chat/types";
+import { chatTitle } from "@/components/shell/chat-title";
+import { bookmarks } from "@/components/shell/sidebar-bookmarks-store";
 import {
   type ProjectMenuControl,
   ProjectThreadList,
@@ -246,7 +247,7 @@ export function SidebarProjects() {
         threads: group.threads.map((run): ProjectThread => {
           return {
             id: run.id,
-            label: runTitle(run.prompt),
+            label: chatTitle(run.prompt),
             time: relativeTimeShort(threadRowTimestamp(run)),
             status: effectiveThreadStatus(run),
             engine: run.engine,
@@ -319,6 +320,7 @@ export function SidebarProjects() {
                 onToggle={toggle}
                 threadHref={(thread) => `/session/${thread.id}`}
                 renderMenu={renderMenu}
+                onPinThread={(id) => bookmarks.add(userId, id)}
               />
             </div>
           )}
@@ -356,6 +358,7 @@ export function SidebarProjects() {
                   threads: visibleThreads,
                 }])[0]?.threads ?? []}
                 threadHref={(thread) => `/session/${thread.id}`}
+                onPinThread={(id) => bookmarks.add(userId, id)}
               />
               <ul className="flex flex-col">
                 {threadOverflow > 0 || showAllThreads ? (

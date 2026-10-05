@@ -23,8 +23,10 @@ import {
   UserBubble,
 } from "@/components/chat/conversation";
 import { FollowUpRows } from "@/components/chat/follow-up-rows";
+import { ChatTabStrip } from "@/components/chat/chat-tabs";
 import { RunUploadChips, type RunUpload } from "@/components/chat/run-uploads";
 import { SubagentRow } from "@/components/chat/subagent-row";
+import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
@@ -43,7 +45,9 @@ import {
   isUserStopSummary,
   ThreadErrorBanner,
 } from "@/components/session-ui/thread-error-banner";
+import { ProjectThreadList } from "@/components/session-ui/project-thread-tree";
 import { WorkedForFold } from "@/components/session-ui/worked-for-fold";
+import { type BookmarkRow, BookmarksSection } from "@/components/shell/sidebar-bookmarks";
 import { cx } from "@/utils/cx";
 import { LongThreadSample } from "./long-thread-sample";
 import {
@@ -60,6 +64,13 @@ import {
   THREAD_ERROR_SUMMARY,
   USER_STOP_SUMMARY,
 } from "./session-sample-data";
+import {
+  detailsTurns,
+  sampleBookmarks,
+  sampleRun,
+  sampleTabs,
+  sampleThreads,
+} from "./shell-panels-data";
 
 /** Left-rail index: every covered type, linked to where it renders. */
 const INDEX: readonly { label: string; href: string }[] = [
@@ -89,6 +100,7 @@ const INDEX: readonly { label: string; href: string }[] = [
   { label: "File-diff view (hunks)", href: "#file-diff" },
   { label: "Child-agent panel rows", href: "#agents" },
   { label: "Subagent rows (one line folded, tool rows + Summary open)", href: "#subagents" },
+  { label: "Shell panels (Details rail, chat tabs, Bookmarks)", href: "#shell-panels" },
   { label: "Composer upload tray", href: "#uploads" },
   { label: "Follow-ups + sources (closing turn grammar)", href: "#conversation" },
   { label: "Long thread (windowed rendering)", href: "#long-thread" },
@@ -186,6 +198,15 @@ export function SessionSample() {
   // What the composer WOULD receive from a follow-up pick in the conversation;
   // the lab has no live composer, so the handoff renders as a preview box.
   const [proposedPrefill, setProposedPrefill] = useState<string | null>(null);
+  // The lab's Bookmarks keep their pins in state, so a rail row dragged (or
+  // pinned) onto the section really lands there and unpins from it.
+  const [pins, setPins] = useState<readonly BookmarkRow[]>(sampleBookmarks);
+  const pinChat = (id: string) =>
+    setPins((current) => {
+      const row = sampleThreads.find((thread) => thread.id === id);
+      if (!row || current.some((pin) => pin.id === id)) return current;
+      return [...current, { id, title: row.label, href: `#${id}` }];
+    });
   useEffect(() => {
     setMounted(true);
     setLiveStartedAt(new Date(Date.now() - 48_000).toISOString());
@@ -425,6 +446,43 @@ export function SessionSample() {
                   />
                 ))}
               </ul>
+            </Surface>
+
+            <Surface
+              id="shell-panels"
+              title="Shell panels - chat tabs, Bookmarks, the Details rail"
+              owner="chat-tabs · sidebar-bookmarks · session-details-rail"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The chat tabs sit across the top of the transcript (the open chats, the
+                current one selected); Bookmarks is the rail section a chat row drops
+                onto; the Details rail is the surface with Environment, Task plan and
+                Usage, every value read from the run rows and the usage frames the thread
+                already holds.
+              </p>
+              <div className="rounded-2xl border border-border-button-default bg-background-primary-default">
+                <ChatTabStrip tabs={sampleTabs} activeId="turn-2" onClose={() => {}} />
+              </div>
+              <div className="grid gap-4 md:grid-cols-[16rem_1fr]">
+                <div className="rounded-2xl border border-border-button-default bg-sidebar p-2">
+                  <BookmarksSection
+                    rows={pins}
+                    activeHref="#turn-1"
+                    onPin={pinChat}
+                    onUnpin={(id) => setPins((current) => current.filter((pin) => pin.id !== id))}
+                  />
+                  <p className="text-mono-label px-2.5 pb-1 pt-3 text-text-tertiary">Threads</p>
+                  <ProjectThreadList
+                    threads={sampleThreads}
+                    threadHref={(thread) => `#${thread.id}`}
+                    ariaLabel="Sample threads"
+                    onPinThread={pinChat}
+                  />
+                </div>
+                <div className="h-[34rem] overflow-hidden rounded-2xl border border-border-button-default bg-background-primary-default">
+                  <SessionDetailsRail root={sampleRun} newest={sampleRun} turns={detailsTurns} />
+                </div>
+              </div>
             </Surface>
 
             <Surface

@@ -6,10 +6,7 @@ import {
   RiComputerLine,
   RiExpandDiagonal2Line,
   RiFileList2Line,
-  RiGitMergeLine,
   RiLayoutRightLine,
-  RiPagesLine,
-  RiRobot2Line,
   RiTerminalBoxLine,
 } from "@remixicon/react";
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
@@ -42,10 +39,11 @@ import {
   useSplitTooNarrow,
 } from "@/components/chat/rail-resizer";
 import { RunFeedback } from "@/components/chat/run-feedback";
+import { SessionDetailsRail } from "@/components/chat/session-details-rail";
+import { SessionRailTabs } from "@/components/chat/session-rail-tabs";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
   RAIL_ICON_BUTTON,
-  RAIL_TAB_LABEL_COLLAPSE,
   railTabLabelFor,
   type SurfaceChoice,
   SurfaceChooser,
@@ -78,7 +76,6 @@ import type { ApiThreadOutlineTurn } from "@/components/chat/windowed-thread";
 import { runGitRefs, GitChips } from "@/components/session-ui/git-chip";
 import { Button } from "@/components/base/buttons/button";
 import { CloseButton } from "@/components/base/buttons/close-button";
-import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
 import { RunLocation } from "@/components/runners/run-location";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { threadSubmissionLane, useThreadFamily } from "@/hooks/use-thread-family";
@@ -857,88 +854,13 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             )}
           >
             <div className="@container border-border-button-default/50 flex h-12 shrink-0 items-center gap-2 border-b px-2">
-              <PillTabList
-                aria-label="Surface"
-                className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              >
-                {/* Agents leads the switcher, but only once a run has fanned
-                    out — no empty tab before then. */}
-                {hasSubagents && (
-                  <PillTab
-                    icon={RiRobot2Line}
-                    isSelected={railTab === "agents"}
-                    onSelect={() => setRailTabOverride("agents")}
-                    data-testid="rail-tab-agents"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Agents
-                  </PillTab>
-                )}
-                <PillTab
-                  icon={RiFileList2Line}
-                  isSelected={railTab === "artifacts"}
-                  onSelect={() => setRailTabOverride("artifacts")}
-                  data-testid="rail-tab-artifacts"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Files
-                </PillTab>
-                {/* Workspace holds the canonical workpieces the user opened from
-                    the conversation - only present once at least one is open. */}
-                {openWorkpieces.length > 0 && (
-                  <PillTab
-                    icon={RiPagesLine}
-                    isSelected={railTab === "workspace"}
-                    onSelect={() => setRailTabOverride("workspace")}
-                    data-testid="rail-tab-workspace"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Workspace
-                  </PillTab>
-                )}
-                {/* Diff appears once a real change set exists - the chooser
-                    card's "available when a real patch exists" promise. */}
-                {hasFiles && (
-                  <PillTab
-                    icon={RiGitMergeLine}
-                    isSelected={railTab === "diff"}
-                    onSelect={() => setRailTabOverride("diff")}
-                    data-testid="rail-tab-diff"
-                    labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                  >
-                    Diff
-                  </PillTab>
-                )}
-                <PillTab
-                  icon={RiCodeSSlashLine}
-                  isSelected={railTab === "editor"}
-                  onSelect={() => setRailTabOverride("editor")}
-                  data-testid="rail-tab-editor"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Editor
-                </PillTab>
-                <PillTab
-                  icon={RiTerminalBoxLine}
-                  isSelected={railTab === "terminal"}
-                  onSelect={() => setRailTabOverride("terminal")}
-                  data-testid="rail-tab-terminal"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Terminal
-                </PillTab>
-                {/* Desktop is a stable product surface. The pane itself waits
-                    for or wakes the thread's sandbox on demand. */}
-                <PillTab
-                  icon={RiComputerLine}
-                  isSelected={railTab === "desktop"}
-                  onSelect={() => setRailTabOverride("desktop")}
-                  data-testid="rail-tab-desktop"
-                  labelClassName={RAIL_TAB_LABEL_COLLAPSE}
-                >
-                  Browser
-                </PillTab>
-              </PillTabList>
+              <SessionRailTabs
+                railTab={railTab}
+                hasSubagents={hasSubagents}
+                hasWorkspace={openWorkpieces.length > 0}
+                hasFiles={hasFiles}
+                onSelect={setRailTabOverride}
+              />
               <Button
                 variant="ghost"
                 size="small"
@@ -1048,6 +970,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     <DiffPane turns={turns} />
                   ) : railTab === "editor" ? (
                     <EditorPane steps={allSteps} live={live} />
+                  ) : railTab === "details" ? (
+                    <SessionDetailsRail root={root} newest={newest} turns={turns} />
                   ) : (
                     <TerminalPane
                       steps={allSteps}

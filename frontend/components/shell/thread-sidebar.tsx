@@ -14,8 +14,9 @@ import {
 } from "@remixicon/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { runTitle } from "@/components/chat/types";
+import { chatTitle } from "@/components/shell/chat-title";
 import { useRailFolded } from "@/components/shell/rail-folded";
+import { SidebarBookmarks } from "@/components/shell/sidebar-bookmarks";
 import {
   SidebarGroup,
   SidebarMenu,
@@ -47,11 +48,11 @@ function CollapsedThreads() {
                 render={
                   <Link
                     aria-current={pathname === href ? "page" : undefined}
-                    aria-label={runTitle(run.prompt)}
+                    aria-label={chatTitle(run.prompt)}
                     href={href}
                   />
                 }
-                tooltip={runTitle(run.prompt)}
+                tooltip={chatTitle(run.prompt)}
               >
                 <RiChat3Line className="size-4" aria-hidden />
               </SidebarMenuButton>
@@ -147,7 +148,14 @@ export function ThreadSidebar({ active }: { active?: ThreadSidebarActive }) {
   return (
     <AppSidebarFrame>
       <NavRoutes routes={routes} />
-      {isCollapsed ? <CollapsedThreads /> : <SidebarProjects />}
+      {isCollapsed ? (
+        <CollapsedThreads />
+      ) : (
+        <>
+          <SidebarBookmarks />
+          <SidebarProjects />
+        </>
+      )}
     </AppSidebarFrame>
   );
 }

@@ -133,7 +133,8 @@ test("active statuses render truthful dots with non-color aria labels", () => {
   expect(html).toContain('aria-label="Running"');
   expect(html).toContain('aria-label="Queued"');
   expect(html).toContain('aria-label="Failed"');
-  expect(html).not.toContain('aria-label="Completed"');
+  // A completed thread wears a check with the same non-colour label.
+  expect(html).toContain('aria-label="Completed"');
   expect(html).toContain("bg-lime-500");
   expect(html).toContain("border-orange-500");
 });
@@ -203,4 +204,24 @@ test("each real project gets one shared actions-menu slot; the no-project bucket
   const menus = html.match(/data-testid="proj-menu"/g) ?? [];
   expect(menus).toHaveLength(1);
   expect(html).toContain('data-open="false"');
+});
+
+test("a completed thread wears a check, every row drags as a chat, and a pin button appears when the rail can pin", () => {
+  const html = renderToStaticMarkup(
+    <ProjectThreadTree
+      groups={[group({ threads: [thread("r1", "Fix the auth bug"), thread("r2", "Deploy", { status: "running" })] })]}
+      isExpanded={() => true}
+      onToggle={() => {}}
+      threadHref={(t) => `/session/${t.id}`}
+      onPinThread={() => {}}
+    />,
+  );
+  // The completion tick sits in the icon column of the settled row only.
+  expect(html.match(/aria-label="Completed"/g) ?? []).toHaveLength(1);
+  expect(html).toContain('aria-label="Running"');
+  // Rows are drag sources for the Bookmarks drop target.
+  expect(html.match(/draggable="true"/g) ?? []).toHaveLength(2);
+  expect(html).toContain('aria-label="Pin Fix the auth bug"');
+  // Without a pin handler the rows carry no pin button.
+  expect(renderTree([group()])).not.toContain('aria-label="Pin ');
 });
