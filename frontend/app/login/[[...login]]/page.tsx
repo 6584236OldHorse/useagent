@@ -1,11 +1,26 @@
 import type { Metadata } from "next";
-import { safeAuthRedirect } from "@/components/auth/safe-redirect";
 import { AuthForm } from "../auth-form";
 
 export const metadata: Metadata = {
   title: "Sign in - useAgent",
   description: "Sign in to your useAgent workspace.",
 };
+
+function safeAuthRedirect(value: string | null): string {
+  if (!value?.startsWith("/") || value.startsWith("//")) return "/";
+  try {
+    const url = new URL(value, "https://useagent.invalid");
+    if (
+      url.origin !== "https://useagent.invalid" ||
+      !url.pathname.startsWith("/") ||
+      url.pathname.startsWith("//")
+    )
+      return "/";
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "/";
+  }
+}
 
 export default async function LoginPage({
   searchParams,
