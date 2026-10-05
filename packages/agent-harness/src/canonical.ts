@@ -39,8 +39,8 @@ export interface CanonicalIdentity {
   provider: ProviderId;
   /** Native session id (opencode `ses_*`, ACP session id, managed session id). */
   nativeSessionId?: string;
-  /** Native parent session id for child-owned events; absent on parent-owned control. */
-  nativeParentSessionId?: string;
+  /** Native parent session id for child-owned events; explicit null when the protocol identifies a root. */
+  nativeParentSessionId?: string | null;
   /** Native event id, when the provider assigns one (for dedup/correlation). */
   nativeEventId?: string;
   /** Native monotonic sequence, when the provider assigns one. */
@@ -80,6 +80,14 @@ export interface CanonicalPlanEntry {
   id: string;
   text: string;
   status: "pending" | "in_progress" | "completed" | "cancelled";
+}
+
+export interface CanonicalMessageSnapshot {
+  revision: string;
+  segment: number;
+  segmentCount: number;
+  final: boolean;
+  streaming: boolean;
 }
 
 /** Bounded provider-reported usage for one child. Known counters stay named while
@@ -199,8 +207,15 @@ export type CanonicalEventBody =
   | { kind: "session.metadata"; metadata: Record<string, unknown> }
   | { kind: "turn.started" }
   | { kind: "turn.completed"; stopReason?: string }
-  | { kind: "message.started"; messageId: string }
-  | { kind: "message.delta"; messageId: string; text: string }
+  | { kind: "message.started"; messageId: string; role?: string; turnId?: string }
+  | {
+      kind: "message.delta";
+      messageId: string;
+      text: string;
+      role?: string;
+      turnId?: string;
+      snapshot?: CanonicalMessageSnapshot;
+    }
   | { kind: "message.completed"; messageId: string; text?: string }
   | { kind: "reasoning.delta"; messageId: string; text: string }
   | { kind: "reasoning.completed"; messageId: string }

@@ -3,10 +3,12 @@
 // the assistant text is published as it grows. One projector's view spans a
 // turn and the continuation the plane may send for it, so nothing that landed
 // between the two is taken as already seen or left out of the record.
-import { recordProviderEvent, CaptureFenceError, runSettlementFence } from "../runs/provider-events";
+import { recordProviderEvent, recordProviderEvents, CaptureFenceError, runSettlementFence, type ProviderEventInput } from "../runs/provider-events";
 import { createSecretRedactor } from "../secrets/redact";
-import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityProviderEvent, runtimeActivityRevision, runtimeActivityStepKey, runtimeThreadId, runtimeTurnError, runtimeTurnSettled, shouldProjectRuntimeActivity, type RuntimeEngineId, type RuntimeThreadSnapshot } from "./runtime-orchestration";
+import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityProviderEvent, runtimeActivityRevision, runtimeActivityStepKey, runtimeThreadId, runtimeTurnError, runtimeTurnSettled, runtimeUserMessageId, shouldProjectRuntimeActivity, type RuntimeEngineId, type RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { type EngineRunContext } from "./types";
+import { appendOnlyMessageCapture, runtimeRootMessageBatches } from "./runtime-root-messages";
+import { turnRunIds } from "./turn-recovery";
 
 type RuntimeActivity = RuntimeThreadSnapshot["thread"]["activities"][number];
 
@@ -58,6 +60,7 @@ export function createTurnProjector(input: {
   const revisions = new Map(input.seen);
   const steps = new Map(input.steps ?? []);
   const threadId = runtimeThreadId(ctx);
+  const capturedMessages = new Map<string, ProviderEventInput[]>();
   let publishedText = "";
   let finalText = "";
   let sealed = false;
@@ -68,6 +71,23 @@ export function createTurnProjector(input: {
     steps: () => steps,
     async apply(snapshot, observe) {
       const toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
+      for (const batch of runtimeRootMessageBatches({
+        runId: ctx.runId, threadId: ctx.threadId ?? ctx.runId, sessionId: threadId,
+        userMessageIds: turnRunIds(ctx.runId).map(runtimeUserMessageId), redact: redact.text,
+      }, snapshot)) {
+        if (sealed) break;
+        const key = batch[0]!.id;
+        const capture = appendOnlyMessageCapture(batch, capturedMessages.get(key));
+        if (capture.events.length === 0) continue;
+        try {
+          await recordProviderEvents(capture.events, { critical: true, fence: runSettlementFence(ctx.runId) });
+          capturedMessages.set(key, capture.snapshot);
+        } catch (error) {
+          if (!(error instanceof CaptureFenceError)) throw error;
+          sealed = true;
+          break;
+        }
+      }
       for (const activity of snapshot.thread.activities) {
         if (sealed) break;
         const revision = runtimeActivityRevision(activity);

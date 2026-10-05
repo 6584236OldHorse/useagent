@@ -100,15 +100,22 @@ const TAIL_KINDS = new Set<TimelineNode["kind"]>(["artifact", "file", "followups
  * While live, only a burst at the very end counts as the reply-in-progress; a
  * burst followed by more work was narration and folds with it.
  */
-export function splitTurn(nodes: readonly TimelineNode[], _live: boolean): TurnSplit {
+export function splitTurn(nodes: readonly TimelineNode[], live: boolean): TurnSplit {
   const flow = nodes.filter((node) => !TAIL_KINDS.has(node.kind));
   const tail = nodes.filter((node) => TAIL_KINDS.has(node.kind));
   // A reply is terminal by definition. Text followed by another tool/reasoning
   // node is progress narration and belongs inside the trace; settled history
   // uses the run's durable summary as the answer for that shape.
-  const replyIndex = flow.at(-1)?.kind === "text" ? flow.length - 1 : -1;
+  const last = flow.at(-1);
+  const finalMessageId = last?.kind === "text" ? last.messageId : undefined;
+  const replyIndex = last?.kind === "text" && (live || last.final !== false) ? flow.length - 1 : -1;
   let replyStart = replyIndex;
-  while (replyStart > 0 && flow[replyStart - 1]?.kind === "text") replyStart -= 1;
+  while (replyStart > 0) {
+    const previous = flow[replyStart - 1];
+    if (previous?.kind !== "text" || (finalMessageId && previous.messageId !== finalMessageId))
+      break;
+    replyStart -= 1;
+  }
   const replyNodes = replyIndex >= 0 ? flow.slice(replyStart, replyIndex + 1) : [];
   return {
     work: flow.filter((_, index) => index < replyStart || index > replyIndex),

@@ -15,6 +15,8 @@ import {
   type WriteFence,
   providerEventExists,
   recordProviderEvent,
+  recordProviderEvents,
+  runSettlementFence,
   scopedProviderEventId,
 } from "./provider-events";
 import { orgSecretRedactor } from "../secrets/store";
@@ -364,13 +366,14 @@ interface ReconcilingMarkerPayload {
   eventsRecovered?: number;
 }
 
-/** Upsert the durable "reconciling after restart" marker on the native lane so
- *  the timeline shows the run is being re-probed. Frozen frame contract (#63):
- *  provider "skynet", eventType "run.reconciling". The id is STABLE per run, so
- *  the boot-park frame and every re-probe heartbeat address the SAME row — one
- *  marker that keeps advancing (each upsert mints a fresh seq → SSE subscribers
- *  see a live heartbeat) instead of a frozen frame or a pile of duplicate rows.
- *  Fire-and-forget; never throws. */
+function recoveryWriteFence(runId: string, claim?: WriteFence): WriteFence {
+  const unsettled = runSettlementFence(runId);
+  // Finalization locks run -> claim. Captures use the same order.
+  return async (tx) => await unsettled(tx) && (!claim || await claim(tx));
+}
+
+/** Upsert the reconciling marker under a stable ID, only while the run and any
+ * claim remain active. Best-effort heartbeat; critical recovered text is separate. */
 function recordReconcilingMarker(
   runId: string,
   threadId: string,
@@ -385,7 +388,7 @@ function recordReconcilingMarker(
     provider: "skynet",
     eventType: RUN_RECONCILING,
     payload,
-  }, fence ? { fence, required: true } : {}).catch(() => {});
+  }, { fence: recoveryWriteFence(runId, fence), required: true }).catch(() => {});
 }
 
 /** Append native events a reconciliation surfaced to the canonical run, so SSE
@@ -404,30 +407,46 @@ export async function ingestReconciliationEvents(
   fence?: WriteFence,
 ): Promise<number> {
   let recovered = 0;
-  for (const ev of events) {
+  const captureFence = recoveryWriteFence(entry.runId, fence);
+  for (let index = 0; index < events.length; index++) {
+    const ev = events[index]!;
+    const batch = [ev];
+    // The native driver emits an anchor followed by one complete authoritative
+    // message revision. Recover its segments atomically, like the live lane.
+    if (ev.provider === "t3" && ev.eventType === "t3.message.started") {
+      while (index + 1 < events.length) {
+        const next = events[index + 1]!;
+        if (next.provider !== "t3" || next.eventType !== "t3.message.updated" ||
+          next.sessionId !== ev.sessionId || next.messageId !== ev.messageId) break;
+        batch.push(next);
+        index++;
+      }
+    }
     try {
-      if (ev.runScopedId && !ev.id.startsWith(`pe_${entry.runId}_`)) {
+      if (batch.some((event) => event.runScopedId && !event.id.startsWith(`pe_${entry.runId}_`))) {
         throw new Error(`Recovered event id does not match run ${entry.runId}`);
       }
-      const eventId = ev.runScopedId ? ev.id : scopedProviderEventId(entry.runId, ev.id);
-      await recordProviderEvent({
-          id: eventId,
+      const inputs = batch.map((event) => ({
+          id: event.runScopedId ? event.id : scopedProviderEventId(entry.runId, event.id),
           runId: entry.runId,
           threadId: entry.threadId,
-          provider: ev.provider,
-          eventType: ev.eventType,
-          nativeSessionId: ev.sessionId ?? null,
-          nativeParentSessionId: ev.parentSessionId ?? null,
-          nativeMessageId: ev.messageId ?? null,
-          nativePartId: ev.partId ?? null,
-          nativeCallId: ev.callId ?? null,
-          payload: redact.unknown(ev.payload),
-        },
+          provider: event.provider,
+          eventType: event.eventType,
+          nativeSessionId: event.sessionId ?? null,
+          nativeParentSessionId: event.parentSessionId ?? null,
+          nativeMessageId: event.messageId ?? null,
+          nativePartId: event.partId ?? null,
+          nativeCallId: event.callId ?? null,
+          payload: redact.unknown(event.payload),
+        }));
+      await recordProviderEvents(inputs,
         // A fenced write is required so the fence loss reaches this loop instead of the log.
-        { critical: strict, required: strict || fence !== undefined, fence },
+        { critical: strict, required: true, fence: captureFence },
       );
-      if (await providerEventExists(eventId)) recovered++;
-      else if (strict) throw new Error(`Recovered event ${eventId} was not durable`);
+      for (const input of inputs) {
+        if (await providerEventExists(input.id)) recovered++;
+        else if (strict) throw new Error(`Recovered event ${input.id} was not durable`);
+      }
     } catch (error) {
       if (error instanceof CaptureFenceError) throw new LostClaimError(entry.runId, recovered);
       if (strict) throw error;

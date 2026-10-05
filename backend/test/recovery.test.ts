@@ -1,12 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { providerEvents } from "../src/db/schema";
+import { providerEvents, reconcileQueue, runs } from "../src/db/schema";
 import { acceptRunCommand } from "../src/commands";
 import { settleCommandForRun } from "../src/commands/dispatch";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../src/commands/cancel";
 import {
   INCOMPATIBLE_PROVIDER_SESSION_SUMMARY,
+  ingestReconciliationEvents,
   recoverStaleRuns,
   runDueReconciles,
   type ReconcileProbe,
@@ -30,6 +31,56 @@ import { piProviderDriver } from "../src/engines/pi-provider-driver";
 import type { EngineId, RunStatus } from "../src/db/schema";
 import { waitFor } from "./helpers"; // side-effect: imports src/index → migrate + seed
 import { enqueueReconcile } from "../src/runs/reconcile-queue";
+import { createSecretRedactor } from "../src/secrets/redact";
+import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
+
+test("reconciliation cannot append narration after settlement even while its lease is held", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({ id: runId, prompt: "late narration", model: "test-model", engine: "mock",
+    orgId: DEV_ORG_ID, userId: DEV_USER_ID, parentRunId: null, threadId: runId });
+  await setRunStatus(runId, "completed");
+  const events = [{ id: `pe_${runId}_message`, runScopedId: true, provider: "t3",
+    eventType: "t3.message.updated", sessionId: "root", messageId: "message", payload: { text: "late" } }];
+  await expect(ingestReconciliationEvents({ runId, threadId: runId }, createSecretRedactor([]), events, true,
+    async () => true)).rejects.toThrow("reconcile claim lost");
+  const rows = await db.select().from(providerEvents).where(eq(providerEvents.runId, runId));
+  expect(rows).toHaveLength(0);
+});
+
+test("concurrent settlement and recovery capture use run-before-claim lock order", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({ id: runId, prompt: "capture settlement race", model: "test-model", engine: "mock",
+    orgId: DEV_ORG_ID, userId: DEV_USER_ID, parentRunId: null, threadId: runId });
+  await enqueueReconcile({ runId, threadId: runId, sandboxId: "qa", sessionId: "qa",
+    sinceAt: new Date(), nextAttemptAt: new Date(Date.now() + 60_000), deadline: new Date(Date.now() + 120_000) });
+  let locked!: () => void;
+  const runLocked = new Promise<void>((resolve) => { locked = resolve; });
+  let release!: () => void;
+  const proceed = new Promise<void>((resolve) => { release = resolve; });
+  const settlement = db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    await tx.select().from(runs).where(eq(runs.id, runId)).for("update");
+    locked();
+    await proceed;
+    // Same lock order as finalizeOwned: run row, then reconcile claim.
+    await tx.delete(reconcileQueue).where(eq(reconcileQueue.runId, runId));
+    await tx.update(runs).set({ status: "completed" }).where(eq(runs.id, runId));
+  });
+  await runLocked;
+  const capture = ingestReconciliationEvents({ runId, threadId: runId }, createSecretRedactor([]), [{
+    id: `pe_${runId}_race`, runScopedId: true, provider: "t3", eventType: "t3.message.updated",
+    sessionId: "qa", messageId: "qa", payload: { text: "late" },
+  }], true, async (tx) => {
+    const rows = await tx.select().from(reconcileQueue).where(eq(reconcileQueue.runId, runId)).for("update");
+    return rows.length > 0;
+  }).then(() => "captured", (error: Error) => error.message);
+  // Let capture contend with the already held run row before finalization proceeds.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  release();
+  await settlement;
+  expect(await capture).toContain("reconcile claim lost");
+  expect(await db.select().from(providerEvents).where(eq(providerEvents.runId, runId))).toHaveLength(0);
+}, 5_000);
 
 // Boot recovery of the durable command lane, driven with a deterministic fake
 // harness probe. Covers the crash matrix: reconcile an in-flight run, free a

@@ -398,7 +398,11 @@ describe("T3 provider drivers", () => {
     })).resolves.toEqual({
       status: "completed",
       summary: "Recovered summary",
-      events: [],
+      events: [
+        expect.objectContaining({ eventType: "t3.message.started", messageId: "assistant-1", payload: { role: "assistant", turnId: "turn-1" } }),
+        expect.objectContaining({ eventType: "t3.message.updated", messageId: "assistant-1",
+          payload: expect.objectContaining({ text: "Recovered summary", final: true, segmentCount: 1 }) }),
+      ],
     });
     expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
       { method: "GET", path: "/api/orchestration/threads/skynet-thread-thread-1" },
@@ -526,7 +530,11 @@ describe("T3 provider drivers", () => {
     expect(first).toMatchObject({
       status: "completed",
       summary: "Recovered with tail activity <redacted>",
-      events: [{
+      events: [
+        { eventType: "t3.message.started", messageId: "assistant-2" },
+        { eventType: "t3.message.updated", messageId: "assistant-2",
+          payload: { text: "Recovered with tail activity <redacted>", final: true } },
+        {
         id: "pe_run-2_t3_child-terminal",
         runScopedId: true,
         provider: "t3",

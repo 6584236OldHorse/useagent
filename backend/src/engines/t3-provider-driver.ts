@@ -1,5 +1,6 @@
 import type { HarnessRuntime, HarnessSession } from "@useagent/agent-harness/canonical";
 import { turnRunIds } from "./turn-recovery";
+import { runtimeRootMessageBatches } from "./runtime-root-messages";
 import {
   providerProtocolIdentity,
   providerDriverUnsupported,
@@ -243,7 +244,7 @@ function reconciledRuntimeEvents(
   for (const message of snapshot.thread.messages) {
     if (message.role === "user" && ownedMessageIds.has(message.id) && message.turnId !== null) ownedTurnIds.add(message.turnId);
   }
-  return snapshot.thread.activities
+  const activities = snapshot.thread.activities
     .filter((activity) => activity.turnId !== null && ownedTurnIds.has(activity.turnId))
     .map((activity) => {
       const event = runtimeActivityProviderEvent(
@@ -265,6 +266,16 @@ function reconciledRuntimeEvents(
         payload: event.payload,
       };
     });
+  const messages = runtimeRootMessageBatches({
+    runId: context.runId, threadId: context.threadId, sessionId: currentSession.nativeSessionId,
+    userMessageIds: [...ownedMessageIds], redact: context.redact.text,
+  }, snapshot).flat().map((event): HarnessInterimEvent => ({
+    id: event.id, runScopedId: true, provider: event.provider, eventType: event.eventType,
+    sessionId: event.nativeSessionId, parentSessionId: event.nativeParentSessionId,
+    messageId: event.nativeMessageId, partId: event.nativePartId, callId: event.nativeCallId,
+    payload: event.payload,
+  }));
+  return [...messages, ...activities];
 }
 
 export function makeT3ProviderDriver(
