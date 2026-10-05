@@ -20,7 +20,7 @@ import { findSlackUser, findSlackWorkspace } from "../src/slack/workspaces";
 import { db } from "../src/db/client";
 import { integrationConnectionCredentials } from "../src/db/schema";
 import { eq } from "drizzle-orm";
-import { uid } from "./helpers";
+import { createOrgSession, uid } from "./helpers";
 
 describe("Slack integration credential persistence", () => {
   test("stores callback credentials atomically, isolates tenants, and deletes them on disconnect", async () => {
@@ -210,8 +210,10 @@ describe("Slack integration credential persistence", () => {
       owner: { type: "user", userId },
     });
     const routes = createIntegrationRoutes(deps);
+    const stateCookie = { cookie: `useagent_connect_state=${started.state}` };
     const response = await routes.request(
       `https://app.useagent.org/slack/callback?state=${encodeURIComponent(started.state)}&code=route-code`,
+      { headers: stateCookie },
     );
 
     expect(response.status).toBe(303);
@@ -228,8 +230,79 @@ describe("Slack integration credential persistence", () => {
 
     const replay = await routes.request(
       `https://app.useagent.org/slack/callback?state=${encodeURIComponent(started.state)}&code=route-code`,
+      { headers: stateCookie },
     );
     expect(replay.status).toBe(303);
     expect(replay.headers.get("location")).toContain("integration=error");
+  });
+
+  test("public OAuth callback completes only for the browser or user that started it", async () => {
+    const owner = await createOrgSession("slack-starter");
+    const other = await createOrgSession("slack-bystander");
+    const teamId = uid("slack-bound-team");
+    const backend: DelegatedConnectionBackend = {
+      kind: "delegated",
+      runtimeBindingId: SLACK_NATIVE_RUNTIME_BINDING_ID,
+      disconnectSupported: true,
+      supports: (provider) => provider === "slack",
+      async listConnectableProviders() { return ["slack"]; },
+      async startConnect(input) {
+        return {
+          backendSessionRef: input.state,
+          runtimeBindingId: SLACK_NATIVE_RUNTIME_BINDING_ID,
+          redirectUrl: `https://slack.example/oauth?state=${input.state}`,
+          expiresAt: new Date(Date.now() + 60_000),
+        };
+      },
+      async completeConnect() {
+        return {
+          runtimeBindingId: SLACK_NATIVE_RUNTIME_BINDING_ID,
+          externalConnectionId: teamId,
+          externalConnectionName: "Bound Workspace",
+          authMethod: "oauth2",
+          account: { externalAccountId: teamId, displayName: "Bound Workspace" },
+          scopes: ["bot:chat:write"],
+          workspaceBinding: { externalWorkspaceId: teamId },
+        };
+      },
+      async disconnect() {},
+      async listActions() { return []; },
+      async executeAction() { throw new Error("not used"); },
+    };
+    const routes = createIntegrationRoutes({ managedBackends: [], delegatedBackends: [backend] });
+    const start = async () => {
+      const response = await routes.request("https://app.useagent.org/slack/connect/org", {
+        method: "POST",
+        headers: { cookie: owner.cookies, "content-type": "application/json" },
+        body: JSON.stringify({ returnTo: "/settings#integrations" }),
+      });
+      expect(response.status).toBe(200);
+      const setCookie = response.headers.get("set-cookie") ?? "";
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("SameSite=Lax");
+      expect(setCookie).toContain("Path=/api/integrations");
+      const { state } = await response.json() as { state: string };
+      expect(setCookie.split(";")[0]).toBe(`useagent_connect_state=${state}`);
+      return { state, stateCookie: setCookie.split(";")[0]! };
+    };
+    const callback = (state: string, cookie?: string) => routes.request(
+      `https://app.useagent.org/slack/callback?state=${encodeURIComponent(state)}&code=consent`,
+      cookie ? { headers: { cookie } } : {},
+    );
+    const outcome = (response: Response) => new URL(response.headers.get("location") ?? "https://invalid")
+      .searchParams.get("integration");
+
+    const first = await start();
+    // The consent link forwarded to someone with no session and no state cookie.
+    expect(outcome(await callback(first.state))).toBe("error");
+    // Someone else signed in, even holding the state cookie, cannot finish it.
+    expect(outcome(await callback(first.state, `${other.cookies}; ${first.stateCookie}`))).toBe("error");
+    await expect(findSlackWorkspace(teamId)).resolves.toBeNull();
+    // The browser that started it finishes it, with or without a session.
+    expect(outcome(await callback(first.state, first.stateCookie))).toBe("connected");
+    expect((await findSlackWorkspace(teamId))?.orgId).toBe(owner.orgId);
+
+    const second = await start();
+    expect(outcome(await callback(second.state, owner.cookies))).toBe("connected");
   });
 });

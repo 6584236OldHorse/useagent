@@ -597,3 +597,52 @@ test("an invitation cannot be cancelled once accepted, and two managers inviting
   const live = await db.select({ id: invitation.id }).from(invitation).where(and(eq(invitation.organizationId, org.orgId), eq(invitation.email, "twice-at-once@example.test"), eq(invitation.status, "pending")));
   expect(live).toHaveLength(1);
 });
+
+test("a workspace and an inviter send a bounded number of invitations a day; operators are not counted", async () => {
+  const org = await createOrgSession("invite-cap");
+  const operator = await createOrgSession("invite-cap-operator");
+  const second = await json<{ id: string }>("/api/auth/organization/create", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { name: "Second workspace", slug: `invite-cap-${crypto.randomUUID().slice(0, 8)}` },
+  });
+  expect(second.status).toBe(200);
+  const invite = (cookies: string, organizationId: string, email: string, resend = false) =>
+    json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies,
+      body: { organizationId, email, role: "member", ...(resend ? { resend: true } : {}) },
+    });
+  // Development makes everyone an operator; Google keeps any address invitable.
+  const saved = {
+    USEAGENT_DEV_MODE: process.env.USEAGENT_DEV_MODE,
+    OPERATOR_ACCOUNTS: process.env.OPERATOR_ACCOUNTS,
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+  };
+  process.env.USEAGENT_DEV_MODE = "false";
+  process.env.OPERATOR_ACCOUNTS = operator.email;
+  process.env.GOOGLE_CLIENT_ID = "invite-cap-client";
+  process.env.GOOGLE_CLIENT_SECRET = "invite-cap-secret";
+  try {
+    for (let index = 0; index < 20; index += 1) {
+      expect((await invite(org.cookies, org.orgId, `cap-${index}@example.test`)).status).toBe(200);
+    }
+    const over = await invite(org.cookies, org.orgId, "cap-over@example.test");
+    expect(over.status).toBe(429);
+    expect(over.body.message).toContain("Try again tomorrow");
+    // A resend is another mail, and the inviter's other workspace shares their allowance.
+    expect((await invite(org.cookies, org.orgId, "cap-0@example.test", true)).status).toBe(429);
+    expect((await invite(org.cookies, second.body.id, "cap-elsewhere@example.test")).status).toBe(429);
+    const written = await db.select({ id: invitation.id }).from(invitation).where(eq(invitation.organizationId, org.orgId));
+    expect(written).toHaveLength(20);
+    for (let index = 0; index < 21; index += 1) {
+      expect((await invite(operator.cookies, operator.orgId, `operator-${index}@example.test`)).status).toBe(200);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

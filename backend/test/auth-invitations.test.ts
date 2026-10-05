@@ -85,6 +85,35 @@ describe("invitation mail configuration", () => {
     expect(message.subject).not.toMatch(/[\r\n]/);
   });
 
+  test("a typed name is plain words in the mail: no markup, no link, not a paragraph", () => {
+    const message = invitationMessage({
+      organization: "Claim your refund at https://pay.example.com/<b>now</b>",
+      inviter: "billing@pay.example.com",
+      role: "member",
+      link: "https://app.example.test/accept-invitation/inv1",
+      expiresAt: new Date("2026-09-20T10:00:00Z"),
+    });
+    for (const body of [message.text, message.html]) {
+      expect(body).not.toContain("pay.example.com");
+      expect(body).not.toContain("https://pay");
+      expect(body).not.toContain("billing@pay");
+    }
+    expect(message.html).not.toContain("<b>");
+    expect(message.html).toContain("&lt;b&gt;");
+    expect(message.html.match(/<a /g)).toHaveLength(2); // the accept button and its spelled-out link
+    expect(message.subject).toBe(
+      "billing@pay.example.com invited you to Claim your refund at https://pay.example.com/<b>now</b> on UseAgent",
+    );
+    const long = invitationMessage({
+      organization: "x".repeat(500),
+      inviter: "Dana",
+      role: "member",
+      link: "https://app.example.test/accept-invitation/inv1",
+      expiresAt: new Date("2026-09-20T10:00:00Z"),
+    });
+    expect(long.text).not.toContain("x".repeat(61));
+  });
+
   test("delivers through the given transport, or only logs the link without one", async () => {
     const sent: Array<{ to: string[]; subject: string; from: string }> = [];
     const data = {

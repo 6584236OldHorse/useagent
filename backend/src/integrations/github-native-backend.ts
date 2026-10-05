@@ -10,6 +10,8 @@ const DEFAULT_WEB_BASE_URL = "https://github.com";
 const GITHUB_API_VERSION = "2022-11-28";
 const JWT_TTL_SECONDS = 9 * 60;
 const FETCH_TIMEOUT_MS = 8_000;
+const USER_INSTALLATIONS_PAGE_SIZE = 100;
+const USER_INSTALLATIONS_MAX_PAGES = 10;
 
 export const GITHUB_NATIVE_RUNTIME_BINDING_ID = "native:github-app";
 
@@ -17,6 +19,10 @@ export interface GithubNativeConnectionConfig {
   readonly appId: string;
   readonly appSlug: string;
   readonly privateKey: string;
+  /** The App's OAuth client: turns the installer's callback `code` into a
+   *  user token so a bind proves the installer can reach the installation. */
+  readonly clientId?: string;
+  readonly clientSecret?: string;
   readonly apiBaseUrl?: string;
   readonly webBaseUrl?: string;
 }
@@ -42,7 +48,7 @@ export interface GithubNativeConnectionBackend {
   buildInstallUrl(input: { readonly state: string }): string;
   validateApp(): Promise<{ readonly appId: string; readonly appSlug: string }>;
   inspectInstallation(installationId: number): Promise<GithubInstallationProjection>;
-  completeInstall(installationId: number): Promise<DelegatedConnectionResult>;
+  completeInstall(installationId: number, userCode: string): Promise<DelegatedConnectionResult>;
   disconnectInstallation(installationId: number): Promise<void>;
 }
 
@@ -62,7 +68,14 @@ export function githubNativeConnectionConfigFromEnv(): GithubNativeConnectionCon
     console.warn("[integrations] GitHub customer connection private key is invalid");
     return null;
   }
-  return { appId, appSlug, privateKey: normalizedKey };
+  const clientId = process.env.GITHUB_CONNECTION_APP_CLIENT_ID?.trim();
+  const clientSecret = process.env.GITHUB_CONNECTION_APP_CLIENT_SECRET?.trim();
+  return {
+    appId,
+    appSlug,
+    privateKey: normalizedKey,
+    ...(clientId && clientSecret ? { clientId, clientSecret } : {}),
+  };
 }
 
 interface GithubAppResponse {
@@ -194,30 +207,71 @@ export function createGithubNativeConnectionBackend(
     appId: required(input.appId, "GitHub App id"),
     appSlug: required(input.appSlug, "GitHub App slug"),
     privateKey: required(input.privateKey, "GitHub App private key"),
+    clientId: input.clientId?.trim(),
+    clientSecret: input.clientSecret?.trim(),
     apiBaseUrl: normalizeBaseUrl(input.apiBaseUrl, DEFAULT_API_BASE_URL),
     webBaseUrl: normalizeBaseUrl(input.webBaseUrl, DEFAULT_WEB_BASE_URL),
   };
   const fetchImpl = dependencies.fetch ?? fetch;
   const now = dependencies.now ?? Date.now;
 
-  async function githubRequest(path: string, init: RequestInit = {}): Promise<Response> {
+  async function timedFetch(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      return await fetchImpl(`${config.apiBaseUrl}${path}`, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": GITHUB_API_VERSION,
-          "User-Agent": "useagent",
-          Authorization: `Bearer ${signAppJwt(config, now())}`,
-          ...init.headers,
-        },
-      });
+      return await fetchImpl(url, { ...init, signal: controller.signal });
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** `bearer` defaults to a fresh App JWT; a user token reads as that user. */
+  function githubRequest(path: string, init: RequestInit = {}, bearer?: string): Promise<Response> {
+    return timedFetch(`${config.apiBaseUrl}${path}`, {
+      ...init,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        "User-Agent": "useagent",
+        Authorization: `Bearer ${bearer ?? signAppJwt(config, now())}`,
+        ...init.headers,
+      },
+    });
+  }
+
+  /** An installation_id in a callback is caller-supplied (GitHub warns it can be
+   *  spoofed). The App's user token for whoever completed the install lists the
+   *  installations that person can reach; a bind needs the id to be among them. */
+  async function requireInstallerAccess(installationId: number, userCode: string): Promise<void> {
+    if (!config.clientId || !config.clientSecret) {
+      throw new Error("GitHub user authorization is not configured");
+    }
+    const exchange = await timedFetch(`${config.webBaseUrl}/login/oauth/access_token`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": "useagent" },
+      body: JSON.stringify({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        code: required(userCode, "GitHub user authorization code"),
+      }),
+    });
+    if (!exchange.ok) throw new Error(`GitHub user authorization failed: HTTP ${exchange.status}`);
+    const userToken = ((await exchange.json()) as { access_token?: unknown }).access_token;
+    if (typeof userToken !== "string" || !userToken) {
+      throw new Error("GitHub user authorization was refused");
+    }
+    for (let page = 1; page <= USER_INSTALLATIONS_MAX_PAGES; page += 1) {
+      const response = await githubRequest(
+        `/user/installations?per_page=${USER_INSTALLATIONS_PAGE_SIZE}&page=${page}`,
+        {},
+        userToken,
+      );
+      if (!response.ok) throw new Error(`GitHub installation access check failed: HTTP ${response.status}`);
+      const listed = ((await response.json()) as { installations?: { id?: unknown }[] }).installations ?? [];
+      if (listed.some((entry) => entry.id === installationId)) return;
+      if (listed.length < USER_INSTALLATIONS_PAGE_SIZE) break;
+    }
+    throw new Error("GitHub installation is not accessible to the signed-in GitHub user");
   }
 
   async function inspectInstallation(
@@ -256,7 +310,8 @@ export function createGithubNativeConnectionBackend(
 
     inspectInstallation,
 
-    async completeInstall(installationId) {
+    async completeInstall(installationId, userCode) {
+      await requireInstallerAccess(positiveInteger(installationId, "GitHub installation id"), userCode);
       const installation = await inspectInstallation(installationId);
       if (installation.status !== "connected") {
         throw new Error("GitHub installation is suspended");
@@ -291,6 +346,13 @@ export function createGithubDelegatedConnectionBackend(
   dependencies: GithubNativeBackendDependencies = {},
 ): DelegatedConnectionBackend {
   const github = createGithubNativeConnectionBackend(config, dependencies);
+  const userAuthorization = Boolean(config.clientId && config.clientSecret);
+  if (!userAuthorization) {
+    // Bound installations keep working; only a new bind needs the installer's proof.
+    console.warn(
+      "[integrations] GitHub connect is off: set GITHUB_CONNECTION_APP_CLIENT_ID and GITHUB_CONNECTION_APP_CLIENT_SECRET",
+    );
+  }
   return {
     kind: "delegated",
     catalogBackend: "native",
@@ -299,7 +361,7 @@ export function createGithubDelegatedConnectionBackend(
     disconnectSupported: true,
     supports: (provider) => provider === "github",
     async listConnectableProviders() {
-      return ["github"];
+      return userAuthorization ? ["github"] : [];
     },
     async startConnect(input) {
       return {
@@ -318,7 +380,10 @@ export function createGithubDelegatedConnectionBackend(
       if (setupAction && setupAction !== "install" && setupAction !== "update") {
         throw new Error("GitHub installation callback has an invalid setup_action");
       }
-      return github.completeInstall(Number(rawInstallationId));
+      // Present when the App requests user authorization during installation.
+      const userCode = input.callback?.code?.trim();
+      if (!userCode) throw new Error("GitHub installation callback is missing the user authorization code");
+      return github.completeInstall(Number(rawInstallationId), userCode);
     },
     async disconnect(input) {
       await github.disconnectInstallation(Number(input.connection.externalConnectionId));

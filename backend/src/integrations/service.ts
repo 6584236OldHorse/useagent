@@ -349,8 +349,13 @@ export function createIntegrationService(
       readonly provider: string;
       readonly state: string;
       readonly callback: IntegrationConnectCallback;
+      /** The signed-in user at the callback: only their own flow is claimable. */
+      readonly actorUserId?: string;
     }) {
-      const claimed = await claimIntegrationConnectSession({ state: input.state });
+      const claimed = await claimIntegrationConnectSession({
+        state: input.state,
+        actorUserId: input.actorUserId,
+      });
       if (!claimed) throw new Error("integration connect session is invalid, busy, or expired");
       if (claimed.session.provider !== input.provider) {
         await releaseIntegrationConnectSessionClaim({

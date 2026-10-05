@@ -7,6 +7,7 @@ import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, invitationMailEnabled, openSignupConfig } from "../env";
 import type { AppEnv } from "../http";
+import { operatorAccessAllowed } from "../operator/access";
 import { withOrgLock } from "../org-lock";
 import { createSignupRoutes, fixedWindow, jsonBody, withJsonBody } from "./signup-routes";
 
@@ -194,6 +195,25 @@ routes.post("/api/auth/organization/leave", async (c) => {
 const RESEND_WINDOW_MS = 60_000;
 const resendAllowed = fixedWindow(1, RESEND_WINDOW_MS);
 
+/** Every invitation, new or resent, is a mail from our domain with a name the
+ *  inviter typed in it. A day's worth per workspace and per inviter bounds what
+ *  one free account can send; the deployment's operators are not counted. */
+const DAY_MS = 24 * 60 * 60_000;
+function dailyInviteCap(name: string): number {
+  const value = Number(process.env[name]?.trim() || 20);
+  return Number.isInteger(value) && value > 0 ? value : 20;
+}
+const invitesPerOrg = fixedWindow(dailyInviteCap("INVITES_PER_ORG_PER_DAY"), DAY_MS);
+const invitesPerUser = fixedWindow(dailyInviteCap("INVITES_PER_USER_PER_DAY"), DAY_MS);
+
+function overDailyInvites(manager: Manager): Refusal | null {
+  if (operatorAccessAllowed(manager.session.user.email)) return null;
+  if (invitesPerOrg(manager.organizationId) > 0 || invitesPerUser(manager.session.user.id) > 0) {
+    return { status: 429, message: "That is all the invitations that can go out today. Try again tomorrow." };
+  }
+  return null;
+}
+
 /** A resend renews the invitation that already exists, with the role stored on
  *  it, never the role the request names. It is answered here in full instead of
  *  being forwarded, so nothing can change between the check and the renewal.
@@ -226,6 +246,8 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
       const manager = await managerFor(request, { ...body, organizationId });
       if ("status" in manager) return c.json({ message: manager.message }, manager.status);
       if (!(await canSignIn(body.email as string))) return c.json({ message: NO_WAY_IN }, 400);
+      const capped = overDailyInvites(manager);
+      if (capped) return c.json({ message: capped.message }, capped.status);
       return auth.handler(pinned(request, body, organizationId));
     });
   }
@@ -271,6 +293,8 @@ async function renew(manager: Manager, email: string): Promise<Renewal | Refusal
   if (live.length && resendAllowed(`${organizationId}:${email.trim().toLowerCase()}`) > 0) {
     return { status: 429, message: "That invitation was resent less than a minute ago. Try again shortly." };
   }
+  const capped = live.length ? overDailyInvites(manager) : null;
+  if (capped) return capped;
   const [renewed] = live.length
     ? await db
         .update(invitation)
