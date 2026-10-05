@@ -21,13 +21,16 @@ function untilAborted<T>(operation: Promise<T>, signal: AbortSignal): Promise<T>
  * projection, both fenced by the same independent bound. The read honours the
  * signal end to end (the exec-based terminal read is raced and its session
  * cleaned up on abort); a read that lands after the bound is never projected,
- * and a projection is never waited on past it. Best effort: a runtime that
- * cannot answer in time is logged and the stop stands.
+ * and the projection receives the same signal, so once the bound fires it
+ * records nothing further: a write already in flight may finish, but no later
+ * usage is written, and a capture already in the run's chain is drained by the
+ * settlement before it charges. Best effort: a runtime that cannot answer in
+ * time is logged and the stop stands.
  */
 export async function settleStoppedTurnUsage(input: {
   readonly cancel: () => Promise<void>;
   readonly read: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
-  readonly apply: (snapshot: RuntimeThreadSnapshot) => Promise<unknown>;
+  readonly apply: (snapshot: RuntimeThreadSnapshot, signal: AbortSignal) => Promise<unknown>;
   readonly deadlineSignal?: AbortSignal;
 }): Promise<boolean> {
   await input.cancel();
@@ -35,7 +38,7 @@ export async function settleStoppedTurnUsage(input: {
   try {
     const snapshot = await untilAborted(input.read(deadline), deadline);
     deadline.throwIfAborted();
-    await untilAborted(input.apply(snapshot), deadline);
+    await untilAborted(input.apply(snapshot, deadline), deadline);
     return true;
   } catch (error) {
     console.warn(

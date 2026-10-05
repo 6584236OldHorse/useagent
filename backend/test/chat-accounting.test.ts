@@ -141,6 +141,22 @@ describe("chat turn accounting", () => {
 });
 
 describe("POST /api/chat accounting", () => {
+  test("the dev fallback is anonymous: answered on the house key, charged to nobody, capped by nothing", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    const calls = mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
+    const before = await db.select({ key: spendEntries.chargeKey }).from(spendEntries).where(like(spendEntries.chargeKey, "chat:%"));
+    const res = await fetchApi("/api/chat", {
+      method: "POST", body: { messages: [{ role: "user", content: "hello from nobody" }] },
+    });
+    expect(res.status).toBe(200);
+    const events = await readSse(res, { timeoutMs: 8_000 });
+    expect(events.some((event) => event.event === "done")).toBe(true);
+    expect(calls.some((url) => url.includes("/chat/completions"))).toBe(true);
+    await Bun.sleep(200);
+    const after = await db.select({ key: spendEntries.chargeKey }).from(spendEntries).where(like(spendEntries.chargeKey, "chat:%"));
+    expect(after.length).toBe(before.length); // no member behind the request, so no charge
+  });
+
   test("a completed turn is charged under its own chat key with the settled figure, and a capped member is refused before any model call", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
     const spentBefore = (await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)

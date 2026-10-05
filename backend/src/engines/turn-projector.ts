@@ -19,8 +19,14 @@ export interface AppliedSnapshot {
 }
 
 export interface TurnProjector {
-  /** `observe` sees each newly recorded activity revision before it is projected; it may answer it (awaited). */
-  apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void | Promise<void>): Promise<AppliedSnapshot>;
+  /** `options.signal`, once aborted, fences the projection: no further activity
+   *  is recorded or projected and no delta is published, so a caller that gave
+   *  up waiting can be sure nothing lands after its deadline. */
+  apply(
+    snapshot: RuntimeThreadSnapshot,
+    observe?: (activity: RuntimeActivity) => void,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<AppliedSnapshot>;
   /** Activity revisions applied so far, or handed in as already seen. */
   seen(): ReadonlyMap<string, string>;
   /** The step each activity key was recorded under, so a later revision updates it instead of adding another. */
@@ -65,16 +71,20 @@ export function createTurnProjector(input: {
     get finalText() { return finalText; },
     seen: () => revisions,
     steps: () => steps,
-    async apply(snapshot, observe) {
+    async apply(snapshot, observe, options) {
+      const signal = options?.signal;
       const toolInFlight = hasOpenRuntimeToolCall(snapshot.thread.activities);
       for (const activity of snapshot.thread.activities) {
+        // Checked before the revision is marked, so an activity fenced out here
+        // is still unseen for a later projection instead of silently lost.
+        if (signal?.aborted) break;
         const revision = runtimeActivityRevision(activity);
         if (revisions.get(activity.id) === revision) continue;
         revisions.set(activity.id, revision);
         await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
           critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
         });
-        await observe?.(activity);
+        observe?.(activity);
         if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
         const step = redact.unknown(activityStep(activity, threadId, engine));
         const key = runtimeActivityStepKey(activity);
@@ -89,7 +99,7 @@ export function createTurnProjector(input: {
       const text = redact.text(assistantText(snapshot));
       const settled = runtimeTurnSettled(snapshot);
       const projection = projectRuntimeAssistantText({ publishedText, finalText }, text, settled);
-      if (projection.delta) ctx.publishDelta?.(projection.delta);
+      if (projection.delta && !signal?.aborted) ctx.publishDelta?.(projection.delta);
       publishedText = projection.publishedText;
       finalText = projection.finalText;
       const error = runtimeTurnError(snapshot);

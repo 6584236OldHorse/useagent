@@ -736,7 +736,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
                 }
               },
               read: (signal) => readRuntimeTerminalSnapshot(ctx, sandbox, signal),
-              apply: (snapshot) => projector.apply(snapshot),
+              apply: (snapshot, signal) => projector.apply(snapshot, undefined, { signal }),
             });
           }
         }

@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
-import { resolveSession } from "../auth/session";
 import { orgScope } from "../middleware/org";
 import { isMemoryScope, type MemoryScope } from "../memory/scope";
 import { resolveChatProviderCredential } from "../provider-gateway/credentials";
@@ -49,18 +48,6 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
   return out.some((m) => m.role === "user") ? out : null;
 }
 
-/** The real authenticated user for this request (null when anonymous / dev-org
- *  fallback), so personal-scope retrieval fails closed - `c.get("userId")` is
- *  filled with the dev user by the org middleware and must not be trusted here. */
-async function authedUserId(headers: Headers): Promise<string | null> {
-  try {
-    const session = await resolveSession(headers);
-    return session?.user.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
 // GET /api/chat/models - the served model catalog + current default. Powers the
 // Chat page's real model picker (honest: the UI renders exactly what the key
 // serves). Harmless when the LLM is unconfigured; the list is informational.
@@ -94,7 +81,16 @@ chatRoutes.post("/", async (c) => {
   const memoryScope: MemoryScope = isMemoryScope(body.memoryScope) ? body.memoryScope : "org";
 
   const orgId = c.get("orgId");
-  const userId = await authedUserId(c.req.raw.headers);
+  // The identity orgScope verified, carried through rather than resolved a
+  // second time (a failed second lookup must never turn a member into nobody
+  // and hand them an uncharged, house-keyed answer). The dev fallback is
+  // anonymous here: no member credential, no allowance, no charge, and
+  // personal-scope retrieval fails closed. Anything else fails closed.
+  const identitySource = c.get("identitySource");
+  if (identitySource !== "session" && identitySource !== "dev") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const userId = identitySource === "session" ? c.get("userId") : null;
 
   // Resolve the OpenRouter credential BYOK-first: a customer's connected key
   // wins over the house key, so their own quota is spent (and an invalid
