@@ -14,6 +14,7 @@ import {
 } from "@/components/chat/question-state";
 import { ReplyComposer } from "@/components/chat/reply-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
+import { compactAvailable } from "@/components/chat/composer-model";
 import { cleanPrompt, type EngineId, type MemoryScope, modelLabel } from "@/components/chat/types";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
 import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-messages";
@@ -136,7 +137,8 @@ export function ConversationComposer({
     () => productChildren?.filter((child) => child.sourceRunId === runId) ?? [],
     [productChildren, runId],
   );
-  // Structural: recomputed when a step or a frame lands, not on a text delta.
+  // Structural: everything read from the history, recomputed when a step or a
+  // frame lands, not on a text delta.
   const steps = runningTurn?.steps;
   const frames = runningTurn?.native?.nativeFrames;
   const canonical = runningTurn?.canonical;
@@ -148,18 +150,19 @@ export function ConversationComposer({
   );
   // Which live channel grew last decides writing versus thinking (a delta carries no seq).
   const growth = useRef(NO_GROWTH);
-  if (runningTurn) growth.current = advanceLiveGrowth(growth.current, runningTurn.run.id, runningTurn);
+  if (runningTurn && work) {
+    growth.current = advanceLiveGrowth(growth.current, runningTurn.run.id, runningTurn, work.watermark);
+  }
   const runningStatus =
     runningTurn && work ? deriveRunningStatus(runningTurn, work, growth.current.latest) : null;
-  const canCompact =
-    !running &&
-    pendingReply === null &&
-    queued.length === 0 &&
-    !pendingQuestion &&
-    !pendingApproval &&
-    !controlLocksComposer &&
-    !composerLocked &&
-    (commands?.some((c) => c.name === "compact") ?? false);
+  const canCompact = compactAvailable({
+    running: running === true,
+    pending: pendingReply !== null,
+    turnStatuses: turns.map((turn) => turn.status),
+    controlOpen: Boolean(pendingQuestion || pendingApproval),
+    locked: Boolean(controlLocksComposer || composerLocked),
+    commands,
+  });
   const compact = () => {
     setCompactFailure(null);
     Promise.resolve(

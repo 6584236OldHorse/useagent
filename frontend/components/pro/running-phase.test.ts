@@ -54,7 +54,7 @@ function turn(over: { steps?: ApiStep[]; frames?: NativeFrame[]; liveText?: stri
     liveText: over.liveText ?? "",
     liveReasoning: over.liveReasoning ?? "",
     executionSummary: null,
-    native: over.frames ? { nativeFrames: over.frames, nativeCursor: over.frames.at(-1)?.seq ?? -1 } : undefined,
+    native: over.frames ? { nativeFrames: over.frames } : undefined,
   };
 }
 
@@ -99,6 +99,16 @@ describe("runtime adapters (claude, codex, opencode): t3 activity frames + text 
     expect(status(t, "text")).toMatchObject({ phase: "working", sentence: "bun run typecheck" });
     const both = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-1" }), frame(2, "t3.activity.tool.completed", { callId: "call-1" })] });
     expect(status(both).phase).toBe("thinking");
+  });
+
+  test("a provisional start without a call id is no call: its completion can never match it", () => {
+    const anonymous = turn({
+      steps,
+      frames: [frame(1, "t3.activity.tool.started"), frame(2, "t3.activity.tool.completed")],
+      liveText: "The answer",
+    });
+    expect(status(anonymous, "text")).toMatchObject({ phase: "working", sentence: "Writing the reply" });
+    expect(deriveRunningWork(anonymous).openTool).toBeNull();
   });
 
   test("an updated call stays open; an error tone closes it", () => {
@@ -185,16 +195,67 @@ describe("without frames: chat (steps + text deltas), then the delta channel alo
 });
 
 describe("live growth: which channel spoke last", () => {
-  test("text beats reasoning in one batch, a frames-only batch hands the word back, replays are idempotent", () => {
-    const first = advanceLiveGrowth(NO_GROWTH, "run-1", turn({ liveText: "a", liveReasoning: "r" }));
+  const growth = (prev: typeof NO_GROWTH, t: RunningTurn, runId = "run-1") =>
+    advanceLiveGrowth(prev, runId, t, deriveRunningWork(t).watermark);
+
+  test("text beats reasoning in one batch, root activity hands the word back, replays are idempotent", () => {
+    const first = growth(NO_GROWTH, turn({ liveText: "a", liveReasoning: "r" }));
     expect(first.latest).toBe("text");
-    const reasoning = advanceLiveGrowth(first, "run-1", turn({ liveText: "a", liveReasoning: "rr" }));
+    const reasoning = growth(first, turn({ liveText: "a", liveReasoning: "rr" }));
     expect(reasoning.latest).toBe("reasoning");
-    const framed = advanceLiveGrowth(reasoning, "run-1", turn({ liveText: "a", liveReasoning: "rr", frames: [frame(1, "t3.activity.tool.completed")] }));
+    const closed = turn({ liveText: "a", liveReasoning: "rr", frames: [frame(1, "t3.activity.tool.completed", { callId: "c" })] });
+    const framed = growth(reasoning, closed);
     expect(framed.latest).toBeNull();
-    expect(advanceLiveGrowth(framed, "run-1", turn({ liveText: "a", liveReasoning: "rr", frames: [frame(1, "t3.activity.tool.completed")] }))).toEqual(framed);
+    expect(growth(framed, closed)).toEqual(framed);
     // A new run starts its own record.
-    expect(advanceLiveGrowth(framed, "run-2", turn({ liveText: "z" })).latest).toBe("text");
+    expect(growth(framed, turn({ liveText: "z" }), "run-2").latest).toBe("text");
+  });
+
+  test("frames the reader ignores never move the watermark: a context-window update keeps Writing", () => {
+    const writing = growth(NO_GROWTH, turn({ liveText: "The fix", frames: [frame(1, "part.text")] }));
+    expect(writing.latest).toBe("text");
+    const ignored = turn({
+      liveText: "The fix",
+      frames: [
+        frame(1, "part.text"),
+        frame(2, "part.step-finish", {}, { tokens: { total: 9 } }),
+        frame(3, "part.text", { sessionId: "ses_child", parentSessionId: "ses_root" }),
+        frame(4, "t3.activity.task.progress", { callId: "agent-a" }, { payload: { taskId: "agent-a", agentKind: "agent" } }),
+      ],
+    });
+    expect(deriveRunningWork(ignored).watermark).toBe(1);
+    const after = growth(writing, ignored);
+    expect(after.latest).toBe("text");
+    expect(deriveRunningStatus(ignored, deriveRunningWork(ignored), after.latest).sentence).toBe("Writing the reply");
+  });
+
+  test("a store replaced under the same run id restarts the baseline: fresh reasoning after old text is Thinking", () => {
+    const stale = { runId: "run-1", text: 6, reasoning: 10, cursor: 12, latest: "text" as const };
+    const fresh = growth(stale, turn({ liveReasoning: "fresh", frames: [frame(4, "part.reasoning")] }));
+    expect(fresh.latest).toBe("reasoning");
+    expect(fresh).toMatchObject({ text: 0, reasoning: 5, cursor: 4 });
+  });
+});
+
+describe("the status is a selection over the memoized work", () => {
+  test("a text delta never reads the frame or step history again", () => {
+    const t = turn({ steps: [bash(0, "ls", "call-1")], frames: [frame(1, "part.tool.completed", { callId: "call-1" })] });
+    const work = deriveRunningWork(t);
+    const untouchable = <T extends object>(what: string): T =>
+      new Proxy({} as T, {
+        get() {
+          throw new Error(`${what} must not be read while selecting the status`);
+        },
+      });
+    const delta: RunningTurn = {
+      steps: untouchable("steps"),
+      liveText: "The answer so far",
+      liveReasoning: "",
+      executionSummary: null,
+      native: { nativeFrames: untouchable("frames") },
+    };
+    expect(deriveRunningStatus(delta, work, "text").sentence).toBe("Writing the reply");
+    expect(deriveRunningStatus(delta, { ...work, openTool: "ls" }, "text").sentence).toBe("ls");
   });
 });
 

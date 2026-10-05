@@ -7,7 +7,7 @@ import { WorkspaceOpenProvider } from "./workspace-open-context";
 // The canonical-timeline flag is read at module load; flip it on BEFORE importing
 // the conversation so these turns render through the canonical lane.
 process.env.NEXT_PUBLIC_CANONICAL_TIMELINE = "1";
-const { Conversation } = await import("./conversation");
+const { Conversation, scrollSignatureOf } = await import("./conversation");
 type Turn = import("./conversation").Turn;
 type ConversationProps = Parameters<typeof Conversation>[0];
 
@@ -170,6 +170,12 @@ test("a queued spawned session ahead of a reply keeps the reply's honest place a
   expect(html).toContain(">2<");
   expect(html).not.toContain("Send now");
   expect(html).not.toContain('data-run-id="run-child"');
+});
+
+test("a queued turn promoted to running changes what autoscroll follows, even before any content lands", () => {
+  const queued = makeTurn("run-q1", "queued", [], "run-live");
+  const running = { ...queued, status: "running" as const, live: true };
+  expect(scrollSignatureOf([running])).not.toBe(scrollSignatureOf([queued]));
 });
 
 test("the optimistic reply is the last queued row, not a transcript bubble", () => {

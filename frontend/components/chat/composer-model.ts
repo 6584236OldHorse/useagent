@@ -20,6 +20,37 @@ export function getComposerAction({
 }
 
 /**
+ * Compact now is offered only on a quiet thread: nothing running, pending or
+ * queued (a queued gateway child counts, it holds the thread's lane), no
+ * control request open, the composer unlocked, and the engine offering the
+ * command.
+ */
+export function compactAvailable({
+  running,
+  pending,
+  turnStatuses,
+  controlOpen,
+  locked,
+  commands,
+}: {
+  running: boolean;
+  pending: boolean;
+  turnStatuses: readonly string[];
+  controlOpen: boolean;
+  locked: boolean;
+  commands: readonly { name: string }[] | undefined;
+}): boolean {
+  return (
+    !running &&
+    !pending &&
+    !turnStatuses.includes("queued") &&
+    !controlOpen &&
+    !locked &&
+    (commands?.some((c) => c.name === "compact") ?? false)
+  );
+}
+
+/**
  * Honest default placeholder: hint ONLY affordances this composer actually has.
  * "/" is real (agent picker on hero, command autocomplete when a catalog holds
  * commands); "@" is advertised only when the mention popover is enabled, and

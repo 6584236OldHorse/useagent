@@ -121,6 +121,17 @@ export type Turn = {
   pendingOutline?: { readonly stepCount: number; readonly hasSummary: boolean };
 };
 
+/** What autoscroll follows: anything that adds transcript content, including a
+ *  queued turn being promoted to running (it mounts as a transcript turn then). */
+export function scrollSignatureOf(turns: readonly Turn[]): string {
+  return turns
+    .map(
+      (t) =>
+        `${t.status}:${t.steps.length}:${t.liveText.length}:${t.liveReasoning.length}:${t.summary ? 1 : 0}`,
+    )
+    .join("|");
+}
+
 export function UserBubble({ children }: { children: string }) {
   return (
     <div className="flex min-w-0 justify-end" data-testid="user-message">
@@ -516,12 +527,7 @@ export const Conversation = memo(function Conversation({
   // to read history must never be yanked back down. `stick` flips on scroll.
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  const scrollSignature = turns
-    .map(
-      (t) =>
-        `${t.steps.length}:${t.liveText.length}:${t.liveReasoning.length}:${t.summary ? 1 : 0}`,
-    )
-    .join("|");
+  const scrollSignature = scrollSignatureOf(turns);
   const productChildSignature = productChildren
     .map((child) => `${child.threadId}:${child.status}:${child.latestActivityAt}`)
     .join("|");
