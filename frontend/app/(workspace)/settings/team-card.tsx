@@ -13,17 +13,17 @@ import { useAuthConfig, useSession } from "@/lib/auth";
 import { AVATAR_GRADIENT } from "./general-card";
 import { relTime } from "./relative-time";
 import {
-  type MemberRole,
-  type PendingInvitation,
-  type Team,
-  type TeamMember,
-  canManageTeam,
   cancelInvitation,
+  canManageTeam,
   fetchTeam,
   invitationHref,
   inviteMember,
+  type MemberRole,
+  type PendingInvitation,
   removeMember,
   resendInvitation,
+  type Team,
+  type TeamMember,
   updateMemberRole,
 } from "./team-api";
 
@@ -44,7 +44,11 @@ export function assignableRoles(myRole: MemberRole | null): readonly MemberRole[
 
 /** Whether the acting person may change or remove this member. Nobody edits
  * themselves here, and only an owner touches another owner. */
-export function canEditMember(myRole: MemberRole | null, me: string | null, target: TeamMember): boolean {
+export function canEditMember(
+  myRole: MemberRole | null,
+  me: string | null,
+  target: TeamMember,
+): boolean {
   if (!canManageTeam(myRole) || target.userId === me) return false;
   return target.role !== "owner" || myRole === "owner";
 }
@@ -96,7 +100,11 @@ export function TeamCard() {
   };
 
   if (failed) {
-    return <p className="py-2.5 text-caption-1-regular text-text-error-primary">Could not load the team.</p>;
+    return (
+      <p className="py-2.5 text-caption-1-regular text-text-error-primary">
+        Could not load the team.
+      </p>
+    );
   }
   if (team === null) {
     return <p className="py-2.5 text-caption-1-regular text-text-tertiary">Loading members...</p>;
@@ -156,7 +164,8 @@ export function TeamCard() {
                     isDisabled={busy !== null}
                     onSelectionChange={(key) => {
                       const role = String(key) as MemberRole;
-                      if (role !== row.role) void act(row.id, () => updateMemberRole(team.organizationId, row.id, role));
+                      if (role !== row.role)
+                        void act(row.id, () => updateMemberRole(team.organizationId, row.id, role));
                     }}
                   >
                     {assignableRoles(myRole).map((role) => (
@@ -197,6 +206,7 @@ export function TeamCard() {
                 invitation={row}
                 manage={manage}
                 canResend={assignableRoles(myRole).includes(row.role)}
+                mailed={config?.invitationEmail ?? null}
                 busy={busy === row.id}
                 onResend={() => act(row.id, () => resendInvitation(team.organizationId, row))}
                 onCancel={() => act(row.id, () => cancelInvitation(team.organizationId, row.id))}
@@ -212,7 +222,7 @@ export function TeamCard() {
           onOpenChange={setInviting}
           organizationId={team.organizationId}
           roles={assignableRoles(myRole)}
-          emailDelivery={config?.invitationEmail ?? false}
+          emailDelivery={config?.invitationEmail ?? null}
           onInvited={() => void load()}
         />
       )}
@@ -224,6 +234,7 @@ function InvitationRow({
   invitation,
   manage,
   canResend,
+  mailed,
   busy,
   onResend,
   onCancel,
@@ -232,6 +243,8 @@ function InvitationRow({
   manage: boolean;
   /** Resending repeats the invited role, which only an owner may do for an owner invitation. */
   canResend: boolean;
+  /** Whether a resend sends mail; when it certainly does not, the action only renews the link. */
+  mailed: boolean | null;
   busy: boolean;
   onResend: () => void;
   onCancel: () => void;
@@ -250,7 +263,7 @@ function InvitationRow({
       <CopyLinkButton href={invitationHref(invitation.id, window.location.origin)} />
       {manage && canResend && (
         <Button variant="ghost" size="xs" disabled={busy} onClick={onResend}>
-          Resend
+          {mailed === false ? "Renew link" : "Resend"}
         </Button>
       )}
       {manage && (
@@ -260,6 +273,16 @@ function InvitationRow({
       )}
     </div>
   );
+}
+
+/** What to tell the inviter about the link: honest about mail when the server
+ *  has said whether it sends any, neutral while that is unknown. */
+export function deliveryCopy(email: string, delivery: boolean | null): string {
+  if (delivery === true)
+    return `Invitation ready for ${email}. It goes out by email when delivery works; this link works either way.`;
+  if (delivery === false)
+    return `This deployment does not send email. Share this link with ${email}.`;
+  return `Invitation ready for ${email}. Share this link with them.`;
 }
 
 function CopyLinkButton({ href }: { href: string }) {
@@ -296,7 +319,7 @@ function InviteDialog({
   onOpenChange: (open: boolean) => void;
   organizationId: string;
   roles: readonly MemberRole[];
-  emailDelivery: boolean;
+  emailDelivery: boolean | null;
   onInvited: () => void;
 }) {
   const [email, setEmail] = useState("");
@@ -337,15 +360,15 @@ function InviteDialog({
     <Modal.Root open={open} onOpenChange={close}>
       <Modal.Content className="max-w-[440px] rounded-2xl border border-border-button-default bg-background-primary-default shadow-dropdown">
         <Modal.Header>
-          <Modal.Title className="text-title-3-medium text-text-primary">Invite to the workspace</Modal.Title>
+          <Modal.Title className="text-title-3-medium text-text-primary">
+            Invite to the workspace
+          </Modal.Title>
         </Modal.Header>
         <Modal.Body className="flex flex-col gap-4 pt-2">
           {created ? (
             <>
               <p className="text-body-2-regular text-text-primary">
-                {emailDelivery
-                  ? `Invitation ready for ${created.email}. It goes out by email when delivery works; this link works either way.`
-                  : `This deployment does not send email. Share this link with ${created.email}.`}
+                {deliveryCopy(created.email, emailDelivery)}
               </p>
               <div className="flex items-center gap-2 rounded-lg border border-border-button-default px-3 py-2">
                 <code className="min-w-0 flex-1 truncate text-caption-1-regular text-text-secondary">
@@ -370,7 +393,11 @@ function InviteDialog({
               />
               <div className="flex flex-col gap-1.5">
                 <span className="text-body-2-medium text-text-primary">Role</span>
-                <Select aria-label="Role" selectedKey={role} onSelectionChange={(key) => setRole(String(key) as MemberRole)}>
+                <Select
+                  aria-label="Role"
+                  selectedKey={role}
+                  onSelectionChange={(key) => setRole(String(key) as MemberRole)}
+                >
                   {roles.map((option) => (
                     <SelectItem key={option} id={option} textValue={ROLE_LABEL[option]}>
                       {ROLE_LABEL[option]}

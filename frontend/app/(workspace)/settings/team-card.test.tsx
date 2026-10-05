@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { canManageTeam, invitationHref, memberRole, type TeamMember } from "./team-api";
-import { TeamCard, assignableRoles, canEditMember } from "./team-card";
+import { assignableRoles, canEditMember, deliveryCopy, TeamCard } from "./team-card";
 
 const member = (over: Partial<TeamMember>): TeamMember => ({
   id: "m1",
@@ -40,6 +40,14 @@ describe("team roles", () => {
     expect(canEditMember("admin", "u9", member({ role: "owner" }))).toBe(false);
     expect(canEditMember("owner", "u9", member({ role: "owner" }))).toBe(true);
     expect(canEditMember("member", "u9", member({}))).toBe(false);
+  });
+
+  test("the link copy claims nothing about mail until the server has said", () => {
+    expect(deliveryCopy("a@example.test", true)).toContain("goes out by email");
+    expect(deliveryCopy("a@example.test", false)).toContain("does not send email");
+    expect(deliveryCopy("a@example.test", null)).toBe(
+      "Invitation ready for a@example.test. Share this link with them.",
+    );
   });
 
   test("the invitation link points at the accept page on this origin", () => {

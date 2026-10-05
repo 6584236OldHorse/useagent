@@ -538,6 +538,20 @@ test("owner guards answer strangers uniformly and act on the organisation that w
   });
   expect(lastOwner.status).toBe(400);
   expect(lastOwner.body.message).toContain("at least one owner");
+  // Handing out ownership takes the same turn and the same checks, minus the last-owner one.
+  const promoted = await json("/api/auth/organization/update-member-role", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { memberId: otherMemberId, role: "owner" },
+  });
+  expect(promoted.status).toBe(200);
+  const stranger = await createOrgSession("guarded-stranger");
+  const refused = await json<{ message?: string }>("/api/auth/organization/update-member-role", {
+    method: "POST",
+    cookies: stranger.cookies,
+    body: { organizationId: org.orgId, memberId: otherMemberId, role: "owner" },
+  });
+  expect(refused.status).toBe(403);
 });
 
 test("an invitation cannot be cancelled once accepted, and two managers inviting the same address get one live link", async () => {

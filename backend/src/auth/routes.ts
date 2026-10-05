@@ -151,15 +151,15 @@ routes.post("/api/auth/organization/update-member-role", async (c) => {
   const body = await jsonBody(request);
   if (!body) return auth.handler(request);
   if (body.role !== undefined && !exactRole(body.role)) return c.json({ message: ROLE_MESSAGE }, 400);
-  if (body.role === "owner") return auth.handler(request); // never fewer owners
   const organizationId = await organisationOf(request, body);
   if (!organizationId) return c.json({ message: "Organization not found" }, 400);
   return withOrgLock(organizationId, async () => {
     // Authorised inside the lock: a removal that finished just before this
-    // turn is seen, and a manager removed meanwhile gets nothing done.
+    // turn is seen, and a manager removed meanwhile gets nothing done. Only
+    // the last-owner check is skipped when ownership is being handed out.
     const manager = await managerFor(request, { ...body, organizationId });
     if ("status" in manager) return c.json({ message: manager.message }, manager.status);
-    if (typeof body.memberId === "string" && (await onlyOwner(organizationId, { memberId: body.memberId }))) {
+    if (body.role !== "owner" && typeof body.memberId === "string" && (await onlyOwner(organizationId, { memberId: body.memberId }))) {
       return c.json({ message: LAST_OWNER }, 400);
     }
     return auth.handler(pinned(request, body, organizationId));

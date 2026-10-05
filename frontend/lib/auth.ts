@@ -130,14 +130,15 @@ export interface AuthConfig {
   /** Unauthenticated dev-org access currently open (ALLOW_DEV_ORG). */
   allowDevOrg: boolean;
   /** The deployment emails organisation invitations; otherwise the inviter shares the link. */
-  invitationEmail: boolean;
+  /** Whether invitations go out by email; null until the server has said. */
+  invitationEmail: boolean | null;
 }
 
 const FALLBACK_CONFIG: AuthConfig = {
   google: false,
   emailPassword: false,
   allowDevOrg: false,
-  invitationEmail: false,
+  invitationEmail: null,
 };
 
 /** Public auth config. It never carries any secret. */
@@ -152,7 +153,7 @@ export async function getAuthConfig(
       google: Boolean(data.google),
       emailPassword: data.emailPassword === true,
       allowDevOrg: Boolean(data.allowDevOrg),
-      invitationEmail: Boolean(data.invitationEmail),
+      invitationEmail: typeof data.invitationEmail === "boolean" ? data.invitationEmail : null,
     };
   } catch {
     return FALLBACK_CONFIG;
