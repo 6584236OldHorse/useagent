@@ -50,7 +50,7 @@ function checkOrganizationReuse(
   }
 }
 
-async function preflight(api: MigrationClient, tx: DbTx) {
+async function preflight(api: MigrationClient, tx: DbTx, retainedUserIds: ReadonlySet<string>) {
   // Readers continue; every identity writer waits until all local bindings commit together.
   await tx.execute(
     sql`LOCK TABLE "user", organization, member, invitation IN SHARE ROW EXCLUSIVE MODE`,
@@ -66,6 +66,10 @@ async function preflight(api: MigrationClient, tx: DbTx) {
     .from(invitation)
     .where(and(eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
     .limit(1);
+  for (const id of retainedUserIds) {
+    const local = users.find((row) => row.id === id);
+    if (!local || local.clerkUserId) throw new Error("Retained identity migration conflict");
+  }
   if (pending.length) throw new Error("Pending invitations require migration");
   const settings = await api.instance.getOrganizationSettings();
   if (!settings.enabled) throw new Error("Organizations must be enabled");
@@ -75,6 +79,7 @@ async function preflight(api: MigrationClient, tx: DbTx) {
   const remoteUsers = new Map<string, RemoteUser>();
   const subjects = new Set<string>();
   for (const local of users) {
+    if (retainedUserIds.has(local.id)) continue;
     let remote: RemoteUser | undefined;
     if (local.clerkUserId) remote = await api.users.getUser(local.clerkUserId);
     else {
@@ -129,9 +134,12 @@ async function preflight(api: MigrationClient, tx: DbTx) {
   return { users, organizations, memberships };
 }
 
-export async function migrateIdentity(api: MigrationClient = identityClient()) {
+export async function migrateIdentity(
+  api: MigrationClient = identityClient(),
+  retainedUserIds: ReadonlySet<string> = new Set(),
+) {
   return withIdentitySync(async (tx) => {
-    const source = await preflight(api, tx);
+    const source = await preflight(api, tx, retainedUserIds);
     const counts = {
       usersCreated: 0,
       usersLinked: 0,
@@ -142,7 +150,13 @@ export async function migrateIdentity(api: MigrationClient = identityClient()) {
       membershipsCreated: 0,
       membershipsExisting: 0,
     };
+    let usersRetained = 0;
+    let membershipsRetained = 0;
     for (const original of source.users) {
+      if (retainedUserIds.has(original.id)) {
+        usersRetained++;
+        continue;
+      }
       const [local] = await tx.select().from(user).where(eq(user.id, original.id));
       if (!local) throw new Error("Local identity changed during migration");
       if (local.clerkUserId) {
@@ -221,6 +235,10 @@ export async function migrateIdentity(api: MigrationClient = identityClient()) {
     }
 
     for (const original of source.memberships) {
+      if (retainedUserIds.has(original.userId)) {
+        membershipsRetained++;
+        continue;
+      }
       const [local] = await tx
         .select({
           role: member.role,
@@ -261,7 +279,7 @@ export async function migrateIdentity(api: MigrationClient = identityClient()) {
         counts.membershipsCreated++;
       }
     }
-    return counts;
+    return retainedUserIds.size ? { ...counts, usersRetained, membershipsRetained } : counts;
   });
 }
 
