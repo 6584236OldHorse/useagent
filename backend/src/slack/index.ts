@@ -61,7 +61,18 @@ export async function handleSlackInboxClaim({
   if (outcome.status === "accepted" || outcome.status === "replayed") {
     const { teamId, channel, messageTs, slackUserId } = payload.identity;
     if (teamId && channel && messageTs) {
-      await recordSlackTurnIdentityIntent({ runId: outcome.runId, teamId, channel, messageTs, slackUserId });
+      const intent = await recordSlackTurnIdentityIntent({
+        runId: outcome.runId,
+        teamId,
+        channel,
+        messageTs,
+        slackUserId,
+      });
+      // A terminal write holding the run row past the bounded wait: the run
+      // stands, the claim retries later and records the intent then.
+      if (intent === "locked") {
+        return { status: "retryable_unavailable", error: "turn_identity_intent_locked" };
+      }
       void stampSlackTurnIdentity(outcome.runId);
     }
     return { status: "completed" };

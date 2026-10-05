@@ -11,8 +11,9 @@
  * nothing. A lookup failure never fails the accepted run.
  */
 import type { RunConnector } from "@useagent/agent-client/wire";
-import { and, eq, gt, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
+import { isLockTimeout } from "../db/pg-errors";
 import { runs, type ConnectorLookup } from "../db/schema";
 import { slackConfig } from "../env";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
@@ -20,6 +21,13 @@ import { publishThreadChange } from "../runs/thread-signals";
 import { resolveSlackClient } from "./client";
 
 export type SlackTurnIdentityOutcome = "stamped" | "already_stamped" | "unavailable";
+/** `locked`: the run row was held (finalization locks it for update) past the
+ *  bounded wait; nothing was written and the claim must retry later. */
+export type SlackTurnIdentityIntentOutcome = "recorded" | "already_recorded" | "locked";
+
+/** The run row can be held by a terminal write when the intent lands; a bounded
+ *  wait keeps the serial inbox moving and the claim retries once it is free. */
+const INTENT_LOCK_TIMEOUT = "2s";
 
 const DEFAULT_LOOKUP_MS = 5_000;
 const RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -42,16 +50,26 @@ function within<T>(lookup: Promise<T | null> | undefined, signal: AbortSignal): 
   });
 }
 
+type IntentBarrier = (runId: string) => Promise<void>;
+let intentBarrierForTest: IntentBarrier | null = null;
+
+/** TEST ONLY: run before the intent write, with the run id, so a test can hold
+ *  the row the write is about to touch. */
+export function setSlackTurnIdentityIntentBarrierForTest(barrier: IntentBarrier | null): void {
+  intentBarrierForTest = barrier;
+}
+
 /** Record, durably and before the inbox claim completes, what the stamp owes.
- *  True when this call recorded it; false when the turn is already stamped or
- *  an earlier claim recorded the same intent. */
+ *  `recorded` when this call recorded it; `already_recorded` when the turn is
+ *  already stamped or an earlier claim recorded the same intent; `locked` when
+ *  the row stayed held past the bounded wait, so nothing was written. */
 export async function recordSlackTurnIdentityIntent(input: {
   readonly runId: string;
   readonly teamId: string;
   readonly channel: string;
   readonly messageTs: string;
   readonly slackUserId: string | null;
-}): Promise<boolean> {
+}): Promise<SlackTurnIdentityIntentOutcome> {
   const lookup: ConnectorLookup = {
     source: "slack",
     teamId: input.teamId,
@@ -59,12 +77,21 @@ export async function recordSlackTurnIdentityIntent(input: {
     messageTs: input.messageTs,
     slackUserId: input.slackUserId,
   };
-  const recorded = await db
-    .update(runs)
-    .set({ connectorLookup: lookup })
-    .where(and(eq(runs.id, input.runId), isNull(runs.connector), isNull(runs.connectorLookup)))
-    .returning({ id: runs.id });
-  return recorded.length > 0;
+  await intentBarrierForTest?.(input.runId);
+  try {
+    const recorded = await db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('lock_timeout', ${INTENT_LOCK_TIMEOUT}, true)`);
+      return tx
+        .update(runs)
+        .set({ connectorLookup: lookup })
+        .where(and(eq(runs.id, input.runId), isNull(runs.connector), isNull(runs.connectorLookup)))
+        .returning({ id: runs.id });
+    });
+    return recorded.length > 0 ? "recorded" : "already_recorded";
+  } catch (error) {
+    if (isLockTimeout(error)) return "locked";
+    throw error;
+  }
 }
 
 /** Finish the stamp a recorded intent owes. Never throws. */

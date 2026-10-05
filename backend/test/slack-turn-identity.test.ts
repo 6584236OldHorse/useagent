@@ -5,7 +5,7 @@
  * client (this is a recording transport, not a live Slack certification).
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { commands, runs, user } from "../src/db/schema";
 import { createRun } from "../src/runs/repo";
@@ -22,6 +22,7 @@ import {
 import {
   recordSlackTurnIdentityIntent,
   recoverSlackTurnIdentities,
+  setSlackTurnIdentityIntentBarrierForTest,
   stampSlackTurnIdentity,
 } from "../src/slack/turn-identity";
 import { upsertSlackUser, upsertSlackWorkspace } from "../src/slack/workspaces";
@@ -325,6 +326,71 @@ describe("slack turn identity", () => {
     }
   });
 
+  test("a run row held by a terminal write neither holds the inbox pass nor loses the intent", async () => {
+    const heldTs = "1700000000.000700";
+    const nextTs = "1700000000.000800";
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel,
+      user: SUNDAR,
+      text: "held",
+      ts: heldTs,
+      thread_ts: rootTs,
+    }));
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel,
+      user: PRIYA,
+      text: "next",
+      ts: nextTs,
+      thread_ts: rootTs,
+    }));
+    const release = Promise.withResolvers<void>();
+    let holder: Promise<void> | null = null;
+    let heldRunId: string | null = null;
+    // The first intent write finds its run row held the way finalization holds
+    // it (finalize.ts takes the row for update) until this test lets go.
+    setSlackTurnIdentityIntentBarrierForTest(async (runId) => {
+      if (holder) return;
+      heldRunId = runId;
+      const locked = Promise.withResolvers<void>();
+      holder = db.transaction(async (tx) => {
+        await tx.execute(sql`select id from runs where id = ${runId} for update`);
+        locked.resolve();
+        await release.promise;
+      });
+      await locked.promise;
+    });
+    try {
+      const started = Date.now();
+      const pass = await processSlackInbox(handleSlackInboxClaim);
+      const elapsedMs = Date.now() - started;
+      expect(pass.requeued).toBeGreaterThanOrEqual(1);
+      if (!heldRunId) throw new Error("the first intent write never ran");
+      expect(heldRunId).toBe(await runIdForMessage(channel, heldTs));
+      // The next event was handled in the same pass while the first row stayed held.
+      const next = await stampedRow(await runIdForMessage(channel, nextTs));
+      expect(next.connector?.sender_name).toBe("Priya");
+      const held = await runRow(heldRunId);
+      expect(held.connector).toBeNull();
+      expect(held.connectorLookup).toBeNull();
+      expect(elapsedMs).toBeLessThan(10_000);
+    } finally {
+      setSlackTurnIdentityIntentBarrierForTest(null);
+      release.resolve();
+      await holder;
+    }
+    if (!heldRunId) throw new Error("the first intent write never ran");
+    const heldId: string = heldRunId;
+    // Once the row is free the deferred claim retries, records the intent, and the stamp lands.
+    const stamped = await waitFor(async () => {
+      await processSlackInbox(handleSlackInboxClaim);
+      const row = await runRow(heldId);
+      return row.connector ? row : null;
+    }, { timeoutMs: 15_000, intervalMs: 250 });
+    expect(stamped.connector?.sender_name).toBe("Sundar");
+  });
+
   test("a turn typed in the product carries no connector", async () => {
     const id = uid("web");
     await createRun({
@@ -365,8 +431,8 @@ describe("stampSlackTurnIdentity", () => {
     try {
       const before = (await runRow(id)).updatedAt.getTime();
       const intent = { runId: id, teamId: TEAM, channel: "C0STAMP", messageTs: "1700000001.000100", slackUserId: SUNDAR };
-      expect(await recordSlackTurnIdentityIntent(intent)).toBe(true);
-      expect(await recordSlackTurnIdentityIntent(intent)).toBe(false);
+      expect(await recordSlackTurnIdentityIntent(intent)).toBe("recorded");
+      expect(await recordSlackTurnIdentityIntent(intent)).toBe("already_recorded");
       expect(await stampSlackTurnIdentity(id)).toBe("stamped");
       expect(signals).toEqual([{ runId: id, kind: "created" }]);
       const row = await runRow(id);
@@ -375,7 +441,7 @@ describe("stampSlackTurnIdentity", () => {
       // The row's clock moves so an open session merges the stamped projection.
       expect(row.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
       expect(await stampSlackTurnIdentity(id)).toBe("already_stamped");
-      expect(await recordSlackTurnIdentityIntent(intent)).toBe(false);
+      expect(await recordSlackTurnIdentityIntent(intent)).toBe("already_recorded");
       expect(signals).toHaveLength(1);
     } finally {
       unsubscribe();
