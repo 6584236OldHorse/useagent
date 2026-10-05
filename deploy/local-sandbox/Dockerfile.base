@@ -8,7 +8,9 @@
 # Non-root: the runner executes everything as uid 1000 (`user`), whose home is
 # /home/user, and the recipe's apt steps use passwordless sudo.
 
-FROM debian:bookworm-slim
+# Pinned to the index digest so every publish starts from the same Debian; move
+# the digest deliberately, with the rest of the versions below.
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 ARG NODE_VERSION=24.19.0
 ARG BUN_VERSION=1.3.14
@@ -51,6 +53,8 @@ RUN apt-get update \
       xfce4-terminal \
       xvfb \
       xz-utils \
+    && mkdir -p /usr/share/useagent \
+    && dpkg-query -W -f '${binary:Package}=${Version}\n' > /usr/share/useagent/base-packages.txt \
     && rm -rf /var/lib/apt/lists/*
 
 # Node from the official tarball for this architecture, checked against the

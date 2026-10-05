@@ -22,6 +22,13 @@ sets those two values as `SANDBOX_IMAGE_REF` and `SANDBOX_IMAGE_DIGEST`; the
 control plane names them to every runner in `welcome`, and the runner pulls
 the reference and refuses to create a sandbox until the digest matches.
 
+What is pinned: the Debian base by its index digest, Node and Bun by version
+and checksum, the engine tools by version. Debian packages come from the
+distribution's mirror at build time, so two publishes can differ in package
+versions; each publish records what it installed in
+`/usr/share/useagent/base-packages.txt` inside the image, and the digest a
+deployment pins is what its runners boot. Move to a new publish deliberately.
+
 The cloud lanes (Cube, Box, Daytona) keep their own bakes from the cloud base
 (`deploy/hetzner/bake-native-images.sh`); the recipe, the runtime archive and
 the engine versions are the same, the base is not, so the digests differ.
