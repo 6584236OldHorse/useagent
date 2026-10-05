@@ -17,6 +17,7 @@ import {
   runtimeThreadId,
   runtimeUserMessageId,
   type RuntimeEngineId,
+  type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
 import { configuredRuntimeMode, runtimeModeFor } from "./permission-mode";
 import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
@@ -68,11 +69,17 @@ export {
   waitForRuntimeTurn,
 } from "./runtime-turn-wait";
 
-export function runtimeSessionHasAuthoritativeHistory(
-  resumed: boolean,
+/**
+ * Whether the runtime thread carries the conversation's history itself. A
+ * thread that already has runs does (native resume, or the runtime's own
+ * handoff when the session or engine changed), so the plane's history goes
+ * only into a fresh thread: the first turn, or after the sandbox was recreated.
+ */
+export function runtimeThreadHasAuthoritativeHistory(
+  snapshot: RuntimeThreadSnapshot,
   lease: Pick<RuntimeProviderBridgeLease, "authPath" | "hasCurrentEpochThreadBinding">,
 ): boolean {
-  return resumed && (
+  return snapshot.thread.latestTurn !== null && (
     lease.authPath !== "subscription" || lease.hasCurrentEpochThreadBinding
   );
 }
@@ -366,7 +373,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
 
         const prompt = await composeRunTurnPrompt(
           ctx,
-          runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease),
+          runtimeThreadHasAuthoritativeHistory(priorSnapshot, providerBridgeLease),
           executionCapabilities,
         );
         await recordProviderSessionStarted(ctx, session, {

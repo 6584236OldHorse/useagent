@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   runtimeRunSnapshot,
-  runtimeSessionHasAuthoritativeHistory,
+  runtimeThreadHasAuthoritativeHistory,
   configuredRuntimeMode,
   createRuntimeTerminalSessionCleanup,
   drainRuntimeTerminalOutput,
@@ -138,7 +138,7 @@ describe("T3 run adapter gate", () => {
     const waitSource = readFileSync(new URL("./runtime-turn-wait.ts", import.meta.url), "utf8");
     const source = adapterSource;
     expect(source).toContain(
-      "runtimeSessionHasAuthoritativeHistory(established.resumed, providerBridgeLease)",
+      "runtimeThreadHasAuthoritativeHistory(priorSnapshot, providerBridgeLease)",
     );
     expect(source).toContain("const prompt = await composeRunTurnPrompt(");
     expect(source).toContain("await establishProviderSession({");
@@ -222,7 +222,7 @@ describe("T3 run adapter gate", () => {
     expect(closeIdx).toBeGreaterThan(settledIdx);
   });
 
-  test("includes canonical history when T3 resumed metadata but the current auth epoch is unbound", () => {
+  test("the plane's history goes only into a fresh runtime thread", () => {
     const ctx = {
       prompt: "continue",
       bootstrapContext: "CANONICAL PRIOR THREAD HISTORY\n\n",
@@ -237,33 +237,27 @@ describe("T3 run adapter gate", () => {
       gatewayAvailable: true,
       desktopAvailability: "on_demand",
     });
+    const promptFor = (snapshot: RuntimeThreadSnapshot, lease: Parameters<typeof runtimeThreadHasAuthoritativeHistory>[1]) =>
+      composeTurnPrompt(ctx, runtimeThreadHasAuthoritativeHistory(snapshot, lease), executionCapabilities, {});
+    const gateway = { authPath: "provider_gateway", hasCurrentEpochThreadBinding: false } as const;
 
-    const afterFailedNewEpochRun = composeTurnPrompt(
-      ctx,
-      runtimeSessionHasAuthoritativeHistory(true, {
-        authPath: "subscription",
-        hasCurrentEpochThreadBinding: false,
-      }),
-      executionCapabilities,
-      {},
-    );
-    expect(afterFailedNewEpochRun).toContain("CANONICAL PRIOR THREAD HISTORY");
+    // The first turn, or the first after the sandbox was recreated: no runs yet.
+    const fresh = runtimeThreadView(v2Snapshot(1, v2Projection()));
+    expect(promptFor(fresh, gateway)).toContain("CANONICAL PRIOR THREAD HISTORY");
 
-    const boundResume = composeTurnPrompt(
-      ctx,
-      runtimeSessionHasAuthoritativeHistory(true, {
-        authPath: "subscription",
-        hasCurrentEpochThreadBinding: true,
-      }),
-      executionCapabilities,
-      {},
-    );
-    expect(boundResume).not.toContain("CANONICAL PRIOR THREAD HISTORY");
+    // Another engine on a living thread: the runtime hands its own history
+    // over, even though the plane's session for this engine is new.
+    const living = runtimeThreadView(v2Snapshot(2, v2Projection({
+      runs: [v2Run({ id: "run-codex", status: "completed", providerThreadId: "pt-codex" })],
+      providerThreads: [v2ProviderThread({ id: "pt-codex" })],
+    })));
+    expect(promptFor(living, gateway)).not.toContain("CANONICAL PRIOR THREAD HISTORY");
 
-    expect(runtimeSessionHasAuthoritativeHistory(true, {
-      authPath: "provider_gateway",
-      hasCurrentEpochThreadBinding: false,
-    })).toBe(true);
+    // A subscription thread keeps the plane's history until it is bound for the current auth epoch.
+    expect(promptFor(living, { authPath: "subscription", hasCurrentEpochThreadBinding: false }))
+      .toContain("CANONICAL PRIOR THREAD HISTORY");
+    expect(promptFor(living, { authPath: "subscription", hasCurrentEpochThreadBinding: true }))
+      .not.toContain("CANONICAL PRIOR THREAD HISTORY");
   });
 
   test("keeps desktop/noVNC readiness off the ordinary T3 turn critical path", () => {
