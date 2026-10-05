@@ -82,3 +82,26 @@ test("two-workspace sign-in cannot load the hosted app until a member workspace 
   expect(loaded).toEqual(["https://plane.example/"]);
   expect(shown).toBe(1);
 });
+
+test("a revoked stored session returns to login without copying stale cookies", async () => {
+  const set: unknown[] = [];
+  let listed = 0;
+  const window = {
+    webContents: { session: { cookies: { set: async (cookie: unknown) => { set.push(cookie); } } } },
+  } as unknown as BrowserWindow;
+  const client = {
+    async requestAuth() {},
+    async authenticate() { return { error: null }; },
+    getCookie: () => "better-auth.session_token=revoked-session",
+    async getSession() { return { data: null, error: null }; },
+    organization: {
+      async list() { listed++; return { data: [], error: null }; },
+      async setActive() { return { error: null }; },
+    },
+  };
+  const login = createDesktopSignIn(new URL("https://plane.example"), window, client, async () => undefined);
+
+  expect(await login.restore()).toBe(false);
+  expect(listed).toBe(0);
+  expect(set).toEqual([]);
+});

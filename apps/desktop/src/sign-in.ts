@@ -33,18 +33,21 @@ export function createDesktopSignIn(
   client: DesktopAuthClient,
   chooseOrganization: (organizations: readonly DesktopOrganization[]) => Promise<string | undefined>,
 ) {
-  const ensureActiveOrganization = async (): Promise<void> => {
-    const [session, organizations] = await Promise.all([client.getSession(), client.organization.list()]);
-    if (session.error || !session.data || organizations.error || !Array.isArray(organizations.data)) {
+  const ensureActiveOrganization = async (): Promise<boolean> => {
+    const session = await client.getSession();
+    if (session.error) {
       throw new Error("Desktop workspace could not be verified.");
     }
+    if (!session.data) return false;
+    const organizations = await client.organization.list();
+    if (organizations.error || !Array.isArray(organizations.data)) throw new Error("Desktop workspace could not be verified.");
     const available = organizations.data.filter(organization =>
       typeof organization.id === "string" && organization.id.length > 0
       && typeof organization.name === "string" && organization.name.length > 0);
     const active = session.data.session.activeOrganizationId;
     if (active) {
       if (!available.some(organization => organization.id === active)) throw new Error("Desktop workspace could not be verified.");
-      return;
+      return true;
     }
     const organizationId = available.length === 1 ? available[0]!.id
       : available.length > 1 ? await chooseOrganization(available) : undefined;
@@ -54,12 +57,13 @@ export function createDesktopSignIn(
     if ((await client.organization.setActive({ organizationId })).error) {
       throw new Error("Desktop workspace could not be selected.");
     }
+    return true;
   };
   const restore = async (): Promise<boolean> => {
+    if (!await ensureActiveOrganization()) return false;
     const cookies = [...parseCookies(client.getCookie())]
       .filter(([name]) => /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/.test(name));
     if (!cookies.some(([name]) => name.endsWith(".session_token"))) return false;
-    await ensureActiveOrganization();
     await Promise.all(cookies.map(([name, cookie]) => window.webContents.session.cookies.set({
       url: plane.href, name, value: cookie, path: "/", httpOnly: true,
       secure: plane.protocol === "https:", sameSite: "lax",
