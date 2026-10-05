@@ -197,3 +197,27 @@ describe("shared capability catalog", () => {
     expect(fetchCount).toBe(3);
   });
 });
+
+describe("shared capability catalog under a detached failure", () => {
+  test("a failure that started before an invalidation cannot erase a newer catalog", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const pending: Array<(catalog: CapabilityCatalog | null) => void> = [];
+    const { load, invalidate } = createCapabilityCatalogLoader(
+      () => new Promise((resolve) => {
+        fetchCount += 1;
+        pending.push(resolve);
+      }),
+      { isShared: () => true },
+    );
+    const stale = load();
+    invalidate();
+    const fresh = load();
+    pending[1]?.(capabilityCatalog(false));
+    expect(await fresh).not.toBeNull();
+    pending[0]?.(null);
+    expect(await stale).toBeNull();
+    expect(await load()).not.toBeNull();
+    expect(fetchCount).toBe(2);
+  });
+});

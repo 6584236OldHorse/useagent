@@ -9,7 +9,7 @@
 export interface CachedRequest<T> {
   /** The shared request; `fresh` skips a settled value (a pending request is joined). */
   get(fresh?: boolean): Promise<T>;
-  /** The settled value the next `get` would reuse, if any. */
+  /** The settled value the next `get` would reuse: nothing while a request is pending. */
   peek(): T | undefined;
   invalidate(): void;
 }
@@ -27,7 +27,7 @@ export function cachedRequest<T>(
   let pending: Promise<T> | null = null;
   let settled: { value: T; at: number } | null = null;
   const current = (): T | undefined =>
-    settled && Date.now() - settled.at < ttlMs ? settled.value : undefined;
+    !pending && settled && Date.now() - settled.at < ttlMs ? settled.value : undefined;
   return {
     get(fresh = false) {
       if (!isShared()) return load();

@@ -6,7 +6,8 @@ import {
   RiLoader4Line,
   RiRefreshLine,
 } from "@remixicon/react";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
+import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import { Button } from "@/components/base/buttons/button";
 import { BackendUnreachable } from "@/components/shared/backend-unreachable";
 import { cx } from "@/utils/cx";
@@ -37,6 +38,14 @@ export function ProviderConnectionsCard() {
   if (error && connections.length === 0) {
     return <BackendUnreachable onRetry={() => void load()} />;
   }
+
+  // A provider connection changed (an API key saved or revoked, a ChatGPT login
+  // completed or logged out): the capability catalog carries these per actor,
+  // so the next reader must ask again.
+  const onConnectionChanged = useCallback(async () => {
+    invalidateCapabilityCatalog();
+    await load();
+  }, [load]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -83,7 +92,7 @@ export function ProviderConnectionsCard() {
             oauthConnection={view.chatGptOAuth}
             codexSandboxExecutionEnabled={enabledSandboxEngines?.includes("codex") ?? null}
             deploymentProvided={deploymentProviders?.[view.provider] === true}
-            onSaved={load}
+            onSaved={onConnectionChanged}
           />
         ))
       )}

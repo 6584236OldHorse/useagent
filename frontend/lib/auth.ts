@@ -6,6 +6,7 @@
 // email form (app/login/auth-form.tsx).
 
 import { useCallback, useEffect, useState } from "react";
+import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import { backendFetch } from "./backend-fetch";
 import { type CachedRequest, cachedRequest } from "./cached-request";
 
@@ -54,9 +55,12 @@ export async function getSession(): Promise<Session | null> {
   }
 }
 
-/** Forget the cached session so the next read asks the backend again. */
+/** The account may have changed: forget the cached session and every other
+ *  cache scoped to the actor (the capability catalog carries the actor's
+ *  provider connections), so the next reads ask the backend again. */
 export function invalidateSession(): void {
   sessionRequest.invalidate();
+  invalidateCapabilityCatalog();
 }
 
 /** Begin the Google OAuth flow: better-auth returns the provider URL to visit,

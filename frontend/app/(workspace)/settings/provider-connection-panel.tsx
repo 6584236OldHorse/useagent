@@ -6,7 +6,6 @@ import { Button } from "@/components/base/buttons/button";
 import { InputBase } from "@/components/base/input/input";
 import { CodexChatGptPath } from "./codex-chatgpt-path";
 import { ConnectionStatusChip, SpinnerIcon } from "./connection-status-chip";
-import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import { putProviderApiKey, revokeProviderConnection } from "./provider-connections-api";
 import {
   accountLabel,
@@ -93,7 +92,6 @@ export function ProviderConnectionPanel({
         metadata: safeProviderMetadata({ email, planType }),
       });
       setApiKey("");
-      invalidateCapabilityCatalog();
       await onSaved();
     } catch {
       setFormError(`Couldn't save the ${labels.name} API key.`);
@@ -108,7 +106,6 @@ export function ProviderConnectionPanel({
       setFormError(null);
       try {
         await revokeProviderConnection({ provider, authMethod });
-        invalidateCapabilityCatalog();
         await onSaved();
       } catch {
         setFormError(`Couldn't revoke the ${labels.name} connection.`);

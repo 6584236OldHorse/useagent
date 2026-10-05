@@ -24,9 +24,12 @@ test("fresh replaces a settled value but joins a pending request", async () => {
   );
   const first = request.get();
   const joined = request.get(true);
+  expect(request.peek()).toBeUndefined();
   release?.();
   expect(await Promise.all([first, joined])).toEqual([1, 1]);
+  expect(request.peek()).toBe(1);
   const second = request.get(true);
+  expect(request.peek()).toBeUndefined();
   release?.();
   expect(await second).toBe(2);
   expect(calls).toBe(2);

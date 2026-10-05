@@ -11,7 +11,6 @@ import { loadBots } from "@/components/bots/load";
 import { NewBotDialog } from "@/components/bots/new-bot-dialog";
 import { orderRoster, outcomeLine } from "@/components/bots/roster-model";
 import { RosterResizer, useRosterWidth } from "@/components/bots/roster-resizer";
-import { subscribeRoster } from "@/components/bots/roster-store";
 import { type ApiBot, engineLabel } from "@/components/bots/types";
 import { useNow } from "@/components/bots/use-now";
 import {
@@ -41,6 +40,7 @@ export function BotsPanel({
   initialError?: boolean;
 }) {
   const pathname = usePathname();
+  const firstPathname = useRef(pathname);
   const [bots, setBots] = useState<ApiBot[] | null>(() =>
     initialBots ? orderRoster(initialBots) : null,
   );
@@ -76,23 +76,11 @@ export function BotsPanel({
     setError(initialError);
   }, [initialBots, initialError]);
 
-  // A page hop carries the roster the server fetched for it; take that instead
-  // of fetching the same list again from here. Back and forward restore a page
-  // from the router cache, whose roster can be older than this column, so a
-  // history traversal fetches once.
-  useEffect(
-    () =>
-      subscribeRoster((list) => {
-        setBots(orderRoster(list));
-        setError(false);
-      }),
-    [],
-  );
   useEffect(() => {
-    const onTraversal = () => void refresh();
-    window.addEventListener("popstate", onTraversal);
-    return () => window.removeEventListener("popstate", onTraversal);
-  }, [refresh]);
+    if (pathname === firstPathname.current) return;
+    firstPathname.current = pathname;
+    void refresh();
+  }, [pathname, refresh]);
 
   const attention = bots?.filter((bot) => bot.state === "attention").length ?? 0;
 

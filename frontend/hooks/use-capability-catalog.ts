@@ -13,8 +13,9 @@ export const CAPABILITY_CATALOG_TTL_MS = 30_000;
 
 /**
  * One catalog request per page: every consumer that mounts within the ttl
- * reads the same response. A failed load (null) is never kept, and a refresh
- * retry asks for a fresh catalog so it can observe the native refresh settling.
+ * reads the same response. A failed load (null) never enters the cache, and a
+ * refresh retry asks for a fresh catalog so it can observe the native refresh
+ * settling.
  */
 export function createCapabilityCatalogLoader(
   fetchCatalog: () => Promise<CapabilityCatalog | null>,
@@ -23,12 +24,21 @@ export function createCapabilityCatalogLoader(
   load: (fresh?: boolean) => Promise<CapabilityCatalog | null>;
   invalidate: () => void;
 } {
-  const request = cachedRequest(fetchCatalog, { ttlMs: CAPABILITY_CATALOG_TTL_MS, ...options });
+  const request = cachedRequest(
+    async () => {
+      const catalog = await fetchCatalog();
+      if (catalog === null) throw new Error("capability catalog unavailable");
+      return catalog;
+    },
+    { ttlMs: CAPABILITY_CATALOG_TTL_MS, ...options },
+  );
   return {
     load: async (fresh = false) => {
-      const catalog = await request.get(fresh);
-      if (catalog === null) request.invalidate();
-      return catalog;
+      try {
+        return await request.get(fresh);
+      } catch {
+        return null;
+      }
     },
     invalidate: () => request.invalidate(),
   };
