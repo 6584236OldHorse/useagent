@@ -140,7 +140,7 @@ function ThreadItem({
       >
         {thread.label}
       </Link>
-      <OriginLink connector={thread.origin} />
+      <OriginLink connector={thread.origin} compact />
       <span className="shrink-0 text-caption-1-medium whitespace-nowrap tabular-nums text-text-tertiary">
         {thread.time}
       </span>

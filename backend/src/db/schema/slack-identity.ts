@@ -15,6 +15,9 @@ export const slackIdentityLookups = pgTable("slack_identity_lookups", {
   channel: text("channel").notNull(),
   messageTs: text("message_ts").notNull(),
   slackUserId: text("slack_user_id"),
+  // Slack's channel_type for the message (im, channel, group, mpim); null when
+  // the event carried none (app_mention) or the row predates the column.
+  channelType: text("channel_type"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

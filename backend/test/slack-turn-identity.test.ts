@@ -46,6 +46,13 @@ const PROFILES: Record<string, { name: string; email: string | null; image: stri
   [SUNDAR]: { name: "Sundar", email: null, image: "https://avatars.example/sundar-192.png" },
   [PRIYA]: { name: "Priya", email: null, image: null },
 };
+/** Channels conversations.info names; any other channel is described without a name. */
+const channelNames = new Map<string, string>();
+/** A private channel the token has no scope for: Slack answers missing_scope. */
+const NO_SCOPE_CHANNEL = "G0NOSCOPE";
+/** A channel whose first conversations.info hangs until aborted and whose later ones answer. */
+const STUCK_CHANNEL = "C0STUCKCH";
+let stuckChannelAnswers = false;
 
 const SLACK_ENV_OVERRIDES: Record<string, string | undefined> = {
   SLACK_SIGNING_SECRET: "test-signing-secret",
@@ -58,7 +65,7 @@ const SLACK_ENV_OVERRIDES: Record<string, string | undefined> = {
 };
 const savedEnv: Record<string, string | undefined> = {};
 
-const calls = { userInfo: [] as string[], permalinks: [] as string[] };
+const calls = { userInfo: [] as string[], permalinks: [] as string[], channelInfo: [] as string[] };
 let stuckAborted = false;
 let gatedCalls = 0;
 let flakyCalls = 0;
@@ -95,6 +102,19 @@ const client: SlackClient = {
   getPermalink: async ({ channel, messageTs }) => {
     calls.permalinks.push(`${channel}:${messageTs}`);
     return permalinkFor(channel, messageTs);
+  },
+  channelInfo: ({ channel, signal }) => {
+    calls.channelInfo.push(channel);
+    if (channel === STUCK_CHANNEL && !stuckChannelAnswers) {
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
+    if (channel === NO_SCOPE_CHANNEL) return Promise.resolve({ kind: null, name: null });
+    return Promise.resolve({
+      kind: channel.startsWith("G") ? ("private_channel" as const) : ("channel" as const),
+      name: channelNames.get(channel) ?? null,
+    });
   },
 };
 
@@ -176,6 +196,8 @@ afterAll(() => {
 
 describe("slack turn identity", () => {
   const channel = `C${uid("ch").replace(/[^a-z0-9]/gi, "").toUpperCase()}`;
+  channelNames.set(channel, "deploys");
+  channelNames.set(STUCK_CHANNEL, "slow-lane");
   const rootTs = "1700000000.000100";
   const replyTs = "1700000000.000200";
   const ghostTs = "1700000000.000300";
@@ -197,9 +219,12 @@ describe("slack turn identity", () => {
       sender_name: "Sundar",
       sender_avatar_url: "https://avatars.example/sundar-192.png",
       permalink: permalinkFor(channel, rootTs),
+      channel_kind: "channel",
+      channel_name: "deploys",
     });
     expect(calls.userInfo).toEqual([SUNDAR]);
     expect(calls.permalinks).toEqual([`${channel}:${rootTs}`]);
+    expect(calls.channelInfo).toEqual([channel]);
 
     const single = await json<{ connector: unknown }>(`/api/runs/${runId}`, { cookies: org.cookies });
     expect(single.status).toBe(200);
@@ -236,6 +261,9 @@ describe("slack turn identity", () => {
     expect(again.connector?.permalink).toBe(permalinkFor(channel, againTs));
     expect(calls.userInfo).toEqual([SUNDAR]);
     expect(calls.permalinks).toEqual([`${channel}:${rootTs}`, `${channel}:${againTs}`]);
+    // The channel's name resolved once for the whole channel.
+    expect(again.connector?.channel_name).toBe("deploys");
+    expect(calls.channelInfo).toEqual([channel]);
   });
 
   test("a thread reply from another member is stamped as its own turn", async () => {
@@ -257,6 +285,8 @@ describe("slack turn identity", () => {
       sender_name: "Priya",
       sender_avatar_url: null,
       permalink: permalinkFor(channel, replyTs),
+      channel_kind: "channel",
+      channel_name: "deploys",
     });
   });
 
@@ -277,6 +307,8 @@ describe("slack turn identity", () => {
       sender_name: null,
       sender_avatar_url: null,
       permalink: permalinkFor(channel, ghostTs),
+      channel_kind: "channel",
+      channel_name: "deploys",
     });
     // The sender is still owed: the row stays for a later attempt.
     expect(await owedLookup(ghostId)).not.toBeNull();
@@ -310,6 +342,8 @@ describe("slack turn identity", () => {
       sender_name: "Flaky",
       sender_avatar_url: null,
       permalink: permalinkFor(channel, firstTs),
+      channel_kind: "channel",
+      channel_name: "deploys",
     });
     expect(await owedLookup(firstId)).toBeNull();
     expect(flakyCalls).toBe(2);
@@ -345,6 +379,8 @@ describe("slack turn identity", () => {
       sender_name: null,
       sender_avatar_url: null,
       permalink: permalinkFor(channel, stuckTs),
+      channel_kind: "channel",
+      channel_name: "deploys",
     });
     expect(stuckAborted).toBe(true);
     expect((await stampedRow(afterId)).connector?.sender_name).toBe("Priya");
@@ -386,6 +422,8 @@ describe("slack turn identity", () => {
         sender_name: "Gated",
         sender_avatar_url: null,
         permalink: permalinkFor(channel, gatedTs),
+        channel_kind: "channel",
+        channel_name: "deploys",
       });
       expect(await owedLookup(gatedId)).toBeNull();
       expect(await recoverSlackTurnIdentities()).toBe(0);
@@ -445,6 +483,84 @@ describe("slack turn identity", () => {
     await waitFor(async () => ((await owedLookup(heldId)) === null ? true : null));
   });
 
+  test("a DM is marked as one, with no channel to name and nothing asked about it", async () => {
+    const dmChannel = "D0DIRECT01";
+    const dmTs = "1700000000.000900";
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel: dmChannel,
+      channel_type: "im",
+      user: SUNDAR,
+      text: "just between us",
+      ts: dmTs,
+    }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const dmId = await runIdForMessage(dmChannel, dmTs);
+    const row = await stampedRow(dmId);
+    expect(row.connector).toEqual({
+      source: "slack",
+      sender_name: "Sundar",
+      sender_avatar_url: "https://avatars.example/sundar-192.png",
+      permalink: permalinkFor(dmChannel, dmTs),
+      channel_kind: "dm",
+      channel_name: null,
+    });
+    expect(calls.channelInfo).not.toContain(dmChannel);
+    expect(await owedLookup(dmId)).toBeNull();
+  });
+
+  test("a private channel the token cannot describe is marked by its kind, and nothing stays owed", async () => {
+    // app_mention carries no channel_type: the kind comes from the channel id.
+    const privateTs = "1700000000.000910";
+    await persistSlackInboxEvent(envelope({
+      type: "app_mention",
+      channel: NO_SCOPE_CHANNEL,
+      user: SUNDAR,
+      text: `<@${BOT}> in private`,
+      ts: privateTs,
+    }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const id = await runIdForMessage(NO_SCOPE_CHANNEL, privateTs);
+    const row = await stampedRow(id);
+    expect(row.connector).toMatchObject({
+      sender_name: "Sundar",
+      permalink: permalinkFor(NO_SCOPE_CHANNEL, privateTs),
+      channel_kind: "private_channel",
+      channel_name: null,
+    });
+    expect(await owedLookup(id)).toBeNull();
+    expect(calls.channelInfo.filter((asked) => asked === NO_SCOPE_CHANNEL)).toEqual([NO_SCOPE_CHANNEL]);
+    // Slack's refusal is not remembered as a name: nothing is cached for it.
+    expect(await stampSlackTurnIdentity(id)).toBe("unavailable");
+  });
+
+  test("a channel Slack cannot describe in time keeps its name owed; the sweep fills it in", async () => {
+    const slowTs = "1700000000.000920";
+    await persistSlackInboxEvent(envelope({
+      type: "app_mention",
+      channel: STUCK_CHANNEL,
+      user: SUNDAR,
+      text: `<@${BOT}> slowly`,
+      ts: slowTs,
+    }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const id = await runIdForMessage(STUCK_CHANNEL, slowTs);
+    const row = await stampedRow(id);
+    expect(row.connector).toEqual({
+      source: "slack",
+      sender_name: "Sundar",
+      sender_avatar_url: "https://avatars.example/sundar-192.png",
+      permalink: permalinkFor(STUCK_CHANNEL, slowTs),
+      channel_kind: "channel",
+      channel_name: null,
+    });
+    expect(await owedLookup(id)).not.toBeNull();
+    stuckChannelAnswers = true;
+    expect(await recoverSlackTurnIdentities()).toBeGreaterThanOrEqual(1);
+    expect((await runRow(id)).connector).toMatchObject({ channel_kind: "channel", channel_name: "slow-lane" });
+    expect(await owedLookup(id)).toBeNull();
+  });
+
   test("a turn typed in the product carries no connector", async () => {
     const id = uid("web");
     await createRun({
@@ -489,7 +605,7 @@ describe("stampSlackTurnIdentity", () => {
         repos: [],
         memoryScope: "org",
       });
-      expect(await recordSlackTurnIdentityIntent({ runId: id, teamId: TEAM, channel, messageTs, slackUserId: RACED })).toBe("recorded");
+      expect(await recordSlackTurnIdentityIntent({ runId: id, teamId: TEAM, channel, messageTs, slackUserId: RACED, channelType: null })).toBe("recorded");
       racedProfile = Promise.withResolvers();
       const stamping = stampSlackTurnIdentity(id);
       await waitFor(async () => (calls.userInfo.includes(RACED) ? true : null));
@@ -498,7 +614,12 @@ describe("stampSlackTurnIdentity", () => {
       await db.update(runs).set({ connector: partial }).where(eq(runs.id, id));
       racedProfile.resolve({ name: "Raced", email: null, image: null });
       expect(await stamping).toBe("stamped");
-      expect((await runRow(id)).connector).toEqual({ ...partial, sender_name: "Raced" });
+      expect((await runRow(id)).connector).toEqual({
+        ...partial,
+        sender_name: "Raced",
+        channel_kind: "channel",
+        channel_name: null,
+      });
       expect(await owedLookup(id)).toBeNull();
     } finally {
       racedProfile = null;
@@ -524,7 +645,7 @@ describe("stampSlackTurnIdentity", () => {
     const unsubscribe = subscribeThread(id, (change) => signals.push(change));
     try {
       const before = (await runRow(id)).updatedAt.getTime();
-      const intent = { runId: id, teamId: TEAM, channel: "C0STAMP", messageTs: "1700000001.000100", slackUserId: SUNDAR };
+      const intent = { runId: id, teamId: TEAM, channel: "C0STAMP", messageTs: "1700000001.000100", slackUserId: SUNDAR, channelType: null };
       expect(await recordSlackTurnIdentityIntent(intent)).toBe("recorded");
       expect(await recordSlackTurnIdentityIntent(intent)).toBe("already_recorded");
       expect(await stampSlackTurnIdentity(id)).toBe("stamped");
@@ -559,7 +680,7 @@ describe("stampSlackTurnIdentity", () => {
       repos: [],
       memoryScope: "org",
     });
-    const intent = { teamId: TEAM, channel: "C0SWEEP", messageTs: "1700000002.000100", slackUserId: SUNDAR };
+    const intent = { teamId: TEAM, channel: "C0SWEEP", messageTs: "1700000002.000100", slackUserId: SUNDAR, channelType: null };
     expect(await recordSlackTurnIdentityIntent({ runId: aged, ...intent })).toBe("recorded");
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await db.update(slackIdentityLookups).set({ createdAt: eightDaysAgo }).where(eq(slackIdentityLookups.runId, aged));
