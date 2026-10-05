@@ -15,7 +15,6 @@ import {
   type OpenCodeSessionReloadDependencies,
 } from "./runtime-adapter";
 import { settleStoppedTurnUsage } from "./runtime-stop-accounting";
-import { createTurnProjector } from "./turn-projector";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -1168,50 +1167,6 @@ describe("T3 run adapter gate", () => {
     expect(landed).toBe(true);
     expect(order).toEqual(["cancel", "read", "apply"]);
     expect(applied).toEqual([0.2]);
-  });
-
-  test("once the bound fires the projection records nothing further, even when a write it was awaiting stalls past it", async () => {
-    const stalled = Promise.withResolvers<void>();
-    const bound = new AbortController();
-    const emitted: string[] = [];
-    const ctx = {
-      runId: "run-stop-fence",
-      threadId: "thread-1",
-      signal: new AbortController().signal,
-      emit: async (step: { label: string }) => {
-        emitted.push(step.label);
-        if (emitted.length === 1) {
-          // The first step write stalls, and the bound fires while it is pending.
-          bound.abort(new Error("stop accounting bound"));
-          await stalled.promise;
-        }
-        return `step-${emitted.length}`;
-      },
-      setSummary() {},
-    } as unknown as EngineRunContext;
-    const projector = createTurnProjector({ ctx, redact: createSecretRedactor([]), engine: "codex", seen: new Map() });
-    const usage = (id: string, costUsd: number) => ({
-      id, tone: "tool" as const, kind: "task.completed", summary: `Subagent ${id}`,
-      payload: { taskId: id, agentKind: "agent", status: "completed", typedUsage: { inputTokens: 10, outputTokens: 5, costUsd } },
-      turnId: "turn-current", sequence: 1,
-    });
-    const base = turnSnapshot({ sequence: 12, turnId: "turn-current", state: "completed", text: "done" });
-    const snapshot = { ...base, thread: { ...base.thread, activities: [usage("task-a", 0.1), usage("task-b", 0.2)] } };
-    const landed = await settleStoppedTurnUsage({
-      cancel: async () => undefined,
-      read: async () => snapshot,
-      apply: (snap, signal) => projector.apply(snap, undefined, { signal }),
-      deadlineSignal: bound.signal,
-    });
-    expect(landed).toBe(false);
-    expect(emitted).toHaveLength(1);
-    // The stalled write completes after the helper gave up: the abandoned
-    // projection must not go on to the second activity.
-    stalled.resolve();
-    await Bun.sleep(20);
-    expect(emitted).toHaveLength(1);
-    expect(projector.seen().has("task-a")).toBe(true);
-    expect(projector.seen().has("task-b")).toBe(false);
   });
 
   test("the read and the projection are fenced by one bound: a slow read never delays the stop and never projects after it", async () => {

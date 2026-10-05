@@ -140,7 +140,37 @@ describe("chat turn accounting", () => {
   });
 });
 
+describe("chat turns with no figure at all", () => {
+  test("a stream that ends normally without naming a generation or usage still counts as one unpriced entry", async () => {
+    mockProvider([chunk("Hi", ""), "[DONE]"], null);
+    const run = await chatRun();
+    for await (const _delta of chatTurnStream(run, messages, house, new AbortController().signal)) { /* consume */ }
+    expect(await usageEvent(run.id)).toMatchObject({ costSource: "unpriced", tokens: { total: 0 } });
+    await finalizeRun(run.id, "completed", "Hi", 10);
+    const [entry] = await db.select().from(spendEntries).where(eq(spendEntries.chargeKey, run.id));
+    expect(entry).toMatchObject({ costUsd: 0, tokens: 0, source: "unpriced" });
+  });
+});
+
 describe("POST /api/chat accounting", () => {
+  test("a member's completed stream with no figure is charged as one unpriced entry", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    mockProvider([chunk("Hi", ""), "[DONE]"], null);
+    const before = await db.select({ key: spendEntries.chargeKey }).from(spendEntries)
+      .where(and(eq(spendEntries.orgId, session.orgId), eq(spendEntries.userId, userId), like(spendEntries.chargeKey, "chat:%")));
+    const res = await fetchApi("/api/chat", {
+      method: "POST", cookies: session.cookies, body: { messages: [{ role: "user", content: "no figure" }] },
+    });
+    expect(res.status).toBe(200);
+    await readSse(res, { timeoutMs: 8_000 });
+    const entries = await waitFor(async () => {
+      const rows = await db.select().from(spendEntries)
+        .where(and(eq(spendEntries.orgId, session.orgId), eq(spendEntries.userId, userId), like(spendEntries.chargeKey, "chat:%")));
+      return rows.length > before.length ? rows : null;
+    });
+    expect(entries.some((row) => row.source === "unpriced" && row.costUsd === 0)).toBe(true);
+  });
+
   test("the dev fallback is anonymous: answered on the house key, charged to nobody, capped by nothing", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
     const calls = mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
@@ -169,10 +199,10 @@ describe("POST /api/chat accounting", () => {
     const events = await readSse(res, { timeoutMs: 8_000 });
     expect(events.some((event) => event.event === "done")).toBe(true);
     const entry = await waitFor(async () => {
-      const [row] = await db.select().from(spendEntries).where(and(
+      const rows = await db.select().from(spendEntries).where(and(
         eq(spendEntries.orgId, session.orgId), eq(spendEntries.userId, userId), like(spendEntries.chargeKey, "chat:%"),
       ));
-      return row ?? null;
+      return rows.find((row) => row.source === "provider_generation") ?? null;
     });
     expect(entry).toMatchObject({ costUsd: 0.25, tokens: 42, source: "provider_generation" });
     const [account] = await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)

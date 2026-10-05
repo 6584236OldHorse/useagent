@@ -58,10 +58,15 @@ export async function* chatTurnStream(
   signal: AbortSignal,
 ): AsyncGenerator<string, void, unknown> {
   const account = newChatAccount();
+  let completed = false;
   try {
     yield* streamChat(messages, run.model, credential.value, signal, account);
+    completed = true;
   } finally {
-    if (account.usage || account.generationId) {
+    // A stream that ended normally is a model call even when the provider
+    // named neither a generation nor usage: it is recorded (unpriced) rather
+    // than skipped. A stream that broke before naming anything has nothing.
+    if (account.usage || account.generationId || completed) {
       const charge = await settleChatCharge(account, credential);
       await recordProviderEvent({
         id: `${run.id}:chat:usage`,
@@ -90,8 +95,11 @@ export async function chargeChatTurn(input: {
   readonly userId: string | null;
   readonly account: ChatAccount;
   readonly credential: ResolvedProviderCredential;
+  /** The stream ended normally: charged even without a figure, as an unpriced entry. */
+  readonly completed?: boolean;
 }): Promise<void> {
-  if (!input.userId || (!input.account.usage && !input.account.generationId)) return;
+  if (!input.userId) return;
+  if (!input.account.usage && !input.account.generationId && !input.completed) return;
   try {
     const charge = await settleChatCharge(input.account, input.credential);
     await chargeSpend({

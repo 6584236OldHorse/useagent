@@ -150,6 +150,7 @@ chatRoutes.post("/", async (c) => {
       if (signal.aborted) return cleanup();
       signal.addEventListener("abort", cleanup);
       const account = newChatAccount();
+      let completed = false;
 
       void (async () => {
         try {
@@ -186,6 +187,7 @@ chatRoutes.post("/", async (c) => {
             answer += delta;
             sendEvent("delta", { delta });
           }
+          completed = true;
           if (!closed) {
             sendEvent("done", {});
             // Governed capture parity (item 7): a COMPLETED exchange (never an
@@ -198,7 +200,7 @@ chatRoutes.post("/", async (c) => {
           if (!closed) sendEvent("error", { error: "chat request failed" });
         } finally {
           // Charged however the stream ended; the response never waits on it.
-          void chargeChatTurn({ orgId, userId, account, credential: resolved });
+          void chargeChatTurn({ orgId, userId, account, credential: resolved, completed });
           cleanup();
         }
       })();
