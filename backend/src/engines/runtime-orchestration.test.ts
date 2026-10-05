@@ -1384,6 +1384,8 @@ describe("activityStep file and command payloads", () => {
     payload,
     turnId: "turn",
   });
+  const stepFor = (engine: "codex" | "claude" | "opencode", id: string, payload: Record<string, unknown>) =>
+    activityStep(completed(id, "Command run", { itemType: "command_execution", ...payload }), undefined, engine);
 
   test("a claude file change recovers its path from the detail string", () => {
     const step = activityStep(completed("fc-claude", "File change", {
@@ -1421,14 +1423,10 @@ describe("activityStep file and command payloads", () => {
 
   test("a codex command reports its captured output and keeps the command line visible", () => {
     // The runtime keeps the command only under data.item; the UI reads input.command.
-    const step = activityStep(completed("cmd-codex", "Command run", {
-      itemType: "command_execution",
+    const step = stepFor("codex", "cmd-codex", {
       detail: "printf hello",
-      data: {
-        toolCallId: "call-4",
-        item: { command: "printf hello", aggregatedOutput: "hello" },
-      },
-    }));
+      data: { toolCallId: "call-4", item: { command: "printf hello", aggregatedOutput: "hello" } },
+    });
     expect(step.code_json).toMatchObject({
       input: { toolCallId: "call-4", command: "printf hello" },
       output: "hello",
@@ -1436,55 +1434,61 @@ describe("activityStep file and command payloads", () => {
   });
 
   test("a command input that names its command is left alone", () => {
-    const step = activityStep(completed("cmd-named", "Command run", {
-      itemType: "command_execution",
+    const step = stepFor("codex", "cmd-named", {
       detail: "bun test",
       data: {
         toolCallId: "call-6",
         command: "bun test --filter x",
         item: { command: "bun test", result: { content: "1 pass" } },
       },
-    }));
+    });
     expect(step.code_json).toMatchObject({ input: { command: "bun test --filter x" }, output: "1 pass" });
   });
 
-  test("a silent command does not echo its own command line as output", () => {
-    const step = activityStep(completed("cmd-plain", "Command run", {
-      itemType: "command_execution",
-      detail: "true",
-      data: { toolCallId: "call-5", item: { command: "true" } },
-    }));
-    expect(step.code_json).toMatchObject({ input: { command: "true" } });
-    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  test("a silent codex command never echoes its command line, however long", () => {
+    const long = `cd /workspace/app && bun install --silent && bun run build && git add -A && git commit -q -m ${"x".repeat(160)} && git push -q origin HEAD`;
+    for (const detail of ["true", `${long.slice(0, 177)}...`]) {
+      const step = stepFor("codex", `cmd-silent-${detail.length}`, {
+        detail,
+        data: { toolCallId: "call-5", item: { command: detail === "true" ? "true" : long } },
+      });
+      expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+    }
   });
 
   test("a claude bash command reports the runtime's captured output", () => {
-    const step = activityStep(completed("cmd-claude", "Command run", {
-      itemType: "command_execution",
+    const step = stepFor("claude", "cmd-claude", {
       toolName: "Bash",
       detail: "Bash: printf hello",
-      data: { toolCallId: "call-7", toolName: "Bash", command: "printf hello", rawOutput: { content: "hello" } },
-    }));
+      data: { toolName: "Bash", command: "printf hello", rawOutput: { content: "hello" } },
+    });
     expect(step.code_json).toMatchObject({ input: { command: "printf hello" }, output: "hello" });
   });
 
-  test("a claude bash command with no captured output does not echo its command line", () => {
-    const step = activityStep(completed("cmd-claude-silent", "Command run", {
-      itemType: "command_execution",
+  test("a silent claude bash command never echoes its command line", () => {
+    const step = stepFor("claude", "cmd-claude-silent", {
       toolName: "Bash",
-      detail: "Bash: true",
-      data: { toolCallId: "call-8", toolName: "Bash", command: "true" },
-    }));
+      detail: `Bash: ${"y".repeat(200)}`,
+      data: { toolName: "Bash", command: "y".repeat(400) },
+    });
     expect((step.code_json as { output?: unknown }).output).toBeUndefined();
   });
 
-  test("an opencode command keeps its detail, which is the real output", () => {
-    const step = activityStep(completed("cmd-opencode", "Command run", {
+  test("an opencode command keeps its detail, the real output, over the one-line summary", () => {
+    const step = stepFor("opencode", "cmd-opencode", {
+      detail: "line one\nline two\nline three",
+      data: { command: "printf x", rawOutput: { content: "line one" } },
+    });
+    expect(step.code_json).toMatchObject({ output: "line one\nline two\nline three" });
+  });
+
+  test("an unknown engine gets the captured text and nothing else", () => {
+    const step = activityStep(completed("cmd-unknown", "Command run", {
       itemType: "command_execution",
-      detail: "hello\n",
-      data: { toolCallId: "call-9", command: "printf hello" },
+      detail: "printf x",
+      data: { command: "printf x", rawOutput: { content: "x" } },
     }));
-    expect(step.code_json).toMatchObject({ output: "hello\n" });
+    expect(step.code_json).toMatchObject({ output: "x" });
   });
 
   test("a claude notebook edit recovers its notebook path", () => {

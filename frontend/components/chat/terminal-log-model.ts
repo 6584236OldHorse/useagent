@@ -6,7 +6,7 @@
 // tool) is one line from the summarizer and never its payload.
 
 import { summarizeToolStep, unwrapToolOutput } from "./tool-summary";
-import { type ApiStep, deriveTrace } from "./types";
+import { type ApiStep, deriveTrace, parseStepCode } from "./types";
 
 /** Result lines a command shows before folding the rest behind "+K lines". */
 export const LOG_BODY_MAX_LINES = 12;
@@ -65,8 +65,17 @@ export function compressTerminalLog(
       hiddenLines: lines.length - shown.length,
       exitCode: trace.exitCode,
       failed: trace.isError,
-      settled: trace.detail !== null || trace.exitCode !== null,
+      settled: trace.detail !== null || trace.exitCode !== null || runtimeStepSettled(step),
     });
   }
   return entries;
+}
+
+/** A runtime engine's command step carries no exit code and, when the command
+ * printed nothing, no output either; its lifecycle kind says whether it is done. */
+function runtimeStepSettled(step: ApiStep): boolean {
+  const code = parseStepCode(step);
+  if (!code || typeof code !== "object") return false;
+  const { activityKind, error } = code as { activityKind?: unknown; error?: unknown };
+  return activityKind === "tool.completed" || activityKind === "tool.denied" || error === true;
 }

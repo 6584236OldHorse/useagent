@@ -4,6 +4,8 @@
 // projection's `files[]` list or in the Claude adapter's detail string, and
 // command items whose captured output sits under `data.item`.
 
+import type { RuntimeEngineId } from "./runtime-orchestration";
+
 type Rec = Readonly<Record<string, unknown>>;
 
 function asRecord(value: unknown): Rec | null {
@@ -71,22 +73,29 @@ function commandInput(input: unknown, item: Rec | null): unknown {
   return command ? { ...(data ?? {}), command } : input;
 }
 
-/** The captured output of a command item. The runtime nests Codex's command
- * result under `data.item` (`aggregatedOutput`, or `result.content`) and Claude's
- * under `data.rawOutput.content`; the payload's `detail` is the command line
- * itself for both (`printf hello`, `Bash: printf hello`), so it is used only when
- * it is not that. OpenCode's detail is the real output and stays. */
-function commandOutput(item: Rec | null, data: Rec | null, command: string | null, detail: string | undefined): string | undefined {
+/** The captured output of a command item. Codex keeps it under `data.item`
+ * (`aggregatedOutput`, or `result.content`) and Claude under
+ * `data.rawOutput.content`; for both, the payload's `detail` is the command line
+ * itself (`printf hello`, `Bash: printf hello`, cut at 180 characters), so it is
+ * never output. OpenCode's `detail` is the real output and its `rawOutput` only a
+ * one-line summary of it, so there the detail wins. An unknown engine gets the
+ * captured text and nothing else. */
+function commandOutput(
+  engine: RuntimeEngineId | null,
+  item: Rec | null,
+  data: Rec | null,
+  detail: string | undefined,
+): string | undefined {
   const captured = stringField(item, "aggregatedOutput")
     ?? stringField(asRecord(item?.result), "content")
-    ?? stringField(asRecord(data?.rawOutput), "content");
-  if (captured) return captured;
-  if (detail && command && (detail === command || detail.endsWith(`: ${command}`))) return undefined;
-  return detail;
+    ?? stringField(asRecord(data?.rawOutput), "content")
+    ?? undefined;
+  return engine === "opencode" ? detail ?? captured : captured;
 }
 
 /** The step's `input` and `output` for a tool activity of the given item type. */
 export function runtimeStepIo(
+  engine: RuntimeEngineId | null,
   itemType: string | null,
   projection: { readonly input: unknown; readonly item: Rec | null; readonly data: Rec | null },
   detail: string | undefined,
@@ -95,9 +104,10 @@ export function runtimeStepIo(
     return { input: fileChangeInput(projection.input, detail), output: detail };
   }
   if (itemType === "command_execution") {
-    const input = commandInput(projection.input, projection.item);
-    const command = stringField(input, "command");
-    return { input, output: commandOutput(projection.item, projection.data, command, detail) };
+    return {
+      input: commandInput(projection.input, projection.item),
+      output: commandOutput(engine, projection.item, projection.data, detail),
+    };
   }
   return { input: projection.input, output: detail };
 }
