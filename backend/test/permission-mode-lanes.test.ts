@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOrgSession, json, uid } from "./helpers";
 import { acceptRunCommand } from "../src/commands";
+import { db } from "../src/db/client";
 import { createChildSession } from "../src/runs/child-sessions";
+import { lockThreadLifecycle } from "../src/runs/thread-lifecycle-lock";
 import { acceptThreadFollowup } from "../src/runs/thread-followups";
 import { createRun, getRun, getRunForOrg } from "../src/runs/repo";
 
@@ -194,5 +196,51 @@ describe("permission mode across the lanes that continue a turn", () => {
     });
     expect(accepted.status).toBe("created");
     expect((await getRun(id))?.permissionMode).toBe("read-only");
+  });
+
+  test("a reply whose transaction opened first but was accepted last is the thread's newest, so the next choice-less reply keeps its narrow mode", async () => {
+    const owner = await createOrgSession("perm-order-owner");
+    const root = await getRunForOrg(owner.orgId, await rootRun(owner.cookies, "full-access"));
+    if (!root) throw new Error("root run missing");
+    const replyRun = (id: string, permissionMode?: "read-only" | "full-access") => ({
+      id,
+      prompt: `reply ${id}`,
+      model: root.model,
+      engine: root.engine,
+      parentRunId: root.id,
+      threadId: root.threadId,
+      repos: [],
+      memoryScope: "org" as const,
+      ...(permissionMode ? { permissionMode } : {}),
+      skillId: null,
+      skillVersion: null,
+      skillContentHash: null,
+      commandName: null,
+      commandProvider: null,
+      commandSessionId: null,
+      commandCatalogRevision: null,
+    });
+    // A: a read-only reply whose transaction opens now (its transaction-start
+    // clock is the earliest) but which only takes the thread lock after B landed.
+    const aId = crypto.randomUUID();
+    let releaseA: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseA = resolve; });
+    const a = db.transaction(async (tx) => {
+      await gate;
+      await lockThreadLifecycle(tx, owner.orgId, root.threadId);
+      await createRun({ ...replyRun(aId, "read-only"), orgId: owner.orgId, userId: root.userId }, tx);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    // B: a full-access reply accepted the ordinary way while A waits.
+    const bId = crypto.randomUUID();
+    const b = await acceptRunCommand({ idempotencyKey: uid("b"), orgId: owner.orgId, actorId: root.userId, run: replyRun(bId, "full-access") });
+    expect(b.status).toBe("created");
+    releaseA();
+    await a;
+    // C: no choice; the thread's newest accepted turn is A, so C keeps read only.
+    const cId = crypto.randomUUID();
+    const c = await acceptRunCommand({ idempotencyKey: uid("c"), orgId: owner.orgId, actorId: root.userId, run: replyRun(cId) });
+    expect(c.status).toBe("created");
+    expect((await getRun(cId))?.permissionMode).toBe("read-only");
   });
 });

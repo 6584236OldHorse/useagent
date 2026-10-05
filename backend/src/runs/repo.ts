@@ -256,6 +256,11 @@ export async function createRun(
     model: input.model,
     engine: input.engine,
     status: "queued",
+    // The insert's own clock time, not the transaction's start (`now()`): the
+    // acceptance transaction opens before it takes the thread lifecycle lock, so
+    // a run that waited for the lock must still sort after every run accepted
+    // while it waited. Thread order is the order runs were accepted in.
+    createdAt: sql`clock_timestamp()`,
     orgId: input.orgId,
     userId: input.userId,
     projectId: project?.id ?? null,
@@ -285,8 +290,10 @@ export async function getRun(id: string): Promise<RunRecord | null> {
 }
 
 /** The thread's newest run: the turn whose mode a follow-up without a choice
- *  keeps. Read it through the acceptance transaction (under the thread's
- *  lifecycle lock) when the answer decides what the inserted run may do. */
+ *  keeps. Newest by acceptance order: `created_at` is the insert's clock time
+ *  taken under the thread lifecycle lock (see createRun), so a run that waited
+ *  for the lock sorts after the runs accepted meanwhile. Read it through the
+ *  acceptance transaction when the answer decides what the inserted run may do. */
 export async function getLatestThreadRun(
   orgId: string,
   threadId: string,
