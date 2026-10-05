@@ -75,7 +75,7 @@ fleetBatchRoutes.post("/", async (c) => {
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
     }
     if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
+      return c.json(error.body, 503);
     }
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);

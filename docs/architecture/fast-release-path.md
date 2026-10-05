@@ -69,22 +69,26 @@ and production still runs the 17-step bash gate on rsynced source.
 ## Target shape
 
 ```
-CI (per main commit)        promote (critical path, <= 5 min)      certify (async)
+CI (per main commit)        promote (<= 5 min after the wait)      certify (async)
 ------------------------    -----------------------------------    -----------------------
 unit/integration/contract   pull manifest images by digest         scheduled synthetic runs:
 build + push three OCI      migration check (expansion-safe)       parity matrix, approvals,
-images for linux/amd64      drain <= 30 s, swap, restart           questions, cancel, pi,
+images for linux/amd64      wait for runs, swap, restart           questions, cancel, pi,
 upload digest manifest      three health routes + commit marker    product-child fan-out
                             provider-readiness (auth only)         budgeted per day
                             ONE cheap 1-turn run per engine        alert -> rollback command
 ```
 
 Hard constraint: exactly one backend per database (boot recovery reconciles
-other processes' in-flight runs). So the swap is drain -> stop -> start, with
-admission closed for the swap window only (target <= 30 s). True overlap
-(Kamal-style) needs lease-owner-aware recovery (slice 9); until then, 30 s.
+other processes' in-flight runs). So the swap is wait -> stop -> start:
+admission closes, the controller waits for zero in-flight runs (no cap other
+than the operator's `wait_for_runs` ceiling, default 120 minutes; a promote
+never cuts a run), then swaps within a 30 s window and reopens admission. True
+overlap (Kamal-style) needs lease-owner-aware recovery (slice 9); until then,
+the wait.
 
-Budgets: promote wall-clock <= 5 min; admission closed <= 30 s per promote;
+Budgets: promote wall-clock <= 5 min plus the wait for in-flight runs;
+admission closed <= 30 s per promote beyond that wait;
 rollback <= 60 s; a frontend-only change <= 3 min end to end.
 
 ## Slices (one PR each, in this order; each has a measured acceptance)
@@ -102,11 +106,12 @@ rollback <= 60 s; a frontend-only change <= 3 min end to end.
    all three routes. Accept: the local stack reaches healthy state in CI.
 3. **Promote and rollback.** Implement one Bun command that consumes the release
    manifest, pulls by digest, warms the inactive frontend and gateway color,
-   performs the single-backend `close -> drain <= 30 s -> stop -> start` swap,
+   performs the single-backend `close -> wait for in-flight runs -> stop -> start` swap,
    switches Caddy, reopens admission, proves health plus release identity, and
    records release history. Rollback flips to the previous manifest. Prove it
    first on a throwaway host from `infra/self-host/hetzner`, then destroy the
-   host. Accept: promote <= 5 minutes, admission closed <= 30 seconds, rollback
+   host. Accept: promote <= 5 minutes past the wait for in-flight runs,
+   admission closed <= 30 seconds beyond that wait, rollback
    <= 60 seconds.
 4. **Kubernetes.** Add `charts/useagent`: backend uses one replica with `Recreate`
    because it is the single database writer; frontend and gateway use
@@ -156,8 +161,8 @@ and paid runs per promote.
 > the same four numbers after the change and meet the slice's acceptance line.
 > Do not add canaries, gate steps, or a test per script; tests only for pure
 > planner/classifier logic. The `deploy/hetzner` file count must not grow. Keep
-> `REQUIRE_SINGLE_BACKEND=1` semantics: swap is drain -> stop -> start, admission
-> closed for the swap window only. Commit with `gh@abhishek.it`; keep core
+> `REQUIRE_SINGLE_BACKEND=1` semantics: swap is wait -> stop -> start, admission
+> closed from the wait to the reopen and never a cut run. Commit with `gh@abhishek.it`; keep core
 > release identifiers vendor-neutral.
 
 ## Sources

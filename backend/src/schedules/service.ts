@@ -488,10 +488,7 @@ export async function fireScheduleForOrg(
       );
     }
     if (error instanceof RunAdmissionClosedError) {
-      throw new ScheduleServiceError(503, {
-        error: error.code,
-        retryable: true,
-      });
+      throw new ScheduleServiceError(503, error.body);
     }
     if (error instanceof SpendAllowanceExceededError) throw new ScheduleServiceError(402, error.body);
     if (error instanceof SandboxMinutesExceededError) throw new ScheduleServiceError(402, error.body);

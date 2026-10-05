@@ -304,7 +304,7 @@ routes.post("/:threadId/messages", async (c) => {
   } catch (error) {
     if (error instanceof RunPromptTooLargeError) return c.json({ error: error.code }, 413);
     if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
-    if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof RunAdmissionClosedError) return c.json(error.body, 503);
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     if (error instanceof FleetQueueLimitError) return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);

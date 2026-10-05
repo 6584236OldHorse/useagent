@@ -9,6 +9,10 @@ import {
 export { RemoteHost } from "./remote-host";
 export type { SshPromotionConfig } from "./remote-host";
 import type { PromotionEffects } from "./promotion";
+import {
+	drainInflightRuns,
+	type InflightSnapshot,
+} from "../hetzner/drain-inflight-runs";
 import { frontendEnvironmentPreparationCommand, identityReleaseValidationCommand, rollbackIdentityPreparationCommand } from "./identity-config";
 import {
 	classifyMigrations,
@@ -119,7 +123,6 @@ export class SshPromotionEffects implements PromotionEffects {
 	readonly #composeFile: string;
 	readonly #caddyTemplate: string;
 	readonly #crash: () => Promise<never>;
-	readonly #drain: boolean;
 	admissionClosedAt: number | null = null;
 	admissionOpenedAt: number | null = null;
 
@@ -132,7 +135,6 @@ export class SshPromotionEffects implements PromotionEffects {
 		readonly composeFile: string;
 		readonly caddyTemplate: string;
 		readonly operationId?: string;
-		readonly drain?: boolean;
 		readonly crash: () => Promise<never>;
 	}) {
 		this.#config = input.config;
@@ -146,7 +148,6 @@ export class SshPromotionEffects implements PromotionEffects {
 		this.#composeFile = input.composeFile;
 		this.#caddyTemplate = input.caddyTemplate;
 		this.#crash = input.crash;
-		this.#drain = input.drain ?? true;
 	}
 
 	now(): string {
@@ -505,25 +506,27 @@ export class SshPromotionEffects implements PromotionEffects {
 
 	async drainBackend(timeoutMs: number): Promise<boolean> {
 		const record = this.#historyAtStart.current;
-		// --no-drain skips only the bounded wait. Admission is already closed and
-		// the candidate backend's boot recovery reconciles interrupted runs.
-		if (!record || !this.#drain) return true;
-		const deadline = Date.now() + timeoutMs;
-		while (Date.now() <= deadline) {
-			const response = await this.#operatorRequest(
-				record,
-				"deployment-inflight",
-				"GET",
-			);
-			const output =
-				response.code === 0
-					? response.stdout
-					: await this.#containerControl(record, "inflight");
-			const snapshot = JSON.parse(output) as { count?: unknown };
-			if (snapshot.count === 0) return true;
-			await Bun.sleep(1000);
-		}
-		return false;
+		if (!record) return true;
+		const result = await drainInflightRuns({
+			timeoutSec: timeoutMs / 1000,
+			pollIntervalSec: 5,
+			countInflight: async () => {
+				const response = await this.#operatorRequest(
+					record,
+					"deployment-inflight",
+					"GET",
+				);
+				const output =
+					response.code === 0
+						? response.stdout
+						: await this.#containerControl(record, "inflight");
+				return JSON.parse(output) as InflightSnapshot;
+			},
+			sleep: (ms) => Bun.sleep(ms),
+			// Progress goes to stderr; stdout stays the one JSON result line.
+			log: (message) => console.error(message),
+		});
+		return result.drained;
 	}
 
 	async backendHealthy(

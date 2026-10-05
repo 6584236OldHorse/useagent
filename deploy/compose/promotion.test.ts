@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import {
 	compensatePromotion,
+	defaultWaitForRunsMs,
 	type PromotionEffects,
 	promote,
 	rollback,
@@ -37,6 +38,8 @@ class FakeEffects implements PromotionEffects {
 	readonly persisted: ReleaseHistory[] = [];
 	healthy = new Set<ReleaseColor>(["blue"]);
 	drainResult = true;
+	/** Wall clock the fake wait consumes, so a long wait can be simulated. */
+	drainDelayMs = 0;
 	publicResult = true;
 	failStartColors = new Set<ReleaseColor>();
 	nowCount = 0;
@@ -65,6 +68,7 @@ class FakeEffects implements PromotionEffects {
 	}
 	async drainBackend(timeoutMs: number) {
 		this.events.push(`drain:${timeoutMs}`);
+		if (this.drainDelayMs) setSystemTime(new Date(Date.now() + this.drainDelayMs));
 		return this.drainResult;
 	}
 	async backendHealthy(record: ReleaseRecord) {
@@ -121,16 +125,63 @@ describe("promotion state machine", () => {
 		expect(effects.healthy).toEqual(new Set(["green"]));
 	});
 
-	test("a bounded drain failure never forces the active backend down and compensates", async () => {
+	test("zero in-flight runs promote at once, and the wait carries the whole budget rather than a short cap", async () => {
+		const effects = new FakeEffects();
+		const result = await promote(effects, activeHistory(), newManifest);
+		expect(result.status).toBe("complete");
+		expect(effects.events.filter((event) => event.startsWith("drain:"))).toEqual([
+			`drain:${defaultWaitForRunsMs}`,
+		]);
+		expect(effects.events.indexOf("admission:close")).toBeLessThan(
+			effects.events.indexOf(`drain:${defaultWaitForRunsMs}`),
+		);
+		expect(effects.events.indexOf(`drain:${defaultWaitForRunsMs}`)).toBeLessThan(
+			effects.events.indexOf("backend:stop:blue"),
+		);
+	});
+
+	test("runs finishing during a long wait still promote: the swap window starts after the wait", async () => {
+		const effects = new FakeEffects();
+		effects.drainDelayMs = 40 * 60_000;
+		setSystemTime(new Date("2026-09-14T10:00:00.000Z"));
+		try {
+			const result = await promote(effects, activeHistory(), newManifest);
+			expect(result.status).toBe("complete");
+		} finally {
+			setSystemTime();
+		}
+		expect(effects.events).toContain("backend:start:green");
+		expect(effects.healthy).toEqual(new Set(["green"]));
+	});
+
+	test("a wait that reaches its ceiling fails loudly, restores admission and leaves the active backend alone", async () => {
 		const effects = new FakeEffects();
 		effects.drainResult = false;
-		const result = await promote(effects, activeHistory(), newManifest);
-		expect(result.status).toBe("compensated");
-		expect(effects.events).toContain("drain:10000");
+		const result = await promote(effects, activeHistory(), newManifest, {
+			waitForRunsMs: 90_000,
+		});
+		expect(result).toMatchObject({
+			status: "compensated",
+			error: expect.stringContaining(
+				"in-flight runs did not finish within 90000ms",
+			),
+		});
+		expect(effects.events).toContain("drain:90000");
 		expect(effects.events).not.toContain("backend:stop:blue");
 		expect(effects.events).not.toContain("backend:start:green");
 		expect(effects.events).toContain("admission:open");
 		expect(effects.healthy).toEqual(new Set(["blue"]));
+	});
+
+	test("a zero wait swaps at once without polling for runs", async () => {
+		const effects = new FakeEffects();
+		const result = await promote(effects, activeHistory(), newManifest, {
+			waitForRunsMs: 0,
+		});
+		expect(result.status).toBe("complete");
+		expect(effects.events.some((event) => event.startsWith("drain:"))).toBe(
+			false,
+		);
 	});
 
 	test("stops a stale inactive backend before entering the drain window", async () => {
@@ -243,13 +294,13 @@ describe("promotion state machine", () => {
 		};
 		const effects = new FakeEffects();
 		effects.healthy = new Set(["green"]);
-		const result = await rollback(effects, {
-			version: 1,
-			current,
-			previous: oldRecord,
-			pending: null,
-		});
+		const result = await rollback(
+			effects,
+			{ version: 1, current, previous: oldRecord, pending: null },
+			{ waitForRunsMs: 60_000 },
+		);
 		expect(result.status).toBe("complete");
+		expect(effects.events).toContain("drain:60000");
 		expect(result.history.current?.manifest.commit).toBe(
 			oldRecord.manifest.commit,
 		);

@@ -62,12 +62,19 @@ With admission open, the command pulls the images by digest, checks that every
 image revision matches the manifest commit, classifies the migration set as
 expansion-safe, runs the migration one-shot, and starts the inactive-color
 frontend and gateway beside the live ones on their own loopback ports.
-Admission then closes for at most 30 seconds: drain the live backend for at
-most 10 seconds, stop it, start the candidate backend on the inactive-color
-port, verify its loopback fingerprint, validate and reload Caddy onto the new
-color, verify the three public fingerprints, commit the release history, and
-reopen admission. The previous color's frontend and gateway stop last. The
-command is bounded to five minutes end to end and holds the host promotion
+Admission then closes and the command waits for every in-flight run (status
+`queued` or `running`) to finish, polling the live backend every five seconds
+and printing the count to stderr; a promote never cuts a run. New tasks are
+refused meanwhile with HTTP 503 and the plain text "A release is being
+installed. Send your task again in a moment." The only ceiling on that wait is
+`--wait-for-runs MINUTES` (default 120); reaching it fails the promote,
+reopens admission and leaves the live release untouched. Once no run is in
+flight the swap itself takes at most 30 seconds: stop the live backend, start
+the candidate backend on the inactive-color port, verify its loopback
+fingerprint, validate and reload Caddy onto the new color, verify the three
+public fingerprints, commit the release history, and reopen admission. The
+previous color's frontend and gateway stop last. Apart from the wait, the
+command is bounded to five minutes end to end, and it holds the host promotion
 lock (`promote.lock` under the state root) throughout, so two promotions never
 overlap. Nothing is built or synchronized on the host.
 
@@ -92,12 +99,12 @@ Flags:
   origin is derived from `USEAGENT_PROMOTE_APP_DOMAIN`. The first failure rolls
   the release back through the controller's own `rollback` and the command
   exits nonzero. The host-side parity matrix never runs inline.
-- `--drain` (default) waits up to 10 seconds for in-flight runs before the
-  backend swap. `--no-drain` skips only that wait; admission still closes for
-  the swap window and the candidate backend's boot recovery reconciles the
-  runs that were interrupted.
+- `--wait-for-runs MINUTES` (default 120) is the ceiling on the wait for
+  in-flight runs before the backend swap. `0` swaps at once and cuts them;
+  admission still closes for the swap window and the candidate backend's boot
+  recovery reconciles the runs that were interrupted.
 
-The final stdout line is one JSON object with `status`, `gates`, `drain`, and
+The final stdout line is one JSON object with `status`, `gates`, `waitForRunsMs`, and
 the timing metrics; gate output goes to stderr. Each gate has a 15-minute
 budget and is killed on expiry; a gate that times out or cannot launch counts
 as failed. After a failed gate, `status` is `rolled-back`, the rollback's own
