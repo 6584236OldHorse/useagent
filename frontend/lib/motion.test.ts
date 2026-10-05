@@ -53,4 +53,32 @@ describe("motion alignment", () => {
     expect(tooltip).toContain("data-[placement=top]:origin-bottom data-[placement=bottom]:origin-top");
     expect(tooltip).not.toContain("scale-90");
   });
+  test("the composer's four most-used controls give press feedback", async () => {
+    for (const [path, marker] of [
+      ["components/chat/composer.tsx", '"button-press-motion flex shrink-0 items-center justify-center overflow-hidden rounded-full"'],
+      ["components/pro/composer-panel/composer-panel.tsx", '"button-press-motion flex size-9 shrink-0'],
+      ["components/pro/composer-panel/composer-panel.tsx", '"button-press-motion flex h-8 shrink-0'],
+      ["components/pro/composer-status-bar.tsx", 'className="button-press-motion flex items-center gap-1 rounded-[40px]'],
+    ]) {
+      expect(await read(path)).toContain(marker);
+    }
+  });
+
+  test("a keyboard toggle of the sidebar lands without the width transition", async () => {
+    const sidebar = await read("components/sidebar-kit/sidebar.tsx");
+    expect(sidebar).toContain("group-data-[instant]/sidebar-wrapper:transition-none");
+    expect(sidebar).toContain('data-instant={instant ? "" : undefined}');
+    // The shortcut handler marks the toggle instant before it toggles.
+    expect(sidebar).toMatch(/event\.preventDefault\(\);\s*setInstant\(true\);\s*toggleSidebar\(\);/);
+  });
+
+  test("a keyboard-opened command palette skips the enter and exit animation", async () => {
+    const search = await read("components/shell/search-command.tsx");
+    expect(search).toMatch(/event\.preventDefault\(\);\s*setInstant\(true\);\s*setOpen\(\(prev\) => !prev\);/);
+    expect(search).toMatch(/setInstant\(false\);\s*handleOpenChange\(true\);/);
+    expect(search).toContain("instant={instant}");
+    const modal = await read("components/base/modal/modal.tsx");
+    expect(modal).toContain('const INSTANT_ANIMATION: React.CSSProperties = { animationDuration: "0s" };');
+    expect(modal).toContain("<ModalOverlay className={overlayClassName} style={instantStyle}>");
+  });
 });

@@ -745,7 +745,7 @@ export function Composer({
                     layout: { duration: 0.2, ease: [0.22, 1, 0.36, 1] },
                   }}
                   className={cn(
-                    "flex shrink-0 items-center justify-center overflow-hidden rounded-full transition-colors",
+                    "button-press-motion flex shrink-0 items-center justify-center overflow-hidden rounded-full",
                     hero ? "h-10 min-w-10" : "h-9 min-w-9",
                     composerAction.kind === "steer" ? "gap-1.5 px-3.5" : hero ? "w-10" : "w-9",
                     composerAction.kind === "stop"

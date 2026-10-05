@@ -96,6 +96,8 @@ export function SearchCommand({ compact = false }: { compact?: boolean }) {
   const runs = useSidebarThreads();
   const relationships = useSidebarThreadRelationships();
   const [open, setOpen] = React.useState(false);
+  // A keyboard-opened palette lands at once; a pointer-opened one animates.
+  const [instant, setInstant] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [shortcutHint, setShortcutHint] = React.useState("⌘K");
 
@@ -106,6 +108,7 @@ export function SearchCommand({ compact = false }: { compact?: boolean }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        setInstant(true);
         setOpen((prev) => !prev);
       }
     };
@@ -146,7 +149,10 @@ export function SearchCommand({ compact = false }: { compact?: boolean }) {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setInstant(false);
+          handleOpenChange(true);
+        }}
         aria-label={compact ? "Search" : undefined}
         title={compact ? "Search" : undefined}
         className={cx(
@@ -164,6 +170,7 @@ export function SearchCommand({ compact = false }: { compact?: boolean }) {
       <CommandMenu.Dialog
         open={open}
         onOpenChange={handleOpenChange}
+        instant={instant}
         overlayClassName="backdrop-blur-[3px]"
         className="max-h-[70vh] w-[min(92vw,40rem)] border border-border-button-default bg-background-primary-default"
       >
