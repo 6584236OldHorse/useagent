@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { CLAUDE_CONFIG_DIR } from "../provider-gateway/sandbox-config";
 import { sandboxRuntimeLayout, type SandboxProcess } from "../sandboxes/provider";
 import {
   RUN_TIMING_OUTCOMES,
@@ -140,9 +141,7 @@ describe("T3 Cube environment", () => {
   });
 
   test("launches one isolated headless environment inside the Cube workstation", () => {
-    const command = buildRuntimeEnvironmentLaunchCommand({
-      RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "true",
-    });
+    const command = buildRuntimeEnvironmentLaunchCommand({});
 
     expect(command).toContain('export T3CODE_HOME="/root/.skynet/t3"');
     expect(command).toContain(NATIVE_RUNTIME_ARTIFACT.archiveSha256);
@@ -151,8 +150,6 @@ describe("T3 Cube environment", () => {
     expect(command).toContain(`export T3CODE_PORT=${RUNTIME_ENVIRONMENT_PORT}`);
     expect(command).toContain("export T3_CODEX_REQUIRED_MCP_SERVERS=useagent");
     expect(command).toContain('printf \'%s\\n\' "useagent" > "/root/.skynet/t3/.useagent-required-mcp"');
-    expect(command).toContain("export RUNTIME_CODEX_CHILD_EVENT_FORWARDING=true");
-    expect(command).toContain("export T3_CODEX_CHILD_EVENT_FORWARDING=true");
     expect(command).toContain("export T3CODE_NO_BROWSER=true");
     expect(command).toContain('/bin/t3" serve --host 0.0.0.0 --port 37733 --base-dir "$T3CODE_HOME"');
     expect(command).toContain('"/root/work"');
@@ -165,9 +162,8 @@ describe("T3 Cube environment", () => {
     expect(command).not.toContain("skynet-env.sh");
     expect(command).not.toContain("BASH_ENV");
     expect(Bun.spawnSync(["bash", "-n", "-c", command]).exitCode).toBe(0);
-    expect(buildRuntimeEnvironmentLaunchCommand({})).not.toContain(
-      "T3_CODEX_CHILD_EVENT_FORWARDING",
-    );
+    // Child transcripts come from the runtime's own subagent threads now.
+    expect(command).not.toContain("CHILD_EVENT_FORWARDING");
   });
 
   test("boots the same pinned runtime in a Box-owned home without root paths", () => {
@@ -213,7 +209,8 @@ describe("T3 Cube environment", () => {
       const result = Bun.spawnSync(["/bin/bash", "-c", command], {
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          // The launch pins settings with the sandbox's node.
+          PATH: `${fakeBin}:${dirname(Bun.which("node")!)}:/usr/bin:/bin`,
           TMPDIR: root,
         },
       });
@@ -521,13 +518,11 @@ describe("T3 Cube environment", () => {
 
 describe("runtime flags marker", () => {
   test("the launch records the flags it started with and readiness checks the plane still wants them", () => {
-    expect(runtimeEnvironmentFlags({})).toBe("child-forwarding=off,telemetry=off");
-    expect(runtimeEnvironmentFlags({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toBe("child-forwarding=on,telemetry=off");
-    expect(buildRuntimeEnvironmentLaunchCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain(
-      `printf '%s\\n' "child-forwarding=on,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"`,
+    expect(runtimeEnvironmentFlags()).toBe("mcp=off,continuations=off,telemetry=off");
+    expect(buildRuntimeEnvironmentLaunchCommand({})).toContain(
+      `printf '%s\\n' "mcp=off,continuations=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"`,
     );
-    expect(buildRuntimeEnvironmentReadinessCommand({})).toContain('.useagent-runtime-flags" 2>/dev/null)" = "child-forwarding=off,telemetry=off"');
-    expect(buildRuntimeEnvironmentReadinessCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain('= "child-forwarding=on,telemetry=off"');
+    expect(buildRuntimeEnvironmentReadinessCommand()).toContain('.useagent-runtime-flags" 2>/dev/null)" = "mcp=off,continuations=off,telemetry=off"');
   });
 
   test("every launch turns the runtime's third-party telemetry off, and an older launch is not ready", () => {
@@ -537,8 +532,49 @@ describe("runtime flags marker", () => {
       // The switch is exported before the runtime starts.
       expect(launch.indexOf("export T3CODE_TELEMETRY_ENABLED=false")).toBeLessThan(launch.indexOf(" serve --host"));
     }
-    // A runtime an older image booted wrote a marker without the switch; readiness refuses it.
-    const older = "child-forwarding=off";
-    expect(Bun.spawnSync(["sh", "-c", `test "${older}" = "${runtimeEnvironmentFlags({})}"`]).exitCode).not.toBe(0);
+    // A runtime an older image booted wrote a marker without the switches; readiness refuses it.
+    for (const older of ["child-forwarding=off", "child-forwarding=off,telemetry=off"]) {
+      expect(Bun.spawnSync(["sh", "-c", `test "${older}" = "${runtimeEnvironmentFlags()}"`]).exitCode).not.toBe(0);
+    }
   });
+
+  test("the launch pins the self-start settings and refuses the previous runtime's database", async () => {
+    const home = await mkdtemp(join(tmpdir(), "runtime-launch-"));
+    try {
+      const layout = { ...sandboxRuntimeLayout("local"), home, workdir: join(home, "work") };
+      const userdata = join(home, ".skynet/t3/userdata");
+      await mkdir(userdata, { recursive: true });
+      await Bun.write(join(userdata, "settings.json"), JSON.stringify({ providers: { codex: { enabled: true } }, autoResumeLimitedThreads: true }));
+      // No runtime is installed here, so the launch stops at the executable check, after the pins.
+      const launch = Bun.spawnSync(["sh", "-c", buildRuntimeEnvironmentLaunchCommand({}, layout)]);
+      expect(launch.exitCode).not.toBe(0);
+      expect(JSON.parse(await readFile(join(userdata, "settings.json"), "utf8"))).toEqual({
+        providers: { codex: { enabled: true } },
+        autoResumeLimitedThreads: false,
+        continueThreadsAfterServerUpdate: false,
+      });
+      await Bun.write(join(userdata, "state.sqlite"), "");
+      const refused = Bun.spawnSync(["sh", "-c", buildRuntimeEnvironmentLaunchCommand({}, layout)]);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr.toString()).toContain("previous runtime state present");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("every launch keeps the runtime from adding tools or starting runs, before it starts", () => {
+    for (const kind of ["cube", "daytona", "local", "box"] as const) {
+      const launch = buildRuntimeEnvironmentLaunchCommand({}, sandboxRuntimeLayout(kind));
+      const serve = launch.indexOf(" serve --host");
+      for (const line of [
+        "export T3_PROVIDER_MCP=off",
+        "export T3_PROVIDER_CONTINUATIONS=off",
+        `export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR}"`,
+      ]) {
+        expect(launch).toContain(line);
+        expect(launch.indexOf(line)).toBeLessThan(serve);
+      }
+    }
+  });
+
 });

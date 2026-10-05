@@ -68,7 +68,7 @@ export function buildRuntimeEnvironmentBootScript(
     "(",
     `  nohup ${shell(buildRuntimeEnvironmentLaunchCommand(env, layout))} >"${runtimeHome}/boot.log" 2>&1 &`,
     "  i=0",
-    `  until ${shell(buildRuntimeEnvironmentReadinessCommand(env))}; do`,
+    `  until ${shell(buildRuntimeEnvironmentReadinessCommand())}; do`,
     '    i=$((i + 1)); [ "$i" -ge 600 ] && break',
     "    sleep 0.1",
     "  done",

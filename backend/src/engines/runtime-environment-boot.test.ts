@@ -9,14 +9,14 @@ import { buildRuntimeEnvironmentLaunchCommand, buildRuntimeEnvironmentReadinessC
 import { sandboxRuntimeLayout } from "../sandboxes/provider";
 
 describe("sandbox boot entrypoint", () => {
-  const env = { RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" };
+  const env = {};
   const script = buildRuntimeEnvironmentBootScript(env);
 
   test("starts the plane's exact launch command in the background, waits on the plane's readiness probe, pairs, warms the shell and keeps the container alive", () => {
     expect(script.startsWith("#!/bin/sh\n")).toBe(true);
     const single = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
     expect(script).toContain(`nohup sh -c ${single(buildRuntimeEnvironmentLaunchCommand(env))} >"/root/.skynet/t3/boot.log" 2>&1 &`);
-    expect(script).toContain(`until sh -c ${single(buildRuntimeEnvironmentReadinessCommand(env))}; do`);
+    expect(script).toContain(`until sh -c ${single(buildRuntimeEnvironmentReadinessCommand())}; do`);
     expect(script).toContain(`sh -c ${single(buildRuntimeEnvironmentAuthenticationCommand())} >>"/root/.skynet/t3/boot.log" 2>&1 || true`);
     expect(script).toContain("http://127.0.0.1:37733/api/orchestration/shell || true");
     expect(script.trimEnd().endsWith('[ "$#" -gt 0 ] && exec "$@"\nexec sleep infinity')).toBe(true);
@@ -31,9 +31,8 @@ describe("sandbox boot entrypoint", () => {
     expect(script).toContain('[ "$i" -ge 600 ] && break');
   });
 
-  test("the flags the runtime starts with follow the plane's environment at bake time", () => {
-    expect(script).toContain('"child-forwarding=on,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
-    expect(buildRuntimeEnvironmentBootScript({})).toContain('"child-forwarding=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+  test("the baked boot starts the runtime with the plane's flags", () => {
+    expect(script).toContain('"mcp=off,continuations=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
     // The baked boot starts the runtime with third-party telemetry off.
     expect(script).toContain("export T3CODE_TELEMETRY_ENABLED=false");
   });
