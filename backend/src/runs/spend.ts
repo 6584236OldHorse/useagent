@@ -4,7 +4,7 @@ import { providerEvents, spendAccounts, spendEntries, type SpendSource } from ".
 
 // ---------------------------------------------------------------------------
 // Spend allowance. Every organisation member may spend SPEND_ALLOWANCE_USD
-// (default 100) of settled model cost. A run is charged ONCE when it settles,
+// (default 50) of settled model cost. A run is charged ONCE when it settles,
 // from the real cost its usage events carry; a member at or past the allowance
 // is refused new runs at acceptance, and a running turn is never cut off.
 // SPEND_ALLOWANCE_USD=0 turns the cap off (the ledger keeps accruing).
@@ -22,7 +22,7 @@ let ceilingWarned = false;
  *  (validated at boot by src/index.ts, and on every read). */
 export function spendAllowanceDefaultUsd(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SPEND_ALLOWANCE_USD?.trim();
-  if (raw === undefined || raw === "") return 100;
+  if (raw === undefined || raw === "") return 50;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   if (parsed > SPEND_CHARGE_MAX_USD) {
