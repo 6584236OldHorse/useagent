@@ -15,7 +15,7 @@ borders that are barely-there hairlines.
 | ----------- | ------------------------ | --------------------------------------- | --- |
 | **Display** | **Inter Tight** | `--font-display`, `next/font/google` | A compact, expressive companion to Inter for Vite+-style product heroes without a proprietary font dependency. |
 | **UI / body** | **Inter** | `--font-sans`, applied to `<html>` | Neutral and highly readable at chat, navigation, form, table, and tool-output sizes. Tuned with `font-feature-settings: 'cv11','ss01','liga','calt'` + `text-rendering: optimizeLegibility` (set once on `<html>` in globals.css). |
-| **Mono** | **JetBrains Mono** | `--font-mono` | Code, IDs, technical labels, `.text-mono-label` overlines. |
+| **Mono** | **JetBrains Mono** | `--font-mono` | Code, IDs and technical values. |
 
 APK Protocol is the preferred licensed display face. Inter Tight is the current
 open-source substitute until licensed APK Protocol webfont files are available.
@@ -47,7 +47,7 @@ Sweep migration: `text-title-h4` hero → `text-display-md`/`lg`; `text-title-h5
 - **Headings / emphasis:** `text-title-1…3-medium`, `text-body-medium`, `text-body-2-medium` + `text-text-primary`
 - **Body / secondary:** `text-body-regular`, `text-body-2-regular` + `text-text-secondary`
 - **Captions / tertiary:** `text-caption-1-regular`, `text-caption-1-medium` + `text-text-tertiary`
-- **Overlines:** `text-mono-label` + `text-text-tertiary`
+- **Section labels:** `text-mono-label` + `text-text-tertiary` (sentence case in the sans; the name is historical)
 
 Large title tokens (`title-h1…h4`) were tightened (~-0.02em) in `tailwind.config.ts`.
 
@@ -61,8 +61,8 @@ refinement lands as three token-level rules:
 - **Tracking = -0.15px** on all UI text (the SF-Pro-adjacent optical signature). Set as the
  global base on `<html>` (`letter-spacing: -0.15px`, catches all raw text) **and** baked into
  the core UI-text tokens `label-md/sm/xs` + `paragraph-md/sm/xs` in `tailwind.config.ts` so
- tokenized and raw text agree. The serif display ramp and `text-mono-label` set their own
- tracking and override this (correct — they are not UI text).
+ tokenized and raw text agree. The serif display ramp sets its own tracking and overrides
+ this (correct, it is not UI text); `text-mono-label` follows the UI tracking.
 - **UI size scale = 12 / 13 / 14 / 24px.** 12–13px → captions + labels (`label-xs`
  `paragraph-xs` = 12px), 14px → body/default (`label-sm` `paragraph-sm` = 14px), 24px → the
  page display size (the `text-display-sm` hero). Keep UI text inside this range — don't

@@ -94,7 +94,7 @@ export function SettingsRail({ className }: { className?: string }) {
               "whitespace-nowrap rounded-2lg px-3 py-1.5 text-body-2-medium transition-colors duration-150",
               "outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring",
               selected
-                ? "bg-background-secondary-hover text-text-primary"
+                ? "bg-background-secondary-hover font-semibold text-text-primary"
                 : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
             )}
           >

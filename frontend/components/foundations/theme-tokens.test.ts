@@ -272,16 +272,31 @@ describe("shared theme tokens", () => {
     expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
   });
 
-  test("selected navigation rows are a quiet neutral pill, never an accent fill", () => {
+  test("navigation rows stay readable without an accent fill", () => {
     // The selected sidebar and settings-rail rows used an accent gradient with
     // a white label; since 2026-09-11 they share the hover surface with primary
-    // text so the rail carries no saturated block.
+    // text, and selection carries weight because that surface is one step from
+    // the rail (neutral-200 on neutral-100 in light, neutral-700 on neutral-800
+    // in dark) and identical to hover.
     for (const rel of ["components/shell/sidebar-nav.tsx", "app/(workspace)/settings/settings-rail.tsx"]) {
       const source = readSource(rel);
-      expect(source).toContain("bg-background-secondary-hover text-text-primary");
+      expect(source).toContain("bg-background-secondary-hover font-semibold text-text-primary");
       expect(source).not.toContain("from-accent-");
       expect(source).not.toContain("shadow-nav-selected");
     }
+    // Primary text on the selected pill, light (#0a0a0a on #ebebeb) and dark (#fafafa on #2e2e2e).
+    expect(contrast("#0a0a0a", "#ebebeb")).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#fafafa", "#2e2e2e")).toBeGreaterThanOrEqual(4.5);
+    // Idle icons use the idle label colour, text-secondary, which clears the 3:1
+    // non-text floor on the rail where the icon-tertiary grey (#a1a1a1) did not.
+    for (const rel of ["components/shell/sidebar-nav.tsx", "components/shell/app-sidebar-frame.tsx"]) {
+      const source = readSource(rel);
+      expect(source).not.toContain("text-foreground-icon-tertiary");
+    }
+    expect(lightSemantic["--color-text-secondary"]).toBe("var(--color-neutral-600)");
+    expect(contrast("#525252", "#f5f5f5")).toBeGreaterThanOrEqual(3);
+    expect(contrast("#a1a1a1", "#f5f5f5")).toBeLessThan(3);
+    expect(contrast("#d4d4d4", "#262626")).toBeGreaterThanOrEqual(3);
   });
 
   test("every standalone dark overlay defines the same component token set as Dusk", () => {
