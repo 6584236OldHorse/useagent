@@ -39,6 +39,7 @@ import { enqueueCanonicalization } from "./canonicalization-outbox";
 import { canonicalEngine } from "../engines/engine-alias";
 import { enqueueLearning } from "../learning/learning-outbox";
 import { releaseLeaseForRun } from "../fleet/lease-repo";
+import { accrueRunSandboxMinutes } from "./sandbox-minutes";
 import { executionGraphEnabled } from "./execution-graph-switch";
 import {
   prepareExecutionGraphSeal,
@@ -541,6 +542,10 @@ async function commitRunFinalization(
     }
     applied = true;
     await releaseLeaseForRun(runId, tx);
+    // Sandbox minutes: charge the settled run's lease lifetimes to its member
+    // ONCE, in this transaction, for both terminal statuses. The leases were
+    // just released above, so their release time is this transaction's now().
+    await accrueRunSandboxMinutes(run, tx);
     if (executionGraph && run.orgId) {
       if (effectiveStatus !== "completed" && effectiveStatus !== "failed") {
         throw new Error("execution_graph_seal_requires_terminal_run");

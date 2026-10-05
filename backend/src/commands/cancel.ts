@@ -4,6 +4,7 @@ import { isUniqueViolation } from "../db/pg-errors";
 import { commands, runs, type RunStatus } from "../db/schema";
 import { setAdmissionState } from "../fleet/admission-repo";
 import { releaseLeaseForRun } from "../fleet/lease-repo";
+import { accrueRunSandboxMinutes } from "../runs/sandbox-minutes";
 import { publishRunLifecycleChange } from "../runs/org-signals";
 import { isInternalRunOrigin } from "../runs/origin";
 import { completeRun } from "../runs/repo";
@@ -145,6 +146,9 @@ export async function acceptRunCancel(input: {
           update commands set state = 'completed', updated_at = now()
           where run_id = ${input.runId} and kind = ${RUN_CREATE} and state <> 'completed'`);
         await releaseLeaseForRun(input.runId, tx);
+        // A queued run can already hold a lease on the thread's retained sandbox;
+        // this is its only settlement, so its minutes are charged here.
+        await accrueRunSandboxMinutes(run, tx);
         await setAdmissionState(input.runId, "canceled", tx);
       }
 

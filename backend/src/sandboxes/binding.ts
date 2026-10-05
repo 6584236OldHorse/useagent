@@ -16,6 +16,7 @@ import {
   sandboxTemplate,
 } from "./provider";
 import { isSandboxProviderKind } from "./plugins";
+import { enabledSandboxProviders, readSandboxPreference } from "./preference";
 import { localPlugin, localProviderConfig } from "@useagent/sandbox-local";
 import { getRunnerPolicy, localRunnersEnabled } from "../runners/policy";
 import { activeRunnerSeam } from "../runners/directory";
@@ -282,6 +283,15 @@ export async function resolveSandboxBindingForRun(
   if (userComputersEnabled(deps.env) && scope.orgId && scope.userId) {
     const user = await userSandboxBinding({ orgId: scope.orgId, userId: scope.userId }, null, deps);
     if (user) return user;
+  }
+  // The member's preferred hosted provider, when this deployment can run it;
+  // anything else (unset, unknown, no credential here) is the server's default.
+  if (scope.orgId && scope.userId) {
+    const env = deps.env ?? process.env;
+    const preferred = await readSandboxPreference({ orgId: scope.orgId, userId: scope.userId });
+    if (preferred && preferred !== sandboxProviderKind(env) && enabledSandboxProviders(env).includes(preferred)) {
+      return requireRecordedEnvBinding(preferred, deps);
+    }
   }
   return requireEnvBinding(deps);
 }

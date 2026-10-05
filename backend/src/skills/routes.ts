@@ -19,6 +19,7 @@ import {
   type RunCommandIntent,
 } from "../commands";
 import { boundedRunPrompt, runCreateBodyLimit } from "../runs/run-create-policy";
+import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
 import {
   engineResolutionErrorBody,
@@ -393,6 +394,7 @@ skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
     if (error instanceof RunAdmissionClosedError) {
       return c.json({ error: error.code, retryable: true }, 503);
     }
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     throw error;
   }
   if (accepted.status === "conflict") {

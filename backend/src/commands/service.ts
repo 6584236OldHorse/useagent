@@ -16,6 +16,7 @@ import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../ru
 import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
+import { assertSandboxMinutes, SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { assertRunPromptLimit } from "./prompt-policy";
 import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { commands, runs } from "../db/schema";
@@ -342,6 +343,10 @@ async function acceptRunCommandWithOrigin(
         // close waits for already-accepting transactions, then every later new
         // acceptance observes the durable closed state.
         await assertRunAdmissionOpen(tx);
+        // Sandbox minutes are checked here, on NEW work only (a keyed replay
+        // above still returns its original run), as a lock-free read of the
+        // committed ledger. A chat turn holds no sandbox and passes.
+        if (input.run.engine !== "chat") await assertSandboxMinutes(input.orgId, input.actorId, tx);
         assertRunPromptLimit(intent.prompt);
         assertRunPromptLimit(input.run.prompt);
 
@@ -394,8 +399,10 @@ async function acceptRunCommandWithOrigin(
   } catch (err) {
     // A concurrent request with the same org/key but a different root thread can
     // win the unique index. The losing transaction is aborted, so resolve the
-    // winner only AFTER withThreadLifecycleLock rolls it back.
-    if (input.idempotencyKey && isUniqueViolation(err)) {
+    // winner only AFTER withThreadLifecycleLock rolls it back. The same applies
+    // to a minutes refusal: a keyed retry that read the fast path before its
+    // winner committed, then met the cap, still replays the committed winner.
+    if (input.idempotencyKey && (isUniqueViolation(err) || err instanceof SandboxMinutesExceededError)) {
       const existing = await findCommandByKey(input.orgId, input.idempotencyKey);
       if (existing) return classifyReplay(existing, fingerprint, origin, source);
     }

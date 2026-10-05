@@ -26,6 +26,7 @@ import {
 import { resolveSkillSelection } from "../skills/repo";
 import { RunIntakeError } from "../resources/run-intake";
 import { RunAdmissionClosedError } from "../commands";
+import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
 import { BotsDisabledError } from "../bots/rollout";
 import {
   assertRunPromptLimit,
@@ -48,10 +49,10 @@ function publishAutomationChange(orgId: string, change: AutomationChange): void 
 }
 
 export class ScheduleServiceError extends Error {
-  readonly status: 400 | 403 | 404 | 409 | 413 | 503;
+  readonly status: 400 | 402 | 403 | 404 | 409 | 413 | 503;
   readonly body: Record<string, unknown>;
 
-  constructor(status: 400 | 403 | 404 | 409 | 413 | 503, body: Record<string, unknown>) {
+  constructor(status: 400 | 402 | 403 | 404 | 409 | 413 | 503, body: Record<string, unknown>) {
     super(String(body.error ?? "schedule_error"));
     this.status = status;
     this.body = body;
@@ -491,6 +492,7 @@ export async function fireScheduleForOrg(
         retryable: true,
       });
     }
+    if (error instanceof SandboxMinutesExceededError) throw new ScheduleServiceError(402, error.body);
     throw error;
   }
   const { runId, firingRecorded } = fired;

@@ -9,6 +9,8 @@ import { ComputerConnectionsCard } from "./computer-connections-card";
 import { GeneralCard } from "./general-card";
 import { IntegrationConnections } from "./integration-connections";
 import { ProviderConnectionsCard } from "./provider-connections-card";
+import { SandboxMinutesRow } from "./sandbox-minutes-row";
+import { SandboxProviderRow } from "./sandbox-provider-row";
 import { SecretsCard } from "./secrets-card";
 import { SettingsRail } from "./settings-rail";
 import {
@@ -130,6 +132,7 @@ export default function SettingsPage() {
                       Starter - Free
                     </Chip>
                   </SettingsRow>
+                  <SandboxMinutesRow />
                 </SettingsCard>
 
                 {/* Real per-model token burn from GET /api/fleet (same live source
@@ -148,7 +151,10 @@ export default function SettingsPage() {
                 title="Infrastructure"
                 description="View the managed runtime and connect optional sandbox accounts."
               >
-                <ComputerConnectionsCard />
+                <div className="flex flex-col gap-4">
+                  <SandboxProviderRow />
+                  <ComputerConnectionsCard />
+                </div>
               </Section>
 
               <Section
