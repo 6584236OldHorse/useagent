@@ -29,10 +29,12 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.CHAT_MODEL;
+  delete process.env.CHAT;
 });
 
 describe("durable chat runs", () => {
-  test("explicit chat engine requires the chat LLM configuration", async () => {
+  test("a deployment can turn the chat engine off", async () => {
+    process.env.CHAT = "off";
     const res = await json("/api/runs", {
       method: "POST",
       body: { prompt: "hello", engine: "chat", model: "anthropic/claude-sonnet-5" },
@@ -43,6 +45,28 @@ describe("durable chat runs", () => {
       error: "engine_not_ready",
       engine: "chat",
     });
+  });
+
+  test("a member without an OpenRouter key is told to connect one, before any model call", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return openRouterStream("never");
+    }) as typeof fetch;
+
+    const created = await json<{ id: string }>("/api/runs", {
+      method: "POST",
+      body: { prompt: "hello", engine: "chat", model: "anthropic/claude-sonnet-5" },
+    });
+    expect(created.status).toBe(201);
+
+    const done = await waitFor(async () => {
+      const res = await json<any>(`/api/runs/${created.body.id}`);
+      return res.body?.status === "failed" ? res.body : null;
+    });
+    expect(done.summary).toContain("Connect an OpenRouter key in Settings");
+    expect(done.steps.map((step: any) => step.label)).toContain("OpenRouter key needed");
+    expect(calls.filter((url) => url.includes("/chat/completions"))).toEqual([]);
   });
 
   test("streams direct chat through the durable run/thread/event model without a sandbox", async () => {

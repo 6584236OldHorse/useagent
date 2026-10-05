@@ -228,7 +228,9 @@ The important variables are:
 - `GITHUB_TOKEN` or `GITHUB_APP_*` for repository access.
 - The Free model lane (OpenRouter `:free` variants for OpenCode) is free on the
   member's own OpenRouter key: a member connects it in Settings and free
-  models cost them nothing; the deployment's keys never serve a member's run.
+  models cost them nothing; the deployment's keys never serve a member's run
+  or chat turn (Chat runs on the member's key or the organisation's stored
+  `OPENROUTER_API_KEY` secret, and `CHAT=off` hides it).
   The lane qualifies itself: at boot and every 15 minutes the backend
   discovers the public catalog and runs short low-priority probe runs (at most
   96 a day, one at a time, never while deployment admission is closed) and

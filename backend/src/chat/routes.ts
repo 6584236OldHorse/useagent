@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
 import { isMemoryScope, type MemoryScope } from "../memory/scope";
+import { providerCredentialMissingMessage } from "../engines/provider-credential-gate";
 import { resolveChatProviderCredential } from "../provider-gateway/credentials";
 import {
   buildResourceAccessSnapshot,
@@ -91,12 +92,12 @@ chatRoutes.post("/", async (c) => {
   }
   const userId = identitySource === "session" ? c.get("userId") : null;
 
-  // Resolve the OpenRouter credential BYOK-first: a customer's connected key
-  // wins over the house key, so their own quota is spent (and an invalid
-  // customer key surfaces its real error rather than re-billing the house).
+  // The member's connected OpenRouter key, else the organisation's secret;
+  // the deployment's own key never serves a member. Without either the turn
+  // is refused with the remedy before any model call.
   const resolved = await resolveChatProviderCredential({ orgId, userId });
   if (!resolved) {
-    return c.json({ error: "chat is not configured (no OpenRouter credential)" }, 503);
+    return c.json({ error: providerCredentialMissingMessage("chat", "openrouter") }, 403);
   }
   // The same allowance every run ingress enforces, before any model call: a
   // member at the cap is refused here too. The turn itself is not metered yet.

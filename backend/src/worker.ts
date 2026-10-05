@@ -46,6 +46,10 @@ import { CHAT_SYSTEM_PROMPT } from "./chat/prompt";
 import { retrieveChatContext } from "./chat/retrieve";
 import { chatFailure, chatTurnStream, type ChatMessage } from "./chat/turn";
 import { resolveChatProviderCredential } from "./provider-gateway/credentials";
+import {
+  ProviderCredentialMissingError,
+  providerCredentialMissingMessage,
+} from "./engines/provider-credential-gate";
 import { subscribeNative } from "./runs/native-events";
 import { createSlidingInactivityWatchdog } from "./runs/inactivity-watchdog";
 import {
@@ -530,7 +534,9 @@ async function runChat(
       orgId: run.orgId,
       userId: run.userId,
     });
-    if (!resolvedChat) throw new Error("chat is not configured (no OpenRouter credential)");
+    if (!resolvedChat) {
+      throw new ProviderCredentialMissingError(providerCredentialMissingMessage("chat", "openrouter"));
+    }
     console.info(`[chat] run ${run.id} served by ${resolvedChat.source}`);
 
     for await (const delta of chatTurnStream(run, messages, resolvedChat, signal)) {

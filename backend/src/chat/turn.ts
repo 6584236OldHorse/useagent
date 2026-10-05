@@ -1,3 +1,4 @@
+import { ProviderCredentialMissingError } from "../engines/provider-credential-gate";
 import type { ResolvedProviderCredential } from "../provider-gateway/credentials";
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
 import { errorMessage } from "../util/error-message";
@@ -20,9 +21,13 @@ export async function* chatTurnStream(
   yield* streamChat(messages, run.model, credential.value, signal);
 }
 
-/** What a failed chat turn records: a spent provider key is named plainly; any
- *  other error stays generic, so a raw provider error never persists from this lane. */
+/** What a failed chat turn records: a missing or spent provider key is named
+ *  plainly with its remedy; any other error stays generic, so a raw provider
+ *  error never persists from this lane. */
 export function chatFailure(error: unknown): { readonly label: string; readonly reason: string } {
+  if (error instanceof ProviderCredentialMissingError) {
+    return { label: "OpenRouter key needed", reason: error.message };
+  }
   const keyLimit = providerKeyLimitReason(errorMessage(error));
   return keyLimit
     ? { label: "Provider key limit reached", reason: keyLimit }

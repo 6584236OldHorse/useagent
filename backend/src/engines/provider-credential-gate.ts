@@ -18,6 +18,9 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderId, string> = {
   opencode: "OpenCode Zen",
 };
 
+/** Thrown when no key can serve the run; the message is the remedy. */
+export class ProviderCredentialMissingError extends Error {}
+
 export function providerCredentialMissingMessage(engine: string, provider: ProviderId): string {
   const engineLabel = (ENGINE_DISPLAY_NAMES as Record<string, string | undefined>)[engine] ?? engine;
   const providerLabel = PROVIDER_DISPLAY_NAMES[provider];
@@ -69,5 +72,5 @@ export async function assertRunProviderCredential(
     deps,
   );
   if (resolved) return;
-  throw new Error(providerCredentialMissingMessage(engine, provider));
+  throw new ProviderCredentialMissingError(providerCredentialMissingMessage(engine, provider));
 }
