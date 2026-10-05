@@ -772,3 +772,16 @@ export async function insertStep(step: {
     .returning();
   return toStep(row!);
 }
+
+/** Append a step after the run's last one, for a lane without the worker's
+ *  in-memory step counter (the restart recovery loop). */
+export async function appendStep(
+  runId: string,
+  step: { kind: StepKind; label: string; chip: string | null; code: unknown | null },
+): Promise<ApiStep> {
+  const [last] = await db
+    .select({ idx: sql<number>`coalesce(max(${steps.idx}), -1)` })
+    .from(steps)
+    .where(eq(steps.runId, runId));
+  return insertStep({ runId, idx: (last?.idx ?? -1) + 1, ...step });
+}

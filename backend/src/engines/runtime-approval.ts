@@ -1,10 +1,11 @@
 import type { PermissionMode } from "@useagent/agent-client/wire";
 import { resolvePreviewSandbox } from "../runs/preview-proxy";
-import { approvalDecisionAllowed } from "./permission-mode";
+import { approvalDecisionAllowed, readOnlyRefusal } from "./permission-mode";
 import { resolveExpectedSandbox } from "../sandboxes/binding";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { providerEventExists, recordProviderEvent } from "../runs/provider-events";
 import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import type { EmitStep } from "./types";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
 const RUNTIME_APPROVAL_TIMEOUT_MS = 15_000;
@@ -77,16 +78,30 @@ export function runtimeApprovalRequest(
   if (activity.kind !== "approval.requested") return null;
   const payload = record(activity.payload);
   if (typeof payload?.requestId !== "string") return null;
-  const rawKind = payload.requestKind;
-  const requestKind =
-    rawKind === "command" || rawKind === "file-read" || rawKind === "file-change"
-      ? rawKind
-      : "other";
   return {
     id: payload.requestId,
     sessionID: sessionId,
-    requestKind,
+    requestKind: approvalRequestKind(payload.requestKind),
     ...(typeof payload.detail === "string" ? { detail: payload.detail } : {}),
+  };
+}
+
+function approvalRequestKind(value: unknown): RuntimeApprovalRequest["requestKind"] {
+  return value === "command" || value === "file-read" || value === "file-change" ? value : "other";
+}
+
+/** The request a recorded `approval.requested` ledger event describes: its
+ *  payload is the RuntimeApprovalRequest the lane stored (see
+ *  runtimeActivityProviderEvent), keyed by `id` where the runtime's own
+ *  activity says `requestId`. Null for any other payload. */
+export function recordedApprovalRequest(payload: unknown, sessionId: string): RuntimeApprovalRequest | null {
+  const stored = record(payload);
+  if (typeof stored?.id !== "string") return null;
+  return {
+    id: stored.id,
+    sessionID: sessionId,
+    requestKind: approvalRequestKind(stored.requestKind),
+    ...(typeof stored.detail === "string" ? { detail: stored.detail } : {}),
   };
 }
 
@@ -211,4 +226,40 @@ export async function replyToRuntimeApproval(input: {
     );
   }
   return { alreadyAnswered: false };
+}
+
+export type RuntimeApprovalReply = typeof replyToRuntimeApproval;
+
+/** For a read-only run, answer one of the runtime's approval requests: a command
+ *  or file change is declined through the same reply path a person uses
+ *  (idempotent on the responded receipt) and a read passes. The live observer
+ *  and the restart recovery loop both come through here. Returns the step that
+ *  records the refusal, or null when the request may proceed. */
+export async function refuseReadOnlyRequest(
+  input: {
+    readonly runId: string;
+    readonly threadId: string;
+    readonly sessionId: string;
+    readonly request: RuntimeApprovalRequest;
+    readonly signal: AbortSignal;
+    readonly expectedSandbox: ExpectedSandboxBinding | null;
+  },
+  reply: RuntimeApprovalReply = replyToRuntimeApproval,
+): Promise<{ step: EmitStep; alreadyAnswered: boolean } | null> {
+  const refusal = readOnlyRefusal(input.request);
+  if (!refusal) return null;
+  const { alreadyAnswered } = await reply({
+    runId: input.runId,
+    threadId: input.threadId,
+    sessionId: input.sessionId,
+    requestId: input.request.id,
+    decision: "decline",
+    signal: input.signal,
+    expectedSandbox: input.expectedSandbox,
+    permissionMode: "read-only",
+  });
+  return {
+    step: { kind: "task", label: `Refused to ${refusal}: this run is read-only`, chip: "read-only" },
+    alreadyAnswered,
+  };
 }

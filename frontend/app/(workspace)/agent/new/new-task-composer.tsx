@@ -47,7 +47,7 @@ import {
   partitionModelOptions,
   type PermissionMode,
 } from "@/components/chat/types";
-import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
+import { PermissionModeChip, permissionModeFor } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
@@ -93,11 +93,14 @@ export function NewTaskComposer({
   const [repos, setRepos] = useState<RepoItem[]>([]);
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
   // A new thread starts in Full access unless the person picks a mode before sending.
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>("full-access");
+  const [chosenMode, setChosenMode] = useState<PermissionMode>("full-access");
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
   const [engine, setEngine] = useState<string>("codex");
+  // What actually rides POST /api/runs: the pick, unless the selected engine
+  // cannot honour it (admission would refuse the run), then Full access.
+  const permissionMode = permissionModeFor(engine, chosenMode);
   // The "+" action shelf under the composer holds the add-context controls
   // (upload, repos, skills, GitHub, branches) so the toolbar row never overflows.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -703,7 +706,7 @@ export function NewTaskComposer({
               auto-applied edits) or Full access; rides POST /api/runs as permission_mode. */}
           <PermissionModeChip
             mode={permissionMode}
-            onChange={setPermissionMode}
+            onChange={setChosenMode}
             engine={engine}
             className="rounded-full px-2 py-1"
           />

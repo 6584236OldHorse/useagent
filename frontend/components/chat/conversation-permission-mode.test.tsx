@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Conversation, type Turn } from "./conversation";
-import type { ApiRun, PermissionMode } from "./types";
+import type { ApiRun, EngineId, PermissionMode } from "./types";
 
 // The permission mode on replay: every settled user message carries the tag
 // for the mode its run was started with, and the reply composer's chip starts
@@ -40,11 +40,11 @@ function turn(id: string, permissionMode?: PermissionMode): Turn {
   return { run, steps: [], status: "completed", summary: run.summary, live: false, liveText: "", liveReasoning: "" };
 }
 
-function render(turns: Turn[]): string {
+function render(turns: Turn[], defaultEngine: EngineId = "opencode"): string {
   return renderToStaticMarkup(
     <Conversation
       turns={turns}
-      defaultEngine="opencode"
+      defaultEngine={defaultEngine}
       defaultModel="claude-sonnet-5"
       defaultMemoryScope="org"
       pendingReply={null}
@@ -68,4 +68,10 @@ test("a run that reported no mode shows no tag, and the composer chip reads full
   const html = render([turn("run-1")]);
   expect(html).not.toContain('data-testid="permission-mode-tag"');
   expect(html).toContain('aria-label="Permission: Full access"');
+});
+
+test("on an engine that cannot ask first the reply composer's chip reads Full access, whatever the newest turn ran with", () => {
+  const html = render([turn("run-1", "read-only")], "pi");
+  expect(html).toContain('aria-label="Permission: Full access"');
+  expect(html).not.toContain('aria-label="Permission: Read only"');
 });

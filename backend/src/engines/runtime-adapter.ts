@@ -34,9 +34,9 @@ import {
   type RuntimeEngineId,
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
-import { configuredRuntimeMode, readOnlyRefusal, runtimeModeFor } from "./permission-mode";
+import { configuredRuntimeMode, runtimeModeFor } from "./permission-mode";
 import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
-import { replyToRuntimeApproval, runtimeApprovalRequest } from "./runtime-approval";
+import { refuseReadOnlyRequest, replyToRuntimeApproval, runtimeApprovalRequest } from "./runtime-approval";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
 import { createSecretRedactor } from "../secrets/redact";
 import {
@@ -357,20 +357,17 @@ export async function waitForRuntimeTurn(
     watchdog.observeActivity(activity);
     if (ctx.permissionMode !== "read-only") return;
     const request = runtimeApprovalRequest(activity, threadId);
-    const refusal = request ? readOnlyRefusal(request) : null;
-    if (!request || !refusal || refusedRequests.has(request.id)) return;
+    if (!request || refusedRequests.has(request.id)) return;
     refusedRequests.add(request.id);
-    await (dependencies.replyToRuntimeApproval ?? replyToRuntimeApproval)({
+    const refused = await refuseReadOnlyRequest({
       runId: ctx.runId,
       threadId: ctx.threadId ?? ctx.runId,
       sessionId: threadId,
-      requestId: request.id,
-      decision: "decline",
+      request,
       signal: ctx.signal,
       expectedSandbox: ctx.expectedSandbox ?? null,
-      permissionMode: "read-only",
-    });
-    await ctx.emit({ kind: "task", label: `Refused to ${refusal}: this run is read-only`, chip: "read-only" });
+    }, dependencies.replyToRuntimeApproval);
+    if (refused) await ctx.emit(refused.step);
   };
   const applySnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
     const applied = await projector.apply(snapshot, observe);

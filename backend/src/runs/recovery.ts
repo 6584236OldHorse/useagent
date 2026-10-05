@@ -58,6 +58,7 @@ import {
   parseExpectedSandboxBinding,
   type ExpectedSandboxBinding,
 } from "../sandboxes/expected-binding";
+import { refuseRecoveredApprovals, type RecoveredApprovalDependencies } from "./recovered-approvals";
 
 /** The event type for the durable "reconciling after restart" marker. Distinct
  *  from the terminal events so the timeline can show a run is being re-probed. */
@@ -513,6 +514,7 @@ async function finalizeOwned(
 export async function runDueReconciles(
   reconcile: ReconcileProbe = defaultReconcile,
   cleanup: RestartTransportCleanup = defaultRestartTransportCleanup,
+  approvals: RecoveredApprovalDependencies = {},
 ): Promise<{ adopted: number; failed: number; retried: number; dropped: number; lost: number; eventsRecovered: number }> {
   let adopted = 0;
   let failed = 0;
@@ -614,6 +616,13 @@ export async function runDueReconciles(
       continue;
     }
     eventsRecovered += recovered;
+    // The old process's observer that answered a read-only run's own requests is gone.
+    if (run.permissionMode === "read-only" && binding && recoveredEvents?.length) {
+      await refuseRecoveredApprovals(
+        { runId: run.id, threadId: run.threadId, sessionId: binding.nativeSessionId, expectedSandbox, events: recoveredEvents },
+        approvals,
+      );
+    }
     if (result.status === "failed") {
       const durable = await finalizeOwned(entry, "failed", result.summary);
       if (!durable) lost++;

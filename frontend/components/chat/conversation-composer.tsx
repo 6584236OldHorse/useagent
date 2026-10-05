@@ -1,10 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import type { ThreadRelationship } from "@useagent/agent-client";
+import { useMemo, useRef, useState } from "react";
 import type { PendingApproval } from "@/components/chat/approval-state";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import type { ComposerSubmit } from "@/components/chat/composer";
 import type { AssistantIdentity, Turn } from "@/components/chat/conversation";
+import { toGatewayChildSession } from "@/components/chat/gateway-children";
 import { latestThreadContext } from "@/components/chat/native-events";
 import {
   composerAcceptsRunResources,
@@ -12,19 +14,30 @@ import {
 } from "@/components/chat/question-state";
 import { ReplyComposer } from "@/components/chat/reply-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
-import type { EngineId, MemoryScope, PermissionMode } from "@/components/chat/types";
+import { compactAvailable } from "@/components/chat/composer-model";
+import { cleanPrompt, type EngineId, type MemoryScope, modelLabel, type PermissionMode } from "@/components/chat/types";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
-import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
+import { PermissionModeChip, permissionModeFor } from "@/components/pro/permission-mode-chip";
+import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-messages";
+import { RunningFooter } from "@/components/pro/running-footer";
+import {
+  advanceLiveGrowth,
+  deriveRunningStatus,
+  deriveRunningWork,
+  NO_GROWTH,
+} from "@/components/pro/running-phase";
 import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
 
 /**
- * The reply composer of a thread plus its status row: the placeholder for the
- * thread's state, the status bar (branch, project, permission chip, engine,
- * context meter) and the Compact now action, which is offered only while
- * nothing is pending, queued or running, and whose refusal shows in the same
- * banner a failed turn uses. Dismissing the banner clears only the error it is
- * showing. The permission chip follows the thread's newest turn until the
- * person picks a mode; every reply then carries that choice.
+ * The reply composer of a thread plus everything that frames it: the running
+ * footer while a turn runs (phase, current step, elapsed, Stop), the messages
+ * still waiting in the queue as numbered rows, the placeholder for the thread's
+ * state, the status bar (branch, project, permission chip, engine, context
+ * meter) and the Compact now action, which is offered only while nothing is
+ * pending, queued or running, and whose refusal shows in the same banner a
+ * failed turn uses. Dismissing the banner clears only the error it is showing.
+ * The permission chip follows the thread's newest turn until the person picks
+ * a mode; every reply then carries that choice.
  */
 export function ConversationComposer({
   turns,
@@ -48,6 +61,10 @@ export function ConversationComposer({
   stopError,
   onStop,
   runStartedAt,
+  sendNowFor,
+  onSendNow,
+  onRemoveQueued,
+  productChildren,
   threadError,
   onDismissThreadError,
   handoffNotice,
@@ -79,6 +96,13 @@ export function ConversationComposer({
   stopError?: string | null;
   onStop?: () => void;
   runStartedAt?: string | null;
+  /** Run id of the HEAD queued turn while a turn runs: that row gets "Send now". */
+  sendNowFor?: string | null;
+  onSendNow?: () => void;
+  /** Cancels a queued run before it starts (the durable cancel); rejects on failure. */
+  onRemoveQueued?: (runId: string) => Promise<void> | void;
+  /** Durable product children of the thread, for the running turn's delegation state. */
+  productChildren?: readonly ThreadRelationship[];
   threadError: string | null;
   onDismissThreadError: () => void;
   handoffNotice?: string | null;
@@ -91,21 +115,67 @@ export function ConversationComposer({
 }) {
   const context = useMemo(() => latestThreadContext(turns), [turns]);
   // The chip follows the thread's newest turn until the person picks a mode; a
-  // legacy turn that reported none reads as full access, the posture it ran with.
+  // legacy turn that reported none reads as full access, the posture it ran
+  // with. An engine that cannot honour the mode sends Full access instead.
   const [chosenMode, setChosenMode] = useState<PermissionMode | null>(null);
-  const permissionMode = chosenMode ?? turns.at(-1)?.run.permission_mode ?? "full-access";
+  const permissionMode = permissionModeFor(
+    defaultEngine,
+    chosenMode ?? turns.at(-1)?.run.permission_mode ?? "full-access",
+  );
   const reply: ComposerSubmit = (text, engine, model, key, scope, command, attachments, resources, bots) =>
     onReply(text, engine, model, key, scope, command, attachments, resources, bots, permissionMode);
   const [compactFailure, setCompactFailure] = useState<string | null>(null);
-  const canCompact =
-    !running &&
-    pendingReply === null &&
-    !turns.some((turn) => turn.status === "queued") &&
-    !pendingQuestion &&
-    !pendingApproval &&
-    !controlLocksComposer &&
-    !composerLocked &&
-    (commands?.some((c) => c.name === "compact") ?? false);
+  // Turns the agent has not started: rows above the input, never transcript
+  // bubbles. Positions count the WHOLE serial queue (a queued gateway child
+  // ahead of a reply is real wait); the rows show the person's own messages.
+  const queued = useMemo<QueuedMessage[]>(() => {
+    const waiting = turns.filter((turn) => turn.status === "queued");
+    const rows = waiting.flatMap((turn, index): QueuedMessage[] =>
+      turn.run.child_session ? [] : [{ id: turn.run.id, position: index + 1, text: cleanPrompt(turn.run.prompt) }],
+    );
+    if (pendingReply !== null) {
+      rows.push({ id: "pending", position: waiting.length + 1, text: pendingReply, pending: true });
+    }
+    return rows;
+  }, [turns, pendingReply]);
+  const runningTurn = running ? (turns.find((turn) => turn.status === "running") ?? null) : null;
+  const runId = runningTurn?.run.id ?? null;
+  // The running turn's gateway child sessions, identity-stable while their state holds.
+  const childTurns = turns.filter((t) => t.run.child_session === true && t.run.parent_run_id === runId);
+  const childSignature = childTurns.map((t) => `${t.run.id}:${t.status}:${t.summary ? 1 : 0}`).join("|");
+  // The signature names every input that matters, so the list only changes with it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const childSessions = useMemo(() => childTurns.map(toGatewayChildSession), [childSignature]);
+  const ownChildren = useMemo(
+    () => productChildren?.filter((child) => child.sourceRunId === runId) ?? [],
+    [productChildren, runId],
+  );
+  // Structural: everything read from the history, recomputed when a step or a
+  // frame lands, not on a text delta.
+  const steps = runningTurn?.steps;
+  const frames = runningTurn?.native?.nativeFrames;
+  const canonical = runningTurn?.canonical;
+  const executionSummary = runningTurn?.executionSummary;
+  const work = useMemo(
+    () => (runningTurn ? deriveRunningWork(runningTurn, childSessions, ownChildren) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, steps, frames, canonical, executionSummary, childSessions, ownChildren],
+  );
+  // Which live channel grew last decides writing versus thinking (a delta carries no seq).
+  const growth = useRef(NO_GROWTH);
+  if (runningTurn && work) {
+    growth.current = advanceLiveGrowth(growth.current, runningTurn.run.id, runningTurn, work.watermark);
+  }
+  const runningStatus =
+    runningTurn && work ? deriveRunningStatus(runningTurn, work, growth.current.latest) : null;
+  const canCompact = compactAvailable({
+    running: running === true,
+    pending: pendingReply !== null,
+    turnStatuses: turns.map((turn) => turn.status),
+    controlOpen: Boolean(pendingQuestion || pendingApproval),
+    locked: Boolean(controlLocksComposer || composerLocked),
+    commands,
+  });
   const compact = () => {
     setCompactFailure(null);
     Promise.resolve(
@@ -144,16 +214,15 @@ export function ConversationComposer({
               : "Answer the question above to continue…"
             : composerLocked
               ? (composerLockedMessage ?? "Loading thread controls…")
-              : assistantIdentity
-                ? `Message ${assistantIdentity.name}`
-                : undefined
+              : running
+                ? "Add context while this runs"
+                : assistantIdentity
+                  ? `Message ${assistantIdentity.name}`
+                  : undefined
       }
       onReply={reply}
       running={running}
-      stopping={stopping}
       stopError={stopError}
-      onStop={onStop}
-      runStartedAt={runStartedAt}
       threadError={shownError}
       onDismissThreadError={dismissShownError}
       notice={handoffNotice}
@@ -165,6 +234,25 @@ export function ConversationComposer({
       enableMentions={resourceMentions && composerAcceptsRunResources(pendingQuestion ?? null)}
       enableUploads={composerAcceptsRunResources(pendingQuestion ?? null)}
       repoRevisions={repoRevisions}
+      lead={
+        <>
+          {runningTurn && runningStatus && (
+            <RunningFooter
+              status={runningStatus}
+              model={modelLabel(runningTurn.run.model, defaultEngine)}
+              startedAt={runStartedAt}
+              onStop={onStop}
+              stopping={stopping}
+            />
+          )}
+          <QueuedMessages
+            messages={queued}
+            sendNowFor={runningTurn ? sendNowFor : null}
+            onSendNow={onSendNow}
+            onRemove={onRemoveQueued}
+          />
+        </>
+      }
       status={
         <ComposerStatusBar
           branch={first?.[1] ?? null}
