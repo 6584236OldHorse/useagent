@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { changedFilesFromTimeline } from "@/components/session-ui/adapter";
+import { filePatchesFromSteps } from "@/components/session-ui/file-diff-view";
 import { filesFromSteps, stepFailed } from "./file-entries";
 import { type ApiStep, parseFileEntries } from "./types";
 
@@ -67,5 +68,17 @@ describe("filesFromSteps", () => {
     const nodes = [failed, applied].map((step) => ({ kind: "tool" as const, key: step.id, step }));
     expect(changedFilesFromTimeline(nodes).map((f) => f.path)).toEqual(["done.ts"]);
     expect(filesFromSteps([failed, applied]).map((f) => f.path)).toEqual(["done.ts"]);
+  });
+
+  test("the Diff hunks skip a failed edit the file list also skips", () => {
+    const applied = fileStep("ok-edit", { input: { file_path: "a.ts", old_string: "one", new_string: "two" } });
+    const failed = fileStep("bad-edit", {
+      input: { file_path: "a.ts", old_string: "two", new_string: "NEVER APPLIED" },
+      error: true,
+    });
+    const patches = filePatchesFromSteps([applied, failed]);
+    const lines = (patches.get("a.ts") ?? []).flat().map((line) => line.text);
+    expect(lines).toContain("two");
+    expect(lines).not.toContain("NEVER APPLIED");
   });
 });

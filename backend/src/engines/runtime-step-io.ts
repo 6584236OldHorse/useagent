@@ -15,7 +15,7 @@ function stringField(value: unknown, key: string): string | null {
   return typeof field === "string" && field.trim() ? field.trim() : null;
 }
 
-const FILE_PATH_KEYS = ["file_path", "filePath", "path", "filename"] as const;
+const FILE_PATH_KEYS = ["file_path", "filePath", "path", "filename", "notebook_path"] as const;
 
 /**
  * Every path a projected file change names. The runtime's activity projection
@@ -34,7 +34,7 @@ export function runtimeFilePaths(input: unknown, detail: string | undefined): st
   for (const entry of files) push(stringField(entry, "path"));
   for (const key of FILE_PATH_KEYS) push(stringField(data, key));
   if (paths.length === 0 && detail) {
-    const match = /"(?:file_path|filePath|path)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(detail);
+    const match = /"(?:file_path|filePath|path|notebook_path)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(detail);
     if (match) {
       try {
         push(JSON.parse(`"${match[1]}"`) as string);
@@ -72,26 +72,32 @@ function commandInput(input: unknown, item: Rec | null): unknown {
 }
 
 /** The captured output of a command item. The runtime nests Codex's command
- * result under `data.item` (`aggregatedOutput`, or `result.content`), while the
- * payload's `detail` is the command line itself; the UI wants the former. */
-function commandOutput(item: Rec | null): string | null {
-  return stringField(item, "aggregatedOutput") ?? stringField(asRecord(item?.result), "content");
+ * result under `data.item` (`aggregatedOutput`, or `result.content`) and Claude's
+ * under `data.rawOutput.content`; the payload's `detail` is the command line
+ * itself for both (`printf hello`, `Bash: printf hello`), so it is used only when
+ * it is not that. OpenCode's detail is the real output and stays. */
+function commandOutput(item: Rec | null, data: Rec | null, command: string | null, detail: string | undefined): string | undefined {
+  const captured = stringField(item, "aggregatedOutput")
+    ?? stringField(asRecord(item?.result), "content")
+    ?? stringField(asRecord(data?.rawOutput), "content");
+  if (captured) return captured;
+  if (detail && command && (detail === command || detail.endsWith(`: ${command}`))) return undefined;
+  return detail;
 }
 
 /** The step's `input` and `output` for a tool activity of the given item type. */
 export function runtimeStepIo(
   itemType: string | null,
-  projection: { readonly input: unknown; readonly item: Rec | null },
+  projection: { readonly input: unknown; readonly item: Rec | null; readonly data: Rec | null },
   detail: string | undefined,
 ): { readonly input: unknown; readonly output: string | undefined } {
   if (itemType === "file_change") {
     return { input: fileChangeInput(projection.input, detail), output: detail };
   }
   if (itemType === "command_execution") {
-    return {
-      input: commandInput(projection.input, projection.item),
-      output: commandOutput(projection.item) ?? detail,
-    };
+    const input = commandInput(projection.input, projection.item);
+    const command = stringField(input, "command");
+    return { input, output: commandOutput(projection.item, projection.data, command, detail) };
   }
   return { input: projection.input, output: detail };
 }

@@ -1448,12 +1448,52 @@ describe("activityStep file and command payloads", () => {
     expect(step.code_json).toMatchObject({ input: { command: "bun test --filter x" }, output: "1 pass" });
   });
 
-  test("a command without captured output keeps the detail as before", () => {
+  test("a silent command does not echo its own command line as output", () => {
     const step = activityStep(completed("cmd-plain", "Command run", {
       itemType: "command_execution",
-      detail: "ls -la",
-      data: { toolCallId: "call-5", command: "ls -la" },
+      detail: "true",
+      data: { toolCallId: "call-5", item: { command: "true" } },
     }));
-    expect(step.code_json).toMatchObject({ output: "ls -la" });
+    expect(step.code_json).toMatchObject({ input: { command: "true" } });
+    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  });
+
+  test("a claude bash command reports the runtime's captured output", () => {
+    const step = activityStep(completed("cmd-claude", "Command run", {
+      itemType: "command_execution",
+      toolName: "Bash",
+      detail: "Bash: printf hello",
+      data: { toolCallId: "call-7", toolName: "Bash", command: "printf hello", rawOutput: { content: "hello" } },
+    }));
+    expect(step.code_json).toMatchObject({ input: { command: "printf hello" }, output: "hello" });
+  });
+
+  test("a claude bash command with no captured output does not echo its command line", () => {
+    const step = activityStep(completed("cmd-claude-silent", "Command run", {
+      itemType: "command_execution",
+      toolName: "Bash",
+      detail: "Bash: true",
+      data: { toolCallId: "call-8", toolName: "Bash", command: "true" },
+    }));
+    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  });
+
+  test("an opencode command keeps its detail, which is the real output", () => {
+    const step = activityStep(completed("cmd-opencode", "Command run", {
+      itemType: "command_execution",
+      detail: "hello\n",
+      data: { toolCallId: "call-9", command: "printf hello" },
+    }));
+    expect(step.code_json).toMatchObject({ output: "hello\n" });
+  });
+
+  test("a claude notebook edit recovers its notebook path", () => {
+    const step = activityStep(completed("fc-notebook", "File change", {
+      itemType: "file_change",
+      toolName: "NotebookEdit",
+      detail: 'NotebookEdit: {"notebook_path":"/w/a.ipynb","cell_id":"3","new_source":"x"}',
+      data: { toolCallId: "call-10", toolName: "NotebookEdit" },
+    }));
+    expect(step.code_json).toMatchObject({ input: { file_path: "/w/a.ipynb", files: [{ path: "/w/a.ipynb" }] } });
   });
 });

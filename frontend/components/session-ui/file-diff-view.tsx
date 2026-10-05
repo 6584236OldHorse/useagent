@@ -11,6 +11,7 @@
 
 import { RiArrowRightSLine } from "@remixicon/react";
 import { memo, useCallback, useRef, useState } from "react";
+import { stepFailed } from "@/components/chat/file-entries";
 import { FileKindBadge } from "@/components/chat/tool-step-row";
 import {
   type ApiStep,
@@ -108,6 +109,7 @@ export function hunksFromStep(step: ApiStep): DiffHunk[] {
 export function filePatchesFromSteps(steps: readonly ApiStep[]): Map<string, DiffHunk[]> {
   const byPath = new Map<string, DiffHunk[]>();
   for (const step of steps) {
+    if (stepFailed(step)) continue;
     const trace = deriveTrace(step);
     if (trace.glyph !== "edit" && trace.glyph !== "write") continue;
     const [entry, ...rest] = parseFileEntries(step);
