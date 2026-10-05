@@ -40,6 +40,8 @@ const STUCK = "U-STUCK";
 const GATED = "U-GATED";
 /** A member whose first users.info fails outright and whose later ones answer. */
 const FLAKY = "U-FLAKY";
+/** A member whose users.info answers when the test says so. */
+const RACED = "U-RACED";
 const PROFILES: Record<string, { name: string; email: string | null; image: string | null }> = {
   [SUNDAR]: { name: "Sundar", email: null, image: "https://avatars.example/sundar-192.png" },
   [PRIYA]: { name: "Priya", email: null, image: null },
@@ -60,6 +62,7 @@ const calls = { userInfo: [] as string[], permalinks: [] as string[] };
 let stuckAborted = false;
 let gatedCalls = 0;
 let flakyCalls = 0;
+let racedProfile: PromiseWithResolvers<{ name: string; email: string | null; image: string | null }> | null = null;
 function permalinkFor(channel: string, ts: string): string {
   return `https://example.slack.com/archives/${channel}/p${ts.replace(".", "")}`;
 }
@@ -85,6 +88,7 @@ const client: SlackClient = {
       });
     }
     if (id === GATED) return Promise.resolve({ name: "Gated", email: null, image: null });
+    if (id === RACED && racedProfile) return racedProfile.promise;
     if (id === FLAKY) return Promise.resolve(flakyCalls++ === 0 ? null : { name: "Flaky", email: null, image: null });
     return Promise.resolve(PROFILES[id] ?? null);
   },
@@ -462,6 +466,46 @@ describe("slack turn identity", () => {
 });
 
 describe("stampSlackTurnIdentity", () => {
+  test("a stamp whose conditional update loses to a concurrent write merges onto that write once and still lands", async () => {
+    // The race a detached stamp and the boot sweep can run on one run: this
+    // stamp reads the run bare and waits on users.info; meanwhile the other
+    // stamp's deadline write lands a permalink-only connector. The update must
+    // merge onto that row and finish the stamp here, not report the run as
+    // already stamped and leave the owed row to the next sweep.
+    process.env.SLACK_IDENTITY_LOOKUP_MS = "5000";
+    const id = uid("raced");
+    const channel = "C0RACED";
+    const messageTs = "1700000002.000100";
+    try {
+      await createRun({
+        id,
+        prompt: "from slack",
+        model: "claude-opus-5",
+        engine: "mock",
+        orgId: org.orgId,
+        userId,
+        parentRunId: null,
+        threadId: id,
+        repos: [],
+        memoryScope: "org",
+      });
+      expect(await recordSlackTurnIdentityIntent({ runId: id, teamId: TEAM, channel, messageTs, slackUserId: RACED })).toBe("recorded");
+      racedProfile = Promise.withResolvers();
+      const stamping = stampSlackTurnIdentity(id);
+      await waitFor(async () => (calls.userInfo.includes(RACED) ? true : null));
+      // The other stamp's deadline write: the permalink alone, onto the bare row.
+      const partial = { source: "slack" as const, sender_name: null, sender_avatar_url: null, permalink: permalinkFor(channel, messageTs) };
+      await db.update(runs).set({ connector: partial }).where(eq(runs.id, id));
+      racedProfile.resolve({ name: "Raced", email: null, image: null });
+      expect(await stamping).toBe("stamped");
+      expect((await runRow(id)).connector).toEqual({ ...partial, sender_name: "Raced" });
+      expect(await owedLookup(id)).toBeNull();
+    } finally {
+      racedProfile = null;
+      process.env.SLACK_IDENTITY_LOOKUP_MS = "300";
+    }
+  });
+
   test("stamps once, wakes the thread stream, and is a no-op afterwards", async () => {
     const id = uid("stamp");
     await createRun({
