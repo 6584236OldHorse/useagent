@@ -13,6 +13,10 @@ test("desktop auth accepts only the official client request shape", () => {
   expect(desktopAuthRequest(`${valid}#unexpected`)).toBeNull();
   expect(desktopAuthRequest(valid.replace("S256", "plain"))).toBeNull();
   expect(desktopAuthRequest(valid.replace("client_id=electron", "client_id=attacker"))).toBeNull();
+  // The Electron plugin encodes the challenge with base64url padding, so the 44-character form is the real one.
+  expect(desktopAuthRequest(valid.replace("B".repeat(43), `${"B".repeat(43)}%3D`))?.query.code_challenge).toBe(`${"B".repeat(43)}=`);
+  expect(desktopAuthRequest(valid.replace("B".repeat(43), `${"B".repeat(43)}%3D%3D`))).toBeNull();
+  expect(desktopAuthRequest(valid.replace("B".repeat(43), `${"B".repeat(42)}%3D`))).toBeNull();
 });
 
 test("desktop approval replaces an expired redirect poll with a fresh bounded poll", () => {

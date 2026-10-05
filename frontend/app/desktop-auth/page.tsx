@@ -18,7 +18,7 @@ export function desktopAuthRequest(value: string): DesktopAuthRequest | null {
   if (url.hash || url.searchParams.size !== 4
     || url.searchParams.getAll("client_id").length !== 1 || query.client_id !== "electron"
     || url.searchParams.getAll("state").length !== 1 || !/^[A-Za-z0-9]{16}$/.test(query.state ?? "")
-    || url.searchParams.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(query.code_challenge ?? "")
+    || url.searchParams.getAll("code_challenge").length !== 1 || !/^[A-Za-z0-9_-]{43}=?$/.test(query.code_challenge ?? "")
     || url.searchParams.getAll("code_challenge_method").length !== 1 || query.code_challenge_method !== "S256") return null;
   return { query, url: `${url.pathname}${url.search}` };
 }
