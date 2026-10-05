@@ -234,8 +234,92 @@ describe("review findings", () => {
     runnerSide.end();
     await stream.done;
     await runnerSide.done;
-    expect(await write).toMatch(/stream is closed/);
+    expect(await write).toMatch(/stream already ended|stream is closed/);
     expect(plane.openStreams).toBe(0);
+  });
+
+  test("a binary send that fails is a failed write", async () => {
+    let failBinary = false;
+    let runner!: Mux;
+    const plane = new Mux("plane", {
+      send: (m) => {
+        if (typeof m !== "string" && failBinary) throw new Error("socket gone");
+        queueMicrotask(() => runner.receive(m));
+      },
+    });
+    runner = new Mux("runner", { send: (m) => queueMicrotask(() => plane.receive(m)) }, { onStreamOpen: () => {} });
+    const stream = await plane.openStream({});
+    failBinary = true;
+    const write = await stream.write(Uint8Array.of(1)).then(() => "resolved", (e: unknown) => String(e));
+    expect(write).toMatch(/transport failed/);
+    await expect(stream.done).rejects.toThrow(/transport failed/);
+    expect(plane.isClosed).toBe(true);
+  });
+
+  test("params that cannot be serialised reject the caller, not the link", async () => {
+    const { plane } = connectPair({}, { onRpc: async () => 1, onStreamOpen: () => {} });
+    const rpc = await plane.rpc("x", { bad: 1n }).catch((e: unknown) => e);
+    expect((rpc as RpcError).code).toBe("invalid_params");
+    const open = await plane.openStream({ bad: 1n }).catch((e: unknown) => e);
+    expect((open as StreamRefusedError).code).toBe("invalid_params");
+    expect(plane.isClosed).toBe(false);
+    expect(plane.openStreams).toBe(0);
+    await expect(plane.rpc("x", {})).resolves.toBe(1);
+  });
+
+  test("a local half-close wakes a writer waiting for credit", async () => {
+    const { plane } = connectPair({}, { onStreamOpen: () => {} }, { window: 1 });
+    const stream = await plane.openStream({});
+    // Window 1 plus the consumer's one prefetched chunk lets two bytes through; the third waits.
+    const write = stream.write(new Uint8Array(4)).then(() => "resolved", (e: unknown) => String(e));
+    await settled();
+    stream.end();
+    expect(await write).toMatch(/already ended/);
+  });
+
+  test("a peer that sends past the window is reset", async () => {
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, { onStreamOpen: () => {} }, { window: 8 });
+    plane.receive(JSON.stringify({ t: "stream.open", id: 1, target: {} }));
+    await settled();
+    expect(plane.openStreams).toBe(1);
+    for (let i = 0; i < 3; i += 1) plane.receive(new Uint8Array([1, 0, 0, 0, 1, 9, 9, 9, 9]));
+    expect(plane.openStreams).toBe(0);
+    expect(sent.some((m) => m.includes('"stream.reset"') && m.includes("window"))).toBe(true);
+  });
+
+  test("pipeToStream fails when the source dies while a write waits for credit", async () => {
+    let received: Promise<unknown> = Promise.resolve();
+    const { plane } = connectPair({}, {
+      onStreamOpen: (_target, stream) => {
+        received = readAllFromStream(stream).then(() => "resolved", (e: unknown) => String(e));
+      },
+    }, { window: 1 });
+    const stream = await plane.openStream({});
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const source = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+        c.enqueue(new Uint8Array(10));
+      },
+    });
+    const pipe = pipeToStream(source, stream).then(() => "resolved", (e: unknown) => String(e));
+    await settled();
+    controller.error(new Error("container died"));
+    expect(await pipe).toMatch(/container died/);
+    expect(await received).toMatch(/container died/);
+    expect(plane.openStreams).toBe(0);
+  });
+
+  test("pipeToStream fails when the link closes during an idle read", async () => {
+    const { plane } = connectPair({}, { onStreamOpen: () => {} });
+    const stream = await plane.openStream({});
+    const source = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
+    const pipe = pipeToStream(source, stream).then(() => "resolved", (e: unknown) => String(e));
+    await settled();
+    plane.close("laptop lid closed");
+    expect(await pipe).toMatch(/laptop lid closed/);
+    expect(source.locked).toBe(false);
   });
 
   test("a refused open tears down the acceptor's reads and writes", async () => {

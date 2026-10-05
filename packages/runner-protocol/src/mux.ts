@@ -99,6 +99,8 @@ interface StreamState {
   inbound: Uint8Array[];
   inboundWaiter: (() => void) | null;
   sendCredit: number;
+  /** Bytes received and not yet credited back; a peer past the window is reset. */
+  recvOutstanding: number;
   creditWaiters: Array<() => void>;
   localClosed: boolean;
   remoteClosed: boolean;
@@ -139,7 +141,14 @@ export class Mux {
   }
 
   send(frame: ControlFrame): void {
-    this.sendRaw(encodeControlFrame(frame));
+    let encoded: string;
+    try {
+      encoded = encodeControlFrame(frame);
+    } catch (error) {
+      this.close(`frame cannot be serialised: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    this.sendRaw(encoded);
   }
 
   /** A transport that throws is a dead link: everything pending fails at once. */
@@ -155,13 +164,19 @@ export class Mux {
   rpc(method: string, params: unknown, options: { timeoutMs?: number } = {}): Promise<unknown> {
     if (this.closed) return Promise.reject(new RpcError("closed", "link is closed"));
     const id = this.nextRpcId++;
+    let encoded: string;
+    try {
+      encoded = encodeControlFrame({ t: "rpc", id, method, params });
+    } catch (error) {
+      return Promise.reject(new RpcError("invalid_params", `params cannot be serialised: ${error instanceof Error ? error.message : String(error)}`));
+    }
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
       this.rpcs.delete(id);
       reject(new RpcError("timeout", `${method} did not answer within ${options.timeoutMs ?? this.rpcTimeoutMs} ms`));
     }, options.timeoutMs ?? this.rpcTimeoutMs);
     this.rpcs.set(id, { resolve, reject, timer });
-    this.send({ t: "rpc", id, method, params });
+    this.sendRaw(encoded);
     return promise;
   }
 
@@ -169,6 +184,12 @@ export class Mux {
     if (this.closed) return Promise.reject(new StreamRefusedError("closed", "link is closed"));
     let id = this.nextStreamId;
     while (this.streams.has(id)) id += 2;
+    let encoded: string;
+    try {
+      encoded = encodeControlFrame({ t: "stream.open", id, target });
+    } catch (error) {
+      return Promise.reject(new StreamRefusedError("invalid_params", `target cannot be serialised: ${error instanceof Error ? error.message : String(error)}`));
+    }
     this.nextStreamId = id + 2;
     const state = this.createStream(id);
     const { promise, resolve, reject } = Promise.withResolvers<MuxStream>();
@@ -178,7 +199,7 @@ export class Mux {
       reject(new StreamRefusedError("timeout", "stream open timed out"));
     }, options.timeoutMs ?? this.streamOpenTimeoutMs);
     this.opening.set(id, { resolve, reject, timer });
-    this.send({ t: "stream.open", id, target });
+    this.sendRaw(encoded);
     return promise;
   }
 
@@ -199,6 +220,11 @@ export class Mux {
     if (!data) return;
     const state = this.streams.get(data.streamId);
     if (!state || state.remoteClosed) return;
+    state.recvOutstanding += data.payload.byteLength;
+    if (state.recvOutstanding > this.window) {
+      this.finishStream(state, new Error("peer exceeded the stream window"));
+      return;
+    }
     // Copy: the socket may reuse its buffer after this call returns.
     state.inbound.push(data.payload.slice());
     state.inboundWaiter?.();
@@ -359,6 +385,7 @@ export class Mux {
       inbound: [],
       inboundWaiter: null,
       sendCredit: this.window,
+      recvOutstanding: 0,
       creditWaiters: [],
       localClosed: false,
       remoteClosed: false,
@@ -390,6 +417,7 @@ export class Mux {
           }
           const chunk = state.inbound.shift()!;
           controller.enqueue(chunk);
+          state.recvOutstanding -= chunk.byteLength;
           // Credit is returned as the consumer drains, not as bytes arrive, so a
           // slow consumer slows its own sender and nobody else.
           if (!state.finished) mux.send({ t: "stream.credit", id, bytes: chunk.byteLength });
@@ -416,12 +444,16 @@ export class Mux {
           const size = Math.min(MAX_CHUNK, state.sendCredit, bytes.byteLength - offset);
           state.sendCredit -= size;
           mux.sendRaw(encodeDataFrame(id, bytes.subarray(offset, offset + size)));
+          if (state.finished) throw state.error ?? new Error("stream is closed");
           offset += size;
         }
       },
       end() {
         if (state.finished || state.localClosed) return;
         state.localClosed = true;
+        const waiters = state.creditWaiters;
+        state.creditWaiters = [];
+        for (const wake of waiters) wake();
         mux.send({ t: "stream.close", id });
         mux.maybeFinish(state);
       },
@@ -454,6 +486,7 @@ export class Mux {
     if (state.finished) return;
     state.finished = true;
     state.error = error;
+    state.inbound = [];
     this.streams.delete(state.id);
     if (notifyPeer && !this.closed && !(state.localClosed && state.remoteClosed)) {
       this.send({ t: "stream.reset", id: state.id, reason: error.message });
@@ -471,21 +504,51 @@ export class Mux {
   }
 }
 
-/** Write every chunk of `source` to `stream`, then half-close it. */
-export async function pipeToStream(source: ReadableStream<Uint8Array>, stream: MuxStream): Promise<void> {
-  const reader = source.getReader();
+/**
+ * Write every chunk of `source` to `stream`, then half-close it (unless
+ * `end` is false, for callers that decide the ending themselves). A failure on
+ * either side ends the pipe: the source is cancelled when the stream fails, the
+ * stream is reset when the source fails, even while a write waits for credit.
+ */
+export async function pipeToStream(
+  source: ReadableStream<Uint8Array>,
+  stream: MuxStream,
+  options: { readonly end?: boolean } = {},
+): Promise<void> {
+  const failure = stream.done.then(
+    () => new Promise<never>(() => {}),
+    (error: unknown) => {
+      throw error instanceof Error ? error : new Error(String(error));
+    },
+  );
+  failure.catch(() => {});
+  let reader: ReturnType<ReadableStream<Uint8Array>["getReader"]> | undefined;
+  let ahead: ReturnType<NonNullable<typeof reader>["read"]> | undefined;
   try {
+    reader = source.getReader();
+    ahead = reader.read();
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await Promise.race([ahead, failure]);
       if (done) break;
-      await stream.write(value);
+      // Read ahead so a source that dies while the write waits for credit is seen.
+      ahead = reader.read();
+      const aheadFailure = ahead.then(() => new Promise<never>(() => {}));
+      aheadFailure.catch(() => {});
+      await Promise.race([stream.write(value), failure, aheadFailure]);
     }
-    stream.end();
+    if (options.end !== false) stream.end();
   } catch (error) {
     stream.reset(`source failed: ${error instanceof Error ? error.message : String(error)}`);
+    ahead?.catch(() => {});
+    void reader?.cancel(error).catch(() => {});
     throw error;
   } finally {
-    reader.releaseLock();
+    ahead?.catch(() => {});
+    try {
+      reader?.releaseLock();
+    } catch {
+      /* a read may still be pending on a cancelled reader */
+    }
   }
 }
 
