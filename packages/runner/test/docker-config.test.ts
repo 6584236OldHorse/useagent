@@ -37,6 +37,19 @@ test("removing the private config leaves the machine's context store in place", 
   expect((await stat(join(machine, "contexts", "tls", "abc", "docker", "ca.pem"))).isFile()).toBe(true);
 });
 
+test("a relative machine config directory still links the absolute store", async () => {
+  const machine = await machineConfig(true);
+  const previous = process.cwd();
+  process.chdir(join(machine, ".."));
+  try {
+    const dir = await privateDockerConfig(LOGIN, machine.slice(machine.lastIndexOf("/") + 1));
+    dirs.push(dir);
+    expect(await readFile(join(dir, "contexts", "tls", "abc", "docker", "ca.pem"), "utf8")).toBe("ca");
+  } finally {
+    process.chdir(previous);
+  }
+});
+
 test("a machine without a docker config gets a login-only config", async () => {
   const machine = await machineConfig(false);
   const dir = await privateDockerConfig(LOGIN, machine);

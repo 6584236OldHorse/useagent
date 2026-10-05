@@ -5,7 +5,7 @@
 import type { LocalSandboxState } from "@useagent/runner-protocol";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
 import {BackendError,
   type ContainerInfo,
@@ -49,7 +49,9 @@ function infoFromInspect(object: Record<string, unknown>): ContainerInfo {
  * login state. It still selects the machine's daemon: the current context is copied
  * and the context store (endpoints, TLS material) is linked in, read-only in practice.
  */
-export async function privateDockerConfig(login: RegistryLogin, machine = process.env.DOCKER_CONFIG?.trim() || join(homedir(), ".docker")): Promise<string> {
+export async function privateDockerConfig(login: RegistryLogin, machineDir = process.env.DOCKER_CONFIG?.trim() || join(homedir(), ".docker")): Promise<string> {
+  // A relative DOCKER_CONFIG would make the link dangle from inside the temp directory.
+  const machine = resolve(machineDir);
   const dir = await mkdtemp(join(tmpdir(), "useagent-pull-"));
   const current = await readFile(join(machine, "config.json"), "utf8")
     .then((text) => (JSON.parse(text) as { currentContext?: string }).currentContext, () => undefined);
