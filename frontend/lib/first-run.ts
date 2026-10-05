@@ -35,30 +35,41 @@ export function markFirstRunSkipped(userId: string): void {
   }
 }
 
+/** The composer page's state: pending until the first-run check settles, then
+ *  stay (render the composer) or open (the first-run page). */
+export type LandingDecision = "pending" | "stay" | "open";
+
+/** A decision settles once: after the composer is up nothing reopens the page. */
+export function settleLanding(current: LandingDecision, outcome: "stay" | "open"): LandingDecision {
+  return current === "pending" ? outcome : current;
+}
+
 /**
- * Watches a landing on the composer page: the first-run page opens only when
- * the workspace check answers yes and the composer holds no draft at that
- * moment, whenever the draft was made (while the session was still loading,
- * from a deep link, from a menu action), so nothing is ever replaced from under
- * a person. Returns the cleanup for an unmount.
+ * Runs the first-run check for a landing on the composer page and reports
+ * exactly one outcome: open the first-run page, or stay and render the
+ * composer. A person who chose to continue before stays without a request; a
+ * failed check stays too (the landing page stands whatever the answer).
+ * Returns the cleanup for an unmount, after which nothing is reported.
  */
 export function watchLanding(deps: {
   readonly userId: string;
   readonly listWorkspaces: () => Promise<Workspace[]>;
-  /** The composer's own state: prompt text or attachments present right now. */
-  readonly hasDraft: () => boolean;
-  readonly open: () => void;
+  readonly settle: (outcome: "stay" | "open") => void;
 }): () => void {
-  if (firstRunSkipped(deps.userId)) return () => {};
   let cancelled = false;
+  if (firstRunSkipped(deps.userId)) {
+    deps.settle("stay");
+    return () => {};
+  }
   deps
     .listWorkspaces()
     .then((workspaces) => {
-      if (!cancelled && !deps.hasDraft() && firstRunApplies(workspaces.find((workspace) => workspace.active))) {
-        deps.open();
-      }
+      if (cancelled) return;
+      deps.settle(firstRunApplies(workspaces.find((workspace) => workspace.active)) ? "open" : "stay");
     })
-    .catch(() => undefined); // the landing page stands whatever the answer
+    .catch(() => {
+      if (!cancelled) deps.settle("stay");
+    });
   return () => {
     cancelled = true;
   };

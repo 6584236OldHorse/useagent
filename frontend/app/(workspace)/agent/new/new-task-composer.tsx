@@ -33,7 +33,6 @@ import {
 } from "@/components/chat/engine-picker";
 import { engineMarkFor, vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
 import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
-import { FirstRunRedirect } from "./first-run-redirect";
 import {
   type CommandPickerStatus,
   filterCommands,
@@ -470,16 +469,8 @@ export function NewTaskComposer({
     }
   }
 
-  // What the first-run redirect must never replace: read at decision time, so a
-  // prompt typed while the session was still loading, seeded by a deep link or
-  // a menu action, or an attachment, all count.
-  const draft = useRef(false);
-  draft.current = prompt.trim() !== "" || runUploads.uploads.length > 0;
-  const hasDraft = useCallback(() => draft.current, []);
-
   return (
     <div>
-      <FirstRunRedirect hasDraft={hasDraft} />
       {/* Composer card modeled on the ai-kit KnowledgeComposerCard: an outer card
           wrapping a darker inset that holds the prompt textarea and a clean pill
           toolbar. Every control is real - attach, repos, engine, model, skill -

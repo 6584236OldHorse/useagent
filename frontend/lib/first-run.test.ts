@@ -45,58 +45,71 @@ test("skipping is remembered per person: in this browser when it stores, for thi
   expect(firstRunSkipped("u3")).toBe(true);
 });
 
-import { watchLanding } from "./first-run";
+import { settleLanding, watchLanding } from "./first-run";
 
-function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], draft = { present: false }) {
-  const opened: number[] = [];
+function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], userId = "landing-user") {
+  const outcomes: string[] = [];
   let answer: (() => void) | undefined;
+  let fail: (() => void) | undefined;
   const cleanup = watchLanding({
-    userId: "landing-user",
+    userId,
     listWorkspaces: () =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
         answer = () => resolve(workspaces.filter((w): w is NonNullable<typeof w> => w !== undefined));
+        fail = () => reject(new Error("workspaces 503"));
       }),
-    hasDraft: () => draft.present,
-    open: () => opened.push(Date.now()),
+    settle: (outcome) => outcomes.push(outcome),
   });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
-    opened,
+    outcomes,
     cleanup,
     answer: async () => {
       answer?.();
       await settle();
     },
+    fail: async () => {
+      fail?.();
+      await settle();
+    },
   };
 }
 
-test("landing: the first-run page opens when the check answers and the composer is empty", async () => {
+test("landing: nothing settles before the check answers, so no composer is enabled meanwhile", async () => {
   const run = landing();
-  await run.answer();
-  expect(run.opened).toHaveLength(1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(run.outcomes).toEqual([]);
   run.cleanup();
 });
 
-test("landing: a draft present when the answer arrives keeps the composer, whenever it was made", async () => {
-  // Typed while the session was still loading: the draft exists before the watch starts.
-  const early = landing([fresh], { present: true });
-  await early.answer();
-  expect(early.opened).toHaveLength(0);
-  // Typed, pasted, seeded by a menu action or an attachment after the watch started.
-  const draft = { present: false };
-  const late = landing([fresh], draft);
-  draft.present = true;
-  await late.answer();
-  expect(late.opened).toHaveLength(0);
-});
+test("landing: a first run opens the page from the pending state; anything else stays, exactly once", async () => {
+  const open = landing();
+  await open.answer();
+  expect(open.outcomes).toEqual(["open"]);
 
-test("landing: an unmount before the answer, or a workspace that is not on a first run, opens nothing", async () => {
+  const stay = landing([{ ...fresh, members: 2 }]);
+  await stay.answer();
+  expect(stay.outcomes).toEqual(["stay"]);
+
+  const failed = landing();
+  await failed.fail();
+  expect(failed.outcomes).toEqual(["stay"]);
+
   const unmounted = landing();
   unmounted.cleanup();
   await unmounted.answer();
-  expect(unmounted.opened).toHaveLength(0);
+  expect(unmounted.outcomes).toEqual([]);
+});
 
-  const settled = landing([{ ...fresh, members: 2 }]);
-  await settled.answer();
-  expect(settled.opened).toHaveLength(0);
+test("landing: a person who chose to continue before stays without a request", () => {
+  markFirstRunSkipped("skipped-user");
+  const run = landing([fresh], "skipped-user");
+  expect(run.outcomes).toEqual(["stay"]);
+});
+
+test("landing: once the composer is up, no later outcome navigates away from it", () => {
+  expect(settleLanding("pending", "open")).toBe("open");
+  expect(settleLanding("pending", "stay")).toBe("stay");
+  expect(settleLanding("stay", "open")).toBe("stay");
+  expect(settleLanding("open", "stay")).toBe("open");
 });
