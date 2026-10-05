@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { formatElapsed } from "@/utils/format";
 import type { TimelineNode } from "./timeline";
 import {
   latestPlanEntries,
@@ -213,6 +214,38 @@ describe("trace rows", () => {
     });
   });
 
+  test("a listing's detail is its entry count and a row carries the duration the engine reported", () => {
+    const listing = toolNode("l1", {
+      tool: "list",
+      input: { path: "src/gateway" },
+      output: "src/gateway/\n  middleware.ts\n  router.ts\n  types.ts",
+      durationMs: 180,
+    });
+    expect(traceRowsFromWork([listing], false)[0]).toMatchObject({
+      label: "List",
+      chip: { text: "gateway", mono: true },
+      detail: "3 entries",
+      durationMs: 180,
+    });
+    // No duration in the payload, none on the row (never a guess).
+    expect(stepRows(traceRowsFromWork([GIT_LOG], false))[0]?.durationMs).toBeNull();
+  });
+
+  test("the duration grammar: milliseconds under a second, tenths under an hour, hours and minutes above", () => {
+    expect([40, 999, 1_000, 4_300, 60_000, 68_500, 3_720_000, 0, -1, null].map(formatElapsed)).toEqual([
+      "40ms",
+      "999ms",
+      "1.0s",
+      "4.3s",
+      "1m",
+      "1m 8.5s",
+      "1h 2m",
+      null,
+      null,
+      null,
+    ]);
+  });
+
   test("a file edit names the file in the chip and its line delta as the detail", () => {
     const edit = toolNode("s8", {
       tool: "edit",
@@ -286,6 +319,16 @@ describe("trace rows", () => {
     expect(gitLog?.body?.kind).toBe("entry");
   });
 
+  test("steps a subagent ran are left to its row; the parent's own last step is the running one", () => {
+    const rows = stepRows(traceRowsFromWork([GIT_LOG, TYPECHECK], true, new Set(["s2"])));
+    expect(rows.map((row) => [row.key, row.status])).toEqual([["s1", "running"]]);
+    const work = [RECALL, GIT_LOG, MEMORY_SEARCH];
+    const own = traceRowsFromWork(work, false, new Set(["s1"]));
+    expect(traceHeader({ live: false, rows: own, work, durationMs: null }).detail).toBe(
+      "called 1 tool",
+    );
+  });
+
   test("while live the last node is the running row; a failure is never running", () => {
     const rows = stepRows(traceRowsFromWork([RECALL, GIT_LOG, MEMORY_SEARCH], true));
     expect(rows.map((row) => row.status)).toEqual(["done", "done", "running"]);
@@ -352,43 +395,78 @@ describe("trace rows", () => {
 });
 
 describe("traceHeader", () => {
-  test("settled with reasoning: Thought for the run's duration, the counts as the detail", () => {
+  test("settled: Worked, then what it did, the failures and how long, dot-separated", () => {
     const { work } = splitTurn(SETTLED, false);
     const rows = traceRowsFromWork(work, false);
     expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
-      label: "Thought for 3m 12s, 1 failed",
-      detail: "2 tool calls, 1 message",
+      label: "Worked",
+      detail: "ran 2 commands · 1 failed · 3m 12.0s",
+      failed: false,
+    });
+    const single = traceRowsFromWork([GIT_LOG], false);
+    expect(traceHeader({ live: false, rows: single, work: [GIT_LOG], durationMs: 4_300 })).toEqual({
+      label: "Worked",
+      detail: "ran 1 command · 4.3s",
       failed: false,
     });
   });
 
-  test("settled without reasoning: the counts are the line, the duration the detail", () => {
-    const work = [RECALL, GIT_LOG, TYPECHECK];
+  test("one segment per kind of work: commands, reads, edits, searches, fetches, plain tool calls", () => {
+    const work = [
+      toolNode("l1", {
+        tool: "list",
+        input: { path: "src" },
+        output: "src/\n  a.ts\n  b.ts\n  c.ts",
+      }),
+      toolNode("r1", { tool: "read", input: { file_path: "src/a.ts" }, output: "export {}" }),
+      toolNode("w1", { tool: "websearch", input: { query: "token bucket" }, output: "Bursts." }),
+      toolNode("f1", { tool: "webfetch", input: { url: "https://example.com" }, output: "Page." }),
+      GIT_LOG,
+    ];
     const rows = traceRowsFromWork(work, false);
-    expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
-      label: "2 tool calls, 1 failed",
-      detail: "3m 12s",
+    // A listing is a tool call, not a search, whatever glyph it draws.
+    expect(traceHeader({ live: false, rows, work, durationMs: 4_300 }).detail).toBe(
+      "ran 1 command · read 1 file · searched once · fetched 1 page · called 1 tool · 4.3s",
+    );
+    const searches = [
+      toolNode("w1", { tool: "websearch", input: { query: "a" }, output: "x" }),
+      toolNode("w2", { tool: "websearch", input: { query: "b" }, output: "y" }),
+    ];
+    expect(
+      traceHeader({
+        live: false,
+        rows: traceRowsFromWork(searches, false),
+        work: searches,
+        durationMs: null,
+        changedFileCount: 2,
+      }).detail,
+    ).toBe("edited 2 files · searched 2 times");
+  });
+
+  test("a turn that only thought reads Thought, with its duration", () => {
+    const rows = traceRowsFromWork([THOUGHT], false);
+    expect(traceHeader({ live: false, rows, work: [THOUGHT], durationMs: 12_000 })).toEqual({
+      label: "Thought",
+      detail: "12.0s",
       failed: false,
     });
-    const single = traceRowsFromWork([GIT_LOG], false);
-    expect(traceHeader({ live: false, rows: single, work: [GIT_LOG], durationMs: 1_000 })).toEqual({
-      label: "1 tool call",
-      detail: "1s",
-      failed: false,
-    });
+    const rows2 = traceRowsFromWork([THOUGHT, GIT_LOG], false);
+    expect(traceHeader({ live: false, rows: rows2, work: [THOUGHT, GIT_LOG], durationMs: null }).label).toBe(
+      "Worked",
+    );
   });
 
   test("settled without a run duration falls back to the steps' own timestamps", () => {
     const { work } = splitTurn(SETTLED, false);
     const rows = traceRowsFromWork(work, false);
-    expect(traceHeader({ live: false, rows, work, durationMs: null }).label).toBe(
-      "Thought for 3m 12s, 1 failed",
+    expect(traceHeader({ live: false, rows, work, durationMs: null }).detail).toBe(
+      "ran 2 commands · 1 failed · 3m 12.0s",
     );
     const recallOnly = traceRowsFromWork([RECALL], false);
     expect(
       traceHeader({ live: false, rows: recallOnly, work: [RECALL], durationMs: null }),
     ).toEqual({
-      label: "Context",
+      label: "Worked",
       detail: null,
       failed: false,
     });
@@ -418,7 +496,7 @@ describe("traceHeader", () => {
     const work = [RECALL, PLAYBOOK];
     const rows = traceRowsFromWork(work, false);
     expect(traceHeader({ live: false, rows, work, durationMs: null })).toEqual({
-      label: "Context",
+      label: "Worked",
       detail: null,
       failed: false,
     });
@@ -433,7 +511,7 @@ describe("traceHeader", () => {
         durationMs: null,
         changedFileCount: 2,
       }),
-    ).toEqual({ label: "Changed 2 files", detail: null, failed: false });
+    ).toEqual({ label: "Worked", detail: "edited 2 files", failed: false });
   });
 
   test("a failed run heads the trace with its category and the failure reason as the detail", () => {

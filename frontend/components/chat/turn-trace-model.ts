@@ -4,26 +4,27 @@
 // which burst is the reply, one row per work node (a verb-first label, the
 // object in a chip, done / failed / running; a mid-work narration burst as a
 // plain prose line), the changed files, and the header's words ("Thinking"
-// live, "Thought for 1m 12s" or "4 tool calls" settled). Every engine's steps
-// land here; a bot's thread only starts folded.
+// live, "Worked · ran 2 commands · called 1 tool · 4.3s" settled). Every
+// engine's steps land here; a bot's thread only starts folded.
 
 import { workEntryFromTimelineNode } from "@/components/session-ui/adapter";
 import {
-  formatWorkingTimer,
   type WorkEntry,
   workEntryHasExpandedBody,
   workEntryIndicatesToolFailure,
 } from "@/components/session-ui/work-entry";
-import { workedForDuration } from "@/components/session-ui/worked-for-fold";
+import { workedForMs } from "@/components/session-ui/worked-for-fold";
+import { formatElapsed } from "@/utils/format";
 import { commandFailedWithRun } from "./command-failed-with-run";
 import { familyForGlyph, familyForToolName, type StepFamily } from "./step-icons";
 import type { TimelineMarker, TimelineNode, TimelinePlanEntry } from "./timeline";
-import { clip, summarizeToolStep, toolStepNames } from "./tool-summary";
+import { clip, listingEntryCount, summarizeToolStep, toolStepNames } from "./tool-summary";
 import {
   type ApiStep,
   deriveTrace,
   firstLine,
   isRenderableTimelineStep,
+  parseCommandStep,
   parseTodos,
   type RunStatus,
 } from "./types";
@@ -148,6 +149,8 @@ export interface TraceStepRow {
   readonly chip: TraceChip | null;
   /** Muted text after the chip: a count, a version, an exit code, a diff stat. */
   readonly detail: string | null;
+  /** How long the step took, when the engine reported it. */
+  readonly durationMs: number | null;
   readonly status: TraceRowStatus;
   readonly body: TraceRowBody | null;
 }
@@ -179,6 +182,7 @@ function proseRow(key: string, text: string, label: string, running: boolean): T
     label,
     chip: line,
     detail: null,
+    durationMs: null,
     status: running ? "running" : "done",
     body: { kind: "prose", text },
   };
@@ -207,12 +211,17 @@ function toolRow(
         : (toolStepNames(node.step)
             .map(familyForToolName)
             .find((candidate) => candidate !== null) ?? familyForGlyph(trace.glyph));
+  // A listing's detail is how many entries came back ("3 entries").
+  const listing =
+    summary.verb === "List" || summary.verb === "Listed" ? listingEntryCount(node.step) : null;
   const detail =
     trace.adds !== null && trace.dels !== null
       ? `+${trace.adds} -${trace.dels}`
       : failed && trace.exitCode !== null && trace.exitCode !== 0
         ? `exit ${trace.exitCode}`
-        : null;
+        : listing !== null
+          ? `${listing} ${listing === 1 ? "entry" : "entries"}`
+          : null;
   const label = family === "reasoning" ? (running ? "Thinking" : "Thought") : summary.verb;
   return {
     kind: "step",
@@ -221,6 +230,7 @@ function toolRow(
     label,
     chip: chip(summary.object, summary.objectMono),
     detail,
+    durationMs: parseCommandStep(node.step).durationMs,
     status: failed ? "failed" : running ? "running" : "done",
     body: workEntryHasExpandedBody(entry) ? { kind: "entry", entry } : null,
   };
@@ -244,6 +254,7 @@ function bootRow(
     label: ready ? `Sandbox ready in ${ready[1]}` : (labels.at(-1) ?? "Preparing"),
     chip: null,
     detail: ready?.[2] ?? null,
+    durationMs: null,
     status: running && !ready ? "running" : "done",
     body: null,
   };
@@ -255,6 +266,7 @@ function markerRow(key: string, marker: TimelineMarker, running: boolean): Trace
     key,
     chip: null,
     detail: null,
+    durationMs: null,
     status: "done" as TraceRowStatus,
     body: null,
   };
@@ -371,16 +383,25 @@ const isBoot = (node: TimelineNode): node is Extract<TimelineNode, { kind: "tool
   node.kind === "tool" && deriveTrace(node.step).accent === "boot";
 
 /** The trace rows of a turn's work; while live the LAST node is the running
- *  one. Consecutive sandbox lifecycle steps fold into one boot row. */
-export function traceRowsFromWork(work: readonly TimelineNode[], live: boolean): TraceRow[] {
+ *  one. Consecutive sandbox lifecycle steps fold into one boot row. Steps a
+ *  subagent ran (`childSteps`, the fold's own attribution) render under that
+ *  child's row, never here as the parent's work. */
+export function traceRowsFromWork(
+  work: readonly TimelineNode[],
+  live: boolean,
+  childSteps?: ReadonlySet<string>,
+): TraceRow[] {
   const rows: TraceRow[] = [];
   let boot: Extract<TimelineNode, { kind: "tool" }>[] = [];
   const flushBoot = (running: boolean) => {
     if (boot.length > 0) rows.push(bootRow(boot, running));
     boot = [];
   };
-  for (const [index, node] of work.entries()) {
-    const last = index === work.length - 1;
+  const own = childSteps
+    ? work.filter((node) => !(node.kind === "tool" && childSteps.has(node.step.id)))
+    : work;
+  for (const [index, node] of own.entries()) {
+    const last = index === own.length - 1;
     if (isBoot(node)) {
       boot.push(node);
       if (last) flushBoot(live);
@@ -417,25 +438,65 @@ export function latestPlanEntries(
 
 export interface TraceHeader {
   readonly label: string;
-  /** Muted text after the label: the running step while live, the counts or
-   *  the duration once settled. */
+  /** Muted text after the label: the running step while live; settled, what
+   *  the turn did as counts ("ran 2 commands · called 1 tool · 4.3s"). */
   readonly detail: string | null;
   readonly failed: boolean;
 }
 
-function formatDurationMs(durationMs: number | null): string | null {
-  if (durationMs === null || !Number.isFinite(durationMs) || durationMs <= 0) return null;
-  return formatWorkingTimer(new Date(0).toISOString(), new Date(durationMs).toISOString());
-}
-
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
+/** What a settled row counts as in the pill. Reasoning, boot and context
+ *  receipts count as nothing; a directory listing is a tool call, not a search,
+ *  whatever glyph it draws. */
+type CountKind = "command" | "read" | "edit" | "search" | "fetch" | "call";
+
+const COUNT_ORDER: readonly CountKind[] = ["command", "read", "edit", "search", "fetch", "call"];
+
+function countKind(row: TraceStepRow): CountKind | null {
+  switch (row.family) {
+    case "reasoning":
+    case "boot":
+      return null;
+    case "shell":
+      return "command";
+    case "file-read":
+      return "read";
+    case "file-edit":
+    case "file-write":
+      return "edit";
+    case "web-fetch":
+      return "fetch";
+    case "search":
+      return /^List(?:ed)?\b/.test(row.label) ? "call" : "search";
+    default:
+      return "call";
+  }
+}
+
+function countSegment(kind: CountKind, n: number): string {
+  switch (kind) {
+    case "command":
+      return `ran ${plural(n, "command")}`;
+    case "read":
+      return `read ${plural(n, "file")}`;
+    case "edit":
+      return `edited ${plural(n, "file")}`;
+    case "search":
+      return n === 1 ? "searched once" : `searched ${n} times`;
+    case "fetch":
+      return `fetched ${plural(n, "page")}`;
+    case "call":
+      return `called ${plural(n, "tool")}`;
+  }
+}
+
 /** The header line. Live: "Thinking" plus the running step. A failed run: its
- *  category ("Engine error") with the reason as the detail. Settled: "Thought
- *  for 3m 12s" (the run's own duration, else the steps' timestamps) with the
- *  call counts as the detail when the turn reasoned; otherwise the counts
- *  themselves ("4 tool calls, 2 messages") with the duration as the detail.
- *  ", N failed" counts the steps that failed along the way; only a turn the run
+ *  category ("Engine error") with the reason as the detail. Settled: "Worked"
+ *  with what it did as the detail ("ran 2 commands · read 1 file · called 1
+ *  tool · 4.3s"): one segment per kind of work, "N failed" for the steps that
+ *  failed along the way, then the duration (the run's own, else the steps'
+ *  timestamps). A turn that only thought reads "Thought". Only a turn the run
  *  itself lost is tinted as a failure, since a step the agent recovered from is
  *  ordinary work. */
 export function traceHeader({
@@ -467,30 +528,28 @@ export function traceHeader({
     return { label: "Thinking", detail, failed: false };
   }
   if (failure) return { label: failure.label, detail: firstLine(failure.reason), failed: true };
-  const failures = traceFailureCount(rows);
-  const thoughts = steps.filter(
-    (row) => row.family === "reasoning" && row.label === "Thought",
-  ).length;
-  const messages = rows.filter((row) => row.kind === "narration").length;
   const markerKeys = new Set(work.filter((node) => node.kind === "marker").map((node) => node.key));
-  const calls = steps.filter(
-    (row) => row.family !== "reasoning" && row.family !== "boot" && !markerKeys.has(row.key),
-  ).length;
-  const counts = [
-    calls > 0 ? plural(calls, "tool call") : null,
-    messages > 0 ? plural(messages, "message") : null,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(", ");
-  const duration = formatDurationMs(durationMs) ?? workedForDuration(work);
-  const failedSuffix = failures > 0 ? `, ${failures} failed` : "";
-  if (thoughts > 0) {
-    const thought = duration ? `Thought for ${duration}` : "Thought";
-    return { label: `${thought}${failedSuffix}`, detail: counts || null, failed: false };
+  const counts = new Map<CountKind, number>();
+  for (const row of steps) {
+    if (markerKeys.has(row.key)) continue;
+    const kind = countKind(row);
+    if (kind) counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
+  // Distinct files (edit calls plus durable receipts) are the honest edit count.
+  if (changedFileCount > 0) counts.set("edit", changedFileCount);
+  const segments = COUNT_ORDER.flatMap((kind) => {
+    const n = counts.get(kind) ?? 0;
+    return n > 0 ? [countSegment(kind, n)] : [];
+  });
+  const worked = segments.length > 0;
+  const failures = traceFailureCount(rows);
+  if (failures > 0) segments.push(`${failures} failed`);
+  const duration = formatElapsed(durationMs) ?? formatElapsed(workedForMs(work));
+  if (duration) segments.push(duration);
+  const thought = steps.some((row) => row.family === "reasoning" && row.label === "Thought");
   return {
-    label: `${counts || (changedFileCount > 0 ? `Changed ${plural(changedFileCount, "file")}` : "Context")}${failedSuffix}`,
-    detail: duration,
+    label: thought && !worked ? "Thought" : "Worked",
+    detail: segments.length > 0 ? segments.join(" · ") : null,
     failed: false,
   };
 }

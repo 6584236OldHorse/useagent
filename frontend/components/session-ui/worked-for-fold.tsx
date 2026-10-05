@@ -24,11 +24,11 @@ import { formatWorkingTimer } from "./work-entry";
 import { WorkEntryRow } from "./work-entry-row";
 
 /**
- * Duration of a work burst from its own node timestamps: min -> max of the tool
- * nodes' ApiStep.created_at, formatted with the shared working-timer grammar.
- * Null when the burst carries no timestamped tool nodes (reasoning-only).
+ * Duration of a work burst from its own node timestamps, in ms: min -> max of
+ * the tool nodes' ApiStep.created_at. Null when the burst carries no
+ * timestamped tool nodes (reasoning-only).
  */
-export function workedForDuration(nodes: readonly TimelineNode[]): string | null {
+export function workedForMs(nodes: readonly TimelineNode[]): number | null {
   let startMs = Number.POSITIVE_INFINITY;
   let endMs = Number.NEGATIVE_INFINITY;
   for (const node of nodes) {
@@ -39,7 +39,13 @@ export function workedForDuration(nodes: readonly TimelineNode[]): string | null
     if (ms > endMs) endMs = ms;
   }
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
-  return formatWorkingTimer(new Date(startMs).toISOString(), new Date(endMs).toISOString());
+  return endMs - startMs;
+}
+
+/** The same span formatted with the shared working-timer grammar. */
+export function workedForDuration(nodes: readonly TimelineNode[]): string | null {
+  const ms = workedForMs(nodes);
+  return ms === null ? null : formatWorkingTimer(new Date(0).toISOString(), new Date(ms).toISOString());
 }
 
 /** Upstream deriveTurnFolds label grammar for a settled turn. */

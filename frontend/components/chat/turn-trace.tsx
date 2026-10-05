@@ -1,12 +1,13 @@
 "use client";
 
 // The ONE block a turn's work renders as, in every thread: a Thinking header
-// ("Thinking" + the pixel loader while live, "Thought for 1m 12s" or "4 tool
-// calls, 2 messages" once settled) over short step lines behind a hairline
-// rule. A step line is: a muted check when done (a muted x when failed, the loader
+// ("Thinking" + the pixel loader while live, "Worked · ran 1 command · called
+// 1 tool · 4.3s" once settled) over short step lines hanging off a thin wavy
+// guide. A step line is: a muted check when done (a muted x when failed, the loader
 // while it runs), the step's family glyph, a verb-first label, the object it
-// acted on in a chip (mono for a command, a path or a slug), and a muted
-// detail. A step opens in place to its payload (reasoning prose, a tool's
+// acted on in a chip (mono for a command, a path or a slug), a muted detail,
+// the step's own duration when the engine reported one, and a red Error chip
+// when it failed. A step opens in place to its payload (reasoning prose, a tool's
 // command + output), which mounts only then. What the agent said mid-work is
 // a muted prose line between the steps, with no verb and no chip. When the
 // turn edited files, a strip of file chips with +added / -removed counts
@@ -28,6 +29,7 @@ import type { ChangedFile } from "@/components/session-ui/changed-files";
 import { MessageCopyButton } from "@/components/session-ui/message-copy-button";
 import { buildToolCallExpandedBody } from "@/components/session-ui/work-entry";
 import { cx as cn } from "@/utils/cx";
+import { formatElapsed } from "@/utils/format";
 import type {
   TraceHeader,
   TraceNarrationRow,
@@ -111,10 +113,13 @@ const TraceNarrationLine = memo(function TraceNarrationLine({ row }: { row: Trac
   );
 });
 
-const TraceRowView = memo(function TraceRowView({ row }: { row: TraceStepRow }) {
+/** One step as a short line. Shared with the subagent rows (./subagent-row), so
+ *  a child's work reads exactly like its parent's. */
+export const TraceRowView = memo(function TraceRowView({ row }: { row: TraceStepRow }) {
   const [expanded, setExpanded] = useState(false);
   const Icon = STEP_ICON[row.family];
   const expandable = row.body !== null;
+  const elapsed = formatElapsed(row.durationMs);
   const head = (
     <>
       <StatusGlyph status={row.status} />
@@ -141,15 +146,34 @@ const TraceRowView = memo(function TraceRowView({ row }: { row: TraceStepRow }) 
           {row.detail}
         </span>
       )}
-      {expandable && (
-        <RiArrowDownSLine
-          className={cn(
-            "ml-auto size-3.5 shrink-0 text-text-tertiary opacity-70 transition-transform duration-200",
-            expanded && "rotate-180",
-          )}
-          aria-hidden
-        />
-      )}
+      {/* The row's right edge: how long it took, the Error chip, the chevron. */}
+      <span className="ml-auto flex shrink-0 items-center gap-2 pl-1">
+        {elapsed && (
+          <span
+            data-testid="trace-row-duration"
+            className="text-[11.5px] tabular-nums text-text-tertiary"
+          >
+            {elapsed}
+          </span>
+        )}
+        {row.status === "failed" && (
+          <span
+            data-testid="trace-row-error"
+            className="inline-flex h-[18px] items-center rounded-md bg-red-alpha-10 px-1.5 text-[11px] font-medium text-red-500"
+          >
+            Error
+          </span>
+        )}
+        {expandable && (
+          <RiArrowDownSLine
+            className={cn(
+              "size-3.5 text-text-tertiary opacity-70 transition-transform duration-200",
+              expanded && "rotate-180",
+            )}
+            aria-hidden
+          />
+        )}
+      </span>
     </>
   );
   const rowClass = "flex min-h-7 w-full items-center gap-2 rounded-md px-1.5 py-0.5 text-left";

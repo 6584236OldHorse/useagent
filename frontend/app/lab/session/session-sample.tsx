@@ -24,6 +24,7 @@ import {
 } from "@/components/chat/conversation";
 import { FollowUpRows } from "@/components/chat/follow-up-rows";
 import { RunUploadChips, type RunUpload } from "@/components/chat/run-uploads";
+import { SubagentRow } from "@/components/chat/subagent-row";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
@@ -55,6 +56,7 @@ import {
   PROPOSED_PLAN_MARKDOWN,
   sampleUploads,
   type SampleTurn,
+  subagentRows,
   THREAD_ERROR_SUMMARY,
   USER_STOP_SUMMARY,
 } from "./session-sample-data";
@@ -62,9 +64,10 @@ import {
 /** Left-rail index: every covered type, linked to where it renders. */
 const INDEX: readonly { label: string; href: string }[] = [
   { label: "User message + attachment", href: "#turn-1" },
+  { label: "Work log pill (Worked · counts · duration)", href: "#turn-1" },
   { label: "Context recall fold (skill / memory / knowledge)", href: "#turn-1" },
   { label: "Reasoning / thinking fold", href: "#turn-1" },
-  { label: "Tool work groups (bash / read / search / web)", href: "#turn-1" },
+  { label: "Tool rows (Run / List / Error chip / durations)", href: "#turn-1" },
   { label: "File edit with line diff", href: "#turn-1" },
   { label: "File receipt row", href: "#turn-1" },
   { label: "Memory write chip", href: "#turn-1" },
@@ -85,6 +88,7 @@ const INDEX: readonly { label: string; href: string }[] = [
   { label: "Changed-files card + tree", href: "#changed-files" },
   { label: "File-diff view (hunks)", href: "#file-diff" },
   { label: "Child-agent panel rows", href: "#agents" },
+  { label: "Subagent rows (one line folded, tool rows + Summary open)", href: "#subagents" },
   { label: "Composer upload tray", href: "#uploads" },
   { label: "Follow-ups + sources (closing turn grammar)", href: "#conversation" },
   { label: "Long thread (windowed rendering)", href: "#long-thread" },
@@ -396,6 +400,31 @@ export function SessionSample() {
                   <AgentPanelRow key={agent.title} agent={agent} onOpen={() => {}} />
                 ))}
               </div>
+            </Surface>
+
+            <Surface
+              id="subagents"
+              title="Subagent rows - one line folded, tool rows + Summary open"
+              owner="subagent-row (subagents-fold)"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                A settled subagent is one line: its name, role and how long it ran.
+                Opened, its own tool rows carry the durations the engine reported and
+                its result sits in a Summary card behind More. Both come from the same
+                children projection the conversation fold reads.
+              </p>
+              <ul className="space-y-px">
+                {subagentRows.map((row, index) => (
+                  <SubagentRow
+                    key={row.card.id}
+                    card={row.card}
+                    fidelity={row.fidelity}
+                    steps={row.steps}
+                    runLive={false}
+                    defaultOpen={index === 0}
+                  />
+                ))}
+              </ul>
             </Surface>
 
             <Surface

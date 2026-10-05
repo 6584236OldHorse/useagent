@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { summarizeToolStep, unwrapToolOutput } from "./tool-summary";
+import { listingEntryCount, summarizeToolStep, unwrapToolOutput } from "./tool-summary";
 import type { ApiStep } from "./types";
 
 function step(over: Partial<ApiStep> & { code?: Record<string, unknown> }): ApiStep {
@@ -384,5 +384,21 @@ describe("summarizeToolStep verb + object (the trace row's text and chip)", () =
     expect(summary.verb).toBe("Resource catalog search");
     expect(summary.object).toBe("useagent");
     expect(summary.verb).not.toContain("Execute");
+  });
+});
+
+describe("listingEntryCount", () => {
+  test("a tree listing counts its entries without the root line", () => {
+    const listing = step({
+      code: { tool: "list", input: { path: "src" }, output: "src/\n  a.ts\n  b/\n  c.ts\n" },
+    });
+    expect(listingEntryCount(listing)).toBe(3);
+  });
+
+  test("a flat listing counts every non-empty line; no output is no count", () => {
+    expect(
+      listingEntryCount(step({ code: { tool: "list", input: { path: "." }, output: "a\nb\n\n" } })),
+    ).toBe(2);
+    expect(listingEntryCount(step({ code: { tool: "list", input: { path: "." } } }))).toBeNull();
   });
 });
