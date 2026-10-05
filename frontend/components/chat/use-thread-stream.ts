@@ -7,6 +7,7 @@ import {
   type DecodedFrame,
   decodeFrame,
   type EventSourceLike,
+  NATIVE_CURSOR_LIMIT,
   nativeHoldDigest,
   THREAD_FRAME_TYPES,
   type ThreadConnection,
@@ -132,7 +133,8 @@ export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
         canonicalId = e.eventId;
       }
     }
-    if (view.canonicalComplete && view.native.nativeCursor >= 0) {
+    // Bounded to what the server reads; a sealed run past the bound replays from the start.
+    if (view.canonicalComplete && view.native.nativeCursor >= 0 && nativeAfter.size < NATIVE_CURSOR_LIMIT) {
       nativeAfter.set(runId, { seq: view.native.nativeCursor, digest: nativeHoldDigest(view.native.nativeFrames) });
     }
   }

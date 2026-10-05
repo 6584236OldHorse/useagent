@@ -3,7 +3,7 @@
 // is covered by thread-connection.test.ts + the browser proof; these lock the two
 // pure decisions the hook is built on.
 
-import { nativeHoldDigest } from "@useagent/agent-client";
+import { NATIVE_CURSOR_LIMIT, nativeHoldDigest } from "@useagent/agent-client";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { NATIVE_SCHEMA_VERSION } from "./native-events";
 import { createThreadStore } from "./thread-store";
@@ -155,6 +155,21 @@ describe("resume cursor (what the store already holds)", () => {
     expect(threadEventsUrl("A", cursor, "boot-1")).toBe(`/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2%3A${digest}`);
     // Without the epoch that minted the store's rows, no cursor of either lane is sent.
     expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
+  });
+
+  test("no more native cursors travel than the server reads", () => {
+    const store = createThreadStore();
+    const runs = Array.from({ length: NATIVE_CURSOR_LIMIT + 1 }, (_, i) => makeRun(`R${i}`, "completed", i === 0 ? null : "R0"));
+    store.applySnapshot(runs);
+    for (const run of runs) {
+      store.applyNative(run.id, {
+        schemaVersion: NATIVE_SCHEMA_VERSION, eventId: `${run.id}-n0`, seq: 0, provider: "opencode", eventType: "part.text",
+        native: { sessionId: "ses", parentSessionId: null, messageId: `${run.id}-m`, partId: `${run.id}-p0`, callId: null },
+        payload: { text: "x" },
+      });
+      store.markCanonicalComplete(run.id);
+    }
+    expect(resumeCursor(store.getSnapshot()).nativeAfter.size).toBe(NATIVE_CURSOR_LIMIT);
   });
 });
 
