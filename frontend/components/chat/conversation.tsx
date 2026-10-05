@@ -226,23 +226,25 @@ const TurnBlock = memo(function TurnBlock({
     if (liveText.length > 0) setSawNarration(true);
   }, [liveText]);
 
-  // The interleaved timeline (narration bursts ↔ tool rows in true order), built
-  // from the watched run's native ordered frames. Null on turns without native
-  // data (settled history, non-native engines) → the legacy rendering below takes
-  // over. Recomputed only when the native snapshot or liveness changes.
-  const durableTimeline = useMemo(() => {
-    // Canonical cutover (flag-gated): render from the canonical lane ONLY once this run's
-    // canonicalization reached its durable `complete` record (H2). A still-provisional
-    // projection (the outbox is retrying, the snapshot may be partial) never drives the
-    // UI - the legacy native derivation does. The two are proven byte-for-byte equivalent,
-    // so a completed swap never changes what the user sees.
-    const canonical = turn.canonical;
-    if (canonical && shouldUseCanonicalTimeline(canonicalTimeline, turn)) {
-      const stepsById = new Map(turn.steps.map((s) => [s.id, s]));
-      return buildTimelineFromCanonical(canonical, stepsById, live);
-    }
-    return turn.native ? buildTimeline(turn.native, live) : null;
-  }, [turn.native, turn.canonical, turn.canonicalComplete, turn.steps, live, canonicalTimeline]);
+  // The interleaved timeline (narration bursts ↔ tool rows in true order). Null on
+  // turns without native data (settled history, non-native engines) → the legacy
+  // rendering below takes over. Canonical cutover (flag-gated): the canonical lane
+  // drives the UI ONLY once this run's canonicalization reached its durable
+  // `complete` record (H2); a still-provisional projection never does. The two are
+  // proven byte-for-byte equivalent, so a completed swap never changes what the user
+  // sees. The lanes are memoized apart so a batch that only touched the other lane
+  // rebuilds nothing.
+  const useCanonical = Boolean(turn.canonical) && shouldUseCanonicalTimeline(canonicalTimeline, turn);
+  const canonicalDurable = useMemo(() => {
+    if (!useCanonical || !turn.canonical) return null;
+    const stepsById = new Map(turn.steps.map((s) => [s.id, s]));
+    return buildTimelineFromCanonical(turn.canonical, stepsById, live);
+  }, [useCanonical, turn.canonical, turn.steps, live]);
+  const nativeDurable = useMemo(
+    () => (useCanonical || !turn.native ? null : buildTimeline(turn.native, live)),
+    [useCanonical, turn.native, live],
+  );
+  const durableTimeline = useCanonical ? canonicalDurable : nativeDurable;
 
   const timeline = useMemo(
     () => withTransientLiveReasoning(durableTimeline, live, liveReasoning),
