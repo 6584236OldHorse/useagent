@@ -306,9 +306,12 @@ describe("spend allowance", () => {
     delete process.env.SPEND_ALLOWANCE_USD;
 
     // The ledger is per organisation: the same person in a second org starts fresh.
+    // Sign-up and the helper already made two; this person may create a third.
+    process.env.ORG_CREATE_LIMIT_PER_USER = "3";
     const create = await fetchApi("/api/auth/organization/create", {
       method: "POST", cookies: session.cookies, body: { name: "Second org", slug: uid("slug") },
     });
+    delete process.env.ORG_CREATE_LIMIT_PER_USER;
     expect(create.status).toBe(200);
     session.jar.absorb(create);
     const created = (await create.json()) as { id?: string; organization?: { id?: string } };

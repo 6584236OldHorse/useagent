@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { user } from "../db/auth-schema";
-import { db } from "../db/client";
+import { db, type Executor } from "../db/client";
 import type { EngineId } from "../db/schema";
 import { PROVIDER_IDS, providerForEngine, type ProviderId } from "./provider";
 
@@ -49,8 +49,8 @@ export function providersOfferedTo(email: string | null | undefined, env: Env = 
   return PROVIDER_IDS.filter((provider) => providerOfferedTo(provider, email, env));
 }
 
-export async function userEmail(userId: string): Promise<string | null> {
-  const [row] = await db.select({ email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
+export async function userEmail(userId: string, exec: Executor = db): Promise<string | null> {
+  const [row] = await exec.select({ email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
   return row?.email ?? null;
 }
 

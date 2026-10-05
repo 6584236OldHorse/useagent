@@ -233,7 +233,9 @@ The important variables are:
   (`/api/operator/*`, `/api/sandbox-preference`, the Daytona and Box provider
   connections) and read a vendor name on a run; everyone else gets 404 there and
   reads "Cloud". Unset, nobody does. Stored connections and preferences keep
-  applying to runs. Development mode keeps it open.
+  applying to runs. Development mode keeps it open. These accounts are also
+  exempt from the sandbox minutes cap and from `ORG_CREATE_LIMIT_PER_USER`
+  (default 2 organisations created per person), in every mode.
 - `PROVIDER_ACCOUNTS=cerebras:owner@example.com,second@example.com;openai:third@example.com`
   offers a model provider only to the listed accounts. A provider named there
   leaves every catalog, refuses runs like an unknown model, has no Settings card

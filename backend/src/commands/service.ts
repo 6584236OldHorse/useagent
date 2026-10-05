@@ -357,10 +357,6 @@ async function acceptRunCommandWithOrigin(
         // still returns its original run), as a lock-free read of the committed
         // figure so this transaction takes no lock that could close a cycle.
         await assertSpendAllowance(input.orgId, input.actorId, tx);
-        // Sandbox minutes are checked here, on NEW work only (a keyed replay
-        // above still returns its original run), as a lock-free read of the
-        // committed ledger. A chat turn holds no sandbox and passes.
-        if (input.run.engine !== "chat") await assertSandboxMinutes(input.orgId, input.actorId, tx);
         assertRunPromptLimit(intent.prompt);
         assertRunPromptLimit(input.run.prompt);
 
@@ -383,6 +379,13 @@ async function acceptRunCommandWithOrigin(
         const runLocation = input.run.runLocation ?? (input.run.parentRunId
           ? (await getLatestThreadRun(input.orgId, input.run.threadId, tx))?.runLocation ?? null
           : null);
+        // Sandbox minutes are checked here, on NEW work only (a keyed replay
+        // above still returns its original run), as a lock-free read of the
+        // committed ledger, once it is known where the turn runs. A chat turn
+        // holds no sandbox and passes.
+        if (input.run.engine !== "chat") {
+          await assertSandboxMinutes(input.orgId, input.actorId, tx, { threadId: input.run.threadId, runLocation });
+        }
         const dispatchReady = await dispatchReadyForUser(
           { orgId: input.orgId, userId: input.actorId, runLocation },
           input.run.engine,
