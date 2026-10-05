@@ -4,6 +4,8 @@ import {
   listRepoTree,
   sanitizeTreePath,
 } from "../src/github/repos";
+// The app boots the schema; without it the tenant lookup fails and the listing reads as configured with an error.
+import "./helpers";
 
 const githubEnvKeys = [
   "GITHUB_TOKEN",
@@ -26,6 +28,10 @@ const originalFetch = globalThis.fetch;
 
 // Force the "unconfigured" env so these unit tests never touch the network
 // (mirrors github-repos.test.ts — backend/.env carries App creds too).
+// Org ids of this suite's own: a GitHub connection another suite stored for a shared id would make a listing read as configured.
+const SUITE = crypto.randomUUID().slice(0, 8);
+const org = (name: string) => `${name}-tree-${SUITE}`;
+
 function clearGithubEnv(): void {
   for (const k of githubEnvKeys) {
     delete process.env[k];
@@ -38,7 +44,7 @@ function clearGithubEnv(): void {
 function configureTenant(repos: unknown[], dir: unknown): () => number {
   process.env.GITHUB_TOKEN = "test-token";
   process.env.GITHUB_ORG = "upstream-org";
-  process.env.GITHUB_TENANT_ORG_ID = "org-primary";
+  process.env.GITHUB_TENANT_ORG_ID = org("org-primary");
   let fetches = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     fetches += 1;
@@ -91,7 +97,7 @@ describe("github tree listing — honest degradation", () => {
   beforeEach(clearGithubEnv);
 
   test("unconfigured → configured:false, empty, never throws", async () => {
-    const listing = await listRepoTree("upstream-org/backend", "org-test", {});
+    const listing = await listRepoTree("upstream-org/backend", org("org-test"), {});
     expect(listing.configured).toBe(false);
     expect(listing.entries).toEqual([]);
     expect(listing.error).toBeUndefined();
@@ -103,7 +109,7 @@ describe("github tree listing — honest degradation", () => {
       fetches += 1;
       return new Response("[]", { status: 200 });
     }) as typeof fetch;
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       path: "../secrets",
     });
     expect(listing.error).toBe("invalid path");
@@ -117,7 +123,7 @@ describe("github tree listing — honest degradation", () => {
       fetches += 1;
       return new Response("[]", { status: 200 });
     }) as typeof fetch;
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       ref: "bad ref",
     });
     expect(listing.error).toBe("invalid ref");
@@ -139,7 +145,7 @@ describe("github tree listing — scoped to offered repos", () => {
       ],
     );
 
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       path: "src",
     });
     expect(listing.configured).toBe(true);
@@ -157,7 +163,7 @@ describe("github tree listing — scoped to offered repos", () => {
 
   test("an unknown repo is refused without a tree fetch", async () => {
     const getFetches = configureTenant([BACKEND_REPO], []);
-    const listing = await listRepoTree("upstream-org/secret", "org-primary", {});
+    const listing = await listRepoTree("upstream-org/secret", org("org-primary"), {});
     expect(listing.entries).toEqual([]);
     expect(listing.error).toBe("repository not available");
     // Only the repos listing ran; the tree endpoint was never hit.
@@ -166,7 +172,7 @@ describe("github tree listing — scoped to offered repos", () => {
 
   test("another product org is denied before touching the tree", async () => {
     const getFetches = configureTenant([BACKEND_REPO], []);
-    const listing = await listRepoTree("upstream-org/backend", "org-other", {});
+    const listing = await listRepoTree("upstream-org/backend", org("org-other"), {});
     expect(listing.entries).toEqual([]);
     expect(listing.error).toContain("not available to this organization");
     expect(getFetches()).toBe(0);
@@ -178,7 +184,7 @@ describe("github tree listing — scoped to offered repos", () => {
       type: "file",
     }));
     configureTenant([BACKEND_REPO], many);
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       path: "src",
     });
     expect(listing.entries).toHaveLength(200);
@@ -187,7 +193,7 @@ describe("github tree listing — scoped to offered repos", () => {
 
   test("a file path (object response) yields an honest empty level", async () => {
     configureTenant([BACKEND_REPO], { path: "src/index.ts", type: "file" });
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       path: "src/index.ts",
     });
     expect(listing.entries).toEqual([]);
@@ -197,13 +203,13 @@ describe("github tree listing — scoped to offered repos", () => {
   test("a failed GitHub fetch degrades to an honest error", async () => {
     process.env.GITHUB_TOKEN = "test-token";
     process.env.GITHUB_ORG = "upstream-org";
-    process.env.GITHUB_TENANT_ORG_ID = "org-primary";
+    process.env.GITHUB_TENANT_ORG_ID = org("org-primary");
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/contents/")) return new Response("nope", { status: 500 });
       return new Response(JSON.stringify([BACKEND_REPO]), { status: 200 });
     }) as typeof fetch;
-    const listing = await listRepoTree("upstream-org/backend", "org-primary", {
+    const listing = await listRepoTree("upstream-org/backend", org("org-primary"), {
       path: "src",
     });
     expect(listing.configured).toBe(true);
