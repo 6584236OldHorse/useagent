@@ -610,6 +610,13 @@
       "when": 1792700000000,
       "tag": "0088_expected_sandbox",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1792700000001,
+      "tag": "0089_control_plane_identity",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { OrganizationSwitcher } from "@clerk/nextjs";
 import { RiApps2Line, RiLoginBoxLine, RiLogoutBoxRLine, RiSettings3Line } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState } from "react";
@@ -13,13 +14,13 @@ import {
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
 import { signOut, useSession } from "@/lib/auth";
+import { legacyAuthEnabled } from "@/lib/auth-mode";
 
 /**
  * Account affordance in the sidebar clusters: an avatar that opens a BoardUI
  * base dropdown menu - identity header, Settings / Apps, sign-in/out. Identity is
- * the live better-auth session (lib/auth.ts); when there is none (the open
- * dev-org path) it invites sign-in. Theme switching lives in the shell
- * ThemeMenu, not here.
+ * the backend-normalized session from lib/auth.ts. Theme switching lives in
+ * the shell ThemeMenu, not here.
  */
 export function UserMenu({
   trigger,
@@ -28,7 +29,7 @@ export function UserMenu({
   trigger?: ReactNode;
 } = {}) {
   const router = useRouter();
-  const { session, refresh } = useSession();
+  const { session } = useSession();
   const [open, setOpen] = useState(false);
 
   const signedIn = session !== null;
@@ -40,7 +41,6 @@ export function UserMenu({
   async function handleSignOut() {
     setOpen(false);
     await signOut();
-    refresh();
     router.push("/login");
     router.refresh();
   }
@@ -83,6 +83,18 @@ export function UserMenu({
                 <p className="truncate text-caption-1-regular text-text-secondary">{email}</p>
               </div>
             </div>
+            {signedIn && !legacyAuthEnabled ? (
+              <OrganizationSwitcher
+                appearance={{
+                  elements: {
+                    rootBox: "w-full px-2 pb-1.5",
+                    organizationSwitcherTrigger:
+                      "w-full rounded-lg border border-border-button-default bg-background-tertiary-default",
+                  },
+                }}
+                hidePersonal
+              />
+            ) : null}
             <DropdownDivider />
           </>
         }

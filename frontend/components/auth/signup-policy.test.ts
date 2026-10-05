@@ -1,18 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import type { ReactElement } from "react";
 
-function read(path: string): string {
-  return readFileSync(new URL(`../../app/${path}`, import.meta.url), "utf8");
-}
+import SignupPage from "@/app/signup/[[...signup]]/page";
+import { legacyAuthEnabled } from "@/lib/auth-mode";
+import { AuthScreen } from "./auth-screen";
+import { IdentityForm } from "./identity-form";
 
 describe("self-service signup UI policy", () => {
-  test("redirects the legacy signup route and exposes no account-creation affordance", () => {
-    const signupPage = read("signup/page.tsx");
-    const authForm = read("login/auth-form.tsx");
+  test("keeps signup on the identity provider and redirects the legacy route", () => {
+    if (legacyAuthEnabled) {
+      expect(() => SignupPage()).toThrow("NEXT_REDIRECT");
+      return;
+    }
 
-    expect(signupPage).toContain('redirect("/login")');
-    expect(authForm).not.toContain("Create an account");
-    expect(authForm).not.toContain("/api/auth/sign-up/email");
-    expect(authForm).not.toContain("/signup");
+    const screen = SignupPage() as ReactElement<{ children: ReactElement<{ mode: string }> }>;
+    expect(screen.type).toBe(AuthScreen);
+    expect(screen.props.children.type).toBe(IdentityForm);
+    expect(screen.props.children.props.mode).toBe("sign-up");
   });
 });

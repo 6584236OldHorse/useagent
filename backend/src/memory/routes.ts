@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { auth } from "../auth";
+import { resolveSession } from "../auth/session";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
 import {
@@ -58,12 +58,12 @@ function poolIdentityFor(
   return planFor(orgId, authedUserId, scope)?.writePool?.identity ?? null;
 }
 
-/** Resolve the real better-auth user id for THIS request (null when anonymous /
+/** Resolve the real authenticated user id for this request (null when anonymous /
  *  dev-org fallback). Distinct from `c.get("userId")`, which the org middleware
  *  also fills with the dev user — personal scope must not trust that. */
 async function authedUserId(headers: Headers): Promise<string | null> {
   try {
-    const session = await auth.api.getSession({ headers });
+    const session = await resolveSession(headers);
     return session?.user.id ?? null;
   } catch {
     return null;

@@ -3,7 +3,8 @@ import { websocket } from "hono/bun";
 import { cors } from "hono/cors";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { ARTIFACT_FIDELITY } from "@useagent/artifact-workspace";
-import { auth } from "./auth";
+import { handleAuthRequest } from "./auth/routes";
+import { authProvider } from "./auth/session";
 import { artifactRoutes } from "./artifacts/routes";
 import { internalArtifactChangeRoutes } from "./artifacts/internal-change-routes";
 import { startEmailConnector } from "./connectors/email";
@@ -14,7 +15,6 @@ import {
   connectorEmailConfig,
   env,
   githubConfigured,
-  googleAuthEnabled,
   memoryConfig,
   slackConfig,
 } from "./env";
@@ -349,7 +349,7 @@ app.get("/api/config", (c) => {
   const models = engineModelsForReadyEngines();
   const configuredModels = engineModelsForConfiguredEngines();
   return c.json({
-    auth: { google: googleAuthEnabled(), emailPassword: true },
+    auth: authProvider(),
     allowDevOrg: allowDevOrg(),
     release: currentReleaseFingerprint(),
     engines,
@@ -416,8 +416,8 @@ app.post("/api/config/models/refresh", async (c) => {
   });
 });
 
-// better-auth: email/password + organization plugin, mounted at /api/auth/*.
-app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+// Managed identity and signed webhooks; the legacy handler is a one-release kill switch.
+app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a
 // model completion directly (OpenRouter), augmented with read-only retrieval

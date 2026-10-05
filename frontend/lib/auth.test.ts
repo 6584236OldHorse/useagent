@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSessionRequest } from "./auth";
+import { createSessionRequest, getAuthConfig, shouldReloadForOrganizationChange } from "./auth";
 
 function countingFetcher(responses: (() => Response)[] = []) {
   const seen: string[] = [];
@@ -50,4 +50,35 @@ test("the session answer expires after its ttl", async () => {
   await request.get();
   await request.get();
   expect(seen).toHaveLength(2);
+});
+
+test("a provider identity rejected by the backend is not an authorized session", async () => {
+  const { fetcher } = countingFetcher([() => new Response(null, { status: 403 })]);
+  const request = createSessionRequest(fetcher, { isShared: () => true });
+  await expect(request.get()).rejects.toThrow("get-session failed: 403");
+});
+
+test("legacy provider config keeps its shape on the dedicated route", async () => {
+  const seen: string[] = [];
+  const fetcher = (async (path: string) => {
+    seen.push(path);
+    return Response.json({ google: true, emailPassword: false, allowDevOrg: false });
+  }) as unknown as Parameters<typeof getAuthConfig>[0];
+
+  expect(await getAuthConfig(fetcher)).toEqual({
+    google: true,
+    emailPassword: false,
+    allowDevOrg: false,
+  });
+  expect(seen).toEqual(["/api/auth/provider-config"]);
+});
+
+test("only a same-user organization change requires a document reload", () => {
+  const first = { userId: "user-1", orgId: "org-1" };
+  expect(shouldReloadForOrganizationChange(undefined, first)).toBe(false);
+  expect(shouldReloadForOrganizationChange(first, first)).toBe(false);
+  expect(shouldReloadForOrganizationChange(first, { ...first, orgId: "org-2" })).toBe(true);
+  expect(shouldReloadForOrganizationChange(first, { userId: "user-2", orgId: "org-2" })).toBe(
+    false,
+  );
 });
