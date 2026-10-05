@@ -10,14 +10,13 @@ import {
   RiFileTextLine,
   RiPagesLine,
   RiSaveLine,
-  RiSendPlane2Line,
   RiSlideshowLine,
-  RiSparkling2Line,
   RiTableLine,
 } from "@remixicon/react";
 import { type ArtifactDescriptor, decodeArtifactResult } from "@useagent/agent-client";
 import {
   type ArtifactWorkpieceKind,
+  artifactWorkpieceExports,
   contentTypeForName,
   inferWorkpieceKind,
 } from "@useagent/artifact-workspace";
@@ -29,13 +28,10 @@ import {
   WorkpieceSurfaces,
 } from "@/app/(library)/agent/artifacts/[id]/artifact-editor-surfaces";
 import { EDIT_ACTIVITY_WINDOW_MS } from "@/components/artifacts/requested-edit-auto-accept";
-import { workpieceFollowUpMessage } from "@/components/artifacts/workpiece-follow-up";
 import { WorkpieceProposalReview } from "@/components/artifacts/workpiece-proposal-review";
 import { StatusDot } from "@/components/base/badges/status-dot";
 import { Button, ButtonLink } from "@/components/base/buttons/button";
-import { IconLinkButton } from "@/components/base/buttons/icon-button";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
-import { useComposerPrefill } from "@/components/chat/composer-prefill-context";
 import { backendFetch } from "@/lib/backend-fetch";
 import { cx } from "@/utils/cx";
 
@@ -136,8 +132,10 @@ function SaveState({ saving, dirty }: { readonly saving: boolean; readonly dirty
 }
 
 /** The per-workpiece header: kind + revision, rendered|Code toggle, the quiet
- * saved/dirty indicator, and native/original export links. Pure - the fetch
- * wrapper and the lab harness both feed it. */
+ * saved/dirty indicator, and the two downloads, named for what they produce: the
+ * original file the agent published, and an export of the current revision in
+ * the kind's native format. Pure - the fetch wrapper and the lab harness both
+ * feed it. */
 export function WorkpieceHeader({
   name,
   kindLabel,
@@ -150,6 +148,7 @@ export function WorkpieceHeader({
   onSave,
   downloadUrl,
   exportUrl,
+  exportFormat,
 }: {
   readonly name: string;
   readonly kindLabel: string;
@@ -160,8 +159,12 @@ export function WorkpieceHeader({
   readonly dirty: boolean;
   readonly editable: boolean;
   readonly onSave?: () => void;
+  /** The file as the agent published it, before any edits made here. */
   readonly downloadUrl?: string;
+  /** A fresh render of the current revision in the kind's native format. */
   readonly exportUrl?: string;
+  /** That format's extension (xlsx, docx, pptx, pdf), so the label says it. */
+  readonly exportFormat?: string;
 }) {
   return (
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-3 py-2">
@@ -198,14 +201,17 @@ export function WorkpieceHeader({
           ))}
         </PillTabList>
         {downloadUrl && (
-          <IconLinkButton
-            icon={RiDownloadLine}
-            size="small"
+          <ButtonLink
+            variant="secondary"
+            size="xs"
+            leadingIcon={RiDownloadLine}
             href={downloadUrl}
             download={name}
-            aria-label={`Download original ${name}`}
-            title="Download original"
-          />
+            aria-label={`Download the original ${name}`}
+            title="The file as the agent published it, before any edits made here"
+          >
+            Original
+          </ButtonLink>
         )}
         {exportUrl && (
           <ButtonLink
@@ -214,8 +220,10 @@ export function WorkpieceHeader({
             leadingIcon={RiDownloadLine}
             href={exportUrl}
             download
+            aria-label={`Export the current revision${exportFormat ? ` as .${exportFormat}` : ""}`}
+            title={`The current revision, rendered fresh${exportFormat ? ` as a .${exportFormat} file` : ""}`}
           >
-            Export
+            {exportFormat ? `Export .${exportFormat}` : "Export"}
           </ButtonLink>
         )}
         {editable && onSave && dirty && (
@@ -230,68 +238,6 @@ export function WorkpieceHeader({
           </Button>
         )}
       </div>
-    </div>
-  );
-}
-
-/** The per-workpiece "Ask a follow-up" composer in the pane header: a compact
- * input that seeds the session reply composer with a typed workpieceRef context
- * prefix (id + name + kind + revision) so the agent edits exactly this canonical
- * document (its edits then flow propose/auto-accept as normal). Reuses the
- * composer-prefill lane, so outside a session (the standalone editor page has no
- * composer) it hides itself. */
-export function WorkpieceFollowUpComposer({
-  artifact,
-  kind,
-  revision,
-}: {
-  readonly artifact: ArtifactDescriptor;
-  readonly kind: ArtifactWorkpieceKind;
-  readonly revision: number;
-}) {
-  const prefillComposer = useComposerPrefill();
-  const [text, setText] = useState("");
-  if (!prefillComposer) return null;
-
-  const submit = () => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    prefillComposer(
-      workpieceFollowUpMessage(
-        { artifactId: artifact.id, name: artifact.name, kind, revision },
-        trimmed,
-      ),
-    );
-    setText("");
-  };
-
-  return (
-    <div className="flex shrink-0 items-center gap-1.5 border-t border-border-button-default px-3 py-2">
-      <RiSparkling2Line aria-hidden className="size-4 shrink-0 text-purple-500" />
-      <input
-        value={text}
-        onChange={(event) => setText(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            submit();
-          }
-        }}
-        aria-label="Ask a follow-up about this file"
-        placeholder="Ask a follow-up about this file..."
-        className="h-8 min-w-0 flex-1 rounded-lg border border-border-button-default bg-background-primary-default px-2.5 text-caption-1-medium text-text-primary outline-none placeholder:text-text-tertiary focus:border-border-focus-ring"
-      />
-      <Button
-        variant="primary"
-        size="small"
-        iconOnly
-        leadingIcon={RiSendPlane2Line}
-        onClick={submit}
-        disabled={!text.trim()}
-        aria-label="Send follow-up"
-        title="Send to the agent"
-        className="shrink-0"
-      />
     </div>
   );
 }
@@ -356,11 +302,7 @@ function WorkpieceEditorView({
         exportUrl={
           editor.actionContract.actions.includes("export") ? workpiece.export_url : undefined
         }
-      />
-      <WorkpieceFollowUpComposer
-        artifact={artifact}
-        kind={workpiece.kind}
-        revision={editor.revision}
+        exportFormat={artifactWorkpieceExports(workpiece.kind as ArtifactWorkpieceKind)[0]?.format}
       />
       {editor.actionContract.edit && (
         <details className="shrink-0 border-t border-border-button-default px-3 py-1.5">
