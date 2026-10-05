@@ -63,10 +63,13 @@ describe("invitation mail configuration", () => {
       link: "https://app.example.test/accept-invitation/inv1",
       expiresAt: new Date("2026-09-20T10:00:00Z"),
     });
-    expect(message.subject).toBe("Dana invited you to Acme on useAgent");
+    expect(message.subject).toBe("Dana invited you to Acme on UseAgent");
     expect(message.text).toContain("join Acme as an admin");
     expect(message.text).toContain("https://app.example.test/accept-invitation/inv1");
     expect(message.text).toContain("until 2026-09-20");
+    expect(message.html).toContain('href="https://app.example.test/accept-invitation/inv1"');
+    expect(message.html).toContain(">Accept invitation<");
+    expect(message.html).toContain(">UseAgent<");
   });
 
   test("a name cannot smuggle a mail header", () => {
@@ -78,7 +81,7 @@ describe("invitation mail configuration", () => {
       link: "https://app.example.test/accept-invitation/inv1",
       expiresAt: new Date("2026-09-20T10:00:00Z"),
     });
-    expect(message.subject).toBe("A teammate invited you to Acme X-Note: injected on useAgent");
+    expect(message.subject).toBe("A teammate invited you to Acme X-Note: injected on UseAgent");
     expect(message.subject).not.toMatch(/[\r\n]/);
   });
 
@@ -101,7 +104,7 @@ describe("invitation mail configuration", () => {
     };
     expect(await deliverInvitation(data, config, send as never)).toBe("sent");
     // A blank inviter name falls back to the inviter's email.
-    expect(sent).toEqual([{ to: ["new@example.test"], subject: "dana@example.test invited you to Acme on useAgent", from: "hello@example.test" }]);
+    expect(sent).toEqual([{ to: ["new@example.test"], subject: "dana@example.test invited you to Acme on UseAgent", from: "hello@example.test" }]);
   });
 });
 
@@ -126,11 +129,14 @@ describe("sign-up verification mail", () => {
   test("the mail says who chose the password and how to cancel, and needs a transport", async () => {
     const links = confirmationLinks("t.s", "https://app.example.test");
     const message = verificationMessage(links);
-    expect(message.subject).toBe("Confirm your useAgent sign-up");
+    expect(message.subject).toBe("Confirm your UseAgent sign-up");
     expect(message.text).toContain(links.confirm);
     expect(message.text).toContain(links.decline);
     expect(message.text).toContain("chosen by whoever filled in the form");
     expect(message.text).toContain("cancel the sign-up here instead");
+    expect(message.html).toContain(`href="${links.confirm}"`);
+    expect(message.html).toContain(`href="${links.decline}"`);
+    expect(message.html).toContain(">Confirm email<");
     await expect(deliverVerification("new@example.test", links, null)).rejects.toThrow("no mail transport");
     const sent: Array<{ to: string[]; subject: string; from: string }> = [];
     const config = { host: "smtp.example.test", port: 465, secure: true, from: "hello@example.test" };
@@ -139,7 +145,7 @@ describe("sign-up verification mail", () => {
       sent.push({ to: msg.to, subject: msg.subject, from: msg.from });
     };
     await deliverVerification("new@example.test", links, config, send as never);
-    expect(sent).toEqual([{ to: ["new@example.test"], subject: "Confirm your useAgent sign-up", from: "hello@example.test" }]);
+    expect(sent).toEqual([{ to: ["new@example.test"], subject: "Confirm your UseAgent sign-up", from: "hello@example.test" }]);
   });
 });
 
