@@ -77,6 +77,7 @@ describe("provider credential trust boundary", () => {
       "account/login/start",
       "account/login/cancel",
       "account/read",
+      "account/rateLimits/read",
       "account/logout",
     ]);
     expect(inheritedKeys).toEqual(["PATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"]);

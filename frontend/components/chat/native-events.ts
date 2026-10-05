@@ -102,6 +102,23 @@ export function deriveThreadContext(
   return latest?.context ?? null;
 }
 
+/** The newest turn's context that is the parent's own: gateway child sessions
+ *  measure their own window, so their turns are skipped. */
+export function latestThreadContext(
+  turns: readonly {
+    readonly run: { readonly child_session?: unknown };
+    readonly native?: { readonly nativeFrames: readonly NativeFrame[]; readonly childSessionIds: ReadonlySet<string> };
+  }[],
+): ThreadContext | null {
+  for (const turn of turns.toReversed()) {
+    if (turn.run.child_session) continue;
+    const native = turn.native;
+    const context = native ? deriveThreadContext(native.nativeFrames, native.childSessionIds) : null;
+    if (context) return context;
+  }
+  return null;
+}
+
 const TASK_CHILD_ID = /<task\s+id="([^"]+)"/;
 const TASK_RESULT = /<task_result>\s*([\s\S]*?)\s*<\/task_result>/;
 

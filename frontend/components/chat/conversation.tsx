@@ -36,11 +36,8 @@ import {
   composerAcceptsRunResources,
   type PendingQuestion,
 } from "@/components/chat/question-state";
-import { ReplyComposer } from "@/components/chat/reply-composer";
+import { ConversationComposer } from "@/components/chat/conversation-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
-import type { ThreadContext } from "@/components/chat/native-events";
-import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
-import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
 import { type GatewayChildSession, SubagentsFold } from "@/components/chat/subagents-fold";
 import { buildTimeline, hasNarration } from "@/components/chat/timeline";
 import {
@@ -469,7 +466,6 @@ export const Conversation = memo(function Conversation({
   runStartedAt,
   prefill,
   repoRevisions,
-  composerContext = null,
   resourceMentions = true,
   onTurnsNeeded,
   composerLocked = false,
@@ -532,8 +528,6 @@ export const Conversation = memo(function Conversation({
    *  proposal); each request carries a fresh nonce so repeats re-apply. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
   repoRevisions?: Readonly<Record<string, string | null>>;
-  /** How full the thread's context window is (null until a step reports usage). */
-  composerContext?: ThreadContext | null;
   resourceMentions?: boolean;
   composerLocked?: boolean;
   composerLockedMessage?: string;
@@ -664,21 +658,17 @@ export const Conversation = memo(function Conversation({
     newestFailed?.summary ?? null,
   );
   const [, bumpDismissTick] = useState(0);
-  // A compaction request that the backend refused: shown in the same banner as
-  // a failed turn, so the failure is visible and Compact now can be tried again.
-  const [compactFailure, setCompactFailure] = useState<string | null>(null);
   const threadError =
-    (newestFailed &&
+    newestFailed &&
     shouldShowThreadErrorBanner(
       newestFailed.run.id,
       newestFailed.summary,
       isThreadErrorBannerDismissedForSession(threadErrorKey),
     )
       ? newestFailed.summary
-      : null) ?? compactFailure;
+      : null;
   const handleDismissThreadError = () => {
     dismissThreadErrorBannerForSession(threadErrorKey);
-    setCompactFailure(null);
     bumpDismissTick((t) => t + 1);
   };
 
@@ -765,28 +755,22 @@ export const Conversation = memo(function Conversation({
         <MessageScrollerRail turns={renderedTurns} scrollRef={scrollRef} />
         <ScrollToEndPill scrollRef={scrollRef} />
       </div>
-      <ReplyComposer
-        engine={defaultEngine}
-        model={defaultModel}
-        memoryScope={defaultMemoryScope}
-        pending={pendingReply !== null}
+      <ConversationComposer
+        turns={turns}
+        defaultEngine={defaultEngine}
+        defaultModel={defaultModel}
+        defaultMemoryScope={defaultMemoryScope}
+        pendingReply={pendingReply}
         commands={commands}
         commandState={commandState}
         modelSelection={modelSelection}
-        locked={controlLocksComposer || composerLocked}
-        placeholder={
-          pendingApproval
-            ? "Respond to the approval above to continue…"
-            : pendingQuestion
-              ? composerCanAnswerQuestion
-                ? "Answer Agent’s question…"
-                : "Answer the question above to continue…"
-              : composerLocked
-                ? (composerLockedMessage ?? "Loading thread controls…")
-                : assistantIdentity
-                  ? `Message ${assistantIdentity.name}`
-                  : undefined
-        }
+        controlLocksComposer={controlLocksComposer}
+        composerLocked={composerLocked}
+        composerLockedMessage={composerLockedMessage}
+        pendingApproval={pendingApproval}
+        pendingQuestion={pendingQuestion}
+        composerCanAnswerQuestion={composerCanAnswerQuestion}
+        assistantIdentity={assistantIdentity}
         onReply={onReply}
         running={running}
         stopping={stopping}
@@ -795,48 +779,13 @@ export const Conversation = memo(function Conversation({
         runStartedAt={runStartedAt}
         threadError={threadError}
         onDismissThreadError={handleDismissThreadError}
-        notice={handoffNotice}
-        onDismissNotice={onDismissHandoffNotice}
+        handoffNotice={handoffNotice}
+        onDismissHandoffNotice={onDismissHandoffNotice}
         engineUnavailable={engineUnavailable}
         engineUnavailableMessage={engineUnavailableMessage}
-        draftKey={turns[0]?.run.id ?? null}
         prefill={prefill}
-        enableMentions={resourceMentions && composerAcceptsRunResources(pendingQuestion ?? null)}
-        enableUploads={composerAcceptsRunResources(pendingQuestion ?? null)}
+        resourceMentions={resourceMentions}
         repoRevisions={repoRevisions}
-        status={
-          <ComposerStatusBar
-            branch={Object.values(repoRevisions ?? {})[0] ?? null}
-            project={Object.keys(repoRevisions ?? {})[0]?.split("/").at(-1) ?? null}
-            agent={engineDisplayLabel(defaultEngine)}
-            context={composerContext}
-            onCompact={
-              !running && pendingReply === null && !turns.some((turn) => turn.status === "queued") &&
-              !pendingQuestion && !pendingApproval && !controlLocksComposer && !composerLocked &&
-              commands?.some((c) => c.name === "compact")
-                ? () => {
-                    setCompactFailure(null);
-                    Promise.resolve(
-                      onReply(
-                        "/compact",
-                        defaultEngine,
-                        defaultModel,
-                        crypto.randomUUID(),
-                        defaultMemoryScope,
-                        { name: "compact", args: "" },
-                      ),
-                    ).catch((error: unknown) => {
-                      setCompactFailure(
-                        error instanceof Error && error.message
-                          ? error.message
-                          : "Compaction could not be sent. Try again.",
-                      );
-                    });
-                  }
-                : undefined
-            }
-          />
-        }
       />
     </div>
   );
