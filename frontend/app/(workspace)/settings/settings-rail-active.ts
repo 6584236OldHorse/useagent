@@ -16,12 +16,18 @@ export type RailScrollFrame = {
 
 export const SETTINGS_ACTIVATION_RATIO = 0.3;
 export const SETTINGS_SCROLL_TAIL_RATIO = 1 - SETTINGS_ACTIVATION_RATIO;
+// Native hash scrolling may settle on the next CSS subpixel past the target.
+const SETTINGS_ACTIVATION_TOLERANCE_PX = 1;
+
+export function settingsAnchorOffset(viewportHeight: number): number {
+  return Math.floor(viewportHeight * SETTINGS_ACTIVATION_RATIO);
+}
 
 export function activeSectionIndex({ sectionTops, viewportHeight }: RailScrollFrame): number {
   if (sectionTops.length === 0) return 0;
-  const line = viewportHeight * SETTINGS_ACTIVATION_RATIO;
+  const line = settingsAnchorOffset(viewportHeight);
   return Math.max(
-    sectionTops.findLastIndex((top) => top <= line),
+    sectionTops.findLastIndex((top) => top <= line + SETTINGS_ACTIVATION_TOLERANCE_PX),
     0,
   );
 }
