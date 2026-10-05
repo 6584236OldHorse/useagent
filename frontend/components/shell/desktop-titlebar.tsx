@@ -15,7 +15,10 @@ export function DesktopTitlebar() {
       document.documentElement.style.removeProperty("--desktop-titlebar-height");
     };
   }, []);
+  // An overlay, not a spacer: the surface below (shell frame, sign-in screen)
+  // pads itself by --desktop-titlebar-height and paints under the traffic
+  // lights, so the strip never shows the body colour as a separate band.
   return visible ? (
-    <div aria-hidden className="h-9 shrink-0 bg-transparent [-webkit-app-region:drag]" />
+    <div aria-hidden className="fixed inset-x-0 top-0 z-50 h-9 bg-transparent [-webkit-app-region:drag]" />
   ) : null;
 }

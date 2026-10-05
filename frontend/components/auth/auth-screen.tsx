@@ -4,7 +4,7 @@ import { OrbitKnotMark } from "@/components/foundations/brand/orbit-knot-mark";
 
 export function AuthScreen({ children }: { children: ReactNode }) {
   return (
-    <main className="flex min-h-[calc(100dvh-var(--desktop-titlebar-height,0px))] w-full bg-background-primary-default">
+    <main className="flex min-h-dvh w-full bg-background-primary-default pt-[var(--desktop-titlebar-height,0px)]">
       <section className="relative flex min-h-[calc(100dvh-var(--desktop-titlebar-height,0px))] w-full flex-col justify-center px-6 sm:px-12 lg:w-[44%] lg:min-w-[420px] lg:max-w-[560px] lg:px-16">
         <div className="animate-ai-fade-up mx-auto w-full max-w-[400px]">{children}</div>
         <div className="absolute bottom-8 left-6 flex items-center gap-2 sm:left-12 lg:left-16">
