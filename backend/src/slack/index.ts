@@ -40,9 +40,11 @@ export { syncSlackWorkspaceBindings } from "./workspaces";
 /** Process one durably accepted inbox claim: verify the ingress-time identity,
  *  hand the event to the run mapper, record durably what the identity stamp of
  *  an accepted (or replayed) run still owes, then start that stamp so the web
- *  can show the sender and link back. The stamp is not awaited: the inbox
- *  processes events serially, so a Slack lookup must never hold the next event;
- *  the recorded intent survives a crash and the boot sweep finishes it. */
+ *  can show the sender and link back. The intent is its own row that no terminal
+ *  write locks, so the claim never waits on the run row; the stamp is not
+ *  awaited, because the inbox processes events serially and a Slack lookup must
+ *  never hold the next event; the recorded intent survives a crash and the boot
+ *  sweep finishes it. */
 export async function handleSlackInboxClaim({
   payload,
   checkpointStagedAttachmentIds,
@@ -61,18 +63,7 @@ export async function handleSlackInboxClaim({
   if (outcome.status === "accepted" || outcome.status === "replayed") {
     const { teamId, channel, messageTs, slackUserId } = payload.identity;
     if (teamId && channel && messageTs) {
-      const intent = await recordSlackTurnIdentityIntent({
-        runId: outcome.runId,
-        teamId,
-        channel,
-        messageTs,
-        slackUserId,
-      });
-      // A terminal write holding the run row past the bounded wait: the run
-      // stands, the claim retries later and records the intent then.
-      if (intent === "locked") {
-        return { status: "retryable_unavailable", error: "turn_identity_intent_locked" };
-      }
+      await recordSlackTurnIdentityIntent({ runId: outcome.runId, teamId, channel, messageTs, slackUserId });
       void stampSlackTurnIdentity(outcome.runId);
     }
     return { status: "completed" };

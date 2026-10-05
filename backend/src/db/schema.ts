@@ -14,6 +14,7 @@ export * from "./schema/api-keys";
 export * from "./schema/integrations";
 export * from "./schema/provider-connections";
 export * from "./schema/slack";
+export * from "./schema/slack-identity";
 export * from "./schema/artifacts";
 export * from "./schema/uploads";
 export * from "./schema/memory";

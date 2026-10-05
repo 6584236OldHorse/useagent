@@ -41,15 +41,6 @@ export type { EngineId, MemoryScope, RunStatus, StepKind };
 // Postgres. `org_id` / `user_id` are nullable so legacy/system runs still fit.
 // ---------------------------------------------------------------------------
 
-/** What a connector stamp still has to look up, durable on the run row. */
-export interface ConnectorLookup {
-  readonly source: "slack";
-  readonly teamId: string;
-  readonly channel: string;
-  readonly messageTs: string;
-  readonly slackUserId: string | null;
-}
-
 export const runs = pgTable(
   "runs",
   {
@@ -153,12 +144,9 @@ export const runs = pgTable(
     // The connector a turn arrived through when it was not typed in the product
     // (Slack today): the sender's display name and avatar as the channel showed
     // them at ingress plus the message permalink, so the web can render who
-    // spoke and link back. Stamped once after acceptance; null for product turns.
+    // spoke and link back. Stamped once after acceptance (the lookup still owed
+    // waits in slack_identity_lookups meanwhile); null for product turns.
     connector: jsonb("connector").$type<RunConnector>(),
-    // The lookup still owed for that stamp: written inside the inbox claim so it
-    // is durable before the claim completes, cleared when the stamp lands, and
-    // swept at boot for turns a crash left behind. Null once stamped.
-    connectorLookup: jsonb("connector_lookup").$type<ConnectorLookup>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

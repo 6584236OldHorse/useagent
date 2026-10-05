@@ -1,36 +1,36 @@
 /**
  * Identity of a Slack-born turn for the web. The inbox claim records, before it
- * completes, what the stamp still owes (`runs.connector_lookup`): the sender to
- * look up (users.info through the workspace's bot token, never from the
- * browser) and the message whose permalink to fetch (chat.getPermalink). The
- * stamp itself runs off the inbox's serial path: the two lookups share one
- * deadline, whatever resolved by then is stamped on the run row, and the thread
+ * completes, what the stamp still owes (a slack_identity_lookups row: the sender
+ * to look up through the workspace's bot token, never from the browser, and the
+ * message whose permalink to fetch). That row is its own table with no foreign
+ * key, so the write never waits on the run row's terminal lock and never holds
+ * the serial inbox. The stamp runs off that path: the two lookups share one
+ * deadline, whatever resolved by then is stamped on the run row under a bounded
+ * lock wait, the lookup row is deleted in the same transaction, and the thread
  * stream is woken so an open session shows the sender within the same second.
- * A crash between the claim and the stamp leaves the intent behind; the boot
- * sweep finishes it. Idempotent: a replayed delivery finds the stamp and does
- * nothing. A lookup failure never fails the accepted run.
+ * A crash or a lock wait that ran out leaves the lookup row; the boot sweep
+ * finishes it. Idempotent: a replayed delivery finds the stamp and cleans up.
+ * A lookup failure never fails the accepted run.
  */
 import type { RunConnector } from "@useagent/agent-client/wire";
-import { and, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { isLockTimeout } from "../db/pg-errors";
-import { runs, type ConnectorLookup } from "../db/schema";
+import { runs, slackIdentityLookups } from "../db/schema";
 import { slackConfig } from "../env";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
 import { publishThreadChange } from "../runs/thread-signals";
 import { resolveSlackClient } from "./client";
 
 export type SlackTurnIdentityOutcome = "stamped" | "already_stamped" | "unavailable";
-/** `locked`: the run row was held (finalization locks it for update) past the
- *  bounded wait; nothing was written and the claim must retry later. */
-export type SlackTurnIdentityIntentOutcome = "recorded" | "already_recorded" | "locked";
-
-/** The run row can be held by a terminal write when the intent lands; a bounded
- *  wait keeps the serial inbox moving and the claim retries once it is free. */
-const INTENT_LOCK_TIMEOUT = "2s";
+export type SlackTurnIdentityIntentOutcome = "recorded" | "already_recorded";
 
 const DEFAULT_LOOKUP_MS = 5_000;
-const RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** The stamp's wait for the run row, which finalization can hold for update;
+ *  past it the lookup row stays and the boot sweep finishes the stamp. */
+const STAMP_LOCK_TIMEOUT = "30s";
+/** A lookup nobody could finish in a week is abandoned; the sweep is bounded. */
+const LOOKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECOVERY_LIMIT = 200;
 
 /** How long both Slack lookups may take together; a response that never
@@ -50,19 +50,8 @@ function within<T>(lookup: Promise<T | null> | undefined, signal: AbortSignal): 
   });
 }
 
-type IntentBarrier = (runId: string) => Promise<void>;
-let intentBarrierForTest: IntentBarrier | null = null;
-
-/** TEST ONLY: run before the intent write, with the run id, so a test can hold
- *  the row the write is about to touch. */
-export function setSlackTurnIdentityIntentBarrierForTest(barrier: IntentBarrier | null): void {
-  intentBarrierForTest = barrier;
-}
-
 /** Record, durably and before the inbox claim completes, what the stamp owes.
- *  `recorded` when this call recorded it; `already_recorded` when the turn is
- *  already stamped or an earlier claim recorded the same intent; `locked` when
- *  the row stayed held past the bounded wait, so nothing was written. */
+ *  Touches only the lookup table, so a held run row cannot delay it. */
 export async function recordSlackTurnIdentityIntent(input: {
   readonly runId: string;
   readonly teamId: string;
@@ -70,58 +59,50 @@ export async function recordSlackTurnIdentityIntent(input: {
   readonly messageTs: string;
   readonly slackUserId: string | null;
 }): Promise<SlackTurnIdentityIntentOutcome> {
-  const lookup: ConnectorLookup = {
-    source: "slack",
-    teamId: input.teamId,
-    channel: input.channel,
-    messageTs: input.messageTs,
-    slackUserId: input.slackUserId,
-  };
-  await intentBarrierForTest?.(input.runId);
-  try {
-    const recorded = await db.transaction(async (tx) => {
-      await tx.execute(sql`select set_config('lock_timeout', ${INTENT_LOCK_TIMEOUT}, true)`);
-      return tx
-        .update(runs)
-        .set({ connectorLookup: lookup })
-        .where(and(eq(runs.id, input.runId), isNull(runs.connector), isNull(runs.connectorLookup)))
-        .returning({ id: runs.id });
-    });
-    return recorded.length > 0 ? "recorded" : "already_recorded";
-  } catch (error) {
-    if (isLockTimeout(error)) return "locked";
-    throw error;
-  }
+  const recorded = await db
+    .insert(slackIdentityLookups)
+    .values({
+      runId: input.runId,
+      teamId: input.teamId,
+      channel: input.channel,
+      messageTs: input.messageTs,
+      slackUserId: input.slackUserId,
+    })
+    .onConflictDoNothing({ target: slackIdentityLookups.runId })
+    .returning({ runId: slackIdentityLookups.runId });
+  return recorded.length > 0 ? "recorded" : "already_recorded";
 }
 
-/** Finish the stamp a recorded intent owes. Never throws. */
+/** Finish the stamp a recorded lookup owes. Never throws. */
 export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnIdentityOutcome> {
   try {
+    const [owed] = await db
+      .select()
+      .from(slackIdentityLookups)
+      .where(eq(slackIdentityLookups.runId, runId))
+      .limit(1);
+    if (!owed) return "unavailable";
     const [run] = await db
-      .select({
-        orgId: runs.orgId,
-        threadId: runs.threadId,
-        connector: runs.connector,
-        lookup: runs.connectorLookup,
-      })
+      .select({ orgId: runs.orgId, threadId: runs.threadId, connector: runs.connector })
       .from(runs)
       .where(eq(runs.id, runId))
       .limit(1);
-    if (!run) return "unavailable";
-    if (run.connector) return "already_stamped";
-    if (!run.lookup || !run.orgId) return "unavailable";
+    if (!run?.orgId) return "unavailable";
+    if (run.connector) {
+      await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+      return "already_stamped";
+    }
     const config = slackConfig();
     const botToken = config
-      ? await resolveSlackBotTokenForWorkspace({ orgId: run.orgId, teamId: run.lookup.teamId, config })
+      ? await resolveSlackBotTokenForWorkspace({ orgId: run.orgId, teamId: owed.teamId, config })
       : null;
     if (!config || !botToken) return "unavailable";
     const client = resolveSlackClient({ apiUrl: config.apiUrl, botToken });
     const deadlineMs = lookupDeadlineMs();
     const signal = AbortSignal.timeout(deadlineMs);
-    const { channel, messageTs, slackUserId } = run.lookup;
     const [profile, permalink] = await Promise.all([
-      within(slackUserId ? client.userInfo?.({ user: slackUserId, signal }) : undefined, signal),
-      within(client.getPermalink?.({ channel, messageTs, signal }), signal),
+      within(owed.slackUserId ? client.userInfo?.({ user: owed.slackUserId, signal }) : undefined, signal),
+      within(client.getPermalink?.({ channel: owed.channel, messageTs: owed.messageTs, signal }), signal),
     ]);
     if (signal.aborted) {
       console.warn(
@@ -134,37 +115,48 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
       sender_avatar_url: profile?.image ?? null,
       permalink: permalink ?? null,
     };
-    // `updated_at` moves so an open session's merge treats the fresh row as new.
-    const updated = await db
-      .update(runs)
-      .set({ connector, connectorLookup: null, updatedAt: new Date() })
-      .where(and(eq(runs.id, runId), isNull(runs.connector)))
-      .returning({ id: runs.id });
+    // One transaction: the stamp lands (`updated_at` moves so an open session's
+    // merge treats the fresh row as new) and the owed row goes with it. The
+    // run row can be held by a terminal write; the wait is bounded and a
+    // timeout leaves the owed row for the sweep.
+    const updated = await db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('lock_timeout', ${STAMP_LOCK_TIMEOUT}, true)`);
+      const rows = await tx
+        .update(runs)
+        .set({ connector, updatedAt: new Date() })
+        .where(and(eq(runs.id, runId), isNull(runs.connector)))
+        .returning({ id: runs.id });
+      await tx.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+      return rows;
+    });
     if (updated.length === 0) return "already_stamped";
     publishThreadChange(run.threadId, { runId, kind: "created" });
     return "stamped";
   } catch (error) {
+    if (isLockTimeout(error)) {
+      console.warn(`[slack] turn identity stamp for run ${runId} waited ${STAMP_LOCK_TIMEOUT} on its run row; the boot sweep retries it`);
+      return "unavailable";
+    }
     console.error(`[slack] turn identity stamp failed for run ${runId}:`, (error as Error).message);
     return "unavailable";
   }
 }
 
-/** Boot sweep: finish the stamps whose intent a crash left behind (bounded to
- *  the last day and a page of turns, oldest first). Returns how many landed. */
+/** Boot sweep: finish the stamps whose lookup row is still owed, oldest first,
+ *  a page at a time, after dropping lookups older than a week. Returns how many
+ *  stamps landed. */
 export async function recoverSlackTurnIdentities(): Promise<number> {
+  await db
+    .delete(slackIdentityLookups)
+    .where(lt(slackIdentityLookups.createdAt, new Date(Date.now() - LOOKUP_MAX_AGE_MS)));
   const owed = await db
-    .select({ id: runs.id })
-    .from(runs)
-    .where(and(
-      isNotNull(runs.connectorLookup),
-      isNull(runs.connector),
-      gt(runs.createdAt, new Date(Date.now() - RECOVERY_WINDOW_MS)),
-    ))
-    .orderBy(runs.createdAt)
+    .select({ runId: slackIdentityLookups.runId })
+    .from(slackIdentityLookups)
+    .orderBy(slackIdentityLookups.createdAt)
     .limit(RECOVERY_LIMIT);
   let stamped = 0;
-  for (const { id } of owed) {
-    if ((await stampSlackTurnIdentity(id)) === "stamped") stamped++;
+  for (const { runId } of owed) {
+    if ((await stampSlackTurnIdentity(runId)) === "stamped") stamped++;
   }
   if (owed.length > 0) {
     console.log(`[slack] turn identity recovery: ${stamped} of ${owed.length} owed stamps landed`);
