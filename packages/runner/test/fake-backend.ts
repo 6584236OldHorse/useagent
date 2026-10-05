@@ -12,6 +12,7 @@ import type {
   TerminalProcess,
 } from "../src/backends/types";
 import { BackendError, type RegistryLogin } from "../src/backends/types";
+import type { RunnerBackendKind } from "@useagent/runner-protocol";
 
 export interface FakeContainer {
   readonly spec: ContainerSpec;
@@ -50,7 +51,7 @@ export function pipe(): Pipe {
 }
 
 export class FakeBackend implements LocalBackend {
-  readonly kind = "docker" as const;
+  kind: RunnerBackendKind = "docker";
   pinsByDigest = true;
   /** What inspect reports as the booted image's digest when set (an engine that boots a tag). */
   bootDigest: string | null = null;
@@ -69,8 +70,9 @@ export class FakeBackend implements LocalBackend {
   async available() {
     return null;
   }
-  async pullImage(ref: string, _onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal) {
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal) {
     if (this.pullFails) throw new Error(this.pullFails);
+    for (const line of this.pullLines) onProgress?.(line);
     if (this.pullBlocks) {
       await new Promise<void>((resolve) => { this.releasePull = resolve; signal?.addEventListener("abort", () => resolve(), { once: true }); });
       if (signal?.aborted) { this.calls.push(`pull ${ref} stopped`); throw new Error(`pull ${ref} stopped`); }
@@ -81,6 +83,8 @@ export class FakeBackend implements LocalBackend {
     if (digest) this.images.set(ref, digest);
   }
   pullFails: string | null = null;
+  /** Output a pull produces before it completes or blocks. */
+  pullLines: string[] = [];
   /** A pull that waits until released or aborted, to test stops during a pull. */
   pullBlocks = false;
   releasePull: (() => void) | null = null;

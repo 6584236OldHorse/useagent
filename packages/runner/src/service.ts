@@ -4,6 +4,7 @@
 // (its label carries the runner id), or it is refused.
 
 import {
+  type ImageRef,
   type LocalSandboxCreateParams,
   type LocalSandboxInfo,
   type MuxStream,
@@ -14,6 +15,7 @@ import {
 } from "@useagent/runner-protocol";
 import type { ContainerInfo, ContainerMount, LocalBackend } from "./backends/types";
 import { BackendError } from "./backends/types";
+import { ensureImage } from "./image";
 import { SessionManager } from "./sessions";
 
 export const RUNNER_LABEL = "useagent.runner";
@@ -21,6 +23,17 @@ export const AUTOSTOP_LABEL = "useagent.autostop-minutes";
 export const SANDBOX_USER = "1000:1000";
 export const SANDBOX_HOME = "/home/user";
 export const SANDBOX_WORKDIR = "/home/user/work";
+/** How long a create waits for an image this machine does not hold yet, well under the plane's own create timeout; the pull goes on past it. */
+export const CREATE_PULL_WAIT_MS = 5 * 60_000;
+
+export interface ImagePullReport {
+  readonly ref: string;
+  readonly digest: string;
+  readonly state: "pulling" | "ready" | "failed";
+  /** 0..1; creeps toward 1 while pulling, since pull output has no total. */
+  readonly progress: number;
+  readonly detail: string;
+}
 
 export interface ServiceOptions {
   readonly runnerId: string;
@@ -30,6 +43,10 @@ export interface ServiceOptions {
   readonly onSandboxStopped?: (sandboxId: string) => Promise<void> | void;
   /** Running sandboxes this machine will hold at once; create refuses beyond it. */
   readonly maxSandboxes?: number;
+  /** Every step of an image pull this runner runs, at welcome or on demand for a create. */
+  readonly onImageProgress?: (report: ImagePullReport) => void;
+  /** How long a create waits for a missing image before refusing; the pull itself goes on. */
+  readonly createPullWaitMs?: number;
   readonly now?: () => number;
 }
 
@@ -65,6 +82,17 @@ function infoOf(container: ContainerInfo): LocalSandboxInfo {
   };
 }
 
+/** The promise's outcome, or the signal's reason as soon as it fires; the work behind the promise goes on. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason as Error);
+  const { promise: fired, reject } = Promise.withResolvers<never>();
+  const onAbort = () => reject(signal.reason as Error);
+  signal.addEventListener("abort", onAbort, { once: true });
+  return Promise.race([promise, fired]).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+type PullListener = (report: ImagePullReport) => void;
+
 export class RunnerService {
   private readonly sessions: SessionManager;
   private readonly lastActivity = new Map<string, number>();
@@ -72,6 +100,13 @@ export class RunnerService {
   private readonly openStreams = new Map<string, number>();
   /** Open terminals by stream id, with the container-side tty each shell reported. */
   private readonly terminals = new Map<number, { terminal: Bun.Terminal; sandboxId: string; ttyFile: string }>();
+  /** Pulls under way by `ref@digest`; a second caller joins the pull instead of starting another. */
+  private readonly pulls = new Map<string, { promise: Promise<string>; listeners: Set<PullListener> }>();
+  /** The image the plane welcomed this runner with; its login covers an on-demand pull of the same reference. */
+  private welcomed: ImageRef | null = null;
+  private present: string | null = null;
+  /** Fires when the runner is going down, so pulls under way stop with it. */
+  private readonly stopping = new AbortController();
   private readonly now: () => number;
 
   constructor(private readonly options: ServiceOptions) {
@@ -81,6 +116,89 @@ export class RunnerService {
 
   get backend(): LocalBackend {
     return this.options.backend;
+  }
+
+  /** Digest of the image last made present on this machine, for the heartbeat; null until one is. */
+  get imageDigest(): string | null {
+    return this.present;
+  }
+
+  /**
+   * Make the plane's image present at its digest, as the welcome asks. The
+   * image is remembered so a create that finds it missing later pulls the same
+   * reference with the same login. `signal` bounds the wait, not the pull.
+   */
+  async ensureImage(image: ImageRef, signal?: AbortSignal): Promise<string> {
+    this.welcomed = image;
+    return this.pull(image, signal);
+  }
+
+  /** The runner is going down: pulls under way stop. */
+  stop(): void {
+    this.stopping.abort();
+  }
+
+  /** One pull per image at a time; every caller shares its progress and its outcome. */
+  private pull(image: ImageRef, signal?: AbortSignal, onProgress?: PullListener): Promise<string> {
+    const key = `${image.ref}@${image.digest}`;
+    let entry = this.pulls.get(key);
+    if (!entry) {
+      const listeners = new Set<PullListener>();
+      const report = (state: ImagePullReport["state"], progress: number, detail: string) => {
+        const current: ImagePullReport = { ref: image.ref, digest: image.digest, state, progress, detail };
+        this.options.onImageProgress?.(current);
+        for (const listener of listeners) listener(current);
+      };
+      const promise = ensureImage(this.options.backend, image, (progress, detail) => report(progress >= 1 ? "ready" : "pulling", progress, detail), this.stopping.signal)
+        .then(
+          (digest) => {
+            this.present = digest;
+            return digest;
+          },
+          (error: unknown) => {
+            report("failed", 0, error instanceof Error ? error.message : String(error));
+            throw error;
+          },
+        )
+        .finally(() => this.pulls.delete(key));
+      entry = { promise, listeners };
+      this.pulls.set(key, entry);
+    }
+    const { promise, listeners } = entry;
+    const waited = signal ? abortable(promise, signal) : promise;
+    if (!onProgress) return waited;
+    listeners.add(onProgress);
+    return waited.finally(() => listeners.delete(onProgress));
+  }
+
+  /**
+   * The create named an image this machine does not hold: pull it now and wait
+   * a bounded while. The pull outlives the wait, so a create that gave up on a
+   * slow line still leaves the image arriving for the next one.
+   */
+  private async pullForCreate(requested: LocalSandboxCreateParams["image"]): Promise<void> {
+    const welcomed = this.welcomed;
+    const image: ImageRef = welcomed?.ref === requested.ref ? { ...welcomed, digest: requested.digest } : requested;
+    const waitMs = this.options.createPullWaitMs ?? CREATE_PULL_WAIT_MS;
+    const wait = AbortSignal.timeout(waitMs);
+    const seen: { last: ImagePullReport | null } = { last: null };
+    try {
+      await this.pull(image, wait, (report) => {
+        if (report.state === "pulling") seen.last = report;
+      });
+    } catch (error) {
+      if (error !== wait.reason) {
+        throw new RpcError("image_missing", `image ${requested.ref} could not be pulled on this machine: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const waited = waitMs >= 60_000 ? `${Math.round(waitMs / 60_000)} min` : `${Math.ceil(waitMs / 1000)} s`;
+      if (seen.last) {
+        throw new RpcError("image_missing", `the sandbox image is still downloading on this machine (${Math.round(seen.last.progress * 100)}%) after ${waited}`);
+      }
+      throw new RpcError(
+        "image_pull_stalled",
+        `the sandbox image pull made no progress in ${waited}${this.options.backend.kind === "apple" ? "; on a Mac this is usually the one-time keychain prompt waiting for an answer" : ""}`,
+      );
+    }
   }
 
   /** Containers this runner created, running or not. */
@@ -216,10 +334,7 @@ export class RunnerService {
       throw new RpcError("invalid_params", "image.ref and image.digest are required");
     }
     const backend = this.options.backend;
-    const present = await backend.imageDigest(params.image.ref);
-    if (present !== params.image.digest) {
-      throw new RpcError("refused", `image ${params.image.ref} is not at digest ${params.image.digest} on this machine`);
-    }
+    if ((await backend.imageDigest(params.image.ref)) !== params.image.digest) await this.pullForCreate(params.image);
     const max = this.options.maxSandboxes;
     if (max !== undefined) {
       const running = (await this.listOwned()).filter((container) => container.state === "running").length;

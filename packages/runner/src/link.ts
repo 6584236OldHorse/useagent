@@ -112,6 +112,11 @@ export class LinkClient {
     this.wake?.();
   }
 
+  /** Something on this runner for the plane's record (an image pull's progress); dropped while no link is up. */
+  event(kind: string, detail: unknown, sandboxId: string | null = null): void {
+    this.mux?.send({ t: "event", sandboxId, kind, detail });
+  }
+
   /** One connection's life. Resolves null to reconnect, or with the final reason. */
   private connectOnce(): Promise<LinkStop | null> {
     const { promise, resolve } = Promise.withResolvers<LinkStop | null>();

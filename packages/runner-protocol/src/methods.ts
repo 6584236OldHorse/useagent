@@ -105,7 +105,11 @@ export type RunnerRpcErrorCode =
   | "unsupported"
   | "refused"
   | "timeout"
-  | "internal";
+  | "internal"
+  /** A create named an image this machine does not hold and could not make present in time (the pull failed or is still downloading). */
+  | "image_missing"
+  /** A create named a missing image whose pull produced no output at all within the wait (on a Mac, usually the one-time keychain prompt). */
+  | "image_pull_stalled";
 
 const LOCAL_ID_PREFIX = "local:";
 

@@ -287,6 +287,22 @@ describe("runner link", () => {
     expect(registry.directory.get("rn_a")?.online).toBe(false);
     expect(registry.directory.get("rn_zzz")).toBeNull();
   });
+
+  test("what the machine reports about itself lands on the plane's record, once it is attached", async () => {
+    const { logged, url } = plane();
+    const welcomes: unknown[] = [];
+    const { mux, socket } = await connect(url, TOKEN, { onWelcome: (frame) => welcomes.push(frame) });
+    // Before hello there is no runner to attribute it to: dropped.
+    mux.send({ t: "event", sandboxId: null, kind: "image.pull", detail: { progress: 0.1 } });
+    mux.send(hello());
+    await until(() => welcomes.length === 1);
+    mux.send({ t: "event", sandboxId: null, kind: "image.pull", detail: { ref: IMAGE.ref, state: "pulling", progress: 0.5, detail: "layer 2/4" } });
+    await until(() => logged.some((line) => line.includes("image.pull")));
+    expect(logged.filter((line) => line.includes("image.pull"))).toEqual([
+      `[runners] rn_a image.pull: {"ref":"${IMAGE.ref}","state":"pulling","progress":0.5,"detail":"layer 2/4"}`,
+    ]);
+    socket.close();
+  });
 });
 
 export { readAllFromStream };
