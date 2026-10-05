@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReleaseRecord } from "./release-config";
 import {
 	backendScratchPreparationCommands,
-	frontendEnvironmentPreparationCommand,
 	RemoteHost,
 	type SshPromotionConfig,
 } from "./ssh-promotion-effects";
+import { frontendEnvironmentPreparationCommand, identityReleaseValidationCommand } from "./identity-config";
 
 const config: SshPromotionConfig = {
 	sshHost: "root@example.test",
@@ -30,6 +30,26 @@ const config: SshPromotionConfig = {
 };
 
 describe("SSH promotion transport", () => {
+	test("rejects mixed auth images and preserves pre-Clerk rollback semantics", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "useagent-identity-image-"));
+		try {
+			const backendEnv = join(directory, "backend.env");
+			const docker = join(directory, "docker");
+			await writeFile(docker, '#!/bin/sh\ncase "$*" in *backend-image*) printf "%s" "$BACKEND_AUTH" ;; *) printf "%s" "$FRONTEND_AUTH" ;; esac\n');
+			await chmod(docker, 0o755);
+			for (const [backendDefault, backendMode, frontendMode, pass] of [
+				["clerk", "clerk", "clerk", true], ["clerk", "better-auth", "clerk", false],
+				["clerk", "clerk", "better-auth", false], ["clerk", "better-auth", "better-auth", true],
+				["", "clerk", "", true], ["clerk", "", "clerk", true],
+			] as const) {
+				await writeFile(backendEnv, `AUTH=${backendMode}\nCLERK_SECRET_KEY=fixture-not-a-key\n`);
+				const result = Bun.spawnSync(["bash", "-c", identityReleaseValidationCommand(backendEnv, "backend-image", "frontend-image")], {
+					env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, BACKEND_AUTH: backendDefault, FRONTEND_AUTH: frontendMode }, stdout: "pipe", stderr: "pipe",
+				});
+				expect(result.exitCode === 0).toBe(pass);
+			}
+		} finally { await rm(directory, { recursive: true }); }
+	});
 	test("stages only Clerk's frontend runtime secret", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "useagent-frontend-env-"));
 		try {

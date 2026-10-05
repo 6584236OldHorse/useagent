@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import type { PromotionEffects } from "./promotion";
+import { frontendEnvironmentPreparationCommand, identityReleaseValidationCommand } from "./identity-config";
 import {
 	classifyMigrations,
 	type MigrationFile,
@@ -298,19 +299,6 @@ export function composePromotionCommand(
 	);
 }
 
-export function frontendEnvironmentPreparationCommand(
-	backendEnvFile: string,
-	frontendEnvFile: string,
-): string {
-	return (
-		`set -eu; set -a; . ${shellQuote(backendEnvFile)}; set +a; ` +
-		`auth_mode=\${AUTH:-clerk}; case "$auth_mode" in clerk) : "\${CLERK_SECRET_KEY:?Clerk auth requires CLERK_SECRET_KEY}" ;; better-auth) ;; *) echo 'invalid AUTH' >&2; exit 2;; esac; ` +
-		`tmp=$(mktemp ${shellQuote(`${frontendEnvFile}.XXXXXX`)}); trap 'rm -f -- "$tmp"' EXIT; ` +
-		`printf '%s\\n' "CLERK_SECRET_KEY=\${CLERK_SECRET_KEY:-}" > "$tmp"; ` +
-		`chmod 600 "$tmp"; mv -f -- "$tmp" ${shellQuote(frontendEnvFile)}; trap - EXIT`
-	);
-}
-
 function parseMigrationInventory(output: string): MigrationFile[] {
 	return output
 		.trim()
@@ -531,6 +519,7 @@ export class SshPromotionEffects implements PromotionEffects {
 				);
 			}
 		}
+		await this.#remote.run(identityReleaseValidationCommand(this.#config.backendEnvFile, record.manifest.backend, record.manifest.frontend));
 		await this.#prepareBackendScratch(record);
 		const current = this.#historyAtStart.current;
 		if (current) {
