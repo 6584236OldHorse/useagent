@@ -81,6 +81,9 @@ export const slackThreads = pgTable(
     cardAppliedRevision: bigint("card_applied_revision", { mode: "number" }),
     cardRevisionRunId: text("card_revision_run_id"),
     cardUpdatedAt: timestamp("card_updated_at", { withTimezone: true }),
+    // Set while a person has muted the bot in this thread ("mute" as a reply);
+    // it then ignores every message there except "unmute".
+    mutedAt: timestamp("muted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

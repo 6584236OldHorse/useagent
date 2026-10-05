@@ -18,6 +18,8 @@ The backend is the control plane for useAgent. It listens on `:3201` by default 
 | Artifacts and uploads | [`src/artifacts/*.ts`](src/artifacts), [`src/uploads/*.ts`](src/uploads) |
 | GitHub, Slack, email connectors | [`src/github/*.ts`](src/github), [`src/slack/*.ts`](src/slack), [`src/connectors/email/*.ts`](src/connectors/email) |
 
+In Slack, a message that starts with `(aside)` or `!aside` is for the people in the thread and the bot ignores it. `mute` as a reply in a thread the bot roots makes it ignore that thread (one reaction confirms it); `unmute` lifts it.
+
 ## Request Lifecycle
 
 1. The frontend posts a run to `POST /api/runs`.

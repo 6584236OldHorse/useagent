@@ -4107,3 +4107,111 @@ describe("slack reply reasoning effort", () => {
     expect(accepted.body.reasoning_effort).toBe("high");
   });
 });
+
+describe("slack asides and thread mute", () => {
+  test("an aside creates no run, gets no reaction, and stays settled when Slack redelivers it", async () => {
+    const marker = uid("aside");
+    const ts = `${uid("ts")}.1`;
+    const channel = `D${uid("dm")}`;
+    const envelope = eventCallback({
+      type: "message",
+      channel,
+      channel_type: "im",
+      user: "U-HUMAN",
+      text: `(aside) ${marker} looks slow`,
+      ts,
+    }) as SlackEnvelope;
+    const inboxKey = slackInboxKey(envelope);
+    expect((await postSlack(envelope)).status).toBe(200);
+    const settled = await waitFor(async () => {
+      const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+      return row?.state === "completed" ? row : null;
+    });
+    expect(settled.error).toBe("permanent_noop:aside");
+    expect(await findRunByPrompt(`(aside) ${marker} looks slow`)).toBeNull();
+    expect(rec.reactions.filter((r) => r.channel === channel && r.timestamp === ts)).toHaveLength(0);
+
+    resetSlackDeduperForTest();
+    expect((await postSlack(envelope)).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const [after] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+    expect(after).toMatchObject({ state: "completed", error: "permanent_noop:aside" });
+    expect(await findRunByPrompt(`(aside) ${marker} looks slow`)).toBeNull();
+  });
+
+  test("mute silences a rooted thread until unmute, with one reaction each", async () => {
+    const marker = uid("mute");
+    const channel = `C${uid("ch")}`;
+    const rootTs = `${uid("ts")}.1`;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> root ${marker}`, ts: rootTs }),
+    );
+    const root = await waitFor(async () => findRunByPrompt(`root ${marker}`));
+
+    const muteTs = `${uid("ts")}.2`;
+    await postSlack(
+      eventCallback({ type: "message", channel, user: "U-HUMAN", text: "Mute.", ts: muteTs, thread_ts: rootTs }),
+    );
+    const muted = await waitFor(async () =>
+      rec.reactions.find((r) => r.channel === channel && r.timestamp === muteTs) ?? null,
+    );
+    expect(muted.name).toBe("no_bell");
+    expect(await findRunByPrompt("Mute.")).toBeNull();
+
+    // Even a mention in the muted thread is ignored, and it settles as such.
+    const quietTs = `${uid("ts")}.3`;
+    const quiet = eventCallback({
+      type: "app_mention",
+      channel,
+      user: "U-HUMAN",
+      text: `<@${BOT}> quiet ${marker}`,
+      ts: quietTs,
+      thread_ts: rootTs,
+    }) as SlackEnvelope;
+    await postSlack(quiet);
+    const settled = await waitFor(async () => {
+      const [row] = await db.select().from(commands).where(eq(commands.id, slackInboxKey(quiet)));
+      return row?.state === "completed" ? row : null;
+    });
+    expect(settled.error).toBe("permanent_noop:thread_muted");
+    expect(await findRunByPrompt(`quiet ${marker}`)).toBeNull();
+    expect(rec.reactions.filter((r) => r.channel === channel && r.timestamp === quietTs)).toHaveLength(0);
+
+    const unmuteTs = `${uid("ts")}.4`;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> unmute`, ts: unmuteTs, thread_ts: rootTs }),
+    );
+    const unmuted = await waitFor(async () =>
+      rec.reactions.find((r) => r.channel === channel && r.timestamp === unmuteTs) ?? null,
+    );
+    expect(unmuted.name).toBe("bell");
+
+    await postSlack(
+      eventCallback({ type: "message", channel, user: "U-HUMAN", text: `back ${marker}`, ts: `${uid("ts")}.5`, thread_ts: rootTs }),
+    );
+    const reply = await waitFor(async () => findRunByPrompt(`back ${marker}`));
+    expect(reply.parent_run_id).toBe(root.id);
+    expect(reply.thread_id).toBe(root.id);
+  });
+
+  test("mute outside a thread the bot roots is not a prompt", async () => {
+    const ts = `${uid("ts")}.1`;
+    const channel = `D${uid("dm")}`;
+    const envelope = eventCallback({
+      type: "message",
+      channel,
+      channel_type: "im",
+      user: "U-HUMAN",
+      text: "mute",
+      ts,
+    }) as SlackEnvelope;
+    expect((await postSlack(envelope)).status).toBe(200);
+    const settled = await waitFor(async () => {
+      const [row] = await db.select().from(commands).where(eq(commands.id, slackInboxKey(envelope)));
+      return row?.state === "completed" ? row : null;
+    });
+    expect(settled.error).toBe("permanent_noop:mute_without_thread");
+    expect(await findRunByPrompt("mute")).toBeNull();
+    expect(rec.reactions.filter((r) => r.channel === channel && r.timestamp === ts)).toHaveLength(0);
+  });
+});

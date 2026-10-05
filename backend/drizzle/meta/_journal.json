@@ -729,6 +729,13 @@
       "when": 1792800000019,
       "tag": "0109_slack_identity_lookup_channel_type",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1792800000020,
+      "tag": "0110_slack_threads_muted_at",
+      "breakpoints": true
     }
   ]
 }
