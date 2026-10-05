@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Chip } from "@/components/base/badges/chip";
+import { LocalLoginAvailability } from "@/components/runners/local-login-availability";
+import { MachinesCard } from "@/components/runners/machines-card";
 import { ApiKeysCard } from "./api-keys-card";
 import { ComputerConnectionsCard } from "./computer-connections-card";
 import { GeneralCard } from "./general-card";
@@ -98,7 +100,10 @@ export default function SettingsPage() {
                 title="Provider connections"
                 description="Your model provider accounts and write-only API keys."
               >
-                <ProviderConnectionsCard />
+                <div className="flex flex-col gap-4">
+                  <ProviderConnectionsCard />
+                  <LocalLoginAvailability />
+                </div>
               </Section>
 
               {/* Integrations */}
@@ -138,6 +143,14 @@ export default function SettingsPage() {
                 description="View the managed runtime and connect optional sandbox accounts."
               >
                 <ComputerConnectionsCard />
+              </Section>
+
+              <Section
+                id="machines"
+                title="Your machines"
+                description="Run eligible threads on computers you control."
+              >
+                <MachinesCard />
               </Section>
 
               {/* Secrets */}

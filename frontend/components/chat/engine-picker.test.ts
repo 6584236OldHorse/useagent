@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { CapabilityCatalog } from "@/lib/capability-catalog";
 import {
+  applyLocalLoginOffers,
   engineConfigFromCapabilityCatalog,
   engineRuntimeCaption,
   pickerEngineOptions,
@@ -64,6 +65,51 @@ describe("new-thread engine picker", () => {
     const config = engineConfigFromCapabilityCatalog(MANIFEST);
     expect(engineRuntimeCaption("chat", config.runtimes.chat, config.readiness.chat)).toBe(
       "Chat only: answers from context, no computer or tools",
+    );
+  });
+
+  test("offers a configured degraded engine through this viewer's machine login", () => {
+    const catalog: CapabilityCatalog = {
+      ...MANIFEST,
+      engines: [
+        ...MANIFEST.engines,
+        {
+          id: "codex",
+          configured: true,
+          ready: false,
+          degradationReason: "provider_unhealthy",
+          defaultModel: "gpt-5.6-luna",
+          models: [
+            {
+              id: "gpt-5.6-luna",
+              default: true,
+              dispatchable: false,
+              policyAllowed: true,
+            },
+            {
+              id: "blocked",
+              default: false,
+              dispatchable: false,
+              policyAllowed: false,
+            },
+          ],
+          runtime: { kind: "t3", label: "OpenAI agent · cloud sandbox" },
+        },
+      ],
+    };
+    const config = applyLocalLoginOffers(engineConfigFromCapabilityCatalog(catalog), [
+      "codex",
+      "claude",
+    ]);
+
+    expect(config.localLoginOffered).toEqual(["codex"]);
+    expect(config.readiness.codex).toMatchObject({
+      ready: false,
+      reason: "provider_unhealthy",
+    });
+    expect(config.models.codex).toEqual(["gpt-5.6-luna"]);
+    expect(engineRuntimeCaption("codex", config.runtimes.codex, config.readiness.codex, true)).toBe(
+      "Codex · machine login available",
     );
   });
 

@@ -57,7 +57,6 @@ import { useWorkpieceAutoOpen } from "@/components/chat/use-workpiece-auto-open"
 import { shouldFocusAutoOpened, workspaceSurfaceHasFocus } from "@/components/chat/workpiece-auto-open";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
-
 import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
 import { filesFromSteps } from "@/components/chat/file-entries";
 import {
@@ -77,13 +76,13 @@ import { runGitRefs, GitChips } from "@/components/session-ui/git-chip";
 import { Button } from "@/components/base/buttons/button";
 import { CloseButton } from "@/components/base/buttons/close-button";
 import { PillTab, PillTabList } from "@/components/base/tabs/pill-tab";
+import { RunLocation } from "@/components/runners/run-location";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { threadSubmissionLane, useThreadFamily } from "@/hooks/use-thread-family";
 import type { InitialThreadRelationshipHint } from "@/lib/thread-relationship-hint";
 import { backendFetch } from "@/lib/backend-fetch";
 import { createRun, createThreadMessage, runCreateFailureMessage } from "@/lib/create-run";
 import { cx } from "@/utils/cx";
-
 // The rail is a resizable sub-viewport panel (viewport breakpoints can't
 // describe it), so a container query on the switcher header collapses each
 // surface pill to icon-only (label -> sr-only keeps the accessible name) once
@@ -683,6 +682,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                   ROOT run's durable wire row - repos are inherited across a thread,
                   so the SSR-provided root is authoritative for the page lifetime. */}
               <GitChips refs={runGitRefs(root)} />
+              <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
               {/* Status pill + New session removed (user 2026-08-23): run state

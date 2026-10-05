@@ -681,9 +681,9 @@ export const Conversation = memo(function Conversation({
       engineConfig.engines,
       engineConfig.readinessKnown,
       engineConfig.readiness,
-    ) !== null;
+    ) !== null && !engineConfig.localLoginOffered.includes(defaultEngine);
   const engineUnavailableMessage =
-    engineConfig.readiness[defaultEngine]?.ready === false
+    engineUnavailable && engineConfig.readiness[defaultEngine]?.ready === false
       ? engineConfig.readiness[defaultEngine]?.message
       : undefined;
 

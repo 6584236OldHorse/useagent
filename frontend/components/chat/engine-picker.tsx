@@ -1,7 +1,7 @@
 "use client";
 
 import { RiArrowDownSLine, RiCheckLine, RiCpuLine, RiRefreshLine } from "@remixicon/react";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   ENGINES,
   type EngineId,
@@ -20,6 +20,7 @@ import {
   type CapabilityModelCatalogStatus,
   parseCapabilityCatalog,
 } from "@/lib/capability-catalog";
+import { useLocalLoginOffers } from "@/components/runners/local-login-availability";
 import { cx as cn } from "@/utils/cx";
 
 export type EngineModelCatalog = Partial<Record<EngineId, readonly string[]>>;
@@ -33,6 +34,15 @@ export interface EngineReadinessStatus {
   readonly message?: string;
 }
 export type EngineReadinessCatalog = Partial<Record<EngineId, EngineReadinessStatus>>;
+
+interface EngineCatalogConfig {
+  engines: EngineId[];
+  models: EngineModelCatalog;
+  readiness: EngineReadinessCatalog;
+  runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  modelDetails: EngineModelDetails;
+  modelCatalogStatuses: EngineModelCatalogStatuses;
+}
 
 export function unavailableModelOptions(
   engine: EngineId,
@@ -98,19 +108,16 @@ export function engineRuntimeCaption(
   engine: EngineId,
   runtime: CapabilityEngineRuntime | undefined,
   readiness: EngineReadinessStatus | undefined,
+  localLoginOffered = false,
 ): string {
   const label = runtime ? ENGINE_RUNTIME_CAPTIONS[engine] ?? "Runtime unavailable" : "Runtime unavailable";
+  if (localLoginOffered) {
+    return `${ENGINES.find((candidate) => candidate.id === engine)?.label ?? "Engine"} · machine login available`;
+  }
   return `${label}${readiness?.ready === false ? " · needs attention" : ""}`;
 }
 
-export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): {
-  engines: EngineId[];
-  models: EngineModelCatalog;
-  readiness: EngineReadinessCatalog;
-  runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
-  modelDetails: EngineModelDetails;
-  modelCatalogStatuses: EngineModelCatalogStatuses;
-} {
+export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): EngineCatalogConfig {
   const configured = catalog.engines.filter((engine) => engine.configured);
   return {
     engines: configured.map((engine) => engine.id),
@@ -146,6 +153,29 @@ export function engineConfigFromCapabilityCatalog(catalog: CapabilityCatalog): {
     ),
     runtimes: Object.fromEntries(configured.map((engine) => [engine.id, engine.runtime])),
   };
+}
+
+export function applyLocalLoginOffers<T extends EngineCatalogConfig>(
+  config: T,
+  offers: readonly EngineId[],
+): T & { localLoginOffered: EngineId[] } {
+  const localLoginOffered = offers.filter(
+    (engine) =>
+      config.engines.includes(engine) && config.readiness[engine]?.reason === "provider_unhealthy",
+  );
+  const modelDetails = { ...config.modelDetails };
+  const models = { ...config.models };
+  for (const engine of localLoginOffered) {
+    modelDetails[engine] = (modelDetails[engine] ?? []).map((model) => {
+      if (!model.policyAllowed) return model;
+      return { ...model, dispatchable: true };
+    });
+    models[engine] = (modelDetails[engine] ?? [])
+      .filter((model) => model.dispatchable)
+      .sort((left, right) => Number(right.default) - Number(left.default))
+      .map((model) => model.id);
+  }
+  return { ...config, localLoginOffered, modelDetails, models };
 }
 
 export function resolveEnabledEngine(
@@ -249,6 +279,7 @@ export function useEnabledEngineConfig(): {
   modelCatalogStatuses: EngineModelCatalogStatuses;
   readiness: EngineReadinessCatalog;
   runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  localLoginOffered: EngineId[];
   /** True once GET /api/capabilities resolved (or failed): before that the engines
    * list is the conservative fallback and must not demote a richer default. */
   loaded: boolean;
@@ -259,13 +290,8 @@ export function useEnabledEngineConfig(): {
   refreshModels: (preserveModel?: string, engine?: EngineId) => Promise<void>;
 } {
   const capabilityState = useCapabilityCatalog();
-  const [config, setConfig] = useState<{
-    engines: EngineId[];
-    models: EngineModelCatalog;
-    modelDetails: EngineModelDetails;
-    modelCatalogStatuses: EngineModelCatalogStatuses;
-    readiness: EngineReadinessCatalog;
-    runtimes: Partial<Record<EngineId, CapabilityEngineRuntime>>;
+  const localLoginOffers = useLocalLoginOffers();
+  const [config, setConfig] = useState<EngineCatalogConfig & {
     loaded: boolean;
     readinessKnown: boolean;
   }>(fallbackEnabledEngineConfig);
@@ -295,7 +321,11 @@ export function useEnabledEngineConfig(): {
       modelCatalogStatuses: refreshed.modelCatalogStatuses,
     }));
   }, []);
-  return { ...config, refreshModels };
+  const offeredConfig = useMemo(
+    () => applyLocalLoginOffers(config, localLoginOffers),
+    [config, localLoginOffers],
+  );
+  return { ...offeredConfig, refreshModels };
 }
 
 /** Configured user-facing engines from GET /api/capabilities. Dispatch readiness is
