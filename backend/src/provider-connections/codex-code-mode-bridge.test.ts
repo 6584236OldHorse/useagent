@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess, TCPSocketListener } from "bun";
@@ -113,6 +113,16 @@ describe("Codex code-mode tunnel", () => {
     await writeFile(tokenFile, `${sha256("next-run-token")}\n`);
     expect(await roundTrip("run-token", "late-frame")).toBe("");
     expect(await roundTrip("next-run-token", "fresh-frame")).toBe("fresh-frame");
+  });
+
+  test("with no run's digest (a pre-warmed or idle sandbox) every bearer is refused", async () => {
+    await rm(tokenFile, { force: true });
+    for (const bearer of ["run-token", "next-run-token", sha256("next-run-token"), "a".repeat(64)]) {
+      expect((await fetch(`http://127.0.0.1:${forwarderPort}/`, { headers: { authorization: `Bearer ${bearer}` } })).status).toBe(403);
+    }
+    expect(await roundTrip("next-run-token", "frame-before-any-run")).toBe("");
+    await writeFile(tokenFile, "");
+    expect((await fetch(`http://127.0.0.1:${forwarderPort}/`, { headers: { authorization: "Bearer next-run-token" } })).status).toBe(403);
   });
 
   test("cuts a flooding host off instead of buffering what the app-server has not read", async () => {

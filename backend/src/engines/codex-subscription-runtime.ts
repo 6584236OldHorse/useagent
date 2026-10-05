@@ -142,7 +142,7 @@ export async function prepareCodexSubscription(input: {
     authEpoch: runtime.authEpoch,
     sandboxId: sandbox.id,
     sandboxGeneration: RUNTIME_GENERATION,
-    environmentId: codexExecutionEnvironmentId(productThreadId, sandbox.id),
+    environmentId: codexExecutionEnvironmentId(sandbox.id),
     cwd: workdir,
   };
   const environmentId = scope.environmentId;
@@ -189,54 +189,11 @@ export async function prepareCodexSubscription(input: {
   // Restarted services or a stale session: whatever this host kept is unusable.
   evictCodexThreadSession(sessionKey, servicesUp ? "stale" : "sandbox services restarted");
 
-  const execServerListening = verdicts[CODEX_EXEC_SERVER_PORT] === LISTENER_OURS;
-  const startCodeMode = {
-    host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
-    forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
-  };
   let execBridge: ReturnType<typeof openCodexExecServerBridge> | undefined;
   let codeModeBridge: ReturnType<typeof openCodexCodeModeBridge> | undefined;
   let relay: CodexRelaySession | undefined;
-  if (!execServerListening) {
-    await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
-  }
   try {
-    if (!execServerListening) {
-      await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
-      const launch = await sandbox.process.executeSessionCommand(
-        CODEX_EXEC_SERVER_SESSION,
-        {
-          command: buildCodexExecServerCommand(environmentId, layout),
-          runAsync: true,
-          suppressInputEcho: true,
-        },
-        30,
-      );
-      if ((launch.exitCode ?? 0) !== 0) {
-        throw new Error("Codex exec-server failed to start");
-      }
-    }
-    if (startCodeMode.host || startCodeMode.forwarder) {
-      await sandbox.process.createSession(CODEX_CODE_MODE_SESSION);
-      const launch = await sandbox.process.executeSessionCommand(
-        CODEX_CODE_MODE_SESSION,
-        { command: buildCodexCodeModeLaunchCommand(layout, startCodeMode), runAsync: true, suppressInputEcho: true },
-        30,
-      );
-      if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
-    }
-    if (!servicesUp) {
-      const readiness = await sandbox.process.executeCommand(
-        buildSandboxListenerProbeCommand(owners, 15_000),
-        undefined,
-        undefined,
-        20,
-      ).catch(() => null);
-      const ready = assertNoForeignListener(readListenerVerdicts(readiness?.result ?? "", owners));
-      if (owners.some(({ port }) => ready[port] !== LISTENER_OURS)) {
-        throw new Error("Codex sandbox services failed readiness");
-      }
-    }
+    await launchMissingCodexServices(sandbox, layout, verdicts);
 
     const sandboxKind = sandbox.providerKind ?? sandboxProviderKind();
     const [execPreview, codeModePreview] = await Promise.all([
@@ -326,6 +283,69 @@ export async function prepareCodexSubscription(input: {
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
   };
+}
+
+/** Start whichever Codex services the probe found missing, then wait until our
+ * own processes hold all three ports. */
+async function launchMissingCodexServices(
+  sandbox: SandboxHandle,
+  layout: SandboxRuntimeLayout,
+  verdicts: NonNullable<ReturnType<typeof readListenerVerdicts>>,
+): Promise<void> {
+  const owners = codexServiceOwners(layout);
+  if (owners.every(({ port }) => verdicts[port] === LISTENER_OURS)) return;
+  if (verdicts[CODEX_EXEC_SERVER_PORT] !== LISTENER_OURS) {
+    await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
+    await sandbox.process.createSession(CODEX_EXEC_SERVER_SESSION);
+    const launch = await sandbox.process.executeSessionCommand(
+      CODEX_EXEC_SERVER_SESSION,
+      {
+        command: buildCodexExecServerCommand(codexExecutionEnvironmentId(sandbox.id), layout),
+        runAsync: true,
+        suppressInputEcho: true,
+      },
+      30,
+    );
+    if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex exec-server failed to start");
+  }
+  const startCodeMode = {
+    host: verdicts[CODEX_CODE_MODE_HOST_PORT] !== LISTENER_OURS,
+    forwarder: verdicts[CODEX_CODE_MODE_FORWARDER_PORT] !== LISTENER_OURS,
+  };
+  if (startCodeMode.host || startCodeMode.forwarder) {
+    await sandbox.process.createSession(CODEX_CODE_MODE_SESSION);
+    const launch = await sandbox.process.executeSessionCommand(
+      CODEX_CODE_MODE_SESSION,
+      { command: buildCodexCodeModeLaunchCommand(layout, startCodeMode), runAsync: true, suppressInputEcho: true },
+      30,
+    );
+    if ((launch.exitCode ?? 0) !== 0) throw new Error("Codex code-mode host failed to start");
+  }
+  const readiness = await sandbox.process.executeCommand(
+    buildSandboxListenerProbeCommand(owners, 15_000),
+    undefined,
+    undefined,
+    20,
+  ).catch(() => null);
+  const ready = assertNoForeignListener(readListenerVerdicts(readiness?.result ?? "", owners));
+  if (owners.some(({ port }) => ready[port] !== LISTENER_OURS)) {
+    throw new Error("Codex sandbox services failed readiness");
+  }
+}
+
+/** A warm-pool sandbox starts the Codex services before any run claims it, so
+ * a new thread's first Codex turn finds them up. No bearer digest is written:
+ * the forwarder refuses every connection until a run admits its own. */
+export async function prewarmCodexServices(sandbox: SandboxHandle): Promise<void> {
+  const layout = codexRuntimeLayout(sandbox);
+  const owners = codexServiceOwners(layout);
+  const probe = await sandbox.process.executeCommand(
+    buildSandboxListenerProbeCommand(owners, 0),
+    undefined,
+    undefined,
+    10,
+  ).catch(() => null);
+  await launchMissingCodexServices(sandbox, layout, assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners)));
 }
 
 const CODEX_SERVICES_PROBE = "codex-services-probe";
@@ -554,9 +574,10 @@ function assertTrustedPreviewHost(
 }
 
 
-/** The remote environment a thread's runs share on one sandbox. */
-function codexExecutionEnvironmentId(threadId: string, sandboxId: string): string {
-  const suffix = `${sandboxId}-${threadId}`
+/** The remote environment of a sandbox's one exec-server, which every run on
+ * the sandbox shares and a warm pool can start before any thread claims it. */
+function codexExecutionEnvironmentId(sandboxId: string): string {
+  const suffix = sandboxId
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
