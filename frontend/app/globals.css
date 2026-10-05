@@ -1792,11 +1792,11 @@ html {
      * warmer error/warning anchors. Hex in comments is the sRGB value each
      * HSL triple encodes.
      * ------------------------------------------------------------------- */
-    --brand-orbit: 220 75% 73.33%; /* #88aaee */
+    --brand-orbit: 217 100% 66%; /* #5294ff */
 
     --neutral-0: 0 0% 100%;               /* #ffffff cards, chrome */
-    --neutral-50: 221.05 42.22% 91.18%;   /* #dfe5f2 canvas */
-    --neutral-100: 222 41.67% 95.29%;     /* #eef1f8 panel fill */
+    --neutral-50: 214 95% 93%;            /* #dde9fd canvas (the library's background) */
+    --neutral-100: 214 90% 96%;           /* #ebf2fe panel fill */
     --neutral-200: 221.54 18.84% 86.47%;  /* #d6dae3 */
     --neutral-300: 222.35 16.5% 79.8%;    /* #c3c8d4 list separators */
     --neutral-400: 222 9.8% 60%;          /* #8f95a3 disabled */
@@ -1818,8 +1818,8 @@ html {
     --blue-700: 220.66 63.35% 37.45%;     /* #234a9c */
     --blue-600: 220.56 62.83% 44.31%;     /* #2a58b8 accent as text */
     --blue-500: 219.62 65.55% 53.33%;     /* #3a6fd6 primary base */
-    --blue-400: 219.56 72.97% 63.73%;     /* #5f8de6 */
-    --blue-300: 220 75% 73.33%;           /* #88aaee main */
+    --blue-400: 217 100% 60%;             /* #3385ff */
+    --blue-300: 217 100% 66%;             /* #5294ff main (the library's main) */
     --blue-200: 219.05 79.75% 84.51%;     /* #b8cef7 */
     --blue-100: 219.38 80% 92.16%;        /* #dbe6fb */
     --blue-50: 220 78.9% 96.27%;          /* #eef3fd */
@@ -1844,7 +1844,7 @@ html {
     /* Slot deltas vs `:root`. */
     --bg-white-0: var(--neutral-0);        /* white cards on the cool canvas */
     --stroke-soft-200: 222.35 16.5% 79.8%; /* #c3c8d4 list hairline; controls take black below */
-    --overlay: 0 0% 0% / 40%;              /* black scrim */
+    --overlay: 0 0% 0% / 80%;              /* black scrim, as the library's */
   }
 
   .phosphor-light {
@@ -3906,9 +3906,9 @@ html {
   --color-pill-tab-blue-hover-background: hsl(var(--blue-200));
 
   /* Flat CTA fills: no gradient, the label stays white on the dark blue. */
-  --gradient-button-primary-default:  linear-gradient(180deg, hsl(var(--blue-600)) 0%, hsl(var(--blue-600)) 100%);
-  --gradient-button-primary-hover:    linear-gradient(180deg, hsl(var(--blue-500)) 0%, hsl(var(--blue-500)) 100%);
-  --gradient-button-primary-active:   linear-gradient(180deg, hsl(var(--blue-700)) 0%, hsl(var(--blue-700)) 100%);
+  --gradient-button-primary-default:  linear-gradient(180deg, hsl(var(--blue-300)) 0%, hsl(var(--blue-300)) 100%);
+  --gradient-button-primary-hover:    linear-gradient(180deg, hsl(var(--blue-400)) 0%, hsl(var(--blue-400)) 100%);
+  --gradient-button-primary-active:   linear-gradient(180deg, hsl(var(--blue-400)) 0%, hsl(var(--blue-400)) 100%);
   --gradient-button-primary-disabled: linear-gradient(
     180deg,
     hsl(var(--neutral-200)) 0%,
@@ -3931,36 +3931,38 @@ html {
   --radius-3xl: 6px;
   --radius-notification-card: 6px;
   --shadow-2xs: 2px 2px 0 0 hsl(var(--neutral-950));
-  --shadow-xs:  2px 2px 0 0 hsl(var(--neutral-950));
-  --shadow-sm:  3px 3px 0 0 hsl(var(--neutral-950));
+  --shadow-xs:  4px 4px 0 0 hsl(var(--neutral-950));
+  --shadow-sm:  4px 4px 0 0 hsl(var(--neutral-950));
   --shadow-md:  4px 4px 0 0 hsl(var(--neutral-950));
-  --shadow-lg:  6px 6px 0 0 hsl(var(--neutral-950));
-  --shadow-xl:  8px 8px 0 0 hsl(var(--neutral-950));
-  --shadow-card:     3px 3px 0 0 hsl(var(--neutral-950));
+  --shadow-lg:  4px 4px 0 0 hsl(var(--neutral-950));
+  --shadow-xl:  4px 4px 0 0 hsl(var(--neutral-950));
+  --shadow-card:     4px 4px 0 0 hsl(var(--neutral-950));
   --shadow-dropdown: 4px 4px 0 0 hsl(var(--neutral-950));
   --shadow-sidebar:  0 0 0 0 transparent;
   --shadow-nav-selected: 0 0 0 2px hsl(var(--neutral-950));
   --shadow-checkbox-selected: inset 0 0 0 2px hsl(var(--neutral-950));
-  --shadow-waitlist: 6px 6px 0 0 hsl(var(--neutral-950));
+  --shadow-waitlist: 4px 4px 0 0 hsl(var(--neutral-950));
 }
 
-/* Neobrutal strokes and depth. Everything below is scoped to the theme class
- * and keyed on the classes the shell and the base kit already render, so no
- * component changes and no other theme moves. Strokes that would shift layout
- * are drawn as spread shadows (0 0 0 2px) instead of borders; the hard offset
- * rides on the same declaration. Kept out of @layer so the utilities lose. */
+/* Neobrutal strokes and depth, after neobrutalism.dev's own component
+ * recipes (border-2 black, shadow 4px 4px 0 0, radius 5px, weight 700 on
+ * headings, the main blue with black text on anything selected). Everything
+ * is scoped to the theme class and keyed on the classes and roles the shell
+ * and the base kit already render: no component changes, no other theme
+ * moves. Strokes that would shift layout are spread shadows; chips inside
+ * clipping containers use a real border. Kept out of @layer so the
+ * utilities lose. */
 .neobrutal {
   --neo-ink: hsl(var(--neutral-950));
+  --neo-main: hsl(var(--blue-300));
   --neo-stroke: 0 0 0 2px var(--neo-ink);
   --neo-lift-2: var(--neo-stroke), 2px 2px 0 2px var(--neo-ink);
-  --neo-lift-3: var(--neo-stroke), 3px 3px 0 2px var(--neo-ink);
   --neo-lift-4: var(--neo-stroke), 4px 4px 0 2px var(--neo-ink);
-  --neo-lift-6: var(--neo-stroke), 6px 6px 0 2px var(--neo-ink);
   --neo-yellow: hsl(47.43 100% 67.25%);
-  --neo-lime: hsl(80.61 78.54% 55.49%);
+  font-weight: 500;
 }
 
-/* Cards, panels, menus: a real stroke and a deep offset. */
+/* Cards, panels, menus: a real stroke and the 4px offset. */
 .neobrutal :is(.rounded-2xl, .rounded-xl, .rounded-2lg):is(.border, .shadow-card, .shadow-dropdown, .shadow-md, .shadow-lg) {
   border-width: 2px;
   border-style: solid;
@@ -3969,29 +3971,34 @@ html {
 .neobrutal .rounded-2xl:is(.bg-background-primary-default, .bg-background-secondary-default, .bg-bg-white-0, .bg-white):not(.border) {
   border: 2px solid var(--neo-ink);
 }
-.neobrutal :is(.rounded-2xl, .rounded-xl):is(.shadow-card, .shadow-md, .shadow-lg) {
-  box-shadow: 5px 5px 0 0 var(--neo-ink);
-}
+.neobrutal :is(.rounded-2xl, .rounded-xl):is(.shadow-card, .shadow-md, .shadow-lg),
 .neobrutal .shadow-dropdown {
-  box-shadow: 6px 6px 0 0 var(--neo-ink);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
 }
 /* Arbitrary radii the composer and reply box use. */
 .neobrutal :is(.rounded-20, .rounded-\[20px\], .rounded-t-2xl) {
-  border-radius: 6px;
+  border-radius: 5px;
 }
 .neobrutal .rounded-t-2xl {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
-/* The composer: the thickest stroke and the deepest offset on the page. */
+/* The composer and the reply box: a thicker stroke, the same offset. */
 .neobrutal fieldset.rounded-2xl.shadow-card,
 .neobrutal .rounded-\[20px\].border.bg-background-primary-default {
   border-width: 3px;
   border-color: var(--neo-ink);
-  box-shadow: 7px 7px 0 0 var(--neo-ink);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+}
+/* The tray under the composer reads as one stacked block with it. */
+.neobrutal .rounded-b-\[16px\].border-b.bg-bg-white-0 {
+  border-width: 0 3px 3px;
+  border-color: var(--neo-ink);
+  border-radius: 0 0 5px 5px;
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
 }
 /* Chips and pill controls inside the composer, its tray and the turn
- * summary: a real border (their containers clip shadows) and a small offset. */
+ * summary: a real border (their containers clip shadows) and the offset. */
 .neobrutal fieldset button.rounded-full,
 .neobrutal .rounded-\[20px\] button.rounded-full,
 .neobrutal .rounded-b-\[16px\] button.rounded-full,
@@ -4005,94 +4012,98 @@ html {
   color: var(--color-text-primary);
   font-weight: 700;
 }
-/* The tray under the composer reads as one stacked block with it. */
-.neobrutal .rounded-b-\[16px\].border-b.bg-bg-white-0 {
-  border-width: 0 3px 3px;
-  border-color: var(--neo-ink);
-  border-radius: 0 0 6px 6px;
-  box-shadow: 7px 7px 0 0 var(--neo-ink);
-}
-/* Rail navigation (settings and similar): bold rows, the selected one lifted. */
-.neobrutal nav a.rounded-2lg {
-  border-radius: 5px;
-  font-weight: 700;
-}
-.neobrutal nav a.rounded-2lg.bg-background-secondary-hover {
-  box-shadow: var(--neo-lift-2);
-  color: #000;
-}
-/* Status chips: the pastel fills keep their text colour and gain a stroke. */
-.neobrutal [class*="bg-status-"][class*="-background"] {
-  border-radius: 4px;
-  box-shadow: 0 0 0 1.5px var(--neo-ink);
-}
-/* Tables: a lifted white frame, a header row in the poster voice, and a
- * black grid between rows. */
-.neobrutal section.rounded-2xl.border.border-border-table {
-  border-width: 2px;
-  border-color: var(--neo-ink);
-  background: var(--color-background-primary-default);
-  box-shadow: 5px 5px 0 0 var(--neo-ink);
-  overflow: hidden;
-}
-.neobrutal .bui-table th {
-  color: #000;
-  font-weight: 800;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  border-bottom: 2px solid var(--neo-ink);
-}
-.neobrutal .bui-table tbody tr {
-  background: var(--color-background-primary-default);
-  border-bottom: 2px solid var(--neo-ink);
-}
-.neobrutal .bui-table tbody tr:last-child {
-  border-bottom: 0;
-}
-.neobrutal .bui-table tbody tr:hover {
-  background: var(--color-accent-100);
-}
-/* The round search field (base Input, pill variant): the frame is the element
- * whose grandchild holds the borderless input. */
-.neobrutal div.rounded-full:has(> div > div > input.bg-transparent.border-0) {
-  border-radius: 5px;
-  box-shadow: var(--neo-lift-2);
-}
-/* Select triggers built on the inset ring. */
-.neobrutal button.rounded-2lg.ring-1.ring-inset {
-  border-radius: 5px;
-  box-shadow: var(--neo-lift-2);
-  --tw-ring-shadow: 0 0 #0000;
-  --tw-ring-offset-shadow: 0 0 #0000;
-}
-/* Primary CTAs: flat fill, stroke, hard offset, and the press on hover. */
+/* Buttons, as the library's: the main blue with a black label for primary,
+ * white for the rest, a stroke, the offset, and the press on hover. */
 .neobrutal .bg-button-primary {
+  color: #000;
+  border: 2px solid var(--neo-ink);
   border-radius: 5px;
-  box-shadow: var(--neo-lift-3);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
   transition: transform 80ms ease, box-shadow 80ms ease;
 }
 .neobrutal .bg-button-primary:hover {
-  transform: translate(2px, 2px);
-  box-shadow: var(--neo-lift-2);
+  transform: translate(4px, 4px);
+  box-shadow: none;
 }
-/* Base buttons (secondary, neutral, danger) that carry a border class. */
 .neobrutal :is(button, [role="button"], a):is(.border, [class*="border-border"]):not(.bg-button-primary):not(:disabled) {
   border-width: 2px;
   border-color: var(--neo-ink);
   border-radius: 5px;
-  box-shadow: 3px 3px 0 0 var(--neo-ink);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.neobrutal :is(button, [role="button"], a):is(.border, [class*="border-border"]):not(.bg-button-primary):not(:disabled):hover {
+  transform: translate(4px, 4px);
+  box-shadow: none;
 }
 .neobrutal :is(button, [role="button"], a).rounded-full {
   border-radius: 5px;
 }
-/* Fields: an inset stroke on the base Input's frame. */
+/* Anything selected or active is the main blue with black text and a stroke:
+ * pill tabs, segmented controls, toggles. */
+.neobrutal :is(button, [role="tab"], [role="radio"], [role="option"])[aria-selected="true"],
+.neobrutal :is(button, [role="tab"], [role="radio"])[data-selected="true"],
+.neobrutal [role="radio"][aria-checked="true"] {
+  background: var(--neo-main);
+  color: #000;
+  box-shadow: var(--neo-stroke);
+  border-radius: 5px;
+}
+/* Fields: the base Input's frame, white with an inset stroke. */
 .neobrutal .rounded-2lg.bg-background-tertiary-default {
+  background: var(--color-background-primary-default);
   outline: 2px solid var(--neo-ink);
   outline-offset: -2px;
 }
+.neobrutal div.rounded-full:has(> div > div > input.bg-transparent.border-0) {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+}
+/* Checkboxes and switches. */
+.neobrutal [role="checkbox"] {
+  outline: 2px solid var(--neo-ink);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+.neobrutal [role="checkbox"][aria-checked="true"],
+.neobrutal [role="checkbox"][data-selected="true"] {
+  background: var(--neo-main);
+  color: #000;
+}
+.neobrutal [role="switch"] {
+  box-shadow: var(--neo-stroke);
+}
+.neobrutal [role="switch"][aria-checked="true"] {
+  background: var(--neo-main);
+}
+/* Command bar and menus: items carry a transparent stroke so the selected
+ * one can take a black one without moving; the selected item is main blue. */
+.neobrutal [cmdk-item],
+.neobrutal :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"]) {
+  border: 2px solid transparent;
+  border-radius: 5px;
+}
+.neobrutal [cmdk-item][aria-selected="true"],
+.neobrutal [cmdk-item][data-selected="true"],
+.neobrutal :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"]):is(:hover, :focus-visible, [data-focused="true"], [data-hovered="true"], [data-focus-visible="true"], [aria-selected="true"]) {
+  background: var(--neo-main);
+  color: #000;
+  border-color: var(--neo-ink);
+}
+.neobrutal [cmdk-group-heading] {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+.neobrutal [cmdk-input-wrapper] {
+  border-bottom: 2px solid var(--neo-ink);
+}
+.neobrutal :is([role="dialog"], [role="alertdialog"]).rounded-2xl,
+.neobrutal :is([role="dialog"], [role="alertdialog"]) > .rounded-2xl {
+  border: 2px solid var(--neo-ink);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+}
 /* Sidebar: an edge on the canvas, a stroked brand tile, stroked header
- * buttons and search, bold rows, and the selected row lifted off the rail. */
+ * buttons and search, bold rows, and the active row in the main blue. */
 .neobrutal [data-slot="sidebar-container"] {
   border-right: 2px solid var(--neo-ink);
 }
@@ -4119,6 +4130,7 @@ html {
 }
 .neobrutal [data-sidebar="menu-item"] > a.bg-background-secondary-hover,
 .neobrutal [data-sidebar="menu-item"] > a.rounded-2lg:hover {
+  background: var(--neo-main);
   box-shadow: var(--neo-lift-2);
   color: #000;
 }
@@ -4128,18 +4140,27 @@ html {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-/* Section labels elsewhere follow the same poster voice. */
 .neobrutal h2.text-mono-label {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+/* Rail navigation (settings and similar): bold rows, the active one main blue. */
+.neobrutal nav a.rounded-2lg {
+  border-radius: 5px;
+  font-weight: 700;
+}
+.neobrutal nav a.rounded-2lg.bg-background-secondary-hover {
+  background: var(--neo-main);
+  box-shadow: var(--neo-lift-2);
+  color: #000;
 }
 /* The user's message is a yellow block; the shell's header rules go black. */
 .neobrutal .rounded-2xl.rounded-br-md.bg-background-secondary-default {
   background: var(--neo-yellow);
   color: #000;
   border: 2px solid var(--neo-ink);
-  border-radius: 6px;
+  border-radius: 5px;
   box-shadow: 4px 4px 0 0 var(--neo-ink);
 }
 .neobrutal .border-b[class*="border-border-button-default/50"] {
@@ -4150,11 +4171,50 @@ html {
   border-radius: 5px;
   box-shadow: var(--neo-stroke);
 }
-.neobrutal kbd {
-  box-shadow: 0 0 0 1.5px var(--neo-ink), 1.5px 1.5px 0 1.5px var(--neo-ink);
-  border-radius: 3px;
+/* Badges and chips: border-2, no shadow, as the library's Badge. */
+.neobrutal [class*="bg-status-"][class*="-background"] {
+  border-radius: 5px;
+  box-shadow: var(--neo-stroke);
 }
-/* Type: headings and labels gain weight. */
+/* Kbd, as the library's: main blue, black text, a stroke. */
+.neobrutal kbd {
+  background: var(--neo-main);
+  color: #000;
+  border-radius: 4px;
+  box-shadow: var(--neo-stroke);
+}
+/* Tables: a lifted white frame, a bold header row over a two-pixel rule,
+ * and a black grid between rows. */
+.neobrutal section.rounded-2xl.border.border-border-table {
+  border-width: 2px;
+  border-color: var(--neo-ink);
+  background: var(--color-background-primary-default);
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+  overflow: hidden;
+}
+.neobrutal .bui-table th {
+  color: var(--color-text-primary);
+  font-weight: 700;
+  border-bottom: 2px solid var(--neo-ink);
+}
+.neobrutal .bui-table tbody tr {
+  background: var(--color-background-primary-default);
+  border-bottom: 2px solid var(--neo-ink);
+}
+.neobrutal .bui-table tbody tr:last-child {
+  border-bottom: 0;
+}
+.neobrutal .bui-table tbody tr:hover {
+  background: var(--color-accent-100);
+}
+/* Select triggers built on the inset ring. */
+.neobrutal button.rounded-2lg.ring-1.ring-inset {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+/* Type: headings and labels take the library's heading weight. */
 .neobrutal :is(h1, h2, h3, [class*="text-title"], [class*="text-display"]) {
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -4377,8 +4437,8 @@ html {
   --swatch-accent: #e88fb4;
 }
 .theme-swatch-neobrutal {
-  --swatch-canvas: #dfe5f2;
-  --swatch-accent: #88aaee;
+  --swatch-canvas: #dde9fd;
+  --swatch-accent: #5294ff;
 }
 
 /* ===========================================================================

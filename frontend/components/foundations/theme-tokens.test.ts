@@ -349,18 +349,17 @@ describe("shared theme tokens", () => {
     const semantic = blocks.find((tokens) => tokens["--color-border-button-default"]);
     expect(semantic?.["--color-border-button-default"]).toBe("hsl(var(--neutral-950))");
     expect(semantic?.["--color-background-secondary-hover"]).toBe("hsl(var(--blue-300))");
-    expect(semantic?.["--shadow-card"]).toBe("3px 3px 0 0 hsl(var(--neutral-950))");
-    // Text tiers and accent-as-text on the canvas (#dfe5f2), the panel fill
-    // (#eef1f8) and the white cards; the white CTA label on the flat blue-600
-    // fill; primary text on the main-blue selected row.
-    for (const surface of ["#dfe5f2", "#eef1f8", "#ffffff"]) {
+    expect(semantic?.["--shadow-card"]).toBe("4px 4px 0 0 hsl(var(--neutral-950))");
+    // Text tiers and accent-as-text on the canvas (#dde9fd), the panel fill
+    // (#ebf2fe) and the white cards; black labels on the main blue (#5294ff)
+    // used for CTAs, selection and kbd.
+    for (const surface of ["#dde9fd", "#ebf2fe", "#ffffff"]) {
       expect(contrast("#000000", surface)).toBeGreaterThanOrEqual(7);
       expect(contrast("#3d3d3d", surface)).toBeGreaterThanOrEqual(4.5);
       expect(contrast("#5b5f6a", surface)).toBeGreaterThanOrEqual(4.5);
       expect(contrast("#2a58b8", surface)).toBeGreaterThanOrEqual(4.5);
     }
-    expect(contrast("#ffffff", "#2a58b8")).toBeGreaterThanOrEqual(4.5);
-    expect(contrast("#000000", "#88aaee")).toBeGreaterThanOrEqual(7);
+    expect(contrast("#000000", "#5294ff")).toBeGreaterThanOrEqual(7);
   });
 
   test("a bar's track sits a step above the raised surface in every dark theme", () => {
