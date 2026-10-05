@@ -15,4 +15,17 @@ describe("Pro to OSS sync boundary", () => {
     expect(() => assertOssSyncSafe(["infra/terraform/prod/main.tf"]))
       .toThrow("OSS sync contains private paths");
   });
+
+  test("rejects planning notes and the production promote lane", () => {
+    for (const path of [
+      "plan/ux-audit-shell.md",
+      ".github/workflows/promote.yml",
+      ".github/workflows/gates.yml",
+      ".github/workflows/images.yml",
+      "deploy/promote.ts",
+    ]) {
+      expect(() => assertOssSyncSafe([path])).toThrow("OSS sync contains private paths");
+    }
+    expect(() => assertOssSyncSafe([".github/workflows/ci.yml", "deploy/compose/promotion.ts"])).not.toThrow();
+  });
 });
