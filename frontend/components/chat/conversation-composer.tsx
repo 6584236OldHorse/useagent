@@ -6,7 +6,10 @@ import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import type { ComposerSubmit } from "@/components/chat/composer";
 import type { AssistantIdentity, Turn } from "@/components/chat/conversation";
 import { latestThreadContext } from "@/components/chat/native-events";
-import { composerAcceptsRunResources, type PendingQuestion } from "@/components/chat/question-state";
+import {
+  composerAcceptsRunResources,
+  type PendingQuestion,
+} from "@/components/chat/question-state";
 import { ReplyComposer } from "@/components/chat/reply-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
 import type { EngineId, MemoryScope } from "@/components/chat/types";

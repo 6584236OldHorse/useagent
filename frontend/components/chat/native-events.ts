@@ -107,7 +107,10 @@ export function deriveThreadContext(
 export function latestThreadContext(
   turns: readonly {
     readonly run: { readonly child_session?: unknown };
-    readonly native?: { readonly nativeFrames: readonly NativeFrame[]; readonly childSessionIds: ReadonlySet<string> };
+    readonly native?: {
+      readonly nativeFrames: readonly NativeFrame[];
+      readonly childSessionIds: ReadonlySet<string>;
+    };
   }[],
 ): ThreadContext | null {
   for (const turn of turns.toReversed()) {
