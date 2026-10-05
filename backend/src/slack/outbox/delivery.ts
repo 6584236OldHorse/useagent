@@ -13,6 +13,7 @@ import {
   findSlackRunResponse,
   setSlackFallbackMessageTs,
   setSlackNativeStream,
+  noteSlackCardRevisions,
 } from "../repo";
 import type { ProcessResult, SlackDeliveryOutcome, SlackErrorClass } from "./types";
 import {
@@ -50,12 +51,6 @@ function backoffMs(attempt: number): number {
   const exp = Math.min(CAP_MS, BASE_MS * 2 ** Math.max(0, attempt - 1));
   return exp + Math.floor(Math.random() * Math.min(1000, exp * 0.25));
 }
-
-/** Newest tool-card batch delivered per run, so a retried older batch never
- *  restores stale card state. Process-local: one backend owns the outbox
- *  (single-replica deployment) and a run's stop clears its entry; after a
- *  restart the stop still carries every card's durable final state. */
-const deliveredCardSeq = new Map<string, number>();
 
 function sessionStatus(value: unknown): SlackSessionStatus | undefined {
   return value === "processing" || value === "active" ? value : undefined;
@@ -315,23 +310,33 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const channel = string("channel");
       const threadTs = string("threadTs");
       const runId = string("runId") ?? string("rootRunId");
-      const chunks = streamChunksFrom(p.chunks);
+      const stored = streamChunksFrom(p.chunks);
       const narrationOffset =
         typeof p.narrationOffset === "number" && Number.isFinite(p.narrationOffset)
           ? p.narrationOffset
           : undefined;
       const fallbackBlocks = Array.isArray(p.fallbackBlocks) ? p.fallbackBlocks : undefined;
       const fallbackText = string("fallbackText");
-      if (!teamId || !channel || !threadTs || !runId || chunks.length === 0 || !fallbackText) {
+      if (!teamId || !channel || !threadTs || !runId || stored.length === 0 || !fallbackText) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
-      const cardSeq = typeof p.cardSeq === "number" ? p.cardSeq : null;
-      if (cardSeq !== null && cardSeq <= (deliveredCardSeq.get(runId) ?? 0)) return { ok: true }; // superseded
-      const noteCardSeq = (): void => {
-        if (cardSeq !== null) deliveredCardSeq.set(runId, cardSeq);
-      };
       const response = await findSlackRunResponse(runId);
       if (!response) return { ok: false, class: "transient", message: "stream_not_started" };
+      // A card batch drops each card a NEWER batch already revised (the ledger
+      // lives on the response row, so a retry after a restart is fenced too);
+      // nothing left means the whole batch was superseded.
+      const cardSeq = typeof p.cardSeq === "number" ? p.cardSeq : null;
+      const chunks = cardSeq === null
+        ? stored
+        : stored.filter((c) => c.type !== "task_update" || (response.cardRevisions[c.id] ?? 0) < cardSeq);
+      if (chunks.length === 0) return { ok: true };
+      const noteCardSeq = (): Promise<void> =>
+        cardSeq === null
+          ? Promise.resolve()
+          : noteSlackCardRevisions(
+              runId,
+              Object.fromEntries(chunks.flatMap((c) => (c.type === "task_update" ? [[c.id, cardSeq]] : []))),
+            );
       let nativeJustDisabled = false;
       if (response.nativeStreamTs) {
         // Offset fence for narration text: retries and backoff can reorder
@@ -351,7 +356,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
             0,
           );
           await addSlackStreamedChars(runId, markdownChars);
-          noteCardSeq();
+          await noteCardSeq();
           return stream;
         }
         if (stream.class === "rate_limited") return stream;
@@ -362,7 +367,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       }
       if (response.fallbackMessageTs) {
         const updated = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text: fallbackText, blocks: fallbackBlocks });
-        if (updated.ok) noteCardSeq();
+        if (updated.ok) await noteCardSeq();
         return updated;
       }
       // Progress is best-effort: with the stream just disabled and no card to
@@ -389,7 +394,6 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       if (!teamId || !channel || !threadTs || !runId || !text || chunks.length === 0 || !blocks) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
-      deliveredCardSeq.delete(runId);
       const response = await findSlackRunResponse(runId);
       if (response?.nativeStreamTs) {
         // Append exactly the reply text the body does NOT yet contain: the

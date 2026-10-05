@@ -267,6 +267,8 @@ export function toolTaskChunk(step: StepLike): SlackTaskUpdateStreamChunk | null
   const bridged = str(input?.name) ?? str(input?.tool);
   const args = (bridged ? rec(input?.arguments) : null) ?? input;
   const tool = (bridged ?? str(code?.tool) ?? "").split(/__|[./]/).filter(Boolean).pop() ?? "";
+  // A plan/todos row travels as plan_update, never as a card.
+  if (step.chip === "plan" || tool === "todowrite") return null;
   const command = commandOf(input?.command ?? code?.command);
   const card =
     knownToolCard(tool, args) ??
@@ -298,14 +300,28 @@ export function toolTaskChunk(step: StepLike): SlackTaskUpdateStreamChunk | null
 }
 
 /** Distinct http(s) URLs a tool's output mentions, capped at five: trailing
- *  punctuation and a closing paren or bracket that wrapped the link are shed,
- *  bracketed IPv6 hosts survive, and anything the URL parser rejects is out. */
+ *  punctuation and the delimiter that wrapped the link are shed, a bracket
+ *  that belongs to the URL (an IPv6 host, a wiki title) stays, and anything
+ *  the URL parser rejects is out. */
 function sourceUrls(text: string): string[] {
-  const candidates = (text.match(/https?:\/\/[^\s<>"']+/g) ?? []).map((raw) => {
-    const url = raw.replace(/[.,;:!?)]+$/, "");
-    return url.includes("[") ? url : url.replace(/\]+$/, "");
-  });
+  const candidates = (text.match(/https?:\/\/[^\s<>"']+/g) ?? []).map(unwrapUrl);
   return [...new Set(candidates.filter(httpUrl))].slice(0, 5);
+}
+
+const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/** Shed a trailing closer only while it outnumbers its opener inside the
+ *  candidate, so `(https://x.dev/a).` yields `https://x.dev/a` while
+ *  `http://[::1]:3000/health` and `https://w.org/Foo_(bar)` keep theirs. */
+function unwrapUrl(raw: string): string {
+  let url = raw;
+  for (;;) {
+    url = url.replace(/[.,;:!?]+$/, "");
+    const closer = url.at(-1) ?? "";
+    const opener = OPENER[closer];
+    if (!opener || url.split(closer).length <= url.split(opener).length) return url;
+    url = url.slice(0, -1);
+  }
 }
 
 /** Progress chunks for a card revision: a card still open under another id
@@ -355,6 +371,11 @@ export function planUpdateFromStep(step: {
   return planUpdateChunk(currentText ? `${head}: ${currentText}` : head);
 }
 
+/** Chars of card JSON the stop restates at most, so finalization never builds
+ *  a payload the outbox refuses: the newest cards win, and an open card past
+ *  the budget still closes with a bare id/title/status. */
+export const TERMINAL_CARD_BUDGET = 6_000;
+
 /** Terminal task closures for stopStream: the recent tool cards restated from
  *  their durable rows (a card still open settles to complete/error, a settled
  *  one is repeated as is, since a live append pending at finalization is
@@ -364,10 +385,24 @@ export function terminalTaskChunks(input: {
   readonly phase: CardPhase;
   readonly title: string;
   readonly cards?: readonly SlackTaskUpdateStreamChunk[];
+  readonly budget?: number;
 }): readonly SlackStreamChunk[] {
   const status: SlackTaskUpdateStatus = input.phase === "failed" ? "error" : "complete";
+  const budget = input.budget ?? TERMINAL_CARD_BUDGET;
+  const restated: SlackTaskUpdateStreamChunk[] = [];
+  let spent = 0;
+  for (const card of (input.cards ?? []).toReversed()) {
+    const settled = card.status === "in_progress" ? { ...card, status } : card;
+    const size = JSON.stringify(settled).length;
+    if (spent + size <= budget) {
+      spent += size;
+      restated.unshift(settled);
+    } else if (card.status === "in_progress") {
+      restated.unshift({ type: "task_update", id: card.id, title: card.title, status });
+    }
+  }
   return [
-    ...(input.cards ?? []).map((card) => (card.status === "in_progress" ? { ...card, status } : card)),
+    ...restated,
     taskUpdateChunk({
       id: "run",
       title: input.phase === "failed" ? "Run failed" : input.title,

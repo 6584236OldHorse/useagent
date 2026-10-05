@@ -88,6 +88,13 @@ describe("toolTaskChunk (one card per tool call, chatter never)", () => {
     expect(toolTaskChunk(step({ kind: "done", label: "Done", code: null }))).toBeNull();
   });
 
+  test("plan rows travel as plan_update, never as a card", () => {
+    expect(
+      toolTaskChunk(step({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } })),
+    ).toBeNull();
+    expect(toolTaskChunk(step({ kind: "command", label: "todos", chip: "tool", code: { tool: "todowrite", input: { todos: [] } } }))).toBeNull();
+  });
+
   test("a web search revises ONE card in place: started, then complete with its sources", () => {
     const search = (activityKind: string, output?: string) =>
       step({
@@ -137,16 +144,24 @@ describe("toolTaskChunk (one card per tool call, chatter never)", () => {
     expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: "", error: false } }))).toMatchObject({ status: "complete" });
   });
 
-  test("sources keep bracketed hosts, shed wrapping punctuation, and drop what the URL parser rejects", () => {
+  test("sources keep brackets that belong to the URL, shed the ones that wrapped it, and drop what the URL parser rejects", () => {
     const output = [
       "see (https://bun.sh/docs).",
-      "local http://[::1]:3000/health,",
+      "local [http://[::1]:3000/health],",
       "[https://x.dev/a]",
+      "{https://example.com/a}",
+      "wiki https://w.org/Foo_(bar)",
       "broken https://%zz",
       "dup https://bun.sh/docs",
     ].join(" ");
     const chunk = toolTaskChunk(step({ label: "web_search", code: { tool: "web_search", input: { query: "q" }, output } }));
-    expect(chunk?.sources?.map((s) => s.url)).toEqual(["https://bun.sh/docs", "http://[::1]:3000/health", "https://x.dev/a"]);
+    expect(chunk?.sources?.map((s) => s.url)).toEqual([
+      "https://bun.sh/docs",
+      "http://[::1]:3000/health",
+      "https://x.dev/a",
+      "https://example.com/a",
+      "https://w.org/Foo_(bar)",
+    ]);
     expect(taskSourcesField([{ type: "url", text: "x", url: "http://[::1" }, { type: "url", text: "ok", url: "https://ok.dev" }])).toEqual({
       sources: [{ type: "url", text: "ok", url: "https://ok.dev" }],
     });
@@ -226,6 +241,18 @@ describe("terminalTaskChunks", () => {
       settled,
       { type: "task_update", id: "step_s9", title: "Ran a command", status: "complete" },
       { type: "task_update", id: "run", title: "Build the thing", status: "complete" },
+    ]);
+  });
+
+  test("the restatement stays within its budget: newest cards first, an open card past it still closes", () => {
+    const big = (id: string, status: "in_progress" | "complete") =>
+      taskUpdateChunk({ id, title: "Searched the web", status, sources: [`https://x.dev/${"a".repeat(400)}`] });
+    const cards = [big("step_1", "in_progress"), big("step_2", "complete"), big("step_3", "complete")];
+    // One card is ~950 chars of JSON: the budget fits exactly the newest one.
+    expect(terminalTaskChunks({ phase: "completed", title: "T", cards, budget: 1_000 })).toEqual([
+      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
+      big("step_3", "complete"),
+      { type: "task_update", id: "run", title: "T", status: "complete" },
     ]);
   });
 

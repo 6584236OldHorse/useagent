@@ -2,6 +2,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -98,6 +99,12 @@ export const slackRunResponses = pgTable(
     // narration appends (each row carries its expected offset) and lets the
     // stop delivery append exactly the un-streamed tail of the reply.
     streamedChars: integer("streamed_chars").notNull().default(0),
+    // Card id -> newest watcher batch sequence delivered for it. Delivery drops
+    // a card from an older (retried) batch a newer one already revised.
+    cardRevisions: jsonb("card_revisions")
+      .$type<Record<string, number>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

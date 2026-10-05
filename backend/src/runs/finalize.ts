@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { artifacts, providerEvents, runs, steps, type RunStatus } from "../db/schema";
 import { completeRun } from "./repo";
@@ -116,11 +116,15 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   // The recent tool cards settle alongside the root task at stop, from their
   // durable rows: a live append still pending when the run turns terminal is
   // dropped, so the stop carries each card's final state itself. Only tool
-  // rows count (runtime chatter never becomes a card).
+  // rows count (runtime chatter and plan rows never become cards).
   const recentToolSteps = await tx
     .select({ id: steps.id, kind: steps.kind, label: steps.label, chip: steps.chip, code_json: steps.codeJson })
     .from(steps)
-    .where(and(eq(steps.runId, run.id), or(inArray(steps.kind, ["command", "file"]), eq(steps.chip, "subagent"))))
+    .where(and(
+      eq(steps.runId, run.id),
+      or(inArray(steps.kind, ["command", "file"]), eq(steps.chip, "subagent")),
+      or(isNull(steps.chip), ne(steps.chip, "plan")),
+    ))
     .orderBy(desc(steps.idx))
     .limit(10);
   const cards = recentToolSteps.toReversed().map(toolTaskChunk).filter((card) => card !== null);

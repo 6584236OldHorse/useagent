@@ -1439,12 +1439,13 @@ describe("slack native stream and Block Kit fallback", () => {
     ]);
   });
 
-  test("a retried older card batch never overwrites a newer revision", async () => {
+  test("a retried older card batch keeps the cards it alone revised and drops the ones a newer batch already did", async () => {
     const t = await rootThread("stale retry");
     await startNativeStream(t, "stale retry");
     await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
     const card = buildRunCard({ title: "stale retry", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
-    const batch = (cardSeq: number, status: "in_progress" | "complete") =>
+    const chunk = (id: string, status: "in_progress" | "complete") => taskUpdateChunk({ id, title: "Ran a command", status });
+    const batch = (cardSeq: number, chunks: ReturnType<typeof chunk>[]) =>
       enqueueAppendStream({
         idempotencyKey: `slack-stream:step:${TEAM}:${t.runId}:${cardSeq}`,
         orgId: DEV_ORG_ID,
@@ -1452,22 +1453,60 @@ describe("slack native stream and Block Kit fallback", () => {
         channel: t.channel,
         threadTs: t.ts,
         runId: t.runId,
-        chunks: [taskUpdateChunk({ id: "step_x", title: "Ran a command", status })],
+        chunks,
         cardSeq,
         fallbackBlocks: card.blocks,
         fallbackText: card.text,
       });
-    const cardsFor = (status: string) =>
-      rec.streams.filter((s) => s.op === "append" && s.channel === t.channel && (s.chunks as any[]).some((c) => c.id === "step_x" && c.status === status));
-    // The newer batch lands first; the older one arrives late (a backed-off retry).
-    await batch(2, "complete");
-    await waitFor(async () => cardsFor("complete")[0] ?? null);
-    await batch(1, "in_progress");
+    const appendsWith = (id: string) =>
+      rec.streams.filter((s) => s.op === "append" && s.channel === t.channel && (s.chunks as any[]).some((c) => c.id === id));
+    // Batch 2 (newer) completes B and lands first; batch 1 (older, a backed-off
+    // retry) completes A and still shows B in progress. A's completion must land;
+    // B's stale state must not. The fence is durable on the response row.
+    await batch(2, [chunk("step_b", "complete")]);
+    await waitFor(async () => appendsWith("step_b")[0] ?? null);
+    await batch(1, [chunk("step_a", "complete"), chunk("step_b", "in_progress")]);
     await waitFor(async () => {
       const row = await getSlackOutbox(`slack-stream:step:${TEAM}:${t.runId}:1`);
       return row?.state === "delivered" ? row : null;
     });
-    expect(cardsFor("in_progress")).toHaveLength(0);
+    expect(appendsWith("step_a")).toHaveLength(1);
+    expect(appendsWith("step_a")[0]!.chunks).toEqual([chunk("step_a", "complete")]);
+    expect(appendsWith("step_b")).toHaveLength(1);
+    expect((await findSlackRunResponse(t.runId))?.cardRevisions).toEqual({ step_a: 1, step_b: 2 });
+  });
+
+  test("finalization survives ten cards with long sources and a long answer", async () => {
+    const t = await watchedThread("big stop");
+    const url = (i: number) => `https://example.com/${i}/${"x".repeat(1800)}`;
+    for (let i = 0; i < 10; i++) {
+      const search = (activityKind: string, output?: string) => ({
+        source: "t3", activityKind, tool: "web_search", input: { query: `q${i}` }, ...(output ? { output } : {}),
+      });
+      const call = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("tool.started") });
+      await t.revise(call, search("tool.completed", [1, 2, 3, 4, 5].map((k) => url(i * 10 + k)).join("\n")));
+    }
+    await finalizeRun(t.runId, "completed", "A".repeat(6_000), 1); // must not throw on payload size
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
+    expect(stopped.chunks!.at(-1)).toMatchObject({ id: "run", status: "complete" });
+    expect(JSON.stringify(stopped.chunks).length).toBeLessThan(20_000);
+  });
+
+  test("ten plan rows after an open call do not hide it from finalization", async () => {
+    const t = await watchedThread("plan crowd");
+    const call = await t.emit({ kind: "command", label: "bash", chip: null, code: { source: "t3", activityKind: "tool.started", tool: "bash", input: { command: "bun test" } } });
+    for (let i = 0; i < 10; i++) {
+      await t.emit({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } });
+    }
+    await finalizeRun(t.runId, "completed", "Done.", 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
+    expect(stopped.chunks).toEqual([
+      { type: "markdown_text", text: "Done." },
+      expect.objectContaining({ id: `step_${call.id}`, title: "Ran a command", status: "complete" }),
+      expect.objectContaining({ id: "run", status: "complete" }),
+    ]);
   });
 
   test("a burst of card revisions coalesces into one append carrying the last revision", async () => {
