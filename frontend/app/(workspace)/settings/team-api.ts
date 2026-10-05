@@ -1,10 +1,12 @@
 import { backendFetch } from "@/lib/backend-fetch";
 
 /**
- * The organisation membership endpoints better-auth serves under /api/auth.
- * Every call works on the session's active organisation, so no id is sent.
- * Reads throw on a non-2xx so the card can show "could not load"; writes throw
- * with the server's message so the dialog can show why.
+ * The organisation membership endpoints better-auth serves under /api/auth,
+ * plus our own pending-invitations read. Every call names the organisation
+ * explicitly: a fresh session has no active organisation until something sets
+ * one, and the rest of the app falls back to the person's first membership, so
+ * this does the same. Reads throw on a non-2xx so the card can say "could not
+ * load"; writes throw with the server's message so the dialog can show why.
  */
 
 export type MemberRole = "owner" | "admin" | "member";
@@ -28,6 +30,7 @@ export interface PendingInvitation {
 }
 
 export interface Team {
+  readonly organizationId: string;
   readonly members: readonly TeamMember[];
   readonly invitations: readonly PendingInvitation[];
   /** The signed-in person's role in this organisation; null when not a member. */
@@ -58,11 +61,25 @@ async function post(path: string, body: Record<string, unknown>, fallback: strin
   return res;
 }
 
-export async function fetchTeam(): Promise<Team> {
-  const [membersRes, invitationsRes, meRes] = await Promise.all([
-    backendFetch("/api/auth/organization/list-members", { cache: "no-store" }),
-    backendFetch("/api/auth/organization/list-invitations", { cache: "no-store" }),
-    backendFetch("/api/auth/organization/get-active-member", { cache: "no-store" }),
+/** The session's active organisation, else the first one the person belongs to. */
+export async function resolveOrganizationId(activeOrganizationId: string | null | undefined): Promise<string> {
+  if (activeOrganizationId) return activeOrganizationId;
+  const res = await backendFetch("/api/auth/organization/list", { cache: "no-store" });
+  if (!res.ok) throw new Error(`organization list ${res.status}`);
+  const orgs = (await res.json()) as Array<{ id: string }> | null;
+  const first = orgs?.[0]?.id;
+  if (!first) throw new Error("no organisation");
+  return first;
+}
+
+export async function fetchTeam(input: {
+  readonly userId: string | null;
+  readonly activeOrganizationId: string | null | undefined;
+}): Promise<Team> {
+  const organizationId = await resolveOrganizationId(input.activeOrganizationId);
+  const [membersRes, invitationsRes] = await Promise.all([
+    backendFetch(`/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" }),
+    backendFetch("/api/team/invitations", { cache: "no-store" }),
   ]);
   if (!membersRes.ok) throw new Error(`list-members ${membersRes.status}`);
   const membersBody = (await membersRes.json()) as {
@@ -83,15 +100,18 @@ export async function fetchTeam(): Promise<Team> {
     role: memberRole(m.role),
     joinedAt: m.createdAt,
   }));
-  // A member may not list invitations; that is an empty list, not an error.
-  const invitationsBody = invitationsRes.ok
-    ? ((await invitationsRes.json()) as Array<{ id: string; email: string; role: string | null; status: string; expiresAt: string }>)
-    : [];
-  const invitations = (Array.isArray(invitationsBody) ? invitationsBody : [])
-    .filter((i) => i.status === "pending" && Date.parse(i.expiresAt) > Date.now())
-    .map((i) => ({ id: i.id, email: i.email, role: memberRole(i.role), expiresAt: i.expiresAt }));
-  const myRole = meRes.ok ? memberRole(((await meRes.json()) as { role?: string }).role) : null;
-  return { members, invitations, myRole };
+  if (!invitationsRes.ok) throw new Error(`invitations ${invitationsRes.status}`);
+  const invitationsBody = (await invitationsRes.json()) as {
+    invitations?: Array<{ id: string; email: string; role: string | null; expiresAt: string }>;
+  };
+  const invitations = (invitationsBody.invitations ?? []).map((i) => ({
+    id: i.id,
+    email: i.email,
+    role: memberRole(i.role),
+    expiresAt: i.expiresAt,
+  }));
+  const mine = input.userId ? members.find((m) => m.userId === input.userId) : undefined;
+  return { organizationId, members, invitations, myRole: mine?.role ?? null };
 }
 
 /** Owners and admins manage people; the check mirrors the server's default access control. */
@@ -99,22 +119,37 @@ export function canManageTeam(role: MemberRole | null): boolean {
   return role === "owner" || role === "admin";
 }
 
-export async function inviteMember(email: string, role: MemberRole): Promise<PendingInvitation> {
-  const res = await post("/api/auth/organization/invite-member", { email, role, resend: true }, "Could not send the invitation.");
+/** A fresh invitation. When one is already pending for that email the server
+ * says so, and the pending row offers resend or cancel. */
+export async function inviteMember(organizationId: string, email: string, role: MemberRole): Promise<PendingInvitation> {
+  const res = await post(
+    "/api/auth/organization/invite-member",
+    { organizationId, email, role, resend: false },
+    "Could not send the invitation.",
+  );
   const body = (await res.json()) as { id: string; email: string; role: string | null; expiresAt: string };
   return { id: body.id, email: body.email, role: memberRole(body.role), expiresAt: body.expiresAt };
 }
 
-export async function cancelInvitation(invitationId: string): Promise<void> {
-  await post("/api/auth/organization/cancel-invitation", { invitationId }, "Could not cancel the invitation.");
+/** Extends the pending invitation and sends the mail again; the role stays as invited. */
+export async function resendInvitation(organizationId: string, invitation: PendingInvitation): Promise<void> {
+  await post(
+    "/api/auth/organization/invite-member",
+    { organizationId, email: invitation.email, role: invitation.role, resend: true },
+    "Could not resend the invitation.",
+  );
 }
 
-export async function updateMemberRole(memberId: string, role: MemberRole): Promise<void> {
-  await post("/api/auth/organization/update-member-role", { memberId, role }, "Could not change the role.");
+export async function cancelInvitation(organizationId: string, invitationId: string): Promise<void> {
+  await post("/api/auth/organization/cancel-invitation", { organizationId, invitationId }, "Could not cancel the invitation.");
 }
 
-export async function removeMember(memberId: string): Promise<void> {
-  await post("/api/auth/organization/remove-member", { memberIdOrEmail: memberId }, "Could not remove the member.");
+export async function updateMemberRole(organizationId: string, memberId: string, role: MemberRole): Promise<void> {
+  await post("/api/auth/organization/update-member-role", { organizationId, memberId, role }, "Could not change the role.");
+}
+
+export async function removeMember(organizationId: string, memberId: string): Promise<void> {
+  await post("/api/auth/organization/remove-member", { organizationId, memberIdOrEmail: memberId }, "Could not remove the member.");
 }
 
 /** The link an inviter can hand over when the deployment sends no mail. */

@@ -22,6 +22,7 @@ import {
   invitationHref,
   inviteMember,
   removeMember,
+  resendInvitation,
   updateMemberRole,
 } from "./team-api";
 
@@ -53,7 +54,7 @@ function expiryText(iso: string): string {
 }
 
 export function TeamCard() {
-  const { session } = useSession();
+  const { session, loading: sessionLoading } = useSession();
   const config = useAuthConfig();
   const [team, setTeam] = useState<Team | null>(null);
   const [failed, setFailed] = useState(false);
@@ -61,20 +62,23 @@ export function TeamCard() {
   const [busy, setBusy] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
 
+  const me = session?.user.id ?? null;
+  const activeOrganizationId = session?.session.activeOrganizationId ?? null;
+
   const load = useCallback(async () => {
+    // Without a session (the open dev org) the list still loads, read-only.
     try {
-      setTeam(await fetchTeam());
+      setTeam(await fetchTeam({ userId: me, activeOrganizationId }));
       setFailed(false);
     } catch {
       setFailed(true);
     }
-  }, []);
+  }, [activeOrganizationId, me]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!sessionLoading) void load();
+  }, [load, sessionLoading]);
 
-  const me = session?.user.id ?? null;
   const myRole = team?.myRole ?? null;
   const manage = canManageTeam(myRole);
 
@@ -150,7 +154,7 @@ export function TeamCard() {
                     isDisabled={busy !== null}
                     onSelectionChange={(key) => {
                       const role = String(key) as MemberRole;
-                      if (role !== row.role) void act(row.id, () => updateMemberRole(row.id, role));
+                      if (role !== row.role) void act(row.id, () => updateMemberRole(team.organizationId, row.id, role));
                     }}
                   >
                     {assignableRoles(myRole).map((role) => (
@@ -166,7 +170,7 @@ export function TeamCard() {
                     disabled={busy !== null}
                     onClick={() => {
                       if (window.confirm(`Remove ${row.name} from this workspace?`)) {
-                        void act(row.id, () => removeMember(row.id));
+                        void act(row.id, () => removeMember(team.organizationId, row.id));
                       }
                     }}
                   />
@@ -191,8 +195,8 @@ export function TeamCard() {
                 invitation={row}
                 manage={manage}
                 busy={busy === row.id}
-                onResend={() => act(row.id, async () => { await inviteMember(row.email, row.role); })}
-                onCancel={() => act(row.id, () => cancelInvitation(row.id))}
+                onResend={() => act(row.id, () => resendInvitation(team.organizationId, row))}
+                onCancel={() => act(row.id, () => cancelInvitation(team.organizationId, row.id))}
               />
             ))}
           </div>
@@ -203,6 +207,7 @@ export function TeamCard() {
         <InviteDialog
           open={inviting}
           onOpenChange={setInviting}
+          organizationId={team.organizationId}
           roles={assignableRoles(myRole)}
           emailDelivery={config?.invitationEmail ?? false}
           onInvited={() => void load()}
@@ -276,12 +281,14 @@ function CopyLinkButton({ href }: { href: string }) {
 function InviteDialog({
   open,
   onOpenChange,
+  organizationId,
   roles,
   emailDelivery,
   onInvited,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  organizationId: string;
   roles: readonly MemberRole[];
   emailDelivery: boolean;
   onInvited: () => void;
@@ -311,7 +318,7 @@ function InviteDialog({
     setBusy(true);
     setError(null);
     try {
-      setCreated(await inviteMember(address, role));
+      setCreated(await inviteMember(organizationId, address, role));
       onInvited();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send the invitation.");
@@ -331,7 +338,7 @@ function InviteDialog({
             <>
               <p className="text-body-2-regular text-text-primary">
                 {emailDelivery
-                  ? `Emailed ${created.email}. They can also use this link.`
+                  ? `Invitation ready for ${created.email}. It goes out by email when delivery works; this link works either way.`
                   : `This deployment does not send email. Share this link with ${created.email}.`}
               </p>
               <div className="flex items-center gap-2 rounded-lg border border-border-button-default px-3 py-2">

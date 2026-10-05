@@ -39,6 +39,8 @@ google.getUserInfo = async ({ idToken }) => ({
       ? { id: "google-existing", email, emailVerified: true, name: prefix }
       : idToken === "invited"
         ? { id: "google-invited", email: `${prefix}-invited@example.test`, emailVerified: true, name: `${prefix}-invited` }
+      : idToken === "invited-unverified"
+        ? { id: "google-invited-unverified", email: `${prefix}-invited-unverified@example.test`, emailVerified: false, name: `${prefix}-invited-unverified` }
       : idToken === "unverified"
         ? {
             id: "google-unverified",
@@ -141,4 +143,27 @@ test("a pending invitation lets a new Google identity create its account in prod
     else process.env.NODE_ENV = prior.NODE_ENV;
   }
   expect(await db.select().from(user).where(eq(user.email, invitedEmail))).toHaveLength(1);
+});
+
+test("an invitation does not admit an unverified Google email", async () => {
+  const invitedEmail = `${prefix}-invited-unverified@example.test`;
+  await db.insert(invitation).values({
+    id: `inv_${crypto.randomUUID()}`,
+    organizationId: orgId,
+    email: invitedEmail,
+    role: "member",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 86_400_000),
+    inviterId: userId,
+  });
+  process.env.NODE_ENV = "production";
+  try {
+    await expect(
+      auth.api.signInSocial({ body: { provider: "google", idToken: { token: "invited-unverified" } } }),
+    ).rejects.toThrow();
+  } finally {
+    if (prior.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prior.NODE_ENV;
+  }
+  expect(await db.select().from(user).where(eq(user.email, invitedEmail))).toEqual([]);
 });

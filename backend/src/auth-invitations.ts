@@ -84,13 +84,23 @@ export interface InvitationNotice {
   readonly expiresAt: Date;
 }
 
+/** Names are typed by people and end up in a mail header: one line, no control characters. */
+export function headerSafe(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Longest a delivery may take before the invitation is left as link-only. */
+export const INVITATION_MAIL_TIMEOUT_MS = 20_000;
+
 export function invitationMessage(notice: InvitationNotice): { subject: string; text: string } {
   const role = notice.role === "admin" ? "an admin" : notice.role === "owner" ? "an owner" : "a member";
   const until = notice.expiresAt.toISOString().slice(0, 10);
+  const inviter = headerSafe(notice.inviter) || "A teammate";
+  const organization = headerSafe(notice.organization) || "a workspace";
   return {
-    subject: `${notice.inviter} invited you to ${notice.organization} on useAgent`,
+    subject: `${inviter} invited you to ${organization} on useAgent`,
     text: [
-      `${notice.inviter} invited you to join ${notice.organization} as ${role}.`,
+      `${inviter} invited you to join ${organization} as ${role}.`,
       "",
       `Accept the invitation: ${notice.link}`,
       "",
@@ -114,6 +124,7 @@ export async function deliverInvitation(
   config: InvitationMailConfig | null = invitationMailConfig(),
   send: typeof sendSmtp = sendSmtp,
 ): Promise<"sent" | "link_only"> {
+  // Rejections and timeouts propagate: better-auth logs them and keeps the invitation.
   const link = invitationLink(data.id);
   if (!config) {
     console.log(`[auth] invitation ${data.id} for ${data.email}: no mail transport, share ${link}`);
@@ -126,10 +137,22 @@ export async function deliverInvitation(
     link,
     expiresAt: data.invitation.expiresAt,
   });
-  await send(
-    { host: config.host, port: config.port, secure: config.secure, user: config.user, pass: config.pass },
-    { from: config.from, to: [data.email], subject: message.subject, text: message.text },
-  );
+  // A stalled SMTP dialog must not hold the invite request; the invitation row
+  // already exists and the link is shown regardless of what the mail did.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      send(
+        { host: config.host, port: config.port, secure: config.secure, user: config.user, pass: config.pass },
+        { from: config.from, to: [data.email], subject: message.subject, text: message.text },
+      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("invitation mail timed out")), INVITATION_MAIL_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   console.log(`[auth] invitation ${data.id} emailed to ${data.email}`);
   return "sent";
 }

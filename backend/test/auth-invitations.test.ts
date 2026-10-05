@@ -6,6 +6,7 @@ const { db } = await import("../src/db/client");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
   deliverInvitation,
+  headerSafe,
   invitationLink,
   invitationMailConfig,
   invitationMessage,
@@ -58,6 +59,19 @@ describe("invitation mail configuration", () => {
     expect(message.text).toContain("join Acme as an admin");
     expect(message.text).toContain("https://app.example.test/accept-invitation/inv1");
     expect(message.text).toContain("until 2026-09-20");
+  });
+
+  test("a name cannot smuggle a mail header", () => {
+    expect(headerSafe("Acme\r\nReply-To: attacker@example.test")).toBe("Acme Reply-To: attacker@example.test");
+    const message = invitationMessage({
+      organization: "Acme\r\nX-Note: injected",
+      inviter: "\u0000",
+      role: "member",
+      link: "https://app.example.test/accept-invitation/inv1",
+      expiresAt: new Date("2026-09-20T10:00:00Z"),
+    });
+    expect(message.subject).toBe("A teammate invited you to Acme X-Note: injected on useAgent");
+    expect(message.subject).not.toMatch(/[\r\n]/);
   });
 
   test("delivers through the given transport, or only logs the link without one", async () => {

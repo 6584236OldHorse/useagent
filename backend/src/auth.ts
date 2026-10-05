@@ -55,7 +55,10 @@ export function createAuthServer() {
       user: {
         create: {
           before: async (user) => {
-            if (!selfSignupEnabled() && !(await invitedSignupAllowed(user.email))) {
+            // An invitation opens the door only to a verified identity: an unverified
+            // email claim could be anyone naming the invited address.
+            const invited = user.emailVerified === true && (await invitedSignupAllowed(user.email));
+            if (!selfSignupEnabled() && !invited) {
               throw APIError.from("FORBIDDEN", {
                 code: "SIGNUP_DISABLED",
                 message: "Account creation is disabled",
