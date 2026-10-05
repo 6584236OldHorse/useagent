@@ -139,8 +139,17 @@ export class Mux {
   }
 
   send(frame: ControlFrame): void {
+    this.sendRaw(encodeControlFrame(frame));
+  }
+
+  /** A transport that throws is a dead link: everything pending fails at once. */
+  private sendRaw(message: string | Uint8Array): void {
     if (this.closed) return;
-    this.transport.send(encodeControlFrame(frame));
+    try {
+      this.transport.send(message);
+    } catch (error) {
+      this.close(`transport failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   rpc(method: string, params: unknown, options: { timeoutMs?: number } = {}): Promise<unknown> {
@@ -158,8 +167,9 @@ export class Mux {
 
   openStream(target: unknown, options: { timeoutMs?: number } = {}): Promise<MuxStream> {
     if (this.closed) return Promise.reject(new StreamRefusedError("closed", "link is closed"));
-    const id = this.nextStreamId;
-    this.nextStreamId += 2;
+    let id = this.nextStreamId;
+    while (this.streams.has(id)) id += 2;
+    this.nextStreamId = id + 2;
     const state = this.createStream(id);
     const { promise, resolve, reject } = Promise.withResolvers<MuxStream>();
     const timer = setTimeout(() => {
@@ -271,7 +281,8 @@ export class Mux {
       case "stream.credit": {
         const state = this.streams.get(frame.id);
         if (!state) return;
-        state.sendCredit += frame.bytes;
+        // Credit only ever returns what was sent; a peer cannot mint a bigger window.
+        state.sendCredit = Math.min(this.window, state.sendCredit + frame.bytes);
         const waiters = state.creditWaiters;
         state.creditWaiters = [];
         for (const wake of waiters) wake();
@@ -286,6 +297,12 @@ export class Mux {
         return;
       }
       case "stream.reset": {
+        const pending = this.opening.get(frame.id);
+        if (pending) {
+          this.opening.delete(frame.id);
+          clearTimeout(pending.timer);
+          pending.reject(new StreamRefusedError("reset", frame.reason));
+        }
         const state = this.streams.get(frame.id);
         if (!state) return;
         this.finishStream(state, new Error(`stream reset by peer: ${frame.reason}`), false);
@@ -310,8 +327,9 @@ export class Mux {
   }
 
   private async acceptStream(id: number, target: unknown): Promise<void> {
-    if (this.streams.has(id)) {
-      this.send({ t: "stream.refused", id, code: "invalid_params", message: "stream id in use" });
+    // The peer's ids have the other parity; anything else is a protocol error, not a stream.
+    if (this.streams.has(id) || id % 2 === (this.role === "plane" ? 0 : 1)) {
+      this.send({ t: "stream.refused", id, code: "invalid_params", message: "stream id in use or not the peer's to open" });
       return;
     }
     if (!this.handlers.onStreamOpen) {
@@ -324,10 +342,7 @@ export class Mux {
     } catch (error) {
       const code = error instanceof StreamRefusedError ? error.code : "refused";
       const message = error instanceof Error ? error.message : String(error);
-      this.streams.delete(id);
-      state.finished = true;
-      state.settle.reject(new StreamRefusedError(code, message));
-      state.stream.done.catch(() => {});
+      this.finishStream(state, new StreamRefusedError(code, message), false);
       this.send({ t: "stream.refused", id, code, message });
       return;
     }
@@ -400,7 +415,7 @@ export class Mux {
           }
           const size = Math.min(MAX_CHUNK, state.sendCredit, bytes.byteLength - offset);
           state.sendCredit -= size;
-          mux.transport.send(encodeDataFrame(id, bytes.subarray(offset, offset + size)));
+          mux.sendRaw(encodeDataFrame(id, bytes.subarray(offset, offset + size)));
           offset += size;
         }
       },
@@ -426,7 +441,11 @@ export class Mux {
   private maybeFinish(state: StreamState): void {
     if (state.localClosed && state.remoteClosed && !state.finished) {
       state.finished = true;
+      state.error = new Error("stream is closed");
       this.streams.delete(state.id);
+      const waiters = state.creditWaiters;
+      state.creditWaiters = [];
+      for (const wake of waiters) wake();
       state.settle.resolve();
     }
   }
@@ -462,6 +481,9 @@ export async function pipeToStream(source: ReadableStream<Uint8Array>, stream: M
       await stream.write(value);
     }
     stream.end();
+  } catch (error) {
+    stream.reset(`source failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
   } finally {
     reader.releaseLock();
   }

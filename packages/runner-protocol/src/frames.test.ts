@@ -55,6 +55,29 @@ describe("control frames", () => {
     expect(parseControlFrame(JSON.stringify({ t: "welcome", protocol: 1 }))).toBeNull();
   });
 
+  test("hello, welcome, heartbeat and event need their required fields", () => {
+    const capacity = { cpu: 4, memoryMb: 8192, sandboxes: 1 };
+    const hello = { t: "hello", runnerId: "r", version: "0.1.0", protocol: 1, backend: "docker", platform: "darwin-arm64", capacity, logins: ["codex"], imageDigest: null };
+    expect(parseControlFrame(JSON.stringify(hello))).toEqual(hello as never);
+    expect(parseControlFrame(JSON.stringify({ ...hello, capacity: {} }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ ...hello, logins: "codex" }))).toBeNull();
+    const welcome = { t: "welcome", protocol: 1, minProtocol: 1, image: { ref: "r", digest: "sha256:0" }, heartbeatSeconds: 15, release: "abc" };
+    expect(parseControlFrame(JSON.stringify(welcome))).toEqual(welcome as never);
+    expect(parseControlFrame(JSON.stringify({ ...welcome, image: { ref: "r" } }))).toBeNull();
+    const heartbeat = { t: "heartbeat", capacity, logins: [], imageDigest: "sha256:0" };
+    expect(parseControlFrame(JSON.stringify(heartbeat))).toEqual(heartbeat as never);
+    expect(parseControlFrame(JSON.stringify({ t: "heartbeat" }))).toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: null, kind: "x", detail: 1 }))).not.toBeNull();
+    expect(parseControlFrame(JSON.stringify({ t: "event", sandboxId: 5, kind: "x" }))).toBeNull();
+  });
+
+  test("credit must be a positive safe integer", () => {
+    expect(parseControlFrame('{"t":"stream.credit","id":1,"bytes":1e309}')).toBeNull();
+    expect(parseControlFrame('{"t":"stream.credit","id":1,"bytes":1.5}')).toBeNull();
+    expect(parseControlFrame('{"t":"stream.credit","id":1,"bytes":-3}')).toBeNull();
+    expect(parseControlFrame('{"t":"stream.credit","id":1,"bytes":64}')).toEqual({ t: "stream.credit", id: 1, bytes: 64 });
+  });
+
   test("keep unknown optional fields for forward compatibility", () => {
     const parsed = parseControlFrame(JSON.stringify({ t: "stream.close", id: 3, later: "field" }));
     expect(parsed).toEqual({ t: "stream.close", id: 3, later: "field" } as never);

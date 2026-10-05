@@ -74,6 +74,9 @@ export interface RunnerRpcCatalog {
   "session.command": { params: { sandboxId: string; sessionId: string; commandId: string }; result: LocalSessionCommand };
   "session.execute": { params: LocalSessionExecuteParams; result: LocalSessionExecuteResult };
   "session.logs": { params: { sandboxId: string; sessionId: string; commandId: string }; result: { output: string } };
+  /** Bytes for a detached command's stdin (Pi's RPC transport writes JSON lines this way). */
+  "session.input": { params: { sandboxId: string; sessionId: string; commandId: string; data: string }; result: null };
+  "session.list": { params: { sandboxId: string }; result: { sessions: readonly string[] } };
   "fs.details": { params: { sandboxId: string; path: string }; result: { size?: number } };
   "pty.resize": { params: { streamId: number; cols: number; rows: number }; result: null };
 }
