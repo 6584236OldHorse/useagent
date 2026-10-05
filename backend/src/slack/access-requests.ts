@@ -552,27 +552,34 @@ async function provenIdentity(tx: Executor, row: Request): Promise<string | null
     .limit(1);
   if (bound) return bound.userId; // the account this sender already owns here
   if (!validEmail(row.email)) return null; // nothing from Slack about the address
-  // A claim on this address (an open sign-up that never confirmed it) is
-  // nobody's: released here, so the person admitted gets a fresh account and
-  // not a stranger's password.
-  await tx.delete(user).where(and(eq(user.email, row.email), claimCondition));
-  const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
-  if (known) return known.id;
-  // Another organisation may be creating this very address at the same moment;
-  // whoever lands first owns the row, and both admissions use it. The winner
-  // also gets what a sign-up gives: a workspace of their own, so that being
-  // removed from this one later never leaves them with nowhere to stand.
-  const [won] = await tx
-    .insert(user)
-    .values({ id: crypto.randomUUID(), name: row.name, email: row.email, emailVerified: false, image: row.image })
-    .onConflictDoNothing({ target: user.email })
-    .returning({ id: user.id });
-  if (won) {
-    await createPersonalOrgForUser({ id: won.id, name: row.name, email: row.email }, tx);
-    return won.id;
+  // An account this address already has is adopted only when it is a person's.
+  // A claim (an open sign-up that never confirmed the address) is released
+  // under its row lock and a fresh account takes its place, so the person
+  // admitted never inherits a stranger's password, and nothing can slip a new
+  // claim in between the look and the choice. Another organisation may be
+  // creating this very address at the same moment; whoever lands first owns
+  // the row, and both admissions use it. The winner also gets what a sign-up
+  // gives: a workspace of their own, so that being removed from this one later
+  // never leaves them with nowhere to stand.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [existing] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).for("update");
+    if (existing) {
+      const [claim] = await tx.select({ id: user.id }).from(user).where(and(eq(user.id, existing.id), claimCondition)).limit(1);
+      if (!claim) return existing.id;
+      await tx.delete(user).where(eq(user.id, claim.id));
+    }
+    const [won] = await tx
+      .insert(user)
+      .values({ id: crypto.randomUUID(), name: row.name, email: row.email, emailVerified: false, image: row.image })
+      .onConflictDoNothing({ target: user.email })
+      .returning({ id: user.id });
+    if (won) {
+      await createPersonalOrgForUser({ id: won.id, name: row.name, email: row.email }, tx);
+      return won.id;
+    }
+    // A creation landed in between: look at it under the lock and decide again.
   }
-  const [created] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
-  return created?.id ?? null;
+  return null; // lost every turn to creations landing in between; the admin can decide again
 }
 
 /** Best effort, and only when the web has a way for them in: a Google sign-in
