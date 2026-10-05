@@ -14,8 +14,14 @@ distributed pub/sub, and that shapes how it scales.
 <CardGroup cols={2}>
   <Card title="Thread stream" icon="messages-square">
     `GET /api/runs/:rootRunId/thread-events`, one connection per conversation,
-    replayable. Reconnects get a fresh durable snapshot then live frames. This
-    is the session view's lifeline.
+    replayable. Every connection starts with a `resume` frame, then the durable
+    snapshot, then every native frame, then only the canonical events above the
+    cursor the browser sent (`canonicalAfter`, the row's `canonicalId`, and the
+    `epoch` of the backend process that delivered it). A cursor from another
+    epoch, or one whose row is not here with that id, is refused: the replay is
+    from zero and `reset` tells the browser to drop what it retained. Native
+    frames never resume because the gateway process also writes them. This is
+    the session view's lifeline.
   </Card>
   <Card title="Org-change stream" icon="bell">
     `GET /api/runs/changes`, one authenticated org stream carrying live
@@ -25,9 +31,9 @@ distributed pub/sub, and that shapes how it scales.
   </Card>
 </CardGroup>
 
-The thread stream's frame types are `snapshot`, `run`, `step`, `delta`,
-`native`, and `done`, plus `canonical` and `canonical-complete` for the
-canonical lane; the full contract lives in
+The thread stream's frame types are `resume`, `snapshot`, `run`, `step`,
+`delta`, `native`, and `done`, plus `canonical` and `canonical-complete` for
+the canonical lane; the full contract lives in
 [Events and streaming](/concepts/events-and-streaming). Two facts matter here: a
 `done` frame settles one run but does **not** close the stream, and a bounded
 queue (20,000 live frames) closes the connection on overflow so the browser

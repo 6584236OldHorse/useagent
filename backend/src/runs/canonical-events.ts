@@ -146,6 +146,15 @@ export async function persistCanonicalEvents(
   return inserted.map(rowToDelivered);
 }
 
+/** The event id at one delivery cursor of a thread, or null when no such row exists. */
+export async function canonicalEventIdAt(threadId: string, deliverySeq: number): Promise<string | null> {
+  const [row] = await db
+    .select({ eventId: canonicalEvents.eventId })
+    .from(canonicalEvents)
+    .where(and(eq(canonicalEvents.threadId, threadId), eq(canonicalEvents.deliverySeq, deliverySeq)));
+  return row?.eventId ?? null;
+}
+
 /** Publish already-persisted events to their thread channel (persist-before-publish
  *  is the caller's responsibility). */
 export function publishDelivered(delivered: readonly DeliveredCanonicalEvent[]): void {

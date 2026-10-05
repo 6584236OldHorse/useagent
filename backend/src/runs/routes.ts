@@ -52,11 +52,8 @@ import { bus, channel, pumpThread, signalCancel, type BusEvent } from "../worker
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
 import { settleZombieCancel } from "./zombie-cancel";
-import {
-  getNativeFramesSince,
-  subscribeNative,
-  type NativeFrame,
-} from "./native-events";
+import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
+import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -775,6 +772,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
+  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;
@@ -974,19 +972,22 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
       };
 
       void (async () => {
-        // 1. Load the authoritative thread (oldest→newest), attaching every run's
-        //    live sources FIRST so frames produced during replay queue up.
+        // 1. Load the authoritative thread (oldest→newest), attaching every run's live
+        //    sources FIRST so frames produced during replay queue up.
         const thread = await getThreadForRun(orgId, rootRunId);
         if (closed) return;
         if (!thread) return cleanup(); // resolved above; defensive
         for (const run of thread) attachRun(run.id);
 
-        // 2. Emit the authoritative snapshot (runs carry their durable steps) BEFORE
-        //    draining queued live frames, then seed step dedupe from it.
+        // 2. Say whether the browser's canonical resume cursor is honoured (a refused one
+        //    replays from zero, and the browser drops what it retained), then the snapshot.
+        const resume = await resolveResumeCursor(threadId, requested);
+        canonicalCursor = resume.canonicalAfter;
+        sendFrame("resume", resumeFramePayload(threadId, resume));
         sendFrame("snapshot", { threadId, runs: thread });
         for (const run of thread) seedStepDedupe(run.id, run.steps);
 
-        // 3. Replay each run's durable native frames (deduped by eventId+seq).
+        // 3. Replay every native frame (deduped by eventId+seq); the gateway also writes them.
         for (const run of thread) {
           for (const frame of await getNativeFramesSince(run.id, -1)) {
             if (closed) return;
@@ -994,17 +995,16 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
           }
         }
 
-        // 3b. Replay the thread's durable canonical events (deduped by deliverySeq).
-        //     Thread-scoped + ordered; a reconnect resumes from canonicalCursor.
-        for (const event of await loadCanonicalThread(threadId, 0)) {
+        // 3b. Read which runs are canonicalization-COMPLETE (H2) BEFORE the rows, so a run
+        //     finalized between the reads announces completion via the live loop after its
+        //     rows; replay the rows above the cursor (deduped by deliverySeq), then the
+        //     completions: React trusts a run's canonical lane ONLY after its completion.
+        const completes = await completeCanonicalRuns(threadId);
+        for (const event of await loadCanonicalThread(threadId, resume.canonicalAfter)) {
           if (closed) return;
           sendCanonical(event);
         }
-
-        // 3c. Replay which runs are canonicalization-COMPLETE (H2). React trusts the
-        //     canonical lane for a run ONLY after this, so a reload converges on the
-        //     same gate as a live client - never on the presence of provisional rows.
-        for (const complete of await completeCanonicalRuns(threadId)) {
+        for (const complete of completes) {
           if (closed) return;
           sendCanonicalComplete({ ...complete, threadId });
         }

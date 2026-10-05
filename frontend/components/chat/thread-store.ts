@@ -239,6 +239,9 @@ export function createThreadStore(options: ThreadStoreOptions = {}): ThreadStore
    *  whether anything observable changed - an identical reconcile snapshot
    *  keeps the stored run object (and so the run's view identity) untouched. */
   const mergeRun = (run: ApiRun): boolean => {
+    // Only this thread's runs: a response for another thread that resolves after a
+    // navigation (a reconcile, a window fetch, a poll) must never land here.
+    if (options.rootThreadId && typeof run.thread_id === "string" && run.thread_id !== options.rootThreadId) return false;
     const prev = runs.get(run.id);
     if (!prev) insertOrdered(run);
     // A fresh DB read is authoritative for durable steps; ingestAll merges (dedupe
