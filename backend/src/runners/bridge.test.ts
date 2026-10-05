@@ -47,7 +47,7 @@ const hello: HelloFrame = {
   platform: "darwin-arm64",
   capacity: { cpu: 4, memoryMb: 8192, sandboxes: 1 },
   logins: ["codex"],
-  imageDigest: null,
+  imageDigest: "sha256:" + "b".repeat(64),
 };
 
 const servers: Array<{ stop(force?: boolean): void }> = [];

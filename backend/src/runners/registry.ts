@@ -184,11 +184,20 @@ export class RunnerRegistry {
     return runner.mux !== null && !runner.mux.isClosed && this.now() - runner.lastSeenAt < OFFLINE_AFTER_MS;
   }
 
-  /** The user's most recently seen online machine in this organisation, if any. */
+  /**
+   * Connected and holding the sandbox image. A runner still pulling the image
+   * heartbeats without a digest and refuses every call until it has one, so
+   * it is not offered work; on its first pull that can be a long while.
+   */
+  isReady(runner: LiveRunner): boolean {
+    return this.isOnline(runner) && runner.imageDigest !== null;
+  }
+
+  /** The user's most recently seen machine in this organisation that can take work, if any. */
   onlineForUser(orgId: string, userId: string): LiveRunner | null {
     let best: LiveRunner | null = null;
     for (const runner of this.live.values()) {
-      if (runner.orgId !== orgId || runner.userId !== userId || !this.isOnline(runner)) continue;
+      if (runner.orgId !== orgId || runner.userId !== userId || !this.isReady(runner)) continue;
       if (!best || runner.lastSeenAt > best.lastSeenAt) best = runner;
     }
     return best;
@@ -240,6 +249,7 @@ export class RunnerRegistry {
     const registry = this;
     const requireMux = (): Mux => {
       if (!runner.mux || !registry.isOnline(runner)) throw new Error(`the machine behind runner ${runner.id} is not connected`);
+      if (!registry.isReady(runner)) throw new Error(`the machine behind runner ${runner.id} is still preparing its sandbox image`);
       return runner.mux;
     };
     return {
@@ -249,7 +259,7 @@ export class RunnerRegistry {
       fingerprint: runner.fingerprint,
       enrolledAt: runner.enrolledAt,
       get online() {
-        return registry.isOnline(runner);
+        return registry.isReady(runner);
       },
       call: (method, params, options) => requireMux().rpc(method, params, options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       openStream: (target) => requireMux().openStream(target) as Promise<MuxStream>,

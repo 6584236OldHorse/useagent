@@ -60,6 +60,25 @@ function mux(): Mux {
 }
 
 describe("runner registry", () => {
+  test("a connected runner without the image is not offered work until it reports a digest", async () => {
+    const registry = new RunnerRegistry({ persist: persistence(async () => true) });
+    registry.know(row());
+    const link = mux();
+    const live = await registry.attach(row(), link, hello);
+    expect(live).not.toBeNull();
+    expect(registry.isOnline(live!)).toBe(true);
+    expect(registry.isReady(live!)).toBe(false);
+    expect(registry.onlineForUser("org-a", "user-1")).toBeNull();
+    expect(registry.directory.get("rn_a")?.online).toBe(false);
+    expect(() => registry.directory.get("rn_a")!.call("sandbox.list", {})).toThrow("still preparing its sandbox image");
+    const beat = { t: "heartbeat", capacity: hello.capacity, logins: [], imageDigest: null } as const;
+    expect(await registry.heartbeat("rn_a", link, beat)).toBe(true);
+    expect(registry.onlineForUser("org-a", "user-1")).toBeNull();
+    expect(await registry.heartbeat("rn_a", link, { ...beat, imageDigest: "sha256:" + "a".repeat(64) })).toBe(true);
+    expect(registry.onlineForUser("org-a", "user-1")?.id).toBe("rn_a");
+    expect(registry.directory.get("rn_a")?.online).toBe(true);
+  });
+
   test("a hello that finishes recording after a newer link attached does not replace it", async () => {
     const first = Promise.withResolvers<boolean>();
     let calls = 0;

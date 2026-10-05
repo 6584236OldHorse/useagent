@@ -95,7 +95,7 @@ function hello(overrides: Partial<HelloFrame> = {}): HelloFrame {
     platform: "darwin-arm64",
     capacity: { cpu: 4, memoryMb: 8192, sandboxes: 0 },
     logins: ["codex"],
-    imageDigest: null,
+    imageDigest: IMAGE.digest,
     ...overrides,
   };
 }

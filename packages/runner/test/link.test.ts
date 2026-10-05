@@ -25,7 +25,7 @@ afterEach(() => {
 
 /** A control plane that speaks the link protocol over Bun's WebSocket server. */
 function fakePlane(options: FakePlaneOptions = {}) {
-  const state = { connections: 0, hellos: [] as unknown[], heartbeats: 0, muxes: [] as Mux[] };
+  const state = { connections: 0, hellos: [] as unknown[], heartbeats: 0, digests: [] as Array<string | null>, muxes: [] as Mux[] };
   const server = Bun.serve<{ mux: Mux | null; authorized: boolean }>({
     port: 0,
     hostname: "127.0.0.1",
@@ -48,8 +48,9 @@ function fakePlane(options: FakePlaneOptions = {}) {
             state.hellos.push(frame);
             mux.send({ ...WELCOME, ...options.welcome });
           },
-          onHeartbeat: () => {
+          onHeartbeat: (frame) => {
             state.heartbeats += 1;
+            state.digests.push(frame.imageDigest);
           },
         });
         ws.data.mux = mux;
@@ -245,6 +246,34 @@ describe("link client", () => {
     const { link, states } = client("http://127.0.0.1:1");
     const run = link.run();
     await until(() => states.filter((s) => s.startsWith("offline:")).length >= 2, 5000);
+    link.stop();
+    expect((await run).reason).toBe("stopped");
+  });
+
+  test("heartbeats without a digest while the image is still being pulled", async () => {
+    let releasePull!: () => void;
+    const pull = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    let digest: string | null = null;
+    const plane = fakePlane();
+    const { link, states } = client(plane.url, {
+      imageDigest: () => digest,
+      onWelcome: async () => {
+        await pull;
+        digest = WELCOME.image.digest;
+      },
+    });
+    const run = link.run();
+    // Two beats land while the pull is still running, and none of them carries a digest.
+    await until(() => plane.state.heartbeats >= 2);
+    expect(plane.state.digests).toEqual([null, null]);
+    expect(states.some((s) => s.startsWith("online:"))).toBe(false);
+    expect(plane.state.connections).toBe(1);
+    releasePull();
+    await until(() => states.some((s) => s.startsWith("online:")));
+    await until(() => plane.state.digests.at(-1) === WELCOME.image.digest);
+    expect(plane.state.connections).toBe(1);
     link.stop();
     expect((await run).reason).toBe("stopped");
   });
