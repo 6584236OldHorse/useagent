@@ -13,6 +13,8 @@ export type DesktopAuthClient = {
 };
 
 export type DesktopOrganization = { id: string; name: string };
+export const desktopOrganizationLabel = (organization: DesktopOrganization): string =>
+  `${organization.name} (${organization.id})`;
 
 function callbackToken(value: string): string {
   if (value.length > 16_384) throw new Error("Invalid desktop sign-in callback.");

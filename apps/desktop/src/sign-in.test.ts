@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { BrowserWindow } from "electron";
-import { createDesktopSignIn } from "./sign-in";
+import { createDesktopSignIn, desktopOrganizationLabel } from "./sign-in";
 
 test("browser sign-in uses the official exchange, writes only to the app session, and rejects invalid callbacks", async () => {
   const set: unknown[] = [];
@@ -104,4 +104,11 @@ test("a revoked stored session returns to login without copying stale cookies", 
   expect(await login.restore()).toBe(false);
   expect(listed).toBe(0);
   expect(set).toEqual([]);
+});
+
+test("duplicate workspace names remain distinguishable in the native choice", () => {
+  expect([
+    desktopOrganizationLabel({ id: "org-one", name: "Acme" }),
+    desktopOrganizationLabel({ id: "org-two", name: "Acme" }),
+  ]).toEqual(["Acme (org-one)", "Acme (org-two)"]);
 });

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, session, shell } from "electron";
 import { join } from "node:path";
 import { authScope } from "./auth-storage";
-import { externalUrl, trustedIpcSender, trustedNavigation } from "./security";
+import { desktopContentPolicy, externalUrl, trustedIpcSender, trustedNavigation } from "./security";
 
 /** The window owns browser policy; it never reads credentials or starts processes. */
 export function createDesktopWindow(plane: URL): BrowserWindow {
@@ -17,7 +17,7 @@ export function createDesktopWindow(plane: URL): BrowserWindow {
   browserSession.webRequest.onHeadersReceived({ urls: [`${plane.origin}/*`] }, (details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     const name = Object.keys(responseHeaders).find(key => key.toLowerCase() === "content-security-policy") ?? "Content-Security-Policy";
-    responseHeaders[name] = [...(responseHeaders[name] ?? []), "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"];
+    responseHeaders[name] = [...(responseHeaders[name] ?? []), desktopContentPolicy(details.resourceType)];
     callback({ responseHeaders });
   });
   const window = new BrowserWindow({

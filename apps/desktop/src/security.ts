@@ -37,6 +37,10 @@ export function trustedNavigation(value: string, origin: string): boolean {
   }
 }
 
+export function desktopContentPolicy(resourceType: string): string {
+  return `object-src 'none'; base-uri 'self'${resourceType === "mainFrame" ? "; frame-ancestors 'none'" : ""}`;
+}
+
 export function externalUrl(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2_048) throw new Error("Invalid external URL.");
   const url = new URL(value);

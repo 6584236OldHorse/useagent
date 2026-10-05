@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
+import { desktopContentPolicy, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
 
 describe("desktop security boundaries", () => {
   test("accepts secure planes and loopback development only", () => {
@@ -25,6 +25,11 @@ describe("desktop security boundaries", () => {
     ).toBe(true);
     expect(trustedNavigation("https://instance.clerk.accounts.dev/other", "https://plane.example")).toBe(false);
     expect(trustedNavigation("https://attacker.example", "https://plane.example")).toBe(false);
+  });
+
+  test("keeps framing protection on the app while preserving backend iframe policy", () => {
+    expect(desktopContentPolicy("mainFrame")).toContain("frame-ancestors 'none'");
+    expect(desktopContentPolicy("subFrame")).toBe("object-src 'none'; base-uri 'self'");
   });
 
   test("validates runner tokens and external URLs", () => {

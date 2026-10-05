@@ -19,7 +19,7 @@ import { createRunnerController, stopRunnerBeforeQuit, type RunnerStatus } from 
 import { externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender } from "./security";
 import { createTokenStore } from "./token-store";
 import { createDesktopWindow } from "./window";
-import { createDesktopSignIn, type DesktopOrganization } from "./sign-in";
+import { createDesktopSignIn, desktopOrganizationLabel, type DesktopOrganization } from "./sign-in";
 import { createDesktopAuthClient } from "./auth-client";
 
 const keepRunningInBackground = process.env.USEAGENT_KEEP_RUNNING_IN_BACKGROUND === "1";
@@ -138,7 +138,7 @@ async function startDesktop(): Promise<void> {
         type: "question",
         title: "Choose workspace",
         message: "Choose the workspace to open in useAgent.",
-        buttons: [...organizations.map(organization => organization.name), "Cancel"],
+        buttons: [...organizations.map(desktopOrganizationLabel), "Cancel"],
         defaultId: 0,
         cancelId: organizations.length,
         noLink: true,
