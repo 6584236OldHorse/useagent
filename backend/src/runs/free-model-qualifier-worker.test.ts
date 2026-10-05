@@ -14,6 +14,7 @@ import {
   fetchOpenRouterFreeModelCandidates,
   openCodeZenSourceEnabled,
   freeModelQualifierEnabled,
+  laneWideFailure,
   QUALIFIER_ADMISSION_WAIT_MS,
   respondToManualRefresh,
   runFreeModelQualifierTick,
@@ -842,5 +843,40 @@ describe("free-model qualifier worker", () => {
       schedule: (_run, firstMs) => { first = firstMs; },
     }, {});
     expect(first).toBe(QUALIFIER_BOOT_DELAY_MS);
+  });
+  test("one provider's outage or timeout keeps its model on retry without pausing the lane", async () => {
+    expect(laneWideFailure("authentication_failed")).toBe(true);
+    expect(laneWideFailure("rate_limited")).toBe(true);
+    for (const code of ["provider_capacity", "timeout", "transport_error", "policy_rejected", null] as const) {
+      expect(laneWideFailure(code)).toBe(false);
+    }
+    const first = candidate("vendor/down:free");
+    const second = candidate("vendor/fine:free");
+    const fake = fakeRepository({
+      state: registryState(["seed:free"]),
+      candidates: [first, second],
+      claims: [claim(first), claim(second)],
+    });
+    let calls = 0;
+    const result = await runFreeModelQualifierTick({
+      driver: {
+        qualify: async () => {
+          calls += 1;
+          return calls === 1
+            ? { classification: "system_failure", latencyMs: 25_000, httpStatus: 502, errorCode: "provider_capacity" }
+            : { classification: "success", latencyMs: 5_000, httpStatus: 200, errorCode: null };
+        },
+      },
+      repository: fake.repository,
+      admission: openAdmission,
+      discover: discovery(first.modelId, second.modelId),
+      nowMs: () => NOW,
+      maxProbes: 4,
+    });
+    expect(calls).toBe(2);
+    expect(fake.records.map((r) => r.outcome)).toEqual(["system_failure", "success"]);
+    // The lane was not paused: no preserved publish, the tick ended normally.
+    expect(fake.publishes.some((p) => p.systemFailure)).toBe(false);
+    expect(result).toMatchObject({ systemFailure: false, claimed: 2, recorded: 2 });
   });
 });
