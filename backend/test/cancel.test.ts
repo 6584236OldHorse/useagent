@@ -56,9 +56,15 @@ async function runStatus(runId: string): Promise<string | null> {
   return (row?.status as string) ?? null;
 }
 
+/** Accept a cancel and collect the org signals it emits for THIS run. The org
+ *  bus is process-wide and every suite shares the dev org, so a run another
+ *  suite left in flight (a bot reply flipping to running) must not land in
+ *  this list; the assertions are about this run's events only. */
 async function acceptCancelWithChanges(runId: string) {
   const changes: OrgChange[] = [];
-  const unsubscribe = subscribeOrg(ORG, (change) => changes.push(change));
+  const unsubscribe = subscribeOrg(ORG, (change) => {
+    if (change.runId === runId) changes.push(change);
+  });
   try {
     const outcome = await acceptRunCancel({ orgId: ORG, actorId: null, runId });
     return { outcome, changes };
