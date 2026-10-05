@@ -1,8 +1,12 @@
-"use client";
+'use client';
 
-import { ThemeProvider } from "next-themes";
+import { ClerkProvider } from '@clerk/nextjs';
+import { ThemeProvider } from 'next-themes';
 
-import { SubagentPane } from "@/components/chat/subagent-pane";
+import { SubagentPane } from '@/components/chat/subagent-pane';
+import { DesktopTitlebar } from '@/components/shell/desktop-titlebar';
+import { IdentitySessionSync } from '@/lib/auth';
+import { legacyAuthEnabled } from '@/lib/auth-mode';
 
 /**
  * Client-side provider stack. Kept as a leaf so the root layout stays a
@@ -14,26 +18,35 @@ import { SubagentPane } from "@/components/chat/subagent-pane";
  * a portal-based slide-over any surface can open via `openSubagentPane(runId)`.
  */
 export function Providers({ children }: { children: React.ReactNode }) {
-  return (
+  const app = (
     <ThemeProvider
-      attribute="class"
-      defaultTheme="dark"
+      attribute='class'
+      defaultTheme='dark'
       enableSystem={false}
       themes={[
-        "light",
-        "dark",
-        "dusk",
-        "aura",
-        "harbor",
-        "phosphor",
-        "phosphor-light",
-        "sakura",
-        "sakura-night",
-        "slate",
+        'light',
+        'dark',
+        'dusk',
+        'aura',
+        'harbor',
+        'phosphor',
+        'phosphor-light',
+        'sakura',
+        'sakura-night',
+        'slate',
       ]}
     >
+      <DesktopTitlebar />
       {children}
       <SubagentPane />
     </ThemeProvider>
+  );
+  return legacyAuthEnabled ? (
+    app
+  ) : (
+    <ClerkProvider signInUrl='/login' signUpUrl='/signup'>
+      <IdentitySessionSync />
+      {app}
+    </ClerkProvider>
   );
 }

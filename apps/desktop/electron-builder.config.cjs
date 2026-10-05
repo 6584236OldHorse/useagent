@@ -1,0 +1,48 @@
+const development = process.env.USEAGENT_DESKTOP_DEV_PACKAGE === "1";
+
+module.exports = {
+  appId: "org.useagent.desktop",
+  productName: "UseAgent",
+  asar: true,
+  protocols: [{ name: "UseAgent sign-in", schemes: ["useagent"] }],
+  directories: {
+    buildResources: "build",
+    output: "dist/packages",
+  },
+  files: ["dist/*.cjs", "resources/trayTemplate.svg", "package.json"],
+  extraResources: development
+    ? []
+    : [
+        {
+          from: "resources/runner/useagent-runner-darwin-${arch}",
+          to: "useagent-runner-darwin-${arch}",
+        },
+      ],
+  forceCodeSigning: !development,
+  mac: {
+    ...(development ? { identity: "-" } : {}),
+    target: ["dmg", "zip"],
+    artifactName: "UseAgent-${version}-darwin-${arch}.${ext}",
+    category: "public.app-category.developer-tools",
+    extendInfo: {
+      NSAppTransportSecurity: {
+        NSAllowsArbitraryLoads: false,
+        NSAllowsLocalNetworking: true,
+        NSExceptionDomains: {
+          localhost: { NSExceptionAllowsInsecureHTTPLoads: true },
+          "127.0.0.1": { NSExceptionAllowsInsecureHTTPLoads: true },
+        },
+      },
+    },
+    hardenedRuntime: !development,
+    entitlements: "build/entitlements.mac.plist",
+    entitlementsInherit: "build/entitlements.mac.inherit.plist",
+    binaries: development ? [] : ["Contents/Resources/useagent-runner-darwin-${arch}"],
+    notarize: !development,
+  },
+  publish: {
+    provider: "github",
+    owner: "useagenthq",
+    repo: "useagent-pro",
+  },
+};
