@@ -444,11 +444,17 @@ describe("desktop browser background traffic", () => {
       "--no-pings",
       "--metrics-recording-only",
       "--disable-domain-reliability",
+      "--gcm-checkin-url=http://127.0.0.1:9/checkin",
+      "--gcm-registration-url=http://127.0.0.1:9/register",
+      "--gcm-mcs-endpoint=https://127.0.0.1:9",
+      "--gaia-url=http://127.0.0.1:9",
     ] as const) {
       expect(BROWSER_PRIVACY_FLAGS).toContain(flag);
       expect(launch).toContain(` ${flag} `);
     }
-    expect(launch).toContain("--disable-features=DnsOverHttps,");
+    // One --disable-features switch: Chrome keeps only the last one it is given.
+    expect(launch.match(/--disable-features=/g)).toHaveLength(1);
+    expect(launch).toMatch(/--disable-features=DnsOverHttps,[^ ]*,AimServerRequestOnStartupEnabled[, ]/);
   });
 
   test("the launcher writes the managed policy for Chromium and Chrome before any browser starts", () => {
@@ -467,6 +473,7 @@ describe("desktop browser background traffic", () => {
       ComponentUpdatesEnabled: false,
       SyncDisabled: true,
       DnsOverHttpsMode: "off",
+      BrowserNetworkTimeQueriesEnabled: false,
     });
     // A failed write never stops the desktop.
     expect(command).toContain("2>/dev/null || true");

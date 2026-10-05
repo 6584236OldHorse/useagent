@@ -67,8 +67,9 @@ const LEGACY_CHROME_PIPE_GONE_COMMAND = `test -z "$(${LEGACY_CHROME_PIPE_PIDS_CO
 const CDP_PORT_CLOSED_COMMAND =
   "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(1 if s.connect_ex(('127.0.0.1',9222)) == 0 else 0)\"";
 
-/** Chrome's own background traffic to Google (component updates, push, metrics, sync, DNS
- *  over HTTPS) stays off in customer sandboxes; pages the agent opens are unaffected. */
+/** Chrome's own background traffic to Google (component updates, push, account listing,
+ *  metrics, sync, DNS over HTTPS) stays off in customer sandboxes; pages the agent opens are
+ *  unaffected. Measured on the image's Chromium 152 with a net log: none of it is left. */
 export const BROWSER_PRIVACY_FLAGS = [
   "--disable-background-networking",
   "--disable-component-update",
@@ -77,7 +78,17 @@ export const BROWSER_PRIVACY_FLAGS = [
   "--metrics-recording-only",
   "--disable-domain-reliability",
   "--disable-breakpad",
-  "--disable-features=DnsOverHttps,OptimizationHints,MediaRouter,Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater",
+  "--disable-features=DnsOverHttps,OptimizationHints,MediaRouter,Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater," +
+    // The AI Mode eligibility check Chrome sends to its default search engine at startup.
+    "AimEnabled,AimServerEligibilityEnabled,AimServerRequestOnStartupEnabled,AimServerRequestOnIdentityChangeEnabled",
+  // Chrome has no switch that turns off push (GCM: checkin, registration and the persistent
+  // connection to port 5228) or its own Google account listing (ListAccounts at startup and
+  // every 24 h), so their endpoints point at a closed local port: none of it leaves the sandbox.
+  // Signing in to Google sites in a page still works; web push notifications do not.
+  "--gcm-checkin-url=http://127.0.0.1:9/checkin",
+  "--gcm-registration-url=http://127.0.0.1:9/register",
+  "--gcm-mcs-endpoint=https://127.0.0.1:9",
+  "--gaia-url=http://127.0.0.1:9",
 ] as const;
 
 /** The same lockdown as managed policy, which also binds a browser started any other way. */
@@ -89,6 +100,7 @@ export const BROWSER_MANAGED_POLICY = {
   BackgroundModeEnabled: false,
   SyncDisabled: true,
   DnsOverHttpsMode: "off",
+  BrowserNetworkTimeQueriesEnabled: false,
   SearchSuggestEnabled: false,
   NetworkPredictionOptions: 2,
   UrlKeyedAnonymizedDataCollectionEnabled: false,
