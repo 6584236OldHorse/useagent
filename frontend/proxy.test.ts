@@ -135,4 +135,23 @@ describe("authentication proxy", () => {
     const response = legacyProxy(new NextRequest("https://useagent.example.com/healthz"));
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
+
+  test("serves the exact favicon before authentication but protects similarly named routes", async () => {
+    const icon = new NextRequest("https://useagent.example.com/icon.svg?v=current");
+    let calls = 0;
+    const next = (() => {
+      calls += 1;
+      return NextResponse.next();
+    }) as NextMiddleware;
+    expect(legacyProxy(icon).headers.get("x-middleware-next")).toBe("1");
+    expect(
+      (await identityMiddlewareProxy(icon, event, next))?.headers.get("x-middleware-next"),
+    ).toBe("1");
+    expect(calls).toBe(0);
+    for (const path of ["/icon.svg-private", "/icon.svg/private"]) {
+      const request = new NextRequest(`https://useagent.example.com${path}`);
+      expect(legacyProxy(request).status).toBe(307);
+      expect((await identityProxy(authFor(request), request)).status).toBe(307);
+    }
+  });
 });
