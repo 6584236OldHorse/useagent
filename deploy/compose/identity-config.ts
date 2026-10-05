@@ -5,7 +5,7 @@ function quote(value: string): string {
 export function frontendEnvironmentPreparationCommand(backendEnv: string, frontendEnv: string): string {
   return `set -eu; set -a; . ${quote(backendEnv)}; set +a; ` +
     `tmp=$(mktemp ${quote(`${frontendEnv}.XXXXXX`)}); trap 'rm -f -- "$tmp"' EXIT; ` +
-    `printf '%s\\n' "CLERK_SECRET_KEY=\${CLERK_SECRET_KEY:-}" > "$tmp"; ` +
+    `printf '%s\\n' "AUTH=\${AUTH:-clerk}" "CLERK_SECRET_KEY=\${CLERK_SECRET_KEY:-}" > "$tmp"; ` +
     `chmod 600 "$tmp"; mv -f -- "$tmp" ${quote(frontendEnv)}; trap - EXIT`;
 }
 

@@ -50,7 +50,7 @@ describe("SSH promotion transport", () => {
 			}
 		} finally { await rm(directory, { recursive: true }); }
 	});
-	test("stages only Clerk's frontend runtime secret", async () => {
+	test("captures release auth so compensation ignores later host changes", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "useagent-frontend-env-"));
 		try {
 			const backendEnv = join(directory, "backend.env");
@@ -73,7 +73,7 @@ describe("SSH promotion transport", () => {
 			);
 			expect(result.exitCode).toBe(0);
 			expect(await readFile(frontendEnv, "utf8")).toBe(
-				["CLERK_SECRET_KEY=sk_test_example", ""].join("\n"),
+        ["AUTH=clerk", "CLERK_SECRET_KEY=sk_test_example", ""].join("\n"),
 			);
 
 			await writeFile(
@@ -89,7 +89,10 @@ describe("SSH promotion transport", () => {
 				{ stdout: "pipe", stderr: "pipe" },
 			);
 			expect(legacyResult.exitCode).toBe(0);
-			expect(await readFile(frontendEnv, "utf8")).toBe("CLERK_SECRET_KEY=\n");
+      expect(await readFile(frontendEnv, "utf8")).toBe("AUTH=better-auth\nCLERK_SECRET_KEY=\n");
+      await writeFile(backendEnv, "AUTH=clerk\nCLERK_SECRET_KEY=new-candidate-key\n");
+      const restored = Bun.spawnSync(["bash", "-c", '. "$1"; printf "%s" "$AUTH"', "fixture", frontendEnv], {stdout:"pipe",stderr:"pipe"});
+      expect(restored.stdout.toString()).toBe("better-auth");
 		} finally {
 			await rm(directory, { recursive: true });
 		}

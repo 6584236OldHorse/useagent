@@ -10,6 +10,9 @@ services:
       io.useagent.release.service: backend
     env_file:
       - ${USEAGENT_BACKEND_ENV_FILE:-/etc/useagent/backend.env}
+      # Auth mode and identity secret are captured with this release. Compensation
+      # must not borrow a candidate's auth selection from the shared host env.
+      - ${USEAGENT_FRONTEND_ENV_FILE:-/etc/useagent/frontend.env}
     environment:
       NODE_ENV: production
       PORT: ${USEAGENT_BACKEND_PORT:?set the inactive-color backend port}

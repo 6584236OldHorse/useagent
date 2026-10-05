@@ -519,7 +519,7 @@ export class SshPromotionEffects implements PromotionEffects {
 				);
 			}
 		}
-		await this.#remote.run(identityReleaseValidationCommand(this.#config.backendEnvFile, record.manifest.backend, record.manifest.frontend));
+		await this.#remote.run(identityReleaseValidationCommand(`${releaseDirectory(this.#config, record)}/frontend.env`, record.manifest.backend, record.manifest.frontend));
 		await this.#prepareBackendScratch(record);
 		const current = this.#historyAtStart.current;
 		if (current) {

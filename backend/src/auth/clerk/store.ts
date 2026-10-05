@@ -145,13 +145,17 @@ export async function syncIdentityOrganization(value: IdentityOrganization, tx: 
   }
   if (value.createdBy && !selfSignupEnabled() && !(await findIdentityUser(value.createdBy, tx)))
     throw new IdentityAccessError();
+  let localSlug = value.slug;
+  for (let suffix = 1; (await tx.select({ id: organization.id }).from(organization).where(eq(organization.slug, localSlug)).limit(1)).length; suffix++) {
+    localSlug = `${value.id}-${suffix}`;
+  }
   const [created] = await tx
     .insert(organization)
     .values({
       id: `org_${crypto.randomUUID()}`,
       clerkOrgId: value.id,
       name: value.name,
-      slug: value.slug,
+      slug: localSlug,
       logo: value.image,
       createdAt: new Date(value.createdAt),
     })

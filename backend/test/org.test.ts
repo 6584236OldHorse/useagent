@@ -369,6 +369,7 @@ describe("managed control-plane identity", () => {
   test("slugless managed organizations retain a stable local slug", async () => {
     await localUser();
     const remoteId = `org_${crypto.randomUUID()}`;
+    await db.insert(organization).values({ id: crypto.randomUUID(), name: `${prefix} existing slug`, slug: remoteId, createdAt: new Date() });
     const client = spyOn(identityClientModule, "identityClient").mockReturnValue({ organizations: {
       getOrganization: async () => ({ id: remoteId, name: prefix, slug: null, hasImage: false,
         createdAt: Date.now(), createdBy: subject }),
@@ -378,7 +379,7 @@ describe("managed control-plane identity", () => {
       expect(projected.slug).toBe(remoteId);
       remoteOrganizations.set(remoteId, projected);
       expect((await webhook("organization.created", { id: remoteId })).status).toBe(200);
-      expect((await db.select().from(organization).where(eq(organization.clerkOrgId, remoteId)))[0]?.slug).toBe(remoteId);
+      expect((await db.select().from(organization).where(eq(organization.clerkOrgId, remoteId)))[0]?.slug).toBe(`${remoteId}-1`);
     } finally { client.mockRestore(); }
   });
 
