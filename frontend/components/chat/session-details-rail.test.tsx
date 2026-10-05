@@ -106,6 +106,18 @@ describe("SessionDetailsRail", () => {
     expect(html).not.toContain("not reported");
   });
 
+  test("the runtime line presents the model as the one requested, not as the one that answered", () => {
+    // runs.model is what the plane asked the runtime for; no runtime reports
+    // the model that answered, so the rail must not read as a fact.
+    const html = renderToStaticMarkup(
+      <SessionDetailsRail root={run()} newest={run({ engine: "codex", model: "gpt-5.6-sol" })} turns={[turn()]} />,
+    );
+    expect(html).toContain("Codex");
+    expect(html).toContain('data-testid="runtime-model-requested"');
+    expect(html).toContain(">requested<");
+    expect(html).toContain("does not report which model answered");
+  });
+
   test("a thread with unloaded outline turns says its plan and totals are partial", () => {
     const html = renderToStaticMarkup(
       <SessionDetailsRail

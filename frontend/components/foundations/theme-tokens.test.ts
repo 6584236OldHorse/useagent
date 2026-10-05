@@ -341,7 +341,38 @@ describe("shared theme tokens", () => {
     expect(semantic?.["--color-text-tertiary"]).toBe("hsl(var(--neutral-500))");
     expect(contrast("#4e7358", "#f2f8f3")).toBeGreaterThanOrEqual(4.5);
   });
+
+  test("the work-log guide draws from the tertiary text token so it reads in light", () => {
+    // The guide is a masked column filled with one token mixed over transparent.
+    // The hairline token it used before is nearly the card colour in light
+    // (about 1.1:1 on white); the tertiary text grey at 55% clears 2:1 on the
+    // card in light (#666666 on white) and in dark (#a1a1a1 on #2e2e2e). The
+    // sRGB mix below stands in for the oklab mix; the floor has room for the gap.
+    const guide = globals.slice(globals.indexOf("@utility trace-guide"));
+    const fill = guide.slice(0, guide.indexOf("mask-image"));
+    expect(fill).toContain("color-mix(in oklab, var(--color-text-tertiary) 55%, transparent)");
+    expect(fill).not.toContain("--color-border-button-default");
+    expect(contrast(mix("#ebebeb", 0.7, "#ffffff"), "#ffffff")).toBeLessThan(1.2);
+    expect(contrast(mix("#666666", 0.55, "#ffffff"), "#ffffff")).toBeGreaterThanOrEqual(2);
+    expect(contrast(mix("#a1a1a1", 0.55, "#2e2e2e"), "#2e2e2e")).toBeGreaterThanOrEqual(2);
+  });
 });
+
+/** `weight` of `over` laid on `under`, mixed per sRGB channel. */
+const mix = (over: string, weight: number, under: string): string => {
+  const channels = (hex: string) =>
+    hex.slice(1).match(/.{2}/g)?.map((channel) => Number.parseInt(channel, 16)) ?? [];
+  const top = channels(over);
+  const base = channels(under);
+  if (top.length !== 3 || base.length !== 3) throw new Error(`invalid hex colors ${over} ${under}`);
+  return `#${top
+    .map((value, index) =>
+      Math.round(value * weight + (base[index] ?? 0) * (1 - weight))
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+};
 
 const contrast = (foreground: string, background: string): number => {
   const [foregroundLuminance, backgroundLuminance] = [foreground, background]

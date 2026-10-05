@@ -24,10 +24,12 @@ import {
 } from "@/components/chat/conversation";
 import { FollowUpRows } from "@/components/chat/follow-up-rows";
 import { ChatTabStrip } from "@/components/chat/chat-tabs";
+import { ReplyComposer } from "@/components/chat/reply-composer";
 import { RunUploadChips, type RunUpload } from "@/components/chat/run-uploads";
 import { SubagentRow } from "@/components/chat/subagent-row";
 import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
+import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { ChangedFilesCard } from "@/components/session-ui/changed-files-tree";
@@ -510,6 +512,38 @@ export function SessionSample() {
                 <RiExternalLinkLine className="size-3.5" aria-hidden />
                 Jump to the image artifact + lightbox in turn 1
               </a>
+            </Surface>
+
+            <Surface
+              id="composer-status"
+              title="Reply composer with its status row"
+              owner="reply-composer · composer-status-bar"
+            >
+              <p className="text-caption-1-regular text-text-tertiary">
+                The status row under the input card (branch, project, engine and the
+                context meter) keeps the card&rsquo;s inset, so the ring chip ends where
+                the send button ends.
+              </p>
+              <div
+                data-testid="composer-status-sample"
+                className="rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <ReplyComposer
+                  engine="codex"
+                  model="gpt-5.6-sol"
+                  memoryScope="org"
+                  pending={false}
+                  onReply={() => {}}
+                  status={
+                    <ComposerStatusBar
+                      branch="rl-staging"
+                      project="gateway"
+                      agent="Codex"
+                      context={{ used: 92_400, cached: 61_000, window: 200_000 }}
+                    />
+                  }
+                />
+              </div>
             </Surface>
           </div>
 

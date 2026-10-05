@@ -78,9 +78,13 @@ export const detailsTurns: readonly (PlanTurn & UsageTurn)[] = [
 ];
 
 /** The chats open as tabs: the conversation's turns, titled the way the rail titles them. */
-export const sampleTabs: readonly ChatTab[] = conversation
-  .slice(0, 3)
-  .map((turn) => ({ id: turn.id, title: chatTitle(turn.prompt), href: `#${turn.id}` }));
+export const sampleTabs: readonly ChatTab[] = conversation.slice(0, 3).map((turn, index) => ({
+  id: turn.id,
+  title: chatTitle(turn.prompt),
+  href: `#${turn.id}`,
+  engine: (["codex", "claude", "opencode"] as const)[index],
+  status: turn.status,
+}));
 
 export const sampleBookmarks: readonly BookmarkRow[] = [
   { id: "turn-1", title: chatTitle(conversation[0].prompt), href: "#turn-1" },

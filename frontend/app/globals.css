@@ -3921,8 +3921,9 @@ html {
 }
 
 /* The thin wavy guide down the left edge of a folded pill's rows (the work log,
- * the todo list): a repeating sine wave, masked over the hairline colour so it
- * follows every theme. */
+ * the todo list): a repeating sine wave, masked over the tertiary text colour
+ * (the grey of the rows' check marks) so it reads in every theme; the hairline
+ * token it used before is almost the page colour in light. */
 @utility trace-guide {
   position: relative;
   &::before {
@@ -3932,7 +3933,7 @@ html {
     bottom: 0;
     left: 0;
     width: 5px;
-    background-color: color-mix(in oklab, var(--color-border-button-default) 70%, transparent);
+    background-color: color-mix(in oklab, var(--color-text-tertiary) 55%, transparent);
     -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='5' height='12' viewBox='0 0 5 12'><path d='M2.5 0c1.6 1.5 1.6 4.5 0 6s-1.6 4.5 0 6' fill='none' stroke='black' stroke-width='1'/></svg>");
     mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='5' height='12' viewBox='0 0 5 12'><path d='M2.5 0c1.6 1.5 1.6 4.5 0 6s-1.6 4.5 0 6' fill='none' stroke='black' stroke-width='1'/></svg>");
     -webkit-mask-repeat: repeat-y;
