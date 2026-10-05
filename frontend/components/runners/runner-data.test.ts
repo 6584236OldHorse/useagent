@@ -34,7 +34,8 @@ describe("runner location", () => {
     expect(runnerLocationLabel("local:rn_missing:container_1", undefined, [runner])).toBe(
       "Unknown machine",
     );
-    expect(runnerLocationLabel("sandbox_1", "cube", [runner])).toBe("cube");
+    expect(runnerLocationLabel("sandbox_1", "cube", [runner])).toBe("Cube");
+    expect(runnerLocationLabel("sandbox_1", "daytona", [runner])).toBe("Daytona");
     expect(runnerLocationLabel("sandbox_1", undefined, [runner])).toBe("Unknown runtime");
   });
 });

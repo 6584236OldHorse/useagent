@@ -31,6 +31,7 @@ import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { ChangedFilesCard } from "@/components/session-ui/changed-files-tree";
@@ -540,6 +541,9 @@ export function SessionSample() {
                   pending={false}
                   enableUploads
                   onReply={() => {}}
+                  permission={
+                    <PermissionModeChip mode="approval-required" onChange={() => {}} engine="codex" />
+                  }
                   status={
                     <ComposerStatusBar
                       run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}

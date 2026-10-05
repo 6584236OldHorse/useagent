@@ -156,9 +156,10 @@ export type ComposerProps = {
    *  "Ask agent to redo"); the text replaces the current draft so the user can send
    *  or edit it. Absent leaves the composer fully user-driven. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
-  /** The status tab hanging off the card's top edge (where the run executes,
-   *  branch, project, engine, context meter). Compact composers only. */
+  /** The status tab on the card's top edge (location, branch, project, engine, context). Compact only. */
   tab?: ReactNode;
+  /** The permission chip for the footer's second column. Compact only. */
+  permission?: ReactNode;
 };
 
 /**
@@ -208,6 +209,7 @@ export function Composer({
   draftKey,
   prefill,
   tab,
+  permission,
 }: ComposerProps) {
   // Draft restore is a lazy initializer so SSR (no window) and draft-less
   // composers stay on the empty string with zero effect churn.
@@ -445,8 +447,7 @@ export function Composer({
     <div
       ref={rootRef}
       className={cn("relative w-full", className)}
-      // Files dropped on the card or pasted into the field become attachments.
-      {...(enableUploads ? attachmentIntake(runUploads.addFiles, !busy) : {})}
+      {...(enableUploads ? attachmentIntake(runUploads.addFiles, !busy) : {})} // drop or paste files here
     >
       {showAgentPopover && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-full">
@@ -654,9 +655,7 @@ export function Composer({
             />
           </div>
 
-          {/* Compact footer: the "+" at the left (in the DOM after the field, so Tab
-              order follows the visual order), the permission chip's slot beside it
-              (column 2), the model and send at the right. */}
+          {/* Compact footer: "+" (after the field in the DOM, so Tab order follows the visual order), the permission chip, then model and send. */}
           {enableUploads ? (
             <ComposerAddButton
               aria-label="Add context"
@@ -665,7 +664,7 @@ export function Composer({
               className="col-start-1 row-start-2"
             />
           ) : null}
-
+          {permission && <div className="col-start-2 row-start-2 flex min-w-0 items-center">{permission}</div>}
           {/* px-1 matches the text row above so the +/send controls left/right-align
               with the placeholder (was px-0.5 → a 2px asymmetry). */}
           <div className={cn(hero ? "mt-1 flex items-center gap-1.5 px-1" : "contents")}>

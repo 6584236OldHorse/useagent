@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { RunUpload } from "@/components/chat/run-uploads";
 import { ComposerAttachmentRow, composerAttachment } from "./composer-attachments";
-import { ComposerAddButton, ComposerAttachmentStrip } from "./composer-panel/composer-panel";
+import { ComposerAddButton } from "./composer-panel/composer-panel";
 
 function upload(over: Partial<RunUpload> = {}): RunUpload {
   return {
@@ -79,6 +80,7 @@ describe("composer attachment tiles", () => {
     expect(inFlight).toContain('data-status="uploading"');
     expect(inFlight).toContain('stroke-dasharray="42 200"');
     expect(inFlight).toContain(">42%<");
+    expect(inFlight).toContain("Uploading, 42%");
     // The dismiss stays in the tree for its blur-in at 100, but it is disabled meanwhile.
     const dismiss = inFlight.match(/<button[^>]*aria-label="Remove shot.png"[^>]*>/)?.[0] ?? "";
     expect(dismiss).toContain("disabled");
@@ -119,14 +121,13 @@ describe("composer attachment row", () => {
   });
 
   test("the strip follows the reduced-motion preference", () => {
-    // MotionConfig reducedMotion="user" is in the tree: the tiles still render
-    // their resting styles, and the strip carries no animation when the OS asks
-    // for none. Static markup proves the wrapper is present via the tile styles.
-    const html = renderToStaticMarkup(
-      <ComposerAttachmentStrip attachments={[composerAttachment(upload())]} />,
-    );
-    expect(html).toContain('role="listitem"');
-    expect(html).toContain('data-attachment-kind="image"');
+    // Static markup cannot observe MotionConfig, so the contract is read from the
+    // strip's source: its tile motion sits under reducedMotion="user".
+    const source = readFileSync(new URL("./composer-panel/composer-panel.tsx", import.meta.url), "utf8");
+    const strip = source.slice(source.indexOf("export function ComposerAttachmentStrip"));
+    const config = strip.indexOf('<MotionConfig reducedMotion="user">');
+    expect(config).toBeGreaterThan(-1);
+    expect(config).toBeLessThan(strip.indexOf("<AnimatePresence"));
   });
 });
 

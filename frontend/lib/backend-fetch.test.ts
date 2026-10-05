@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { backendUpload } from "./backend-fetch";
-import { CLIENT_RELEASE_FINGERPRINT } from "./release-compat";
+import { CLIENT_RELEASE_FINGERPRINT, FrontendReleaseMismatchError } from "./release-compat";
 
 // A stand-in for the browser's XMLHttpRequest: records what the upload sends,
 // reports two progress events and answers with the headers the script sets.
@@ -47,7 +47,11 @@ const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 beforeEach(() => {
   Object.defineProperty(globalThis, "XMLHttpRequest", { value: FakeXhr, configurable: true, writable: true });
   // The release header is added in the browser only.
-  Object.defineProperty(globalThis, "window", { value: { sessionStorage: new Map() }, configurable: true, writable: true });
+  Object.defineProperty(globalThis, "window", {
+    value: { sessionStorage: new Map(), setTimeout: () => 0, location: { reload: () => {} } },
+    configurable: true,
+    writable: true,
+  });
   FakeXhr.last = null;
   FakeXhr.status = 201;
   FakeXhr.responseHeaders = "content-type: application/json\r\n";
@@ -87,6 +91,8 @@ describe("backendUpload", () => {
 
   test("a newer server release on a mutating call is refused like backendFetch refuses it", async () => {
     FakeXhr.responseHeaders = "x-useagent-release-fingerprint: run-events-v1:other\r\n";
-    await expect(backendUpload("/api/uploads", new FormData(), () => {})).rejects.toThrow();
+    await expect(backendUpload("/api/uploads", new FormData(), () => {})).rejects.toBeInstanceOf(
+      FrontendReleaseMismatchError,
+    );
   });
 });

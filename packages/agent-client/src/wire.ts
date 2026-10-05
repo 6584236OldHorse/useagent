@@ -237,6 +237,9 @@ export interface ApiRun {
   /** The provider sandbox this run executed on (null before provisioning, for
    *  sandbox-less engines, and once the box is released). */
   sandbox_id: string | null;
+  /** The sandbox provider the run was bound to at acceptance ("daytona", "cube",
+   *  "box" or "local"); absent from an older backend, null while unbound. */
+  sandbox_provider?: string | null;
   /** Legacy single-repo mirror (= repos[0] ?? null), clean "owner/name". */
   repo: string | null;
   /** GitHub repos this thread works in (each clean "owner/name"); [] = bare workdir.
@@ -726,6 +729,7 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     // Tolerant on purpose: a response from a backend that predates the field
     // must still decode, so absence reads as "no sandbox recorded".
     sandbox_id: isNullableString(record.sandbox_id) ? record.sandbox_id : null,
+    ...(isNullableString(record.sandbox_provider) ? { sandbox_provider: record.sandbox_provider } : {}),
     resolved_resources: record.resolved_resources,
     memory_scope: record.memory_scope as MemoryScope,
     // Absent only from a backend that predates the field: the chip then shows nothing.

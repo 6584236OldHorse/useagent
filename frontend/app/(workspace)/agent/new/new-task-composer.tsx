@@ -597,8 +597,9 @@ export function NewTaskComposer({
                 ) : null}
               </div>
 
-              {/* The footer slot between the add button and the engine chip is
-                  where the permission chip lands next. */}
+              {/* Permission for the new thread, the panel's faces over the run's mode
+                  (Auto, Manual, Plan mode, Bypass all); rides POST /api/runs as permission_mode. */}
+              <PermissionModeChip mode={permissionMode} onChange={setChosenMode} engine={engine} />
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes
@@ -684,15 +685,6 @@ export function NewTaskComposer({
             value={playbook}
             onChange={setPlaybook}
             triggerClassName="max-w-[16rem] rounded-full text-text-secondary"
-          />
-
-          {/* Permission for the new thread: Read only, Guard (with or without
-              auto-applied edits) or Full access; rides POST /api/runs as permission_mode. */}
-          <PermissionModeChip
-            mode={permissionMode}
-            onChange={setChosenMode}
-            engine={engine}
-            className="rounded-full px-2 py-1"
           />
 
           {selectedRepoItems.length > 0 ? (

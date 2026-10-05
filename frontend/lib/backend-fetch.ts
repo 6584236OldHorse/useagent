@@ -48,7 +48,9 @@ export function backendUpload(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", path);
     xhr.withCredentials = true;
-    new Headers(init?.headers).forEach((value, name) => xhr.setRequestHeader(name, value));
+    new Headers(init?.headers).forEach((value, name) => {
+      xhr.setRequestHeader(name, value);
+    });
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     };

@@ -33,8 +33,8 @@ import { engineDisplayLabel } from "@/components/session-ui/provider-status-bann
  * The reply composer of a thread plus everything that frames it: the running
  * footer while a turn runs (phase, current step, elapsed, Stop), the messages
  * still waiting in the queue as numbered rows, the placeholder for the thread's
- * state, the status bar (branch, project, permission chip, engine, context
- * meter) and the Compact now action, which is offered only while nothing is
+ * state, the status tab (location, branch, project, engine, context meter), the
+ * footer's permission chip and the Compact now action, which is offered only while nothing is
  * pending, queued or running, and whose refusal shows in the same banner a
  * failed turn uses. Dismissing the banner clears only the error it is showing.
  * The permission chip follows the thread's newest turn until the person picks
@@ -235,6 +235,15 @@ export function ConversationComposer({
       enableMentions={resourceMentions && composerAcceptsRunResources(pendingQuestion ?? null)}
       enableUploads={composerAcceptsRunResources(pendingQuestion ?? null)}
       repoRevisions={repoRevisions}
+      permission={
+        <PermissionModeChip
+          mode={permissionMode}
+          onChange={setChosenMode}
+          engine={defaultEngine}
+          // Answering a native question resumes the running turn; no new run, no new mode.
+          disabled={Boolean(pendingQuestion && composerCanAnswerQuestion)}
+        />
+      }
       lead={
         <>
           {runningTurn && runningStatus && (
@@ -259,15 +268,6 @@ export function ConversationComposer({
           run={turns.at(-1)?.run ?? null}
           branch={first?.[1] ?? null}
           project={first?.[0]?.split("/").at(-1) ?? null}
-          permission={
-            <PermissionModeChip
-              mode={permissionMode}
-              onChange={setChosenMode}
-              engine={defaultEngine}
-              // Answering a native question resumes the running turn; no new run, no new mode.
-              disabled={Boolean(pendingQuestion && composerCanAnswerQuestion)}
-            />
-          }
           agent={engineDisplayLabel(defaultEngine)}
           context={context}
           onCompact={canCompact ? compact : undefined}

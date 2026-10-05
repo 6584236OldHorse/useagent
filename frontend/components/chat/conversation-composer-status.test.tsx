@@ -64,8 +64,8 @@ const tabOf = (html: string) => {
 test("an empty thread shows only where its run executes, never a repository placeholder", () => {
   const html = render([turn("run-1", { sandbox_id: "sbx-1", sandbox_provider: "daytona" })]);
   const tab = tabOf(html);
-  expect(tab).toContain('title="Runs on daytona"');
-  expect(tab).toContain(">daytona<");
+  expect(tab).toContain('title="Runs on Daytona"');
+  expect(tab).toContain(">Daytona<");
   expect(tab).not.toContain("No repository");
   expect(tab).not.toContain("Default branch");
   expect(tab).toContain(">OpenCode<");
@@ -85,7 +85,7 @@ test("a thread with a repository shows the location, then the branch, then the p
   expect(location).toBeGreaterThan(-1);
   expect(branch).toBeGreaterThan(location);
   expect(project).toBeGreaterThan(branch);
-  expect(tab).not.toContain("daytona");
+  expect(tab).not.toContain("Daytona");
 });
 
 test("a thread whose run recorded no sandbox shows no location item", () => {
