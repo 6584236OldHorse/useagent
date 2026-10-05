@@ -14,6 +14,10 @@ const listeners = new Set<Listener>();
 const openListeners = new Set<OpenListener>();
 const pending = new Map<string, OrgChange>();
 let source: EventSource | null = null;
+/** Whether the shared stream is open right now: a subscriber that joins an open stream is
+ *  told so at once (nothing replays `open` to a late listener), a subscriber that joins
+ *  while it reconnects hears the open that follows. */
+let opened = false;
 let flushScheduled = false;
 
 function flush(): void {
@@ -55,7 +59,11 @@ function enqueue(change: OrgChange): void {
 function connect(): void {
   if (source || typeof window === "undefined") return;
   source = new EventSource("/api/runs/changes");
+  source.addEventListener("error", () => {
+    opened = false;
+  });
   source.addEventListener("open", () => {
+    opened = true;
     for (const listener of openListeners) {
       try {
         listener();
@@ -84,12 +92,14 @@ export function subscribeOrgChanges(listener: Listener, onOpen?: OpenListener): 
   listeners.add(listener);
   if (onOpen) openListeners.add(onOpen);
   connect();
+  if (onOpen && opened) queueMicrotask(() => openListeners.has(onOpen) && onOpen());
   return () => {
     listeners.delete(listener);
     if (onOpen) openListeners.delete(onOpen);
     if (listeners.size !== 0) return;
     source?.close();
     source = null;
+    opened = false;
     pending.clear();
     flushScheduled = false;
     openListeners.clear();

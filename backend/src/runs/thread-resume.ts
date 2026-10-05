@@ -20,7 +20,7 @@
 // (eventId, seq) pairs it holds, and the run resumes after the cursor only when this
 // database's rows at or below the cursor are exactly that set, checked in the same
 // snapshot that reads the rows above it.
-import type { NativeHoldEntry } from "@useagent/agent-client";
+import { NATIVE_CURSOR_LIMIT, type NativeHoldEntry } from "@useagent/agent-client";
 import { canonicalEventIdAt } from "./canonical-events";
 import { getNativeFramesSince, type NativeFrame, type NativeHold, resumeNativeLanes } from "./native-events";
 
@@ -77,10 +77,11 @@ export function resumeFramePayload(threadId: string, resolved: ResolvedResume) {
 /** Per-run native cursors, `nativeAfter=<runId>:<seq>:<digest>` repeated, for the runs
  *  whose canonical lane the browser saw complete: the newest seq it holds and the digest
  *  of the (eventId, seq) pairs it holds (`nativeHoldDigest` in the client library). A
- *  malformed entry reads as absent; at most 200 are read. */
+ *  malformed entry reads as absent; at most NATIVE_CURSOR_LIMIT are read (the client sends
+ *  no more). */
 export function parseNativeCursors(values: readonly string[] | undefined): ReadonlyMap<string, NativeHold> {
   const cursors = new Map<string, NativeHold>();
-  for (const value of (values ?? []).slice(0, 200)) {
+  for (const value of (values ?? []).slice(0, NATIVE_CURSOR_LIMIT)) {
     const match = /^([A-Za-z0-9._-]{1,64}):(\d{1,15}):([0-9a-f]{16})$/.exec(value);
     if (match) cursors.set(match[1]!, { seq: Number(match[2]), digest: match[3]! });
   }

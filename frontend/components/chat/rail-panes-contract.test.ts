@@ -13,7 +13,8 @@ describe("rail panes load on first open", () => {
   test("the session view takes the on-demand panes from the loader, never from their modules", () => {
     const view = read("./session-view.tsx");
     for (const pane of ON_DEMAND_PANES) {
-      expect(view).not.toMatch(new RegExp(`import \\{[^}]*\\} from "@/components/chat/${pane}"`));
+      // Neither the aliased nor the relative spelling of the pane's own module.
+      expect(view).not.toMatch(new RegExp(`import \\{[^}]*\\} from "(@/components/chat/|\\./)${pane}"`));
     }
     expect(view).toContain('from "@/components/chat/workspace-pane-loader"');
   });
