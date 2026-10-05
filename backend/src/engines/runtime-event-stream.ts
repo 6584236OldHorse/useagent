@@ -121,3 +121,25 @@ export async function followRuntimeThread(input: FollowRuntimeThreadInput): Prom
     await delay(input.resumeDelayMs ?? RESUME_DELAY_MS, undefined, { signal: input.signal }).catch(() => {});
   }
 }
+
+/** One request-response RPC to the runtime: true once it exits successfully,
+ *  false on a failed exit, a closed socket, the timeout or an abort. */
+export async function requestRuntimeRpc(
+  sandbox: SandboxHandle,
+  tag: string,
+  payload: Readonly<Record<string, unknown>>,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<boolean> {
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+  let socket: Awaited<ReturnType<typeof openRuntimeSocket>> | undefined;
+  try {
+    socket = await openRuntimeSocket({ sandbox, signal: bounded });
+    await socket.call(tag, payload);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    socket?.close();
+  }
+}

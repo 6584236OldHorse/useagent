@@ -556,10 +556,12 @@ export async function prepareProviderGatewaySandbox(
       { path: CLAUDE_SETTINGS_FILE, content: JSON.stringify(managedSettings) },
       { path: CLAUDE_MCP_CONFIG_FILE, content: claudeMcpConfig(toolDescriptor) },
     ];
-    await (options.rootOwnedClaudeCapability
-      ? writeClaudeCapabilityFiles(sandbox, files)
-      : writeUserClaudeCapabilityFiles(sandbox, files));
-    await writePrivateFiles(sandbox, [{ path: SANDBOX_MARKER, content: generation }]);
+    await Promise.all([
+      options.rootOwnedClaudeCapability
+        ? writeClaudeCapabilityFiles(sandbox, files)
+        : writeUserClaudeCapabilityFiles(sandbox, files),
+      writePrivateFiles(sandbox, [{ path: SANDBOX_MARKER, content: generation }]),
+    ]);
     return;
   }
 

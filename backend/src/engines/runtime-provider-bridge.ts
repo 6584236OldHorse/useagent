@@ -458,13 +458,11 @@ export async function awaitRuntimeProviderReady(
 
 /** A warm turn's read-only provider checks, issued alongside sandbox
  * acquisition: the install validation for a sandbox this process already
- * bootstrapped, and subscription Codex's services probe. Claude is left out:
- * its bootstrap carries the run's gateway environment. */
+ * bootstrapped (no environment, no writes; a turn that bootstraps afresh just
+ * leaves it untaken), and subscription Codex's services probe. */
 export function prefetchRuntimeProviderBridge(sandbox: SandboxHandle, engine: RuntimeEngineId): void {
-  if (engine === "claude") return;
   const layout = runtimeBridgeLayout(sandbox);
-  const bootstrap = buildRuntimeProviderBootstrapCommand(engine, {}, layout, "plane");
-  if (bootstrapStates.get(sandbox.id || sandbox)?.has(bootstrap)) {
+  if (bootstrapStates.get(sandbox.id || sandbox)?.size) {
     const pendingRevision = engine === "codex" ? codexProviderConfigurationRevision(layout) : null;
     prefetchSandboxCommand(sandbox, buildRuntimeProviderValidationCommand(engine, layout, pendingRevision), 10);
   }
@@ -684,9 +682,14 @@ export async function prepareRuntimeProviderBridge(
       async close() {},
     };
   } else if (engine === "claude") {
-    await prepareProviderGatewaySandbox(sandbox, ctx, engine, {
-      rootOwnedClaudeCapability: layout.runsAsRoot,
-    });
+    // The run's capability and the Claude user's access to the workspace are
+    // independent writes, both after the bootstrap that installs the helper.
+    await Promise.all([
+      prepareProviderGatewaySandbox(sandbox, ctx, engine, {
+        rootOwnedClaudeCapability: layout.runsAsRoot,
+      }),
+      prepareClaudeRuntimeAccess(sandbox, workdir),
+    ]);
   } else {
     const mode = engineAuthMode("codex");
     if (!mode) throw new Error("invalid ENGINE_AUTH_MODE_CODEX");
@@ -712,7 +715,6 @@ export async function prepareRuntimeProviderBridge(
   }
 
   if (engine === "claude") {
-    await prepareClaudeRuntimeAccess(sandbox, workdir);
     return {
       authPath: null,
       authEpoch: null,

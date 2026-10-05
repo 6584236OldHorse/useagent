@@ -2,11 +2,9 @@ import type { EngineAdapter } from "./types";
 import { composeRunTurnPrompt } from "./types";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  awaitRuntimeProviderReady,
   prefetchRuntimeProviderBridge,
   prepareRuntimeProviderBridge,
   prepareStableRuntimeProvider,
-  type RuntimeProviderReadiness,
   type RuntimeProviderBridgeLease,
 } from "./runtime-provider-bridge";
 import {
@@ -16,6 +14,7 @@ import {
   type RuntimeEnvironmentRequest,
 } from "./runtime-environment-client";
 import { awaitCodexProviderReady } from "./codex-subscription-runtime";
+import { ensureRuntimeProviderReadyForTurn } from "./runtime-provider-barrier";
 import {
   runtimeThreadId,
   runtimeUserMessageId,
@@ -25,9 +24,6 @@ import {
 import { configuredRuntimeMode, runtimeModeFor } from "./permission-mode";
 import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
-import {
-  type SandboxHandle,
-} from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import type { ProviderDriver } from "@useagent/agent-harness/control";
 import { sessionCapabilities } from "./capabilities";
@@ -102,65 +98,6 @@ const CODEX_VERIFY_DEADLINE_MS = 8_000;
 const CLAUDE_BARRIER_DEADLINE_MS = 35_000;
 const CLAUDE_VERIFY_DEADLINE_MS = 35_000;
 
-interface RuntimeProviderBarrierDependencies {
-  readonly awaitReady: typeof awaitRuntimeProviderReady;
-  readonly restart: typeof restartRuntimeEnvironment;
-  readonly invalidateAccess: typeof invalidateRuntimeEnvironmentAccess;
-  /** Whether the runtime server is up at all. Absent in tests means "up". */
-  readonly healthy?: typeof runtimeEnvironmentHealthy;
-}
-
-const runtimeProviderBarrierDependencies: RuntimeProviderBarrierDependencies = {
-  awaitReady: awaitRuntimeProviderReady,
-  restart: restartRuntimeEnvironment,
-  invalidateAccess: invalidateRuntimeEnvironmentAccess,
-  healthy: runtimeEnvironmentHealthy,
-};
-
-export async function ensureRuntimeProviderReadyForTurn(input: {
-  readonly sandbox: SandboxHandle;
-  readonly signal: AbortSignal;
-  readonly readiness: RuntimeProviderReadiness;
-  readonly barrierDeadlineMs: number;
-  readonly verifyDeadlineMs: number;
-  readonly providerLabel: string;
-  readonly dependencies?: RuntimeProviderBarrierDependencies;
-}): Promise<void> {
-  const dependencies = input.dependencies ?? runtimeProviderBarrierDependencies;
-  // A sandbox whose runtime is down cannot fill its status cache no matter how
-  // long the barrier waits. Boot straight away instead of burning the whole
-  // barrier deadline first; the boot reads the settings written just before it.
-  // The baked image usually has the runtime up already; it then takes the
-  // settings through its settings watch, and the barrier below covers that.
-  const up = dependencies.healthy ? await dependencies.healthy(input.sandbox) : true;
-  if (
-    up &&
-    (await dependencies.awaitReady(
-      input.sandbox,
-      input.signal,
-      input.barrierDeadlineMs,
-      input.readiness,
-    ))
-  ) {
-    return;
-  }
-  input.signal.throwIfAborted();
-  await dependencies.restart(input.sandbox, input.signal);
-  dependencies.invalidateAccess(input.sandbox);
-  input.signal.throwIfAborted();
-  if (
-    !(await dependencies.awaitReady(
-      input.sandbox,
-      input.signal,
-      input.verifyDeadlineMs,
-      input.readiness,
-    ))
-  ) {
-    input.signal.throwIfAborted();
-    throw new Error(`${input.providerLabel} runtime did not become ready after restart`);
-  }
-}
-
 interface RuntimeShellSnapshot {
   readonly projects: readonly { readonly id: string }[];
   readonly threads: readonly { readonly id: string }[];
@@ -188,7 +125,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
       let stableProviderPendingRevision: string | null = null;
       // A runtime this process already talks to lists the same projects and
       // threads before and after the provider bridge, so its shell is read
-      // alongside the bridge; any barrier below that may restart it reads again.
+      // alongside the bridge; a barrier below that restarts it reads again.
       let earlyShell: Promise<RuntimeShellSnapshot | null> | null = null;
       let runtimeTouched = false;
       const prepared = await prepareSandboxTurn(ctx, {
@@ -268,17 +205,16 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // T3 applied the gateway-backed wrapper rather than merely observing
         // that the settings file exists.
         if (providerBridgeLease.readiness) {
-          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
-            await ensureRuntimeProviderReadyForTurn({
+            runtimeTouched = (await ensureRuntimeProviderReadyForTurn({
               sandbox,
               signal: ctx.signal,
               readiness: providerBridgeLease.readiness,
               barrierDeadlineMs: CLAUDE_BARRIER_DEADLINE_MS,
               verifyDeadlineMs: CLAUDE_VERIFY_DEADLINE_MS,
               providerLabel: "Claude",
-            });
+            })) || runtimeTouched;
           } finally {
             endBarrier?.();
           }
@@ -293,7 +229,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // a per-run instance, and Claude has its own marker barrier above. The
         // no-first-activity watchdog below remains the final safety net.
         if (providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused) {
-          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             // A sandbox whose runtime is down cannot publish the status cache,
@@ -314,6 +249,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               // reads the relay config synchronously and builds the remote instance
               // from the start, then verify once before steering. Honest error if
               // the runtime never reports ready.
+              runtimeTouched = true;
               await restartRuntimeEnvironment(sandbox, ctx.signal, ctx.timing);
               invalidateRuntimeEnvironmentAccess(sandbox);
               if (
