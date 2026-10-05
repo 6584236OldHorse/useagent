@@ -61,6 +61,9 @@ export interface EngineRunContext {
    *  recalled memory. Never echoed as the user's text; the stored `prompt` stays
    *  the user's raw words. Compose via {@link composeTurnPrompt}. */
   turnContext: string;
+  /** Whether team memory is configured for this run, so the turn prompt can say
+   *  how the memory tools work (or that there are none on this turn). */
+  memoryEnabled?: boolean;
   /** Server-authored connected inventory status and run-bound resource facts.
    *  Injected for every ordinary turn across every engine. It is reference data,
    *  not authorization: only resolvedResources grants capabilities. */

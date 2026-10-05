@@ -43,7 +43,9 @@ import {
 } from "../sandboxes/expected-binding";
 
 const RUNTIME_POLL_INTERVAL_MS = 125;
-export const T3_SESSION_GENERATION = 2;
+// Bumped with the memory rules in the fresh-session prefix: a session bound before
+// them is stale, so its next turn starts fresh and reads them once.
+export const T3_SESSION_GENERATION = 3;
 
 interface RuntimeShellSnapshot {
   readonly projects: readonly { readonly id: string }[];

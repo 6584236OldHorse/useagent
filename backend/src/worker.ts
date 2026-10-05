@@ -259,18 +259,14 @@ async function runWorker(runId: string): Promise<void> {
     }
 
     // Split the run's context (north star "Fix the Current Context Bug First"):
-    //  - turnContext: fresh TEAM MEMORY (config-gated; "" when MEMORY_API_URL is
-    //    unset), already reference-framed. Injected on EVERY turn (fresh AND
-    //    resumed) so a continuing conversation still sees newly recalled memory.
-    //  - bootstrapContext: the reconstructed prior thread, injected ONLY into a
-    //    FRESH native session (a resumed session already holds it natively).
-    // Fetched in PARALLEL — independent context work must not serialize startup.
-    // Prompts are stored clean; the composed prefix is the engine's only view.
-    //
-    // The scope PLAN maps the run's persisted identity + memoryScope to the pools
-    // it reads (org → org pool; personal → personal + org) and the single pool it
-    // captures into; null when memory is disabled. Identity is ALWAYS from the run
-    // row — never the sandbox/prompt.
+    // turnContext is fresh team memory (config-gated, "" when MEMORY_API_URL is
+    // unset), reference-framed and injected on EVERY turn; bootstrapContext is
+    // the reconstructed prior thread, injected ONLY into a FRESH native session.
+    // Fetched in PARALLEL. Prompts are stored clean; the composed prefix is the
+    // engine's only view. The scope PLAN maps the run's persisted identity and
+    // memoryScope to the pools it reads (org: org pool; personal: personal + org)
+    // and the pool it captures into; null when memory is disabled. Identity is
+    // ALWAYS from the run row, never the sandbox or prompt.
     const plan = resolveScopedMemory(run);
     // Start the native-session lookup alongside every other independent context
     // source. The result both controls fresh-only catalog prefill and is reused
@@ -402,6 +398,7 @@ async function runWorker(runId: string): Promise<void> {
         run.prompt,
         bootstrapContext,
         turnContext,
+        plan !== null,
         resourceContext,
         skillContext,
         skillCatalogContext,
@@ -610,6 +607,7 @@ async function runEngine(
   prompt: string,
   bootstrapContext: string,
   turnContext: string,
+  memoryEnabled: boolean,
   resourceContext: string,
   skillContext: string,
   skillCatalogContext: string,
@@ -708,6 +706,7 @@ async function runEngine(
     prompt,
     bootstrapContext,
     turnContext,
+    memoryEnabled,
     resourceContext,
     skillContext,
     skillCatalogContext,

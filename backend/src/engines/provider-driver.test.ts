@@ -10,7 +10,7 @@ import {
   resolveProviderDriverForSession,
   resolveProviderRegistration,
 } from "./index";
-import { t3ProviderDrivers } from "./t3-provider-driver";
+import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { RUNTIME_GENERATION } from "./runtime-environment";
 
 describe("production provider registry", () => {
@@ -139,7 +139,7 @@ describe("production provider registry", () => {
         sessionId: "skynet-thread-thread-t3",
         sandboxId: "cube-t3",
         protocol: providerProtocolIdentity(t3ProviderDrivers[engine].descriptor.protocol),
-        generation: 2,
+        generation: T3_SESSION_GENERATION,
         authEpoch: null,
         currentAuthEpoch: null,
       });
@@ -173,7 +173,7 @@ describe("production provider registry", () => {
         },
         {
           protocol: providerProtocolIdentity(t3ProviderDrivers[engine].descriptor.protocol),
-          generation: 2,
+          generation: T3_SESSION_GENERATION,
           authEpoch: "epoch-old",
           currentAuthEpoch: "epoch-current",
         },

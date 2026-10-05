@@ -1,10 +1,12 @@
 import { productChildThreadsEnabled } from "../runs/thread-relationship-switch";
+import { MEMORY_TURN_GUIDANCE, MEMORY_TURN_GUIDANCE_NO_TOOLS } from "../memory/memory-skill-text";
 
 /** The provider-neutral context needed to compose one agent turn. */
 export interface TurnPromptContext {
   readonly prompt: string;
   readonly bootstrapContext: string;
   readonly turnContext: string;
+  readonly memoryEnabled?: boolean;
   readonly resourceContext?: string;
   readonly skillContext?: string;
   readonly skillCatalogContext?: string;
@@ -123,7 +125,13 @@ export function composeTurnPrompt(
   // Bots are reachable only through the gateway tools; a turn that cannot reach them
   // (no gateway, or an internal origin such as Slack) must not be told to use them.
   const tools = executionCapabilities.facilities.tools;
-  const botsReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
+  const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway";
+  const botsReachable = gatewayReachable && ctx.origin === null;
+  // Memory works through the same gateway tools on every origin (automations and
+  // handoffs included); a session without them is told so rather than left to
+  // invent a memory file in the sandbox. Said once per session with the operating
+  // rules: a resumed session still holds it, and only the recalled facts change.
+  const memoryRules = ctx.memoryEnabled ? (gatewayReachable ? MEMORY_TURN_GUIDANCE : MEMORY_TURN_GUIDANCE_NO_TOOLS) : "";
   const perTurn =
     executionCapabilityPrompt(executionCapabilities) +
     AGENT_WORKFLOW_ROUTING_RULES +
@@ -134,7 +142,7 @@ export function composeTurnPrompt(
     (ctx.resourceContext ?? "") +
     (ctx.inputContext ?? "") +
     ctx.turnContext;
-  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + ctx.bootstrapContext + perTurn;
+  const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + memoryRules + ctx.bootstrapContext + perTurn;
   return `${prefix}<current_user_request>\n${ctx.prompt}\n</current_user_request>`;
 }
 import type { ExecutionCapabilitySnapshot } from "@useagent/agent-harness/canonical";
