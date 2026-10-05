@@ -1,6 +1,6 @@
-import { and, eq, gt, like, lt, or, sql } from "drizzle-orm";
+import { and, eq, like, or, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { providerEvents, spendAccounts, spendEntries, type SettledSpendSource, type SpendSource } from "../db/schema";
+import { providerEvents, spendAccounts, spendEntries, type SpendSource } from "../db/schema";
 
 // ---------------------------------------------------------------------------
 // Spend allowance. Every organisation member may spend SPEND_ALLOWANCE_USD
@@ -46,26 +46,20 @@ export const SPEND_TOKENS_MAX = 2_147_483_647;
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
-/** The refusal at admission: the member is at the allowance, or a chat charge
- *  of theirs is unresolved (pending past the sweep's window with nothing to
- *  price it), which pauses new work until an operator settles it. */
 export class SpendAllowanceExceededError extends Error {
-  readonly code: "spend_allowance_exceeded" | "spend_unresolved";
+  readonly code = "spend_allowance_exceeded" as const;
 
-  constructor(readonly spent: number, readonly allowance: number, readonly unresolved = 0) {
+  constructor(readonly spent: number, readonly allowance: number) {
     super(
-      unresolved > 0
-        ? `${unresolved === 1 ? "A chat charge of yours" : `${unresolved} chat charges of yours`} could not be settled and ` +
-          `${unresolved === 1 ? "is" : "are"} unresolved. New tasks are paused until an operator settles ${unresolved === 1 ? "it" : "them"}.`
-        : `You have spent ${usd(spent)} of your ${usd(allowance)} allowance. New tasks are paused until it is raised.`,
+      `You have spent ${usd(spent)} of your ${usd(allowance)} allowance. ` +
+        "New tasks are paused until it is raised.",
     );
     this.name = "SpendAllowanceExceededError";
-    this.code = unresolved > 0 ? "spend_unresolved" : "spend_allowance_exceeded";
   }
 
   /** The refusal every ingress answers with. */
   get body() {
-    return { error: this.code, message: this.message, spent: this.spent, allowance: this.allowance, unresolved: this.unresolved };
+    return { error: this.code, message: this.message, spent: this.spent, allowance: this.allowance };
   }
 }
 
@@ -87,13 +81,12 @@ export async function assertSpendAllowance(
   const fallback = spendAllowanceDefaultUsd();
   if (!userId || fallback <= 0) return;
   const [account] = await exec
-    .select({ allowanceUsd: spendAccounts.allowanceUsd, spentUsd: spendAccounts.spentUsd, unresolved: spendAccounts.unresolved })
+    .select({ allowanceUsd: spendAccounts.allowanceUsd, spentUsd: spendAccounts.spentUsd })
     .from(spendAccounts)
     .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, userId)))
     .limit(1);
   const spent = account?.spentUsd ?? 0;
   const allowance = effectiveAllowance(account?.allowanceUsd ?? null, fallback);
-  if ((account?.unresolved ?? 0) > 0) throw new SpendAllowanceExceededError(spent, allowance, account!.unresolved);
   if (spent >= allowance) throw new SpendAllowanceExceededError(spent, allowance);
 }
 
@@ -185,16 +178,10 @@ function runtimeActivityFigure(stored: Record<string, unknown>): UsageFigure | n
   return { cost, tokens: usageTokens(usage) };
 }
 
-export type { SettledSpendSource };
-
 export interface RunCharge {
   readonly cost: number;
   readonly tokens: number;
-  readonly source: SettledSpendSource;
-  /** The provider's generation id a chat usage row named, if any. */
-  readonly generationId: string | null;
-  /** Whether the provider accepted a chat request whose stream then broke before naming anything. */
-  readonly lost: boolean;
+  readonly source: SpendSource;
 }
 
 /**
@@ -223,8 +210,6 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   let tokens = 0;
   let priced = false;
   let settled = false;
-  let generationId: string | null = null;
-  let lost = false;
   const perIdentity = new Map<string, UsageFigure>();
   for (const row of rows) {
     let stored: Record<string, unknown> | null = null;
@@ -240,8 +225,6 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
       // snapshot the composer ring reads, not a per-call ledger. That lane is
       // priced from its activities below.
       if (row.provider === "t3") continue;
-      if (typeof stored.generationId === "string" && stored.generationId) generationId ??= stored.generationId;
-      lost ||= stored.accepted === true && stored.completed !== true;
       const figure = stepFinishFigure(stored);
       const bounded = boundedCost(figure.cost, `run ${runId} event ${row.id}`);
       if (bounded !== null) {
@@ -271,11 +254,11 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   }
   cost = Math.min(cost, SPEND_CHARGE_MAX_USD);
   tokens = boundedTokens(tokens);
-  const source: SettledSpendSource = settled ? "provider_generation" : priced ? "usage" : "unpriced";
+  const source: SpendSource = settled ? "provider_generation" : priced ? "usage" : "unpriced";
   if (source === "unpriced" && tokens > 0) {
     console.warn(`[spend] run ${runId} reported ${tokens} tokens but no cost; charged as unpriced`);
   }
-  return { cost, tokens, source, generationId, lost };
+  return { cost, tokens, source };
 }
 
 // ── Charging ────────────────────────────────────────────────────────────────
@@ -284,8 +267,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
  * Record one charge and add it to the member's account, once and together.
  * The per-charge entry is the guard: a second settlement, a replayed finalize
  * or a concurrent charge under the same key inserts nothing and charges
- * nothing; an entry opened as `pending` before its turn ran is filled in
- * here, once. Handed the pool, it runs as one short transaction, so no reader
+ * nothing. Handed the pool, it runs as one short transaction, so no reader
  * ever sees the entry without its account movement. The account upsert takes
  * the member's row lock, so a caller inside a larger transaction must make
  * this its LAST statement: a transaction that holds that lock must never go
@@ -298,37 +280,25 @@ export async function chargeSpend(
     readonly userId: string;
     readonly cost: number;
     readonly tokens: number;
-    readonly source: SettledSpendSource;
-    readonly generationId?: string | null;
+    readonly source: SpendSource;
   },
   exec: Executor = db,
 ): Promise<boolean> {
   if (exec === db) return db.transaction((tx) => chargeSpend(input, tx));
   const cost = boundedCost(input.cost, `charge ${input.key}`) ?? 0;
-  const tokens = Number.isFinite(input.tokens) ? boundedTokens(input.tokens) : 0;
-  const settled = await exec
+  const inserted = await exec
     .insert(spendEntries)
     .values({
       chargeKey: input.key,
       orgId: input.orgId,
       userId: input.userId,
       costUsd: cost,
-      tokens,
+      tokens: Number.isFinite(input.tokens) ? boundedTokens(input.tokens) : 0,
       source: input.source,
-      generationId: input.generationId ?? null,
     })
-    .onConflictDoUpdate({
-      target: spendEntries.chargeKey,
-      set: {
-        costUsd: cost,
-        tokens,
-        source: input.source,
-        generationId: sql`coalesce(excluded.generation_id, ${spendEntries.generationId})`,
-      },
-      setWhere: eq(spendEntries.source, "pending"),
-    })
+    .onConflictDoNothing()
     .returning({ chargeKey: spendEntries.chargeKey });
-  if (settled.length === 0) return false; // already charged
+  if (inserted.length === 0) return false; // already charged
   await exec
     .insert(spendAccounts)
     .values({ orgId: input.orgId, userId: input.userId, spentUsd: cost, runs: 1 })
@@ -343,116 +313,6 @@ export async function chargeSpend(
   return true;
 }
 
-/**
- * Open a charge before the work it pays for runs, so the intent to charge is
- * durable from the start: a completion that fails to write leaves a pending
- * entry to be settled (chargeSpend fills it in; chat/turn.ts sweeps what the
- * process never completed), never a lost figure. Idempotent under its key.
- */
-export async function openSpendCharge(input: {
-  readonly key: string;
-  readonly orgId: string;
-  readonly userId: string;
-}, exec: Executor = db): Promise<void> {
-  await exec
-    .insert(spendEntries)
-    .values({ chargeKey: input.key, orgId: input.orgId, userId: input.userId, costUsd: 0, tokens: 0, source: "pending" })
-    .onConflictDoNothing();
-}
-
-/** Drop a charge opened for a turn that never made a model call. */
-export async function discardSpendCharge(key: string): Promise<void> {
-  await db.delete(spendEntries).where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
-}
-
-/** Note the provider's generation id on an open charge as soon as the stream
- *  names it, so a charge the process never completes can still be priced from
- *  the provider's record. */
-export async function noteSpendGeneration(key: string, generationId: string, exec: Executor = db): Promise<void> {
-  await exec
-    .update(spendEntries)
-    .set({ generationId })
-    .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
-}
-
-/** One settled figure a charge is written with. */
-export interface SpendFigure {
-  readonly cost: number;
-  readonly tokens: number;
-  readonly source: SettledSpendSource;
-  readonly generationId: string | null;
-}
-
-/** Store a charge's figure on its open entry before the account moves, so a
- *  settlement the ledger refuses afterwards can be completed from the stored
- *  figure alone (chat/charge-sweep.ts). The entry stays pending. */
-export async function noteSpendFigure(key: string, figure: SpendFigure): Promise<void> {
-  await db
-    .update(spendEntries)
-    .set({
-      costUsd: boundedCost(figure.cost, `charge ${key}`) ?? 0,
-      tokens: Number.isFinite(figure.tokens) ? boundedTokens(figure.tokens) : 0,
-      figureSource: figure.source,
-      generationId: sql`coalesce(${figure.generationId}, ${spendEntries.generationId})`,
-    })
-    .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
-}
-
-/** Charges opened before `openedBefore` and never settled, with the figure each already holds, if any. */
-export async function pendingSpendCharges(openedBefore: Date): Promise<Array<{
-  readonly key: string;
-  readonly orgId: string;
-  readonly userId: string;
-  readonly generationId: string | null;
-  readonly figure: SpendFigure | null;
-}>> {
-  const rows = await db
-    .select({
-      key: spendEntries.chargeKey,
-      orgId: spendEntries.orgId,
-      userId: spendEntries.userId,
-      generationId: spendEntries.generationId,
-      cost: spendEntries.costUsd,
-      tokens: spendEntries.tokens,
-      figureSource: spendEntries.figureSource,
-    })
-    .from(spendEntries)
-    .where(and(eq(spendEntries.source, "pending"), lt(spendEntries.createdAt, openedBefore)));
-  return rows.map(({ cost, tokens, figureSource, ...row }) => ({
-    ...row,
-    figure: figureSource ? { cost, tokens, source: figureSource, generationId: row.generationId } : null,
-  }));
-}
-
-/**
- * Record on each member's account how many of their pending charges nothing
- * can price (the sweep's stuck entries) and clear the count everywhere else.
- * Admission refuses a member while any stands, so an unresolved charge is
- * never quietly outrun; an operator settles the entry (a figure, or dropping
- * it) and the next sweep clears the count.
- */
-export async function markUnresolvedSpend(
-  stuck: ReadonlyArray<{ readonly orgId: string; readonly userId: string }>,
-): Promise<void> {
-  const counts = new Map<string, { orgId: string; userId: string; count: number }>();
-  for (const { orgId, userId } of stuck) {
-    const key = `${orgId}\u0000${userId}`;
-    counts.set(key, { orgId, userId, count: (counts.get(key)?.count ?? 0) + 1 });
-  }
-  await db.transaction(async (tx) => {
-    await tx.update(spendAccounts).set({ unresolved: 0, updatedAt: new Date() }).where(gt(spendAccounts.unresolved, 0));
-    for (const { orgId, userId, count } of counts.values()) {
-      await tx
-        .insert(spendAccounts)
-        .values({ orgId, userId, unresolved: count })
-        .onConflictDoUpdate({
-          target: [spendAccounts.orgId, spendAccounts.userId],
-          set: { unresolved: count, updatedAt: new Date() },
-        });
-    }
-  });
-}
-
 /** Charge a settled run to its member from the usage it carries. Runs without
  *  an org or a person behind them have nothing to charge. */
 export async function accrueRunSpend(
@@ -461,16 +321,6 @@ export async function accrueRunSpend(
 ): Promise<void> {
   if (!run.orgId || !run.userId) return;
   const charge = await priceRunUsage(run.id, exec);
-  if (charge.source === "unpriced" && (charge.generationId || charge.lost)) {
-    // Billed (the provider named a generation, or accepted a request whose
-    // stream then broke) but not priced here: never a zero. The run's charge
-    // stays open with what is known, and the sweep prices it from the
-    // provider's record or counts it unresolved.
-    await openSpendCharge({ key: run.id, orgId: run.orgId, userId: run.userId }, exec);
-    if (charge.generationId) await noteSpendGeneration(run.id, charge.generationId, exec);
-    console.warn(`[spend] run ${run.id} is billed but not priced yet; left pending for the sweep`);
-    return;
-  }
   await chargeSpend({ key: run.id, orgId: run.orgId, userId: run.userId, ...charge }, exec);
 }
 
@@ -479,8 +329,6 @@ export interface SpendSnapshot {
   /** Null when the cap is off. */
   readonly allowance: number | null;
   readonly runs: number;
-  /** Chat charges nothing could price; new work pauses while any stands. */
-  readonly unresolved: number;
 }
 
 /** The member's own figures. */
@@ -492,7 +340,6 @@ export async function spendSnapshot(orgId: string, userId: string | null): Promi
           allowanceUsd: spendAccounts.allowanceUsd,
           spentUsd: spendAccounts.spentUsd,
           runs: spendAccounts.runs,
-          unresolved: spendAccounts.unresolved,
         })
         .from(spendAccounts)
         .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, userId)))
@@ -502,6 +349,5 @@ export async function spendSnapshot(orgId: string, userId: string | null): Promi
     spent: row?.spentUsd ?? 0,
     allowance: fallback > 0 ? effectiveAllowance(row?.allowanceUsd ?? null, fallback) : null,
     runs: row?.runs ?? 0,
-    unresolved: row?.unresolved ?? 0,
   };
 }

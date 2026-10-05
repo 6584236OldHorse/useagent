@@ -10,11 +10,9 @@ import { SettingsRow } from "./settings-rows";
 export function SpendRow() {
   const spend = useSpend();
   const description =
-    spend && spend.unresolved > 0
-      ? "A chat charge of yours could not be settled. New tasks pause until an operator settles it."
-      : spend?.allowance === null
-        ? "Settled model cost of your runs. This deployment sets no cap."
-        : "Settled model cost of your runs. New tasks pause at the allowance.";
+    spend?.allowance === null
+      ? "Settled model cost of your runs. This deployment sets no cap."
+      : "Settled model cost of your runs. New tasks pause at the allowance.";
   return (
     <SettingsRow label="Allowance" description={description}>
       <Chip variant="caption" color={spend && spendCapped(spend) ? "rose" : "soft"}>

@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS "spend_accounts" (
 	"allowance_usd" numeric(14, 6),
 	"spent_usd" numeric(14, 6) DEFAULT 0 NOT NULL,
 	"runs" integer DEFAULT 0 NOT NULL,
-	"unresolved" integer DEFAULT 0 NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "spend_accounts_org_id_user_id_pk" PRIMARY KEY("org_id","user_id")
 );
@@ -19,9 +18,5 @@ CREATE TABLE IF NOT EXISTS "spend_entries" (
 	"cost_usd" numeric(14, 6) NOT NULL,
 	"tokens" integer DEFAULT 0 NOT NULL,
 	"source" text NOT NULL,
-	"generation_id" text,
-	"figure_source" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "spend_entries_pending_idx" ON "spend_entries" ("created_at") WHERE "source" = 'pending';
