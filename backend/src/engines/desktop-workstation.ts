@@ -67,6 +67,50 @@ const LEGACY_CHROME_PIPE_GONE_COMMAND = `test -z "$(${LEGACY_CHROME_PIPE_PIDS_CO
 const CDP_PORT_CLOSED_COMMAND =
   "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(1 if s.connect_ex(('127.0.0.1',9222)) == 0 else 0)\"";
 
+/** Chrome's own background traffic to Google (component updates, push, metrics, sync, DNS
+ *  over HTTPS) stays off in customer sandboxes; pages the agent opens are unaffected. */
+export const BROWSER_PRIVACY_FLAGS = [
+  "--disable-background-networking",
+  "--disable-component-update",
+  "--disable-sync",
+  "--no-pings",
+  "--metrics-recording-only",
+  "--disable-domain-reliability",
+  "--disable-breakpad",
+  "--disable-features=DnsOverHttps,OptimizationHints,MediaRouter,Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater",
+] as const;
+
+/** The same lockdown as managed policy, which also binds a browser started any other way. */
+export const BROWSER_MANAGED_POLICY = {
+  MetricsReportingEnabled: false,
+  // Standard protection stays on: the agent opens arbitrary sites and sometimes signs in.
+  SafeBrowsingProtectionLevel: 1,
+  ComponentUpdatesEnabled: false,
+  BackgroundModeEnabled: false,
+  SyncDisabled: true,
+  DnsOverHttpsMode: "off",
+  SearchSuggestEnabled: false,
+  NetworkPredictionOptions: 2,
+  UrlKeyedAnonymizedDataCollectionEnabled: false,
+  SpellCheckServiceEnabled: false,
+  TranslateEnabled: false,
+  AlternateErrorPagesEnabled: false,
+  PasswordLeakDetectionEnabled: false,
+  DomainReliabilityAllowed: false,
+} as const;
+
+/** Chromium and Chrome read their managed policy from these directories. */
+export const BROWSER_POLICY_DIRECTORIES = ["/etc/chromium/policies/managed", "/etc/opt/chrome/policies/managed"] as const;
+
+/** Write the policy as root, through sudo on a non-root layout; never fatal. */
+export function buildBrowserPolicyCommand(): string {
+  const json = JSON.stringify(BROWSER_MANAGED_POLICY);
+  const write = BROWSER_POLICY_DIRECTORIES
+    .map((directory) => `mkdir -p ${directory} && printf '%s' ${shellQuote(json)} >${directory}/useagent.json`)
+    .join(" && ");
+  return `{ ${write}; } 2>/dev/null || sudo -n sh -c ${shellQuote(write)} 2>/dev/null || true`;
+}
+
 /** The one-shot Chrome start the launcher runs first and the relay runs on demand. */
 export function buildBrowserLaunchScript(): string {
   return [
@@ -75,6 +119,7 @@ export function buildBrowserLaunchScript(): string {
     'mkdir -p "$HOME/.skynet/browser-profile"',
     "browser=$(command -v google-chrome 2>/dev/null || command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null)",
     'exec "$browser" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check ' +
+      `${BROWSER_PRIVACY_FLAGS.join(" ")} ` +
       "--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 " +
       "'--remote-allow-origins=*' " +
       '--user-data-dir="$HOME/.skynet/browser-profile" --restore-last-session --start-maximized about:blank ' +
@@ -95,6 +140,8 @@ export function buildDesktopLaunchCommand(): string {
     "set -eu",
     `export DISPLAY=${BROWSER_DISPLAY}`,
     'mkdir -p "$HOME/.skynet"',
+    // Chrome's background traffic is locked down by managed policy before any browser starts.
+    buildBrowserPolicyCommand(),
     // Any earlier desktop goes first: the one whose pid is recorded (its process group) and
     // every service by name, so a relaunch never stacks on a live display. Names only, and
     // the browser and relay by their binaries: this shell's own command text has the same words.

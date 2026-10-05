@@ -82,7 +82,8 @@ ${command.replace(/\nif .*; then exit 0; fi\n/, "\n").split("\n").filter((line) 
     expect(defaults).toContain("picture-uri='file:///usr/share/backgrounds/gnome/adwaita-l.webp'");
     expect(await Bun.file(join(root, `${home}/.config/pcmanfm/useagent/desktop-items-0.conf`)).text()).toContain("wallpaper=/usr/share/backgrounds/gnome/adwaita-l.webp");
     const browser = await Bun.file(join(root, `${home}/Desktop/browser.desktop`)).text();
-    expect(browser).toContain("$(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox");
+    // The icon runs the desktop's own browser launch: its sandbox flags, profile and background-traffic lockdown.
+    expect(browser).toContain('Exec=sh -c "exec sh $HOME/.skynet/browser-launch.sh"');
     expect(await Bun.file(join(root, `${home}/Desktop/files.desktop`)).text()).toContain("Exec=pcmanfm %U");
     await rm(root, { recursive: true, force: true });
   });

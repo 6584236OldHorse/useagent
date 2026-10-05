@@ -209,8 +209,8 @@ const DESKTOP_ITEMS = [
 
 const DESKTOP_LAUNCHERS: readonly [string, string, string, string][] = [
   ["files", "Files", "pcmanfm %U", "system-file-manager"],
-  // The same flags the desktop's own browser launch needs: root and a sandbox without user namespaces.
-  ["browser", "Browser", 'sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox --disable-dev-shm-usage --disable-gpu"', "web-browser"],
+  // The desktop's own browser launch: its sandbox flags, its profile, and no background traffic.
+  ["browser", "Browser", 'sh -c "exec sh $HOME/.skynet/browser-launch.sh"', "web-browser"],
   ["terminal", "Terminal", "gnome-terminal", "org.gnome.Terminal"],
 ];
 

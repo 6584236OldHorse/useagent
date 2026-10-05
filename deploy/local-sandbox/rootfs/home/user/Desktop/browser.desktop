@@ -1,5 +1,5 @@
 [Desktop Entry]
 Type=Application
 Name=Browser
-Exec=sh -c "exec $(command -v google-chrome || command -v chromium || command -v chromium-browser) --no-sandbox --disable-dev-shm-usage --disable-gpu"
+Exec=sh -c "exec sh $HOME/.skynet/browser-launch.sh"
 Icon=web-browser
