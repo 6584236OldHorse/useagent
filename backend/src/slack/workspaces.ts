@@ -52,10 +52,23 @@ export async function upsertSlackWorkspace(input: {
     });
 }
 
-/** The product identity explicitly bound to one Slack sender, if any. The
- *  binding counts only while that user is still a member of the org, so
- *  removing a member closes their Slack door at the same moment. */
+/** The product identity explicitly bound to one Slack sender, if any (the row as stored). */
 export async function findSlackUser(
+  teamId: string,
+  slackUserId: string,
+): Promise<SlackSenderIdentity | null> {
+  const [row] = await db
+    .select({ orgId: slackUsers.orgId, userId: slackUsers.userId })
+    .from(slackUsers)
+    .where(and(eq(slackUsers.teamId, teamId), eq(slackUsers.slackUserId, slackUserId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The binding that may attribute a run: it counts only while that user is
+ *  still a member of the org, so removing a member closes their Slack door at
+ *  the same moment. Every ingress path resolves senders through this. */
+export async function findActiveSlackUser(
   teamId: string,
   slackUserId: string,
 ): Promise<SlackSenderIdentity | null> {
@@ -99,7 +112,7 @@ export async function resolveSlackSender(
   const team = teamId?.trim();
   const sender = slackUserId?.trim();
   if (!team || !sender) return null;
-  const identity = await findSlackUser(team, sender);
+  const identity = await findActiveSlackUser(team, sender);
   return identity?.orgId === workspace.orgId ? identity : null;
 }
 
