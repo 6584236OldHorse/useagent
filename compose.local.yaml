@@ -109,6 +109,9 @@ services:
       CUBE_SANDBOX_DOMAIN: ${CUBE_SANDBOX_DOMAIN:-cube.app}
     ports:
       - "127.0.0.1:3202:3202"
+    volumes:
+      # The gateway publishes artifacts into the same store the backend serves.
+      - useagent-artifacts:/app/backend/.artifacts
     restart: unless-stopped
 
   frontend:
