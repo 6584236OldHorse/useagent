@@ -41,7 +41,7 @@ env:
 
 jobs:
   compose-health:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -72,7 +72,7 @@ jobs:
 
   # ── Types across both apps (root `typecheck` = frontend tsc + backend tsc) ────
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
 
   # ── Backend unit/integration tests against an isolated Postgres ──────────────
   backend-test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     services:
       postgres:
@@ -163,7 +163,7 @@ jobs:
   # projection, nor the sandbox contract's import-boundary (it must stay a pure
   # leaf, importing no backend/frontend/provider code).
   package-test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -195,7 +195,7 @@ jobs:
   # the immutable ops identity. Keep its hermetic canaries, rollback harnesses,
   # strict TypeScript project, and shell syntax in the same required CI graph.
   private-ops:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -231,7 +231,7 @@ jobs:
 
   # ── Frontend: chat logic tests + a real production build ─────────────────────
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -271,7 +271,7 @@ jobs:
   # biome.jsonc is the guardrail for real defects (a11y, unused code, floating
   # promises). Errors fail this job; warnings are reported but do not gate.
   frontend-lint:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
