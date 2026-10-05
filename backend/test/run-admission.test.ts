@@ -114,11 +114,18 @@ describe("durable run admission", () => {
     });
     await closeAdmission();
 
-    expect((await json("/api/runs", {
+    const refused = await json("/api/runs", {
       method: "POST",
       body: { prompt: "blocked", engine: "mock" },
       cookies: session.cookies,
-    })).status).toBe(503);
+    });
+    expect(refused.status).toBe(503);
+    // The web composer shows `message` verbatim, so the refusal reads plainly.
+    expect(refused.body).toEqual({
+      error: "run_admission_closed",
+      retryable: true,
+      message: "A release is being installed. Send your task again in a moment.",
+    });
     expect((await json(`/api/skills/${skill.body.id}/run`, {
       method: "POST",
       body: { prompt: "blocked", engine: "mock" },

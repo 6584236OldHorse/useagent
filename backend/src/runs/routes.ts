@@ -323,7 +323,7 @@ export async function handleRunCreate(
         });
   } catch (error) {
     if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
+      return c.json(error.body, 503);
     }
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     throw error;
@@ -452,7 +452,7 @@ export async function handleRunCreate(
         409,
       );
     }
-    if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof RunAdmissionClosedError) return c.json(error.body, 503);
     if (error instanceof SpendAllowanceExceededError || error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)

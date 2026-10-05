@@ -250,7 +250,7 @@ skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
       await assertRunAdmissionOpen();
     } catch (error) {
       if (error instanceof RunAdmissionClosedError) {
-        return c.json({ error: error.code, retryable: true }, 503);
+        return c.json(error.body, 503);
       }
       throw error;
     }
@@ -321,7 +321,7 @@ skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
       return c.json({ error: error.code }, 413);
     }
     if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
+      return c.json(error.body, 503);
     }
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     throw error;
@@ -394,7 +394,7 @@ skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
       return c.json({ error: error.code }, 413);
     }
     if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
+      return c.json(error.body, 503);
     }
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);

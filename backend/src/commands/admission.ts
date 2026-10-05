@@ -26,6 +26,9 @@ export interface AdmissionChange {
   readonly reason: string;
 }
 
+/** What a person sees while a release waits for in-flight runs; the web composer shows `message`. */
+const RELEASE_IN_PROGRESS = "A release is being installed. Send your task again in a moment.";
+
 export class RunAdmissionClosedError extends Error {
   readonly code = "run_admission_closed";
   readonly state: RunAdmissionState;
@@ -34,6 +37,11 @@ export class RunAdmissionClosedError extends Error {
     super(`Run admission is closed for ${state.operationId}: ${state.reason}`);
     this.name = "RunAdmissionClosedError";
     this.state = state;
+  }
+
+  /** The 503 body every run-starting route answers with. */
+  get body() {
+    return { error: this.code, retryable: true, message: RELEASE_IN_PROGRESS };
   }
 }
 
