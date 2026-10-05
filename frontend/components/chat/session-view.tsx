@@ -935,6 +935,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                       <SurfaceChooser
                         agentsAvailable={hasSubagents}
                         diffAvailable={hasFiles}
+                        facts={threadFacts(allSteps)}
                         onSelect={setRailTabOverride}
                       />
                     )
@@ -998,4 +999,14 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
       </ComposerPrefillProvider>
     </WorkspaceOpenProvider>
   );
+}
+
+/** The chooser's live facts: commands run and files touched in this thread. */
+function threadFacts(steps: readonly { readonly kind: string }[]): string[] {
+  const commands = steps.filter((step) => step.kind === "command").length;
+  const files = steps.filter((step) => step.kind === "file").length;
+  return [
+    ...(commands > 0 ? [`${commands} command${commands === 1 ? "" : "s"} run`] : []),
+    ...(files > 0 ? [`${files} file change${files === 1 ? "" : "s"}`] : []),
+  ];
 }
