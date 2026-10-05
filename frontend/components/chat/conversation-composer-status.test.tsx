@@ -43,7 +43,11 @@ function turn(
   return { run, steps: [], status: "completed", summary: run.summary, live: false, liveText: "", liveReasoning: "" };
 }
 
-function render(turns: Turn[], repoRevisions?: Record<string, string | null>): string {
+function render(
+  turns: Turn[],
+  repoRevisions?: Record<string, string | null>,
+  state: { running?: boolean; onStop?: () => void } = {},
+): string {
   return renderToStaticMarkup(
     <ConversationComposer
       turns={turns}
@@ -55,6 +59,8 @@ function render(turns: Turn[], repoRevisions?: Record<string, string | null>): s
       threadError={null}
       onDismissThreadError={() => {}}
       repoRevisions={repoRevisions}
+      running={state.running}
+      onStop={state.onStop}
     />,
   );
 }
@@ -114,4 +120,23 @@ test("a thread whose run recorded no sandbox shows no location item", () => {
   const tab = tabOf(render([turn("run-1", { sandbox_id: null })]));
   expect(tab).not.toContain("Runs on");
   expect(tab).toContain(">OpenCode<");
+});
+
+test("the tray hangs under the input card in every state and does not move when a run starts", () => {
+  const idle = render([turn("run-1", { sandbox_id: "sbx-1", sandbox_provider: "daytona" })]);
+  const running = render(
+    [{ ...turn("run-1", { sandbox_id: "sbx-1", sandbox_provider: "daytona" }), status: "running" }],
+    undefined,
+    { running: true, onStop: () => {} },
+  );
+  for (const html of [idle, running]) {
+    const card = html.indexOf("rounded-[20px]");
+    const tray = html.indexOf('data-testid="composer-status-tab"');
+    expect(card).toBeGreaterThan(-1);
+    expect(tray).toBeGreaterThan(card);
+  }
+  // The same tray markup in both states: nothing to jump.
+  expect(tabOf(running)).toBe(tabOf(idle));
+  // The running frame (footer, Stop) sits above the card, the tray stays under it.
+  expect(running.indexOf('data-session-ui="running-footer"')).toBeLessThan(running.indexOf("rounded-[20px]"));
 });

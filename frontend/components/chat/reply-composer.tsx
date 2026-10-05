@@ -76,8 +76,8 @@ export function ReplyComposer({
   repoRevisions?: Readonly<Record<string, string | null>>;
   /** Rendered above the input card (the running footer, the queued rows). */
   lead?: ReactNode;
-  /** The status tab on the input card's top edge (where the run executes,
-   *  branch, project, engine, context meter). */
+  /** The status tray under the input card (where the run executes, branch,
+   *  project, engine, spend, context meter). */
   status?: ReactNode;
   /** The permission chip for the footer's second column. */
   permission?: ReactNode;
