@@ -489,11 +489,11 @@ export function NewTaskComposer({
           maxHeight={260}
           disabled={submitting}
           className={cx(
-            // Idle and focused, the composer matches the rest of the UI
-            // chrome; focus lifts the border one step (never a boxed focus
-            // ring). While submitting, the ComposerLoader rim light is the
-            // animated gradient ring, so the card surface goes transparent.
-            "rounded-20 p-2 shadow-card transition-colors focus-within:border-border-button-hover",
+            // Idle and focused, the composer keeps the same border as the rest
+            // of the UI chrome (no focus ring, no lifted border). While
+            // submitting, the ComposerLoader rim light is the animated gradient
+            // ring, so the card surface goes transparent.
+            "rounded-20 p-2 shadow-card transition-colors",
             submitting && "border-transparent bg-transparent opacity-100 shadow-none",
           )}
         >
