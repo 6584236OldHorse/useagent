@@ -103,36 +103,46 @@ export function resetRetainedThreadStoresForTest(): void {
 export interface ResumeCursor {
   readonly canonicalAfter: number;
   readonly canonicalId: string | null;
+  /** Per run whose canonical lane the store saw complete, the newest native seq it holds. */
+  readonly nativeAfter: ReadonlyMap<string, number>;
 }
 
-/** What the store already holds, as the server's canonical resume cursor: the newest
- *  delivery seq across the thread and the event id at that row, so the server can
- *  prove it still holds the same history. Native frames always replay from zero. */
+/** What the store already holds, as the server's resume cursors: the newest canonical
+ *  delivery seq across the thread with the event id at that row, so the server can prove
+ *  it still holds the same history, and per SEALED run the newest native seq, which the
+ *  server honours against the seal's watermark. A live run's native frames always replay
+ *  from zero (their seq is not a commit order). */
 export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
   let canonicalAfter = 0;
   let canonicalId: string | null = null;
-  for (const view of snapshot.byId.values()) {
+  const nativeAfter = new Map<string, number>();
+  for (const [runId, view] of snapshot.byId) {
     for (const e of view.canonical) {
       if (e.deliverySeq > canonicalAfter) {
         canonicalAfter = e.deliverySeq;
         canonicalId = e.eventId;
       }
     }
+    if (view.canonicalComplete && view.native.nativeCursor >= 0) nativeAfter.set(runId, view.native.nativeCursor);
   }
-  return { canonicalAfter, canonicalId };
+  return { canonicalAfter, canonicalId, nativeAfter };
 }
 
 /** The epoch of the backend process that delivered each store's canonical rows; a
  *  cursor is only sent back with it, so another process refuses it and replays. */
 const streamEpochs = new WeakMap<ThreadStore, string>();
 
-/** The stream URL, carrying the cursor only when there is one and its epoch is known. */
+/** The stream URL, carrying the cursors only when the epoch that minted them is known. */
 export function threadEventsUrl(rootRunId: string, cursor: ResumeCursor, epoch: string | null): string {
   const params = new URLSearchParams();
-  if (cursor.canonicalAfter > 0 && cursor.canonicalId && epoch) {
-    params.set("canonicalAfter", String(cursor.canonicalAfter));
-    params.set("canonicalId", cursor.canonicalId);
+  const canonical = cursor.canonicalAfter > 0 && cursor.canonicalId !== null;
+  if (epoch && (canonical || cursor.nativeAfter.size > 0)) {
     params.set("epoch", epoch);
+    if (canonical) {
+      params.set("canonicalAfter", String(cursor.canonicalAfter));
+      params.set("canonicalId", cursor.canonicalId as string);
+    }
+    for (const [runId, seq] of cursor.nativeAfter) params.append("nativeAfter", `${runId}:${seq}`);
   }
   const query = params.toString();
   return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;

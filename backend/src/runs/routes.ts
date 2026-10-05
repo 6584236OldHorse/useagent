@@ -52,7 +52,7 @@ import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
-import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
+import { nativeReplayStart, parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
   admitCanonicalComplete,
   loadCanonicalThread,
@@ -696,9 +696,8 @@ runsRoutes.get("/:id/events", async (c) => {
 //   native   { threadId, runId, frame }    versioned native frame (dedupe by eventId+seq)
 //   done     { threadId, runId, status }   settles ONE run; does NOT close the stream
 //
-// Reconnect replays a full snapshot + latest native frames per run; stable ids make
-// that idempotent (no thread-global sequence — deliberately simpler, correct at this
-// scale). The old per-run `/:id/events` route is untouched (the rollback path).
+// Reconnect replays the snapshot plus, per thread-resume.ts, the native frames and canonical
+// rows the browser's cursors do not cover. The old per-run `/:id/events` route is untouched.
 //
 // A cap of MAX_QUEUE queued live frames bounds memory: on overflow the connection
 // closes so the browser reconnects to a fresh authoritative snapshot rather than
@@ -715,7 +714,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
-  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"));
+  const requested = parseResumeCursor(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.query("epoch"), c.req.queries("nativeAfter"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;
@@ -902,13 +901,14 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
       // was withheld but the live step/delta/native listeners stayed bound, leaking
       // frames cross-thread/cross-org (Codex review finding 1). Org-scoped read fails
       // closed; a run outside this thread is ignored without ever attaching.
+      let nativeSince = (_runId: string): number => -1; // set once the cursors resolve (step 3)
       const projectRun = async (runId: string): Promise<void> => {
         const run = await getRunWithSteps(orgId, runId);
         if (!run || run.thread_id !== threadId) return;
         attachRun(runId);
         seedStepDedupe(runId, run.steps);
         sendFrame("run", { threadId, run });
-        for (const frame of await getNativeFramesSince(runId, -1)) {
+        for (const frame of await getNativeFramesSince(runId, nativeSince(runId))) {
           if (closed) return;
           sendNative(runId, frame);
         }
@@ -930,19 +930,19 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         sendFrame("snapshot", { threadId, runs: thread });
         for (const run of thread) seedStepDedupe(run.id, run.steps);
 
-        // 3. Replay every native frame (deduped by eventId+seq); the gateway also writes them.
+        // 3. Runs whose canonicalization is COMPLETE (H2), read BEFORE the canonical rows so a
+        //    run finalized between the reads announces completion via the live loop. A sealed
+        //    run's native replay starts after the browser's cursor; the rest replay every frame.
+        const completes = await completeCanonicalRuns(threadId);
+        nativeSince = nativeReplayStart(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
         for (const run of thread) {
-          for (const frame of await getNativeFramesSince(run.id, -1)) {
+          for (const frame of await getNativeFramesSince(run.id, nativeSince(run.id))) {
             if (closed) return;
             sendNative(run.id, frame);
           }
         }
 
-        // 3b. Read which runs are canonicalization-COMPLETE (H2) BEFORE the rows, so a run
-        //     finalized between the reads announces completion via the live loop after its
-        //     rows; replay the rows above the cursor (deduped by deliverySeq), then the
-        //     completions: React trusts a run's canonical lane ONLY after its completion.
-        const completes = await completeCanonicalRuns(threadId);
+        // 3b. Canonical rows above the cursor (deduped by deliverySeq), then the completions.
         for (const event of await loadCanonicalThread(threadId, resume.canonicalAfter)) {
           if (closed) return;
           sendCanonical(event);

@@ -512,4 +512,66 @@ describe("thread-events — resume cursor", () => {
     expect(eventIndex(c, "canonical")).toBeLessThan(eventIndex(c, "canonical-complete"));
     expect(c.frames.filter((x) => x.event === "canonical").length).toBe(3);
   });
+
+  // ── Native cursors: a browser that holds a SEALED run up to the seal's watermark asks
+  //    for only what is newer; every other case replays the run's native frames from zero.
+  async function seedSealed(sourceFrameMax = 2) {
+    const seeded = await seedResumable();
+    await db.insert(canonicalizationOutbox).values({ runId: seeded.root, threadId: seeded.root, state: "complete", sourceFrameMax, sourceStepCount: 0 }).onConflictDoNothing();
+    return seeded;
+  }
+  const settled = (c: StreamClient): Promise<void> => c.waitFrame((f) => f.some((x) => x.event === "canonical-complete"));
+
+  test("a native cursor at the seal watermark replays only the frames written after it", async () => {
+    const { org, root, seqs, ids } = await seedSealed();
+    // A frame landed after the seal (an artifact receipt, a follow-up): seq 3, above the watermark.
+    await recordProviderEvent({ id: `${root}::late`, runId: root, threadId: root, provider: "skynet", eventType: "followups.suggested", nativePartId: "late", payload: { suggestions: [] } });
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[2]), canonicalId: ids[2]!, epoch: STREAM_EPOCH })}&nativeAfter=${root}:2`, org.cookies);
+    await settled(c);
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: seqs[2], reset: false } } });
+    expect(nativeSeqs(c, root)).toEqual([3]);
+    expect(canonicalSeqs(c)).toEqual([]);
+  });
+
+  test("a native cursor without a canonical cursor is still honoured on this process's epoch", async () => {
+    const { org, root } = await seedSealed();
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2`, org.cookies);
+    await settled(c);
+    expect(nativeSeqs(c, root)).toEqual([]);
+    expect(c.frames.filter((x) => x.event === "canonical").length).toBe(3);
+  });
+
+  for (const [name, setup] of [
+    ["below the seal watermark", async () => ({ ...(await seedSealed(2)), cursor: "1", epoch: STREAM_EPOCH })],
+    ["for a run that is not sealed", async () => ({ ...(await seedResumable()), cursor: "2", epoch: STREAM_EPOCH })],
+    ["minted by another backend process", async () => ({ ...(await seedSealed(2)), cursor: "2", epoch: "some-earlier-boot" })],
+    ["sent without an epoch", async () => ({ ...(await seedSealed(2)), cursor: "2", epoch: "" })],
+  ] as const) {
+    test(`a native cursor ${name} is ignored: the run replays from zero`, async () => {
+      const { org, root, cursor, epoch } = await setup();
+      const c = await open(`/api/runs/${root}/thread-events?${q(epoch ? { epoch } : {})}&nativeAfter=${root}:${cursor}`, org.cookies);
+      await c.waitFrame(() => canonicalSeqs(c).length === 3);
+      expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+    });
+  }
+
+  test("a refused canonical cursor resets the connection and the native cursors with it", async () => {
+    const { org, root, seqs, ids } = await seedSealed();
+    const c = await open(`/api/runs/${root}/thread-events?${q({ canonicalAfter: String(seqs[1]), canonicalId: ids[1]!, epoch: "some-earlier-boot" })}&nativeAfter=${root}:2`, org.cookies);
+    await settled(c);
+    expect(c.frames[0]).toMatchObject({ event: "resume", data: { resume: { canonicalAfter: 0, reset: true } } });
+    expect(nativeSeqs(c, root)).toEqual([0, 1, 2]);
+  });
+
+  test("a live re-projection of a resumed run does not resend the frames the browser holds", async () => {
+    const { org, root } = await seedSealed();
+    const c = await open(`/api/runs/${root}/thread-events?epoch=${STREAM_EPOCH}&nativeAfter=${root}:2`, org.cookies);
+    await settled(c);
+    // The thread signal re-projects the run (a settled refresh): the durable `run` frame
+    // is re-sent, the native frames below the browser's cursor are not.
+    publishThreadChange(root, { runId: root, kind: "settled" });
+    await c.waitFrame((f) => f.filter((x) => x.event === "run" && x.data.run.id === root).length >= 1);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(nativeSeqs(c, root)).toEqual([]);
+  });
 });
