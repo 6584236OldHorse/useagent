@@ -5,7 +5,7 @@ import { type DotTone, StatusDot } from "@/components/shared/status-dot";
 import { threadActivityTimestamp } from "@/components/shell/thread-discovery";
 import { backendFetch } from "@/lib/backend-fetch";
 import { relativeTimeShort } from "@/utils/format";
-import { FirstRunGate } from "./first-run-gate";
+import { FirstRunGate, taskPrefilled } from "./first-run-gate";
 import { NewTaskComposer } from "./new-task-composer";
 import { fetchSkills } from "./skills-data";
 
@@ -96,7 +96,7 @@ export default async function NewTaskPage({
           </div>
 
           <div className="mt-8">
-            <FirstRunGate>
+            <FirstRunGate prefilled={taskPrefilled({ repo: initialRepository, prompt: initialPrompt })}>
               <NewTaskComposer
                 skills={skills}
                 initialRepository={initialRepository}
