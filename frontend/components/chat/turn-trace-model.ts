@@ -454,10 +454,11 @@ type CountKind = "command" | "read" | "edit" | "search" | "fetch" | "call";
 const COUNT_ORDER: readonly CountKind[] = ["command", "read", "edit", "search", "fetch", "call"];
 
 function countKind(row: TraceStepRow): CountKind | null {
+  if (row.family === "reasoning" || row.family === "boot") return null;
+  // A listing is a tool call whatever family its glyph drew from: the search
+  // family for a list tool, the file-read family for a Codex "List files" read.
+  if (/^List(?:ed)?\b/.test(row.label)) return "call";
   switch (row.family) {
-    case "reasoning":
-    case "boot":
-      return null;
     case "shell":
       return "command";
     case "file-read":
@@ -468,7 +469,7 @@ function countKind(row: TraceStepRow): CountKind | null {
     case "web-fetch":
       return "fetch";
     case "search":
-      return /^List(?:ed)?\b/.test(row.label) ? "call" : "search";
+      return "search";
     default:
       return "call";
   }

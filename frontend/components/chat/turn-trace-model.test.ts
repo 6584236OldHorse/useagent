@@ -232,18 +232,39 @@ describe("trace rows", () => {
   });
 
   test("the duration grammar: milliseconds under a second, tenths under an hour, hours and minutes above", () => {
-    expect([40, 999, 1_000, 4_300, 60_000, 68_500, 3_720_000, 0, -1, null].map(formatElapsed)).toEqual([
+    expect(
+      [40, 999, 1_000, 4_300, 59_949, 59_999, 60_000, 68_500, 119_999, 3_720_000, 0, -1, null].map(
+        formatElapsed,
+      ),
+    ).toEqual([
       "40ms",
       "999ms",
       "1.0s",
       "4.3s",
+      "59.9s",
+      "1m",
       "1m",
       "1m 8.5s",
+      "2m",
       "1h 2m",
       null,
       null,
       null,
     ]);
+  });
+
+  test("a Codex listing read as a file-read row is still a tool call in the pill", () => {
+    const listed = toolNode("l2", {
+      tool: "read",
+      title: "List files in '.'",
+      input: {},
+      output: "a.ts\nb.ts",
+    });
+    const rows = traceRowsFromWork([listed], false);
+    expect(rows[0]).toMatchObject({ family: "file-read", label: "Listed", detail: "2 entries" });
+    expect(traceHeader({ live: false, rows, work: [listed], durationMs: null }).detail).toBe(
+      "called 1 tool",
+    );
   });
 
   test("a file edit names the file in the chip and its line delta as the detail", () => {

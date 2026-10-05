@@ -64,10 +64,11 @@ export function relativeTimeShort(
 export function formatElapsed(ms: number | null): string | null {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   if (ms < 1000) return `${Math.round(ms)}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
+  // Round to tenths before choosing the bucket, so 59,999 ms is "1m", never "60.0s".
+  const tenths = Math.round(ms / 100);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  const minutes = Math.floor(tenths / 600);
   if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-  const rest = (seconds - minutes * 60).toFixed(1);
-  return rest === "0.0" ? `${minutes}m` : `${minutes}m ${rest}s`;
+  const rest = tenths - minutes * 600;
+  return rest === 0 ? `${minutes}m` : `${minutes}m ${(rest / 10).toFixed(1)}s`;
 }

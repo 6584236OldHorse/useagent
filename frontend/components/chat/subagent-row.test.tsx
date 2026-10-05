@@ -166,3 +166,24 @@ describe("subagent row", () => {
     expect(bare).toContain("Running the suite");
   });
 });
+
+describe("subagent row residuals", () => {
+  test("a result of exactly the fold length still folds behind More", () => {
+    const html = render({ result: "x".repeat(240) }, { defaultOpen: true });
+    expect(html).toContain("line-clamp-3");
+    expect(html).toContain(">More<");
+  });
+
+  test("a running spawn with no frame and no steps yet says Working", () => {
+    const view = deriveChildrenView(STEPS.slice(0, 1), [], []);
+    const card = view.cards[0];
+    if (!card) throw new Error("no legacy card derived");
+    const html = renderToStaticMarkup(
+      <ul>
+        <SubagentRow card={card} fidelity={undefined} steps={[]} runLive />
+      </ul>,
+    );
+    expect(html).toContain('data-status="running"');
+    expect(html).toContain(">Working<");
+  });
+});
