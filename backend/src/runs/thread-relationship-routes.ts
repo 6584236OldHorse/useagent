@@ -8,7 +8,7 @@ import {
   type ThreadRelationshipView,
 } from "./thread-relationship-repo";
 import { acceptThreadFollowup } from "./thread-followups";
-import { isPermissionMode } from "../engines/permission-mode";
+import { isPermissionMode, PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { productChildThreadsEnabled, threadRelationshipsEnabled } from "./thread-relationship-switch";
 import { pumpThread } from "../worker";
 import { runQueueView } from "../fleet/view";
@@ -305,6 +305,7 @@ routes.post("/:threadId/messages", async (c) => {
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
     if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     if (error instanceof FleetQueueLimitError) return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
+    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
     throw error;
   }
 });

@@ -112,7 +112,7 @@ export function ConversationComposer({
       onReply("/compact", defaultEngine, defaultModel, crypto.randomUUID(), defaultMemoryScope, {
         name: "compact",
         args: "",
-      }),
+      }, [], [], [], permissionMode),
     ).catch((error: unknown) => {
       setCompactFailure(
         error instanceof Error && error.message ? error.message : "Compaction could not be sent. Try again.",
@@ -169,7 +169,14 @@ export function ConversationComposer({
         <ComposerStatusBar
           branch={first?.[1] ?? null}
           project={first?.[0]?.split("/").at(-1) ?? null}
-          permission={<PermissionModeChip mode={permissionMode} onChange={setChosenMode} />}
+          permission={
+            <PermissionModeChip
+              mode={permissionMode}
+              onChange={setChosenMode}
+              // Answering a native question resumes the running turn; no new run, no new mode.
+              disabled={Boolean(pendingQuestion && composerCanAnswerQuestion)}
+            />
+          }
           agent={engineDisplayLabel(defaultEngine)}
           context={context}
           onCompact={canCompact ? compact : undefined}
