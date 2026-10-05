@@ -89,8 +89,9 @@ function typeCommand(text: string, delayMs: number): string {
   const encoded = Buffer.from(text, "utf8").toString("base64");
   const keystrokes = `printf '%s' '${encoded}' | base64 -d | xdotool type --clearmodifiers --delay ${delayMs} --file -`;
   if (text.length <= CLIPBOARD_TEXT_THRESHOLD) return keystrokes;
-  // Long text is pasted: a keystroke per character is slow and toolkits drop some.
-  return `if command -v xclip >/dev/null 2>&1; then printf '%s' '${encoded}' | base64 -d | xclip -selection clipboard -in && ` +
+  // Long text is pasted: a keystroke per character is slow and toolkits drop some. xclip forks
+  // to serve the selection; its output is detached so the batch shell can exit.
+  return `if command -v xclip >/dev/null 2>&1; then printf '%s' '${encoded}' | base64 -d | xclip -selection clipboard -in >/dev/null 2>&1 && ` +
     `xdotool key --clearmodifiers ctrl+v && sleep 0.3; else ${keystrokes}; fi`;
 }
 

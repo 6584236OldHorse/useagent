@@ -73,7 +73,7 @@ describe("coordinates, richer actions and failures", () => {
     const short = buildCubeSequenceCommand([{ action: "type", text: "hello", delayMs: 10 }]);
     expect(short).not.toContain("xclip");
     const long = buildCubeSequenceCommand([{ action: "type", text: "x".repeat(400), delayMs: 10 }]);
-    expect(long).toContain("xclip -selection clipboard -in && xdotool key --clearmodifiers ctrl+v");
+    expect(long).toContain("xclip -selection clipboard -in >/dev/null 2>&1 && xdotool key --clearmodifiers ctrl+v");
     expect(long).toContain("else printf");
   });
 
