@@ -342,6 +342,21 @@ describe("shared theme tokens", () => {
     expect(contrast("#4e7358", "#f2f8f3")).toBeGreaterThanOrEqual(4.5);
   });
 
+  test("a bar's track sits a step above the raised surface in every dark theme", () => {
+    // The usage card's bars draw on a popover on the raised surface (neutral-700);
+    // a track at the same step vanished in dark, so the dark overlays set it to
+    // neutral-400. The light overlays keep their hairline neutral-200.
+    for (const selector of [".dark {", ".dusk {", ".aura {", ".harbor {", ".phosphor {", ".slate {", ".sakura-night {"]) {
+      const overlay = extractBlocks(selector).map(parseTokens).find((tokens) => tokens["--color-chart-track"]);
+      expect(overlay?.["--color-chart-track"]).toBe("hsl(var(--neutral-400))");
+      expect(overlay?.["--color-background-primary-default"] ?? "hsl(var(--neutral-700))").not.toBe(overlay?.["--color-chart-track"]);
+    }
+    for (const selector of [".phosphor-light {", ".sakura {"]) {
+      const overlay = extractBlocks(selector).map(parseTokens).find((tokens) => tokens["--color-chart-track"]);
+      expect(overlay?.["--color-chart-track"]).toBe("hsl(var(--neutral-200))");
+    }
+  });
+
   test("the work-log guide draws from the tertiary text token so it reads in light", () => {
     // The guide is a masked column filled with one token mixed over transparent.
     // The hairline token it used before is nearly the card colour in light

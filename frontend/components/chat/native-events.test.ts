@@ -342,6 +342,10 @@ describe("deriveThreadContext", () => {
       used: 530,
       cached: 400,
       window: 1000,
+      input: 100,
+      output: 20,
+      reasoning: 0,
+      cacheWrite: 10,
     });
   });
 
@@ -354,7 +358,15 @@ describe("deriveThreadContext", () => {
         payload: { tokens: { input: 1, output: 1, total: 700 } },
       }),
     ];
-    expect(deriveThreadContext(frames, new Set())).toEqual({ used: 700, cached: 0, window: null });
+    expect(deriveThreadContext(frames, new Set())).toEqual({
+      used: 700,
+      cached: 0,
+      window: null,
+      input: 1,
+      output: 1,
+      reasoning: 0,
+      cacheWrite: 0,
+    });
     expect(deriveThreadContext([parsed({ eventType: "part.text" })], new Set())).toBeNull();
   });
 
@@ -378,7 +390,15 @@ describe("deriveThreadContext", () => {
         activity: { id: "evt-usage-3", kind: "context-window.updated" },
       },
     });
-    const context = { used: 18357, cached: 17152, window: 258400 };
+    const context = {
+      used: 18357,
+      cached: 17152,
+      window: 258400,
+      input: 18336,
+      output: 21,
+      reasoning: 0,
+      cacheWrite: 0,
+    };
     expect(deriveThreadContext([frame], new Set())).toEqual(context);
     // The composer's own entry point sees the same ring for the thread's turn.
     expect(latestThreadContext([

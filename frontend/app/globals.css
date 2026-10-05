@@ -2232,7 +2232,7 @@ html {
   --color-separator-border-strong: color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
 
   /* Charts: neutral structure only (categorical/status bars keep theme.css) */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
 
@@ -2333,7 +2333,7 @@ html {
   --color-separator-border-strong: color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
 
   /* Charts: neutral structure only (categorical/status bars keep theme.css) */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
 
@@ -2639,7 +2639,7 @@ html {
   );
 
   /* Charts */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
   --color-chart-agents-bar:        hsl(var(--purple-500));
@@ -2850,7 +2850,7 @@ html {
   );
 
   /* Charts */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
   --color-chart-agents-bar:        hsl(var(--purple-500));
@@ -3055,7 +3055,7 @@ html {
   );
 
   /* Charts */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
   --color-chart-agents-bar:        hsl(var(--purple-500));
@@ -3260,7 +3260,7 @@ html {
   );
 
   /* Charts */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
   --color-chart-agents-bar:        hsl(var(--purple-500));
@@ -3717,7 +3717,7 @@ html {
   );
 
   /* Charts */
-  --color-chart-track:   hsl(var(--neutral-700));
+  --color-chart-track:   hsl(var(--neutral-400)); /* one step above the raised surface (neutral-700), so a bar's track reads on a popover */
   --color-chart-cursor:  hsl(var(--neutral-400));
   --color-chart-neutral: hsl(var(--neutral-700));
   --color-chart-agents-bar:        hsl(var(--purple-500));

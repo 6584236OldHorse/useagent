@@ -31,6 +31,7 @@ import { SessionDetailsRail } from "@/components/chat/session-details-rail";
 import { ToolStepRow } from "@/components/chat/tool-step-row";
 import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { UsageCard } from "@/components/pro/usage-card";
 import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentPanelRow } from "@/components/session-ui/agent-panel-row";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
@@ -550,13 +551,48 @@ export function SessionSample() {
                       branch="rl-staging"
                       project="gateway"
                       agent="Codex"
-                      context={{ used: 92_400, cached: 61_000, window: 200_000 }}
+                      context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                      spend={{ spent: 12.34, allowance: 100, runs: 3 }}
                     />
                   }
                 />
               </div>
             </Surface>
           </div>
+
+          {/* The status tab's context popover as the reference's usage card, with
+              the member's figures supplied so every row shows here. */}
+          <Surface id="usage-card" title="Usage card (the context ring's popover)" owner="usage-card · agent-limits-card">
+            <p className="text-caption-1-regular text-text-tertiary">
+              The context window over the buckets the runtime's usage frames carry, expandable
+              to the breakdown; under it the member's usage limits, sandbox minutes and spend,
+              with a bar while a cap is set and no reset line. On a runtime that reports no
+              window the card shows the token readout alone.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div
+                data-testid="usage-card-sample"
+                className="w-[320px] max-w-full rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <UsageCard
+                  context={{ used: 92_400, cached: 61_000, window: 200_000, input: 29_800, output: 1_420, reasoning: 0, cacheWrite: 180 }}
+                  minutes={{ used: 12, cap: 600 }}
+                  spend={{ spent: 12.34, allowance: 100, runs: 3 }}
+                  onCompact={() => {}}
+                />
+              </div>
+              <div
+                data-testid="usage-card-sample-no-window"
+                className="w-[320px] max-w-full rounded-2xl border border-border-button-default bg-background-primary-default"
+              >
+                <UsageCard
+                  context={{ used: 92_400, cached: 61_000, window: null, input: 29_800, output: 1_420 }}
+                  minutes={{ used: 12, cap: null }}
+                  spend={{ spent: 5, allowance: null, runs: 1 }}
+                />
+              </div>
+            </div>
+          </Surface>
 
           {/* A settled markdown answer rendered on its own, so the AgentAnswer
               summary path (used when a turn carries no narration) is also visible. */}

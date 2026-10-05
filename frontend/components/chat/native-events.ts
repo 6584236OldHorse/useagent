@@ -67,6 +67,12 @@ export interface ThreadContext {
   readonly cached: number;
   /** The model's context window in tokens, when the runtime reported it. */
   readonly window: number | null;
+  /** The call's buckets as the frame carried them, for the usage card's segments;
+   *  a bucket the runtime did not report reads 0. */
+  readonly input: number;
+  readonly output: number;
+  readonly reasoning: number;
+  readonly cacheWrite: number;
 }
 
 const readNumber = (v: unknown): number | null =>
@@ -87,16 +93,23 @@ export function deriveThreadContext(
     if (!tokens) continue;
     const cache = asRecord(tokens.cache);
     const cached = readNumber(cache?.read) ?? 0;
-    const used =
-      readNumber(tokens.total) ??
-      (readNumber(tokens.input) ?? 0) +
-        cached +
-        (readNumber(cache?.write) ?? 0) +
-        (readNumber(tokens.output) ?? 0);
+    const input = readNumber(tokens.input) ?? 0;
+    const output = readNumber(tokens.output) ?? 0;
+    const reasoning = readNumber(tokens.reasoning) ?? 0;
+    const cacheWrite = readNumber(cache?.write) ?? 0;
+    const used = readNumber(tokens.total) ?? input + cached + cacheWrite + output;
     if (used <= 0) continue;
     latest = {
       seq: frame.seq,
-      context: { used, cached, window: readNumber(payload?.contextWindow) },
+      context: {
+        used,
+        cached,
+        window: readNumber(payload?.contextWindow),
+        input,
+        output,
+        reasoning,
+        cacheWrite,
+      },
     };
   }
   return latest?.context ?? null;

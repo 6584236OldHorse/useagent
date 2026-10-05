@@ -268,12 +268,15 @@ describe("preferred sandbox provider", () => {
       expect((await get()).body.enabled.map((p) => p.kind)).toEqual(["daytona", "cube"]);
       // The E2B-protocol plugin keeps its id; the dropdown's name follows where CUBE_API_URL points.
       const previousUrl = process.env.CUBE_API_URL;
-      process.env.CUBE_API_URL = "https://api.e2b.app";
-      expect((await get()).body.enabled.find((p) => p.kind === "cube")?.label).toBe("E2B");
-      process.env.CUBE_API_URL = "https://cube.internal.example";
-      expect((await get()).body.enabled.find((p) => p.kind === "cube")?.label).toBe("Cube");
-      if (previousUrl === undefined) delete process.env.CUBE_API_URL;
-      else process.env.CUBE_API_URL = previousUrl;
+      try {
+        process.env.CUBE_API_URL = "https://api.e2b.app";
+        expect((await get()).body.enabled.find((p) => p.kind === "cube")?.label).toBe("E2B");
+        process.env.CUBE_API_URL = "https://cube.internal.example";
+        expect((await get()).body.enabled.find((p) => p.kind === "cube")?.label).toBe("Cube");
+      } finally {
+        if (previousUrl === undefined) delete process.env.CUBE_API_URL;
+        else process.env.CUBE_API_URL = previousUrl;
+      }
       // Only an enabled hosted provider may be preferred; a machine is never picked here.
       expect((await put("box")).status).toBe(400);
       expect((await put("local")).status).toBe(400);
