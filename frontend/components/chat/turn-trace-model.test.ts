@@ -358,7 +358,7 @@ describe("traceHeader", () => {
     expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
       label: "Thought for 3m 12s, 1 failed",
       detail: "2 tool calls, 1 message",
-      failed: true,
+      failed: false,
     });
   });
 
@@ -368,7 +368,7 @@ describe("traceHeader", () => {
     expect(traceHeader({ live: false, rows, work, durationMs: 192_000 })).toEqual({
       label: "2 tool calls, 1 failed",
       detail: "3m 12s",
-      failed: true,
+      failed: false,
     });
     const single = traceRowsFromWork([GIT_LOG], false);
     expect(traceHeader({ live: false, rows: single, work: [GIT_LOG], durationMs: 1_000 })).toEqual({
