@@ -205,11 +205,19 @@ async function mintInstallationAccessToken(
     const requested = requestBody && typeof requestBody.permissions === "object" && requestBody.permissions
       ? Object.entries(requestBody.permissions as Record<string, string>).map(([k, v]) => `${k}:${v}`).join(", ")
       : null;
+    // GitHub's own message names the field it refused (permissions, or a
+    // repository outside the installation's selection); it carries no secret.
+    const reason = await tokRes.json().then(
+      (body: unknown) => (body && typeof body === "object" && typeof (body as { message?: unknown }).message === "string"
+        ? ` (${(body as { message: string }).message})`
+        : ""),
+      () => "",
+    );
     const hint = tokRes.status === 422 && requested
-      ? `; the App or its installation lacks one of the requested permissions (${requested}), grant them in the App settings and accept the update on the installation`
+      ? `; this usually means the App or its installation lacks one of the requested permissions (${requested}): grant them in the App settings and accept the update on the installation`
       : "";
     throw new Error(
-      `GitHub App token mint failed for installation ${installationId}: HTTP ${tokRes.status}${hint}`,
+      `GitHub App token mint failed for installation ${installationId}: HTTP ${tokRes.status}${reason}${hint}`,
     );
   }
   const payload = (await tokRes.json()) as { token?: string; expires_at?: string };

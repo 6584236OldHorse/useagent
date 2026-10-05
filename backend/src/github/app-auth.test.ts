@@ -81,7 +81,7 @@ describe("GitHub App token mint refusals", () => {
 			Response.json({ message: "Validation Failed" }, { status: 422 })) as typeof fetch;
 
 		await expect(getRepositoryPublicationTokenForId("acme/widget", 123, config)).rejects.toThrow(
-			/HTTP 422; the App or its installation lacks one of the requested permissions \(contents:write, metadata:read, pull_requests:write\)/,
+			/HTTP 422 \(Validation Failed\); this usually means the App or its installation lacks one of the requested permissions \(contents:write, metadata:read, pull_requests:write\)/,
 		);
 	});
 

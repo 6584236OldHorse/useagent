@@ -9,9 +9,9 @@ const ORG = "org-skynet-dev";
 
 // The gateway's skill activation is a column-scoped UPDATE on runs. Every UPDATE
 // on runs fires trg_validate_batched_child_run_update, whose function runs as the
-// invoking role and reads child_thread_batch_items; Postgres checks that read when
-// it plans the trigger's expression, even though the guard only matters when the
-// thread changes. Production shipped that trigger without the read grant and every
+// invoking role and reads child_thread_batch_items; the executor checks that read
+// on the generic plan before the AND short-circuits, even though the guard only
+// matters when the thread changes. Production shipped that trigger without the read grant and every
 // playbook activation through the gateway died with 42501. This runs the exact
 // gateway write under the manifest's grants, and shows the read grant is the one
 // that makes the difference.
@@ -74,7 +74,7 @@ async function updateRunAsRestrictedRole(
 
 describe("restricted gateway skill activation on runs", () => {
   test("the manifest's grants let the gateway update a run's skill columns", async () => {
-    expect(runsGrants).toContain("GRANT SELECT ON child_thread_batch_items TO useagent_gateway");
+    expect(runsGrants).toContain("GRANT SELECT (org_id, child_run_id) ON child_thread_batch_items TO useagent_gateway");
     expect(await updateRunAsRestrictedRole(runsGrants)).toEqual({ failure: null, updated: 1 });
   });
 
