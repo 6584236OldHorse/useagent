@@ -78,6 +78,15 @@ export function desktopContentPolicy(
   };
 }
 
+export function desktopLoadErrorMessage(error: unknown): string {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message : "The desktop could not start.";
+  if (code === "ERR_BLOCKED_BY_CLIENT" || /^ERR_BLOCKED_BY_CLIENT(?:\s|\(|$)/.test(message)) {
+    return "This server is missing the required script policy. Update the server and try again.";
+  }
+  return message;
+}
+
 export function externalUrl(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2_048) throw new Error("Invalid external URL.");
   const url = new URL(value);

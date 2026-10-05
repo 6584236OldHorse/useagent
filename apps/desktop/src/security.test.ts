@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { desktopContentPolicy, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
+import { desktopContentPolicy, desktopLoadErrorMessage, externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender, trustedNavigation } from "./security";
 
 describe("desktop security boundaries", () => {
   test("accepts secure planes and loopback development only", () => {
@@ -53,6 +53,14 @@ describe("desktop security boundaries", () => {
     });
     expect(desktopContentPolicy("mainFrame", 302, {}, true).block).toBe(false);
     expect(desktopContentPolicy("mainFrame", 200, headers, false).policy).toContain(" 'unsafe-eval'");
+  });
+
+  test("turns only the canceled security load into an actionable startup error", () => {
+    expect(desktopLoadErrorMessage(new Error("ERR_BLOCKED_BY_CLIENT (-20) loading https://plane.example")))
+      .toBe("This server is missing the required script policy. Update the server and try again.");
+    expect(desktopLoadErrorMessage(Object.assign(new Error("request blocked"), { code: "ERR_BLOCKED_BY_CLIENT" })))
+      .toBe("This server is missing the required script policy. Update the server and try again.");
+    expect(desktopLoadErrorMessage(new Error("ERR_CONNECTION_REFUSED"))).toBe("ERR_CONNECTION_REFUSED");
   });
 
   test("validates runner tokens and external URLs", () => {
