@@ -92,3 +92,44 @@ The production cutover remains blocked until the private release orchestrator:
 True overlapping, gapless replacement requires a later Caddy-to-kamal-proxy
 loopback handoff. That routing change belongs to private operations and is not
 part of this additive public-repository phase.
+
+## Promote from GitHub
+
+The `Promote` workflow (`.github/workflows/promote.yml`, run it from the
+Actions tab) ships a release that `images.yml` already published, in about a
+minute, from a Blacksmith runner. It takes the `release-manifest-<sha>`
+artifact from the successful `images.yml` push run on `main` for that sha,
+checks that the three digests exist in GHCR, and runs
+`bun run deploy/promote.ts` over ssh. That controller owns the host promotion
+lock, admission close and reopen, the backend swap, the migration one-shot,
+the Caddy switch and compensation on failure; the workflow only adds the
+loopback health checks on the host and `https://<app domain>/healthz` from
+the runner (HTTP 200 with the live commit, 60 s each), then a step summary
+with the commit, color, status and timings. The controller, `compose.prod.yaml`
+and the Caddy template always come from the revision the workflow runs from;
+the requested sha is release data only.
+
+Inputs:
+
+- `sha`: the main commit to promote. Its images.yml run must have published
+  the manifest artifact (90 day retention). Leave it empty for a rollback.
+- `rollback` (default false): run the controller's `rollback`, which restores
+  the release the host recorded as previous under the host lock; no migration
+  runs. To reach any other older sha, promote it: the controller accepts only
+  a forward-safe migration set and always runs the migration one-shot, so
+  there is no migrate switch.
+- `drain` (default true): wait up to 10 s for in-flight runs before the swap.
+- `parity` (default false): call `gates.yml` (readiness, canary, parity) after.
+
+Secrets (on the `production` environment or the repository):
+`USEAGENT_DEPLOY_SSH_KEY` (private key; the controller connects as root),
+`USEAGENT_DEPLOY_KNOWN_HOSTS` (`ssh-keyscan` output for the host) and
+`USEAGENT_DEPLOY_HOST` (bare host name or address). Variables:
+`USEAGENT_GATEWAY_DOMAIN` (required) and `USEAGENT_APP_DOMAIN` (default
+`app.useagent.org`). The host pulls from GHCR with the login `configure-host.sh`
+created; the runner needs only `GITHUB_TOKEN` (`packages: read`) for the
+digest check.
+
+If a run stops without a final status line, rerun it with the same inputs: the
+first rerun recovers the pending operation and exits with `retryRequired`, the
+second one promotes.
