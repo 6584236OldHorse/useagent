@@ -21,7 +21,7 @@ import {
 import { composeTurnPrompt } from "./turn-prompt";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
-import type { RuntimeEnvironmentRequest } from "./runtime-environment-client";
+import { RuntimeEnvironmentRequestError, type RuntimeEnvironmentRequest } from "./runtime-environment-client";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { createSecretRedactor } from "../secrets/redact";
 import type { RuntimeThreadStreamItem } from "./runtime-event-stream";
@@ -96,7 +96,6 @@ function turnSnapshot(input: {
 const reloadCommandState = {
   modelLimitsChanged: true,
   modelLimitsRevision: "revision-1",
-  modelLimitsChangedAt: "2026-09-05T00:00:00.000Z",
 } as const;
 
 describe("T3 run adapter gate", () => {
@@ -268,9 +267,84 @@ describe("T3 run adapter gate", () => {
     };
 
     await expect(runAttempt(true)).rejects.toThrow("transport response lost");
-    await expect(runAttempt(false)).resolves.toBeUndefined();
+    await expect(runAttempt(false)).resolves.toBe(true);
     expect(stopCommands).toHaveLength(2);
-    expect(stopCommands[1]).toEqual(stopCommands[0]);
+    // Each attempt is its own command with its own time: the runtime refuses a
+    // stop older than a turn queued since, and remembers a declined id for good.
+    for (const command of stopCommands) {
+      expect(String(command.commandId)).toMatch(/^skynet-session-stop-revision-1-[0-9a-f-]{36}-thread-1$/);
+      expect(Math.abs(Date.now() - Date.parse(String(command.createdAt)))).toBeLessThan(60_000);
+    }
+    expect(stopCommands[1]!.commandId).not.toEqual(stopCommands[0]!.commandId);
+  });
+
+  test.each([
+    [
+      "an invariant refusal",
+      { _tag: "OrchestrationCommandInvariantError", commandType: "thread.session.stop",
+        detail: "thread thread-1 was re-engaged after settle; skipping session stop" },
+    ],
+    [
+      "a previously rejected stop",
+      { _tag: "OrchestrationCommandPreviouslyRejectedError",
+        commandId: "skynet-session-stop-revision-1-thread-1",
+        detail: "Orchestration command invariant failed (thread.session.stop): ..." },
+    ],
+  ] as const)("proceeds without acknowledgement when the runtime declines the stop with %s", async (_label, cause) => {
+    const calls: string[] = [];
+    const applied = await reloadRetainedOpenCodeSession({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      threadId: "thread-1",
+      threadExists: true,
+      ...reloadCommandState,
+      dependencies: {
+        requestEnvironment: async <T>(
+          _sandbox: SandboxHandle,
+          request: RuntimeEnvironmentRequest,
+        ) => {
+          calls.push(`${request.method} ${request.path}`);
+          if (request.method === "POST") {
+            throw new RuntimeEnvironmentRequestError("The provider runtime POST request failed (HTTP 500)", {
+              status: 500,
+              response: { reason: "orchestration_dispatch_failed", traceId: "t", cause },
+            });
+          }
+          return reloadSnapshot("ready", "completed") as T;
+        },
+        wait: async () => {},
+      } satisfies OpenCodeSessionReloadDependencies,
+    });
+    expect(applied).toBe(false);
+    expect(calls).toEqual(["GET /api/orchestration/threads/thread-1", "POST /api/orchestration/dispatch"]);
+  });
+
+  test("a refusal that is not about the stop still fails the reload", async () => {
+    let reads = 0;
+    await expect(reloadRetainedOpenCodeSession({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      threadId: "thread-1",
+      threadExists: true,
+      ...reloadCommandState,
+      dependencies: {
+        requestEnvironment: async <T>(
+          _sandbox: SandboxHandle,
+          request: RuntimeEnvironmentRequest,
+        ) => {
+          if (request.method === "POST") {
+            throw new RuntimeEnvironmentRequestError("The provider runtime POST request failed (HTTP 500)", {
+              status: 500,
+              response: { reason: "orchestration_dispatch_failed", cause: { _tag: "OrchestrationCommandInvariantError", commandType: "thread.turn.request" } },
+            });
+          }
+          reads += 1;
+          return reloadSnapshot("ready", "completed") as T;
+        },
+        wait: async () => {},
+      } satisfies OpenCodeSessionReloadDependencies,
+    })).rejects.toThrow("HTTP 500");
+    expect(reads).toBe(2);
   });
 
   test("fails without acknowledgement when the conditional stop observes re-engagement", async () => {

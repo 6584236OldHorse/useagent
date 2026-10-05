@@ -327,7 +327,6 @@ describe("T3 provider bridge", () => {
 
     expect(lease.modelLimitsChanged).toBe(true);
     expect(lease.modelLimitsRevision).toBe(pendingAfterCrash.revision);
-    expect(lease.modelLimitsChangedAt).toBe(pendingAfterCrash.createdAt);
     expect(lease.readiness).toBeNull();
     expect(acknowledged).toBe("");
 

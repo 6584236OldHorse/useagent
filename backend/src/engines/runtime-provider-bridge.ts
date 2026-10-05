@@ -127,7 +127,6 @@ export interface RuntimeProviderBridgeLease extends CodexSubscriptionLease {
   readonly pendingProviderConfigurationRevision: string | null;
   readonly modelLimitsChanged: boolean;
   readonly modelLimitsRevision: string | null;
-  readonly modelLimitsChangedAt: string | null;
   readonly ackModelLimitsReload: () => Promise<void>;
 }
 
@@ -145,7 +144,6 @@ const NOOP_PROVIDER_BRIDGE_LEASE: RuntimeProviderBridgeLease = {
   pendingProviderConfigurationRevision: null,
   modelLimitsChanged: false,
   modelLimitsRevision: null,
-  modelLimitsChangedAt: null,
   async ackModelLimitsReload() {},
   async close() {},
 };
@@ -158,7 +156,6 @@ const CODEX_GATEWAY_BRIDGE_LEASE: RuntimeProviderBridgeLease = {
   pendingProviderConfigurationRevision: null,
   modelLimitsChanged: false,
   modelLimitsRevision: null,
-  modelLimitsChangedAt: null,
   async ackModelLimitsReload() {},
   async close() {},
 };
@@ -715,7 +712,6 @@ export async function prepareRuntimeProviderBridge(
       pendingProviderConfigurationRevision,
       modelLimitsChanged: modelLimitRefresh.changed,
       modelLimitsRevision: modelLimitRefresh.revision,
-      modelLimitsChangedAt: modelLimitRefresh.changedAt,
       ackModelLimitsReload: modelLimitRefresh.acknowledge,
       async close() {},
     };
@@ -741,7 +737,6 @@ export async function prepareRuntimeProviderBridge(
         pendingProviderConfigurationRevision,
         modelLimitsChanged: false,
         modelLimitsRevision: null,
-        modelLimitsChangedAt: null,
         async ackModelLimitsReload() {},
         close: () => lease.close(),
       };
@@ -759,7 +754,6 @@ export async function prepareRuntimeProviderBridge(
       pendingProviderConfigurationRevision,
       modelLimitsChanged: false,
       modelLimitsRevision: null,
-      modelLimitsChangedAt: null,
       async ackModelLimitsReload() {},
       async close() {},
     };
