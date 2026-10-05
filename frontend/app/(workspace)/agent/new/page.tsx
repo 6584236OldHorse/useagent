@@ -5,8 +5,7 @@ import { type DotTone, StatusDot } from "@/components/shared/status-dot";
 import { threadActivityTimestamp } from "@/components/shell/thread-discovery";
 import { backendFetch } from "@/lib/backend-fetch";
 import { relativeTimeShort } from "@/utils/format";
-import { FirstRunGate } from "./first-run-gate";
-import { taskPrefilled } from "./task-prefill";
+import { FirstRunNotice } from "./first-run-notice";
 import { NewTaskComposer } from "./new-task-composer";
 import { fetchSkills } from "./skills-data";
 
@@ -78,7 +77,7 @@ function RecentTasks({ runs }: { runs: RecentRun[] }) {
 export default async function NewTaskPage({
   searchParams,
 }: {
-  searchParams: Promise<{ repo?: string | string[]; prompt?: string | string[]; skill?: string | string[] }>;
+  searchParams: Promise<{ repo?: string | string[]; prompt?: string | string[] }>;
 }) {
   const params = await searchParams;
   const requestedRepo = params.repo;
@@ -86,8 +85,6 @@ export default async function NewTaskPage({
   // Deep-link prefill: surfaces like "Discuss PR" open the composer with the
   // prompt already drafted (e.g. the repo + PR number the agent should read).
   const initialPrompt = typeof params.prompt === "string" ? params.prompt : "";
-  // The composer reads ?skill= itself; the gate only needs to know it is there.
-  const requestedSkill = typeof params.skill === "string" && params.skill ? params.skill : null;
   const [skills, recentRuns] = await Promise.all([fetchSkills(), fetchRecentRuns()]);
 
   return (
@@ -99,13 +96,12 @@ export default async function NewTaskPage({
           </div>
 
           <div className="mt-8">
-            <FirstRunGate prefilled={taskPrefilled({ repo: initialRepository, prompt: initialPrompt, skill: requestedSkill })}>
-              <NewTaskComposer
-                skills={skills}
-                initialRepository={initialRepository}
-                initialPrompt={initialPrompt}
-              />
-            </FirstRunGate>
+            <FirstRunNotice />
+            <NewTaskComposer
+              skills={skills}
+              initialRepository={initialRepository}
+              initialPrompt={initialPrompt}
+            />
           </div>
 
           {recentRuns.length > 0 ? <RecentTasks runs={recentRuns} /> : null}

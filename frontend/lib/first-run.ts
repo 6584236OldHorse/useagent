@@ -35,45 +35,30 @@ export function markFirstRunSkipped(userId: string): void {
   }
 }
 
-/** The composer page's state: pending until the first-run check settles, then
- *  stay (render the composer) or open (the first-run page). */
-export type LandingDecision = "pending" | "stay" | "open";
-
-/** A decision settles once: after the composer is up nothing reopens the page. */
-export function settleLanding(current: LandingDecision, outcome: "stay" | "open"): LandingDecision {
-  return current === "pending" ? outcome : current;
-}
-
 /**
  * Runs the first-run check for a landing on the composer page and reports
- * exactly one outcome: open the first-run page, or stay and render the
- * composer. A person who chose to continue before stays without a request; a
- * failed check stays too (the landing page stands whatever the answer).
- * Returns the cleanup for an unmount, after which nothing is reported.
+ * whether the workspace is on its first run, so the page can show a notice.
+ * Nothing here navigates. A person who chose to continue before is reported
+ * false without a request; a failed check is reported false too. Returns the
+ * cleanup for an unmount, after which nothing is reported.
  */
-export function watchLanding(deps: {
+export function watchFirstRun(deps: {
   readonly userId: string;
   readonly listWorkspaces: () => Promise<Workspace[]>;
-  readonly settle: (outcome: "stay" | "open") => void;
-  /** Asked when the answer arrives: is the page this check was started for
-   *  still the one in front of the person, with no navigation requested from
-   *  it meanwhile? A pending navigation has nothing rendered yet, so this is
-   *  what keeps the first-run page from superseding it. */
-  readonly stillHere: () => boolean;
+  readonly settle: (firstRun: boolean) => void;
 }): () => void {
   let cancelled = false;
   if (firstRunSkipped(deps.userId)) {
-    deps.settle("stay");
+    deps.settle(false);
     return () => {};
   }
   deps
     .listWorkspaces()
     .then((workspaces) => {
-      if (cancelled) return;
-      deps.settle(deps.stillHere() && firstRunApplies(workspaces.find((workspace) => workspace.active)) ? "open" : "stay");
+      if (!cancelled) deps.settle(firstRunApplies(workspaces.find((workspace) => workspace.active)));
     })
     .catch(() => {
-      if (!cancelled) deps.settle("stay");
+      if (!cancelled) deps.settle(false);
     });
   return () => {
     cancelled = true;
