@@ -327,9 +327,18 @@ describe("memory guidance", () => {
   });
 
   test("a session that cannot reach the gateway gets the honest no-tools text", () => {
-    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true, origin: "slack" }), false, EXECUTION);
+    const noTools: ExecutionCapabilitySnapshot = {
+      ...EXECUTION,
+      facilities: { ...EXECUTION.facilities, tools: { availability: "unsupported", access: { kind: "none" } } },
+    };
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true }), false, noTools);
     expect(prompt).toContain(MEMORY_TURN_GUIDANCE_NO_TOOLS);
     expect(prompt).not.toContain("memory_remember");
+  });
+
+  test("an internal origin keeps the memory tools text; they work on every origin", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true, origin: "product:automation" }), false, EXECUTION);
+    expect(prompt).toContain(MEMORY_TURN_GUIDANCE);
   });
 
   test("a deployment without memory says nothing about it", () => {

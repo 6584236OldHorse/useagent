@@ -125,12 +125,12 @@ export function composeTurnPrompt(
   // Bots are reachable only through the gateway tools; a turn that cannot reach them
   // (no gateway, or an internal origin such as Slack) must not be told to use them.
   const tools = executionCapabilities.facilities.tools;
-  const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
-  const botsReachable = gatewayReachable;
-  // Memory works through the same gateway tools; a session without them is told
-  // so rather than left to invent a memory file in the sandbox. Said once per
-  // session with the operating rules: a resumed session still holds it, and only
-  // the recalled facts change from turn to turn.
+  const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway";
+  const botsReachable = gatewayReachable && ctx.origin === null;
+  // Memory works through the same gateway tools on every origin (automations and
+  // handoffs included); a session without them is told so rather than left to
+  // invent a memory file in the sandbox. Said once per session with the operating
+  // rules: a resumed session still holds it, and only the recalled facts change.
   const memoryRules = ctx.memoryEnabled ? (gatewayReachable ? MEMORY_TURN_GUIDANCE : MEMORY_TURN_GUIDANCE_NO_TOOLS) : "";
   const perTurn =
     executionCapabilityPrompt(executionCapabilities) +
