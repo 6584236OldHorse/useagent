@@ -55,7 +55,7 @@ function CompletionMark({ done, total }: { readonly done: number; readonly total
   if (total > 0 && done === total) {
     return (
       <RiCheckboxCircleFill
-        className="size-5 shrink-0 text-lime-600 transition-colors duration-300"
+        className="size-4 shrink-0 text-lime-600 transition-colors duration-300"
         aria-hidden
       />
     );
@@ -64,7 +64,7 @@ function CompletionMark({ done, total }: { readonly done: number; readonly total
   const circumference = 2 * Math.PI * radius;
   const ratio = total === 0 ? 0 : done / total;
   return (
-    <svg viewBox="0 0 18 18" className="size-5 shrink-0" aria-hidden="true">
+    <svg viewBox="0 0 18 18" className="size-4 shrink-0" aria-hidden="true">
       <circle cx="9" cy="9" r={radius} strokeWidth="2" className="fill-none stroke-background-tertiary-default" />
       <circle
         cx="9"
@@ -104,21 +104,20 @@ export function PlanChecklist({
     <section
       aria-label={title}
       data-testid={testId}
-      className={cx(
-        "overflow-hidden rounded-2xl border border-border-button-default bg-background-primary-default shadow-card",
-        className,
-      )}
+      className={cx("flex flex-col", className)}
     >
+      {/* The same pill as the Thinking header it sits under: content-hugging,
+          rounded, hairline ring, 16px mark, caret at the end. */}
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-background-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+        className="inline-flex w-fit max-w-full cursor-pointer items-center gap-2 rounded-full bg-background-secondary-default px-2.5 py-1 text-left ring-1 ring-inset ring-border-button-default/60 transition-colors duration-100 hover:bg-background-secondary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
       >
         <CompletionMark done={done} total={total} />
-        <span className="min-w-0 flex-1 truncate text-body-2-medium text-text-primary">{title}</span>
+        <span className="min-w-0 truncate text-body-2-medium text-text-secondary">{title}</span>
         <span
-          className="text-caption-1-medium font-medium tabular-nums text-lime-600"
+          className="shrink-0 text-body-2-regular tabular-nums text-lime-600"
           aria-label={`${done} of ${total} complete`}
           role="img"
         >
@@ -126,14 +125,14 @@ export function PlanChecklist({
         </span>
         <RiArrowDownSLine
           className={cx(
-            "size-4 shrink-0 text-text-tertiary transition-transform duration-200",
-            open ? "rotate-0" : "-rotate-90",
+            "size-3.5 shrink-0 text-text-tertiary transition-transform duration-300",
+            open && "rotate-180",
           )}
           aria-hidden
         />
       </button>
       {open && (
-        <ol className="border-t border-border-button-default py-1 motion-safe:animate-ai-fade-up">
+        <ol className="mt-1.5 ml-[18px] border-l border-border-button-default/60 pl-3 motion-safe:animate-ai-fade-up">
           {entries.map((entry) => {
             const Icon = ITEM_ICON[entry.status];
             const struck = entry.status === "completed" || entry.status === "cancelled";
@@ -142,13 +141,13 @@ export function PlanChecklist({
               <li
                 key={entry.id}
                 className={cx(
-                  "flex items-start gap-2.5 px-4 py-2 transition-colors duration-300",
+                  "flex items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-300",
                   active && "bg-accent-500/10",
                 )}
               >
                 <Icon
                   className={cx(
-                    "mt-0.5 size-4 shrink-0 transition-colors duration-300",
+                    "size-3.5 shrink-0 transition-colors duration-300",
                     ITEM_TONE[entry.status],
                     active && "motion-safe:animate-spin",
                   )}
@@ -156,7 +155,7 @@ export function PlanChecklist({
                 />
                 <span
                   className={cx(
-                    "min-w-0 flex-1 text-body-2-regular transition-colors duration-300",
+                    "min-w-0 flex-1 truncate text-[12.5px] leading-5 transition-colors duration-300",
                     struck && "text-text-tertiary line-through",
                     active && "font-medium text-text-primary",
                     !struck && !active && "text-text-secondary",
