@@ -98,6 +98,25 @@ describe("harvestTurnOutputs", () => {
     expect(await pending).toEqual([]);
   });
 
+  test("a publish that started is finished even when the run is cancelled meanwhile", async () => {
+    const runId = await sandboxRun("cancelled during publish");
+    const controller = new AbortController();
+    let published = 0;
+    const deps: HarvestDependencies = {
+      list: async () => "10\t/root/work/a.pdf\0" + "20\t/root/work/b.pdf\0",
+      known: async () => null,
+      digest: async () => "x",
+      publish: async (input) => {
+        controller.abort();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        published += 1;
+        return { artifact: { id: input.path }, record: {}, created: true } as never;
+      },
+    };
+    expect(await harvestTurnOutputs(runId, { signal: controller.signal }, deps)).toEqual(["/root/work/a.pdf"]);
+    expect(published).toBe(1);
+  });
+
   test("does nothing for a run without a sandbox", async () => {
     const runId = crypto.randomUUID();
     await createRun({

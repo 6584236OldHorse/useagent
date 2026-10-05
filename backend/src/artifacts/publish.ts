@@ -319,10 +319,6 @@ export async function publishSandboxArtifact(input: {
   /** When set, the new bytes + companion land as a NEW REVISION of this existing
    * artifact (same org + same workpiece kind), not a new artifact. */
   readonly updatesArtifactId?: string;
-  /** Wall-clock deadline (ms since epoch) past which nothing is persisted:
-   *  the turn output harvest hands over its budget so a slow publish never
-   *  lands after the run has been finalized. */
-  readonly notAfter?: number;
 }): Promise<{ artifact: ArtifactDescriptor; record: ArtifactRecord; created: boolean }> {
   const run = await getRunForOrg(input.orgId, input.runId);
   if (!run || (input.threadId && run.threadId !== input.threadId)) {
@@ -431,9 +427,6 @@ export async function publishSandboxArtifact(input: {
         })`,
       );
     }
-    if (input.notAfter !== undefined && Date.now() > input.notAfter) {
-      throw new Error("publication deadline passed before the artifact was persisted");
-    }
     const revised = await withArtifactStorageKeyLock(digest, async (tx) => {
       await artifactStorage().put(digest, file.bytes);
       if ((await artifactStorage().size(digest)) !== file.bytes.length) {
@@ -498,9 +491,6 @@ export async function publishSandboxArtifact(input: {
       sourcePath,
       digest,
     ].join(":")}))`);
-    if (input.notAfter !== undefined && Date.now() > input.notAfter) {
-      throw new Error("publication deadline passed before the artifact was persisted");
-    }
     const record = await createArtifactRecord({
       orgId: input.orgId,
       userId: input.userId,

@@ -132,10 +132,11 @@ const defaultDependencies: HarvestDependencies = {
 
 class HarvestStopped extends Error {}
 
-/** Start `work` unless the run is already cancelled, then wait at most `ms`
- *  for it. A late result or failure of work we stopped waiting for is
- *  dropped; the sandbox and publish calls cannot be cancelled themselves, so
- *  publish is handed the harvest deadline and refuses to persist past it. */
+/** Start read-only `work` unless the run is already cancelled, then wait at
+ *  most `ms` for it. A late result or failure of work we stopped waiting for
+ *  is dropped; that is safe only for reads (listing, lookups, digests), which
+ *  is why publishing never goes through here: a publish that has started is
+ *  awaited to completion, so nothing can persist after the harvest returned. */
 function bounded<T>(work: () => Promise<T>, ms: number, signal: AbortSignal | undefined, what: string): Promise<T> {
   if (signal?.aborted) return Promise.reject(new HarvestStopped("run cancelled"));
   if (ms <= 0) return Promise.reject(new HarvestStopped(`${what} has no time left`));
@@ -165,9 +166,11 @@ function kindMismatch(error: unknown): boolean {
 
 /**
  * Publish the deliverables a turn left in its workspace. Never throws: a
- * harvest failure must not fail a run that already finished its work. Bounded
- * by a total budget, a per-step timeout and the run's abort signal, so
- * finalization is never held. Returns the artifact ids published or revised.
+ * harvest failure must not fail a run that already finished its work. Reads
+ * are bounded by a per-step timeout and the run's abort signal, new work
+ * stops once the budget or the run is gone, and a publish that started is
+ * finished before this returns, so finalization never overtakes a persist.
+ * Returns the artifact ids published or revised.
  */
 export async function harvestTurnOutputs(
   runId: string,
@@ -178,7 +181,6 @@ export async function harvestTurnOutputs(
   const left = () => Math.min(STEP_TIMEOUT_MS, HARVEST_BUDGET_MS - (Date.now() - startedAt));
   const published: string[] = [];
   const { signal } = options;
-  const notAfter = startedAt + HARVEST_BUDGET_MS;
   try {
     if (signal?.aborted) return published;
     const run = await bounded(() => getRun(runId), left(), signal, "run lookup");
@@ -195,6 +197,9 @@ export async function harvestTurnOutputs(
       workspaceRoot,
     );
     for (const candidate of candidates) {
+      // New work starts only while time and the run remain; work already
+      // started below is always finished.
+      if (left() <= 0 || signal?.aborted) break;
       try {
         const known = await bounded(() => dependencies.known(run, candidate.path), left(), signal, "artifact lookup");
         if (known && known.sizeBytes === candidate.size) {
@@ -208,23 +213,17 @@ export async function harvestTurnOutputs(
           threadId: run.threadId,
           path: candidate.path,
           purpose: "deliverable" as const,
-          // A publish we stopped waiting for must not land after the run has
-          // been finalized and its history sealed: persistence refuses past this.
-          notAfter,
         };
+        // Publishing is awaited to completion: its own sandbox and storage
+        // calls bound it, and finalization must never overtake a persist.
         let result: Awaited<ReturnType<typeof publishSandboxArtifact>>;
         try {
-          result = await bounded(
-            () => dependencies.publish(known ? { ...base, updatesArtifactId: known.id } : base),
-            left(),
-            signal,
-            "publish",
-          );
+          result = await dependencies.publish(known ? { ...base, updatesArtifactId: known.id } : base);
         } catch (error) {
           // A changed file whose kind cannot revise the existing artifact (an
           // image, an archive, a large office file) is published on its own.
           if (!known || !kindMismatch(error)) throw error;
-          result = await bounded(() => dependencies.publish(base), left(), signal, "publish");
+          result = await dependencies.publish(base);
         }
         published.push(result.artifact.id);
       } catch (error) {
