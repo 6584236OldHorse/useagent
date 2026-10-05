@@ -12,6 +12,7 @@ backend/runtime-assets/*.tar.gz.tmp-*
 # build artifacts
 dist/
 build/
+!apps/desktop/build/
 t3-dist/
 *.tsbuildinfo
 
