@@ -19,7 +19,6 @@ import {
 import {
   discoverOpenRouterFreeModels,
   freeModelLaneCache,
-  freeModelRegistryReadEnabled,
   OPENROUTER_CATALOG_TIMEOUT_MS,
   OPENROUTER_CATALOG_URL,
   type CatalogFetcher,
@@ -31,8 +30,12 @@ import type {
 } from "./free-model-qualification-driver";
 
 const QUALIFIER_LEASE_MS = 5 * 60_000;
-const QUALIFIER_INTERVAL_MIN = 60;
-const QUALIFIER_MAX_PROBES_PER_TICK = 1;
+const QUALIFIER_INTERVAL_MIN = 15;
+const QUALIFIER_MAX_PROBES_PER_TICK = 4;
+const QUALIFIER_BOOT_DELAY_MS = 1_000;
+/** Manual (picker) refresh cool-down. Process-global: the catalog and the
+ * probe budget are deployment-wide, so one refresh serves every org. */
+const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
 const PENDING_SUCCESS_RETRY_MS = 10 * 60_000;
 const QUALIFIED_SUCCESS_RETRY_MS = 6 * 60 * 60_000;
 const SYSTEM_FAILURE_RETRY_MS = 30 * 60_000;
@@ -40,10 +43,12 @@ const MODEL_FAILURE_BASE_RETRY_MS = 30 * 60_000;
 const MODEL_FAILURE_MAX_RETRY_MS = 24 * 60 * 60_000;
 const PUBLISHED_LANE_CAP = 8;
 
+/** On by default; FREE_MODEL_QUALIFIER=off is the kill switch (the lane then
+ * stays at its last published generation). */
 export function freeModelQualifierEnabled(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  return env.FREE_MODEL_QUALIFIER_ENABLED === "1";
+  return env.FREE_MODEL_QUALIFIER !== "off";
 }
 
 function boundedInteger(
@@ -183,9 +188,13 @@ export function desiredPublishedLane(
 }
 
 export interface FreeModelQualifierTickDeps {
-  readonly driver: FreeModelQualificationDriver;
+  /** Null: no organization owns probe runs yet, so the tick discovers and
+   * republishes but never probes. */
+  readonly driver: FreeModelQualificationDriver | null;
   readonly repository?: FreeModelQualifierRepository;
   readonly discover?: () => Promise<CatalogDiscoveryResult>;
+  /** Fires once the catalog phase settled, before any probe starts. */
+  readonly onDiscovered?: (result: CatalogDiscoveryResult) => void;
   readonly admission?: () => Promise<RunAdmissionState>;
   readonly nowMs?: () => number;
   readonly maxProbes?: number;
@@ -208,7 +217,8 @@ export async function runFreeModelQualifierTick(
   const repository = deps.repository ?? productionRepository();
   const admission = deps.admission ?? getRunAdmission;
   const nowMs = deps.nowMs ?? Date.now;
-  const maxProbes = deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK;
+  const driver = deps.driver;
+  const maxProbes = driver ? deps.maxProbes ?? QUALIFIER_MAX_PROBES_PER_TICK : 0;
   const leaseMs = deps.leaseMs ?? QUALIFIER_LEASE_MS;
   if (!(await admission()).open) {
     return {
@@ -222,6 +232,7 @@ export async function runFreeModelQualifierTick(
   }
 
   const discovery = await (deps.discover ?? fetchOpenRouterFreeModelCandidates)();
+  deps.onDiscovered?.(discovery);
   if (!discovery.ok) {
     const published = await repository.publish({ modelIds: [], systemFailure: true });
     return {
@@ -245,13 +256,14 @@ export async function runFreeModelQualifierTick(
   let recorded = 0;
   let systemFailure = false;
   for (let index = 0; index < maxProbes; index += 1) {
+    if (!driver) break;
     if (!(await admission()).open) break;
     const [claim] = await repository.claimDue(1, leaseMs);
     if (!claim) break;
     claimed += 1;
     let result: FreeModelQualificationResult;
     try {
-      result = await deps.driver.qualify({
+      result = await driver.qualify({
         modelId: claim.modelId,
         claimToken: claim.claimToken,
       });
@@ -325,11 +337,10 @@ export async function runFreeModelQualifierTick(
 }
 
 export async function hydrateFreeModelLaneFromRegistry(): Promise<boolean> {
-  if (!freeModelRegistryReadEnabled()) return false;
   const state = await loadCurrentFreeModelLane();
-  return state
-    ? freeModelLaneCache.adoptRegistryLane(state.currentModelIds, { allowEmpty: true })
-    : false;
+  if (!state) return false;
+  freeModelLaneCache.adoptRegistryLane(state.currentModelIds);
+  return true;
 }
 
 export interface FreeModelRegistryHydratorDeps {
@@ -344,9 +355,7 @@ export interface FreeModelRegistryHydratorDeps {
  * the qualifying worker may run elsewhere. Postgres remains catalog truth. */
 export function startFreeModelRegistryHydrator(
   deps: FreeModelRegistryHydratorDeps = {},
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  if (!freeModelRegistryReadEnabled(env)) return false;
+): void {
   const hydrate = deps.hydrate ?? hydrateFreeModelLaneFromRegistry;
   const schedule = deps.schedule ?? ((run, intervalMs) => setInterval(run, intervalMs));
   const run = (): void => {
@@ -359,14 +368,37 @@ export function startFreeModelRegistryHydrator(
   };
   const timer = schedule(run, 60_000);
   timer.unref?.();
-  return true;
 }
 
+export interface FreeModelQualifierTick {
+  readonly result: Promise<FreeModelQualifierTickResult>;
+  /** Settles once this tick's catalog phase finished; null when the tick ended
+   * before reaching it (deployment admission closed, or it failed). */
+  readonly discovery: Promise<CatalogDiscoveryResult | null>;
+}
+
+export type FreeModelRefreshAttempt =
+  | { readonly admitted: true; readonly tick: FreeModelQualifierTick }
+  | { readonly admitted: false; readonly retryAfterMs: number };
+
+export interface FreeModelQualifier {
+  /** Run a tick now, or join the one already running. */
+  readonly tick: () => FreeModelQualifierTick;
+  /** The picker's "Refresh free models": a tick behind the manual cool-down. */
+  readonly refresh: (nowMs?: number) => FreeModelRefreshAttempt;
+}
+
+export interface FreeModelQualifierWorkerDeps
+  extends Omit<FreeModelQualifierTickDeps, "maxProbes" | "leaseMs" | "onDiscovered"> {
+  readonly schedule?: (run: () => void, firstMs: number, everyMs: number) => void;
+}
+
+/** Null when the kill switch is set; the manual refresh then reports it. */
 export function startFreeModelQualifierWorker(
-  deps: Omit<FreeModelQualifierTickDeps, "maxProbes" | "leaseMs">,
+  deps: FreeModelQualifierWorkerDeps,
   env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  if (!freeModelQualifierEnabled(env)) return false;
+): FreeModelQualifier | null {
+  if (!freeModelQualifierEnabled(env)) return null;
   const intervalMin = boundedInteger(
     env.FREE_MODEL_QUALIFIER_INTERVAL_MIN,
     QUALIFIER_INTERVAL_MIN,
@@ -379,27 +411,53 @@ export function startFreeModelQualifierWorker(
     1,
     4,
   );
-  let active: Promise<unknown> | null = null;
-  const run = (): void => {
-    if (active) return;
-    active = runFreeModelQualifierTick({ ...deps, maxProbes, leaseMs: QUALIFIER_LEASE_MS })
-      .then((result) => {
+  const { schedule: scheduleDep, ...tickDeps } = deps;
+  let active: FreeModelQualifierTick | null = null;
+  let refreshedAt = 0;
+  const tick = (): FreeModelQualifierTick => {
+    if (active) return active;
+    const discovered = Promise.withResolvers<CatalogDiscoveryResult | null>();
+    // The slot clears before anyone awaiting the result resumes, so the next
+    // tick() after an awaited result starts fresh instead of joining a stale one.
+    const result = runFreeModelQualifierTick({
+      ...tickDeps,
+      maxProbes,
+      leaseMs: QUALIFIER_LEASE_MS,
+      onDiscovered: discovered.resolve,
+    }).finally(() => {
+      discovered.resolve(null);
+      active = null;
+    });
+    const current: FreeModelQualifierTick = { result, discovery: discovered.promise };
+    active = current;
+    void result.then(
+      (outcome) => {
         console.log(
-          `[free-model-qualifier] status=${result.status} discovered=${result.discovered} ` +
-            `claimed=${result.claimed} recorded=${result.recorded} publish=${result.publishOutcome}`,
+          `[free-model-qualifier] status=${outcome.status} discovered=${outcome.discovered} ` +
+            `claimed=${outcome.claimed} recorded=${outcome.recorded} publish=${outcome.publishOutcome}`,
         );
-      })
-      .catch((error) => {
+      },
+      (error: unknown) => {
         console.warn(
           "[free-model-qualifier] tick failed:",
           error instanceof Error ? error.message : "unknown",
         );
-      })
-      .finally(() => {
-        active = null;
-      });
+      },
+    );
+    return current;
   };
-  setTimeout(run, 1_000).unref();
-  setInterval(run, intervalMin * 60_000).unref();
-  return true;
+  const refresh = (nowMs = Date.now()): FreeModelRefreshAttempt => {
+    const sinceRefresh = nowMs - refreshedAt;
+    if (refreshedAt > 0 && sinceRefresh < MANUAL_REFRESH_COOLDOWN_MS) {
+      return { admitted: false, retryAfterMs: MANUAL_REFRESH_COOLDOWN_MS - sinceRefresh };
+    }
+    refreshedAt = nowMs;
+    return { admitted: true, tick: tick() };
+  };
+  const schedule = scheduleDep ?? ((run, firstMs, everyMs) => {
+    setTimeout(run, firstMs).unref();
+    setInterval(run, everyMs).unref();
+  });
+  schedule(() => void tick(), QUALIFIER_BOOT_DELAY_MS, intervalMin * 60_000);
+  return { tick, refresh };
 }

@@ -226,12 +226,14 @@ The important variables are:
 - `LOCAL_RUNNERS=off` keeps every run on the deployment's provider even when a user's machine is connected. Whether an organization may run threads on members' machines, and lend those machines' Codex and Claude logins, is its runner policy (`PUT /api/runners/policy`).
 - `MEMORY_API_URL` and related memory variables to enable the optional team-memory layer.
 - `GITHUB_TOKEN` or `GITHUB_APP_*` for repository access.
-- `FREE_MODEL_QUALIFIER_ENABLED=1` starts the durable, low-priority OpenRouter
-  full-agent qualifier. It is off by default and also requires
-  `FREE_MODEL_QUALIFIER_ORG_ID`; deployment admission closure suppresses probes.
-- `FREE_MODEL_REGISTRY_READ_ENABLED=1` makes the synchronous OpenCode catalog
-  read the last atomically published DB generation. It is independently off by
-  default, so qualification can run in shadow mode before runtime cutover.
+- The Free model lane (OpenRouter `:free` variants for OpenCode) qualifies
+  itself: at boot and every 15 minutes the backend discovers the public
+  catalog, runs short low-priority probe runs (at most 96 a day, one at a
+  time, never while deployment admission is closed) and advertises the last
+  generation it published. Probe runs belong to `FREE_MODEL_QUALIFIER_ORG_ID`,
+  else the deployment's primary organization (`USEAGENT_PRIMARY_ORG_ID`);
+  without either the lane only discovers. `FREE_MODEL_QUALIFIER=off` is the
+  kill switch (the lane then stays at its last generation).
 
 ## Deploy and Terraform
 

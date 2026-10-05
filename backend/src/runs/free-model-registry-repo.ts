@@ -12,7 +12,7 @@ import {
 } from "../db/schema";
 
 export const FREE_MODEL_LANE = "opencode_free";
-export const DEFAULT_DAILY_FREE_MODEL_PROBE_BUDGET = 24;
+export const DEFAULT_DAILY_FREE_MODEL_PROBE_BUDGET = 96;
 export const FREE_MODEL_QUALIFICATION_STREAK = 2;
 export const FREE_MODEL_DISQUALIFICATION_STREAK = 2;
 export const FREE_MODEL_SYSTEM_PAUSE_MS = 30 * 60_000;

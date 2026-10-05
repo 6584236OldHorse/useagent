@@ -10,7 +10,9 @@ import {
   fetchOpenRouterFreeModelCandidates,
   freeModelQualifierEnabled,
   runFreeModelQualifierTick,
+  startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
+  type CatalogDiscoveryResult,
   type FreeModelQualifierRepository,
 } from "./free-model-qualifier-worker";
 
@@ -162,13 +164,18 @@ const openAdmission = async () => ({
 });
 
 describe("free-model qualifier worker", () => {
-  test("both rollout switches are default off", () => {
-    expect(freeModelQualifierEnabled({})).toBe(false);
-    expect(freeModelQualifierEnabled({ FREE_MODEL_QUALIFIER_ENABLED: "0" })).toBe(false);
-    expect(freeModelQualifierEnabled({ FREE_MODEL_QUALIFIER_ENABLED: "1" })).toBe(true);
+  test("the qualifier is on by default with one kill switch", () => {
+    expect(freeModelQualifierEnabled({})).toBe(true);
+    expect(freeModelQualifierEnabled({ FREE_MODEL_QUALIFIER: "on" })).toBe(true);
+    expect(freeModelQualifierEnabled({ FREE_MODEL_QUALIFIER: "off" })).toBe(false);
+    expect(freeModelQualifierEnabled({ FREE_MODEL_QUALIFIER_ENABLED: "0" })).toBe(true);
+    expect(startFreeModelQualifierWorker(
+      { driver: null, schedule: () => {} },
+      { FREE_MODEL_QUALIFIER: "off" },
+    )).toBeNull();
   });
 
-  test("registry hydration is default off and schedules every enabled replica", () => {
+  test("registry hydration schedules on every replica", () => {
     let scheduled: (() => void) | null = null;
     let intervalMs = 0;
     let unrefCalled = false;
@@ -180,11 +187,7 @@ describe("free-model qualifier worker", () => {
         return { unref: () => { unrefCalled = true; } };
       },
     };
-    expect(startFreeModelRegistryHydrator(deps, {})).toBe(false);
-    expect(startFreeModelRegistryHydrator(
-      deps,
-      { FREE_MODEL_REGISTRY_READ_ENABLED: "1" },
-    )).toBe(true);
+    startFreeModelRegistryHydrator(deps);
     expect(scheduled).not.toBeNull();
     expect(intervalMs).toBe(60_000);
     expect(unrefCalled).toBe(true);
@@ -399,5 +402,123 @@ describe("free-model qualifier worker", () => {
     expect(agent.requests).toEqual([]);
     expect(fake.publishes).toEqual([{ modelIds: [], systemFailure: true }]);
     expect(result.status).toBe("catalog_failure");
+  });
+  test("without an organization for probe runs the tick discovers and republishes but never probes", async () => {
+    const stale = candidate("vendor/stale:free", {
+      state: "qualified",
+      everQualified: true,
+      successStreak: 2,
+    });
+    const state = registryState(["vendor/stale:free", "vendor/gone:free"]);
+    const { repository, records, publishes } = fakeRepository({
+      state,
+      candidates: [stale, candidate("vendor/pending:free")],
+      claims: [claim(candidate("vendor/pending:free"))],
+    });
+    const result = await runFreeModelQualifierTick({
+      driver: null,
+      repository,
+      discover: discovery("vendor/stale:free", "vendor/pending:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+    });
+    expect(result.status).toBe("completed");
+    expect(result.discovered).toBe(2);
+    expect(result.claimed).toBe(0);
+    expect(records).toHaveLength(0);
+    // The lane still drops a model whose candidate row is no longer qualified.
+    expect(publishes).toHaveLength(1);
+    expect(publishes[0]?.modelIds).toEqual(["vendor/stale:free"]);
+  });
+
+  test("the discovery phase settles before the first probe starts", async () => {
+    const pending = candidate("vendor/pending:free");
+    const { repository } = fakeRepository({
+      state: registryState([]),
+      candidates: [pending],
+      claims: [claim(pending)],
+    });
+    const gate = Promise.withResolvers<void>();
+    let probed = false;
+    const worker = startFreeModelQualifierWorker({
+      driver: {
+        qualify: async () => {
+          probed = true;
+          await gate.promise;
+          return { classification: "success", latencyMs: 5, httpStatus: 200, errorCode: null };
+        },
+      },
+      repository,
+      discover: discovery("vendor/pending:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!worker) throw new Error("expected the worker");
+    const tick = worker.tick();
+    const discovered = await tick.discovery;
+    expect(discovered?.ok).toBe(true);
+    expect(discovered && discovered.ok ? discovered.candidates.map((c) => c.id) : []).toEqual([
+      "vendor/pending:free",
+    ]);
+    // Joining while the probe runs returns the same tick.
+    expect(worker.tick()).toBe(tick);
+    gate.resolve();
+    const result = await tick.result;
+    expect(probed).toBe(true);
+    expect(result.claimed).toBe(1);
+    // A later call starts a fresh tick.
+    expect(worker.tick()).not.toBe(tick);
+  });
+
+  test("the manual refresh runs a tick behind a process-wide cool-down", async () => {
+    const { repository } = fakeRepository({ state: registryState([]), candidates: [] });
+    let discoveries = 0;
+    const discover = async (): Promise<CatalogDiscoveryResult> => {
+      discoveries += 1;
+      return { ok: true, candidates: [] };
+    };
+    const worker = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover,
+      admission: openAdmission,
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!worker) throw new Error("expected the worker");
+    const first = worker.refresh(NOW);
+    expect(first.admitted).toBe(true);
+    if (!first.admitted) return;
+    await first.tick.result;
+    expect(discoveries).toBe(1);
+
+    const repeat = worker.refresh(NOW + 5_000);
+    expect(repeat.admitted).toBe(false);
+    if (repeat.admitted) return;
+    expect(repeat.retryAfterMs).toBe(25_000);
+    expect(discoveries).toBe(1);
+
+    const later = worker.refresh(NOW + 30_000);
+    expect(later.admitted).toBe(true);
+    if (!later.admitted) return;
+    await later.tick.result;
+    expect(discoveries).toBe(2);
+  });
+
+  test("a tick that ends before discovery settles the discovery promise with null", async () => {
+    const { repository } = fakeRepository({ state: registryState([]), candidates: [] });
+    const worker = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: discovery(),
+      admission: async () => ({ ...(await openAdmission()), open: false }),
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!worker) throw new Error("expected the worker");
+    const tick = worker.tick();
+    expect(await tick.discovery).toBeNull();
+    expect((await tick.result).status).toBe("skipped_admission_closed");
   });
 });

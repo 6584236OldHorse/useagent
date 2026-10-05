@@ -128,7 +128,7 @@ function configureOfflineEnvironment(url: string): void {
   process.env.REQUIRE_SINGLE_BACKEND = "false";
   process.env.BETTER_AUTH_SECRET = "v002-offline-canary-secret-not-for-production";
   process.env.FRONTEND_ORIGIN = "http://localhost:3200";
-  process.env.FREE_MODEL_QUALIFIER_ENABLED = "false";
+  process.env.FREE_MODEL_QUALIFIER = "off";
   process.env.FLEET_RECONCILER_AUTOSTART = "0";
   process.env.DAYTONA_WARM_POOL_SIZE = "0";
   process.env.CUBE_WARM_POOL_SIZE = "0";

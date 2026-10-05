@@ -169,7 +169,7 @@ export const freeModelRegistryState = pgTable(
       .notNull()
       .defaultNow(),
     probeBudgetDay: date("probe_budget_day", { mode: "string" }).notNull(),
-    dailyProbeBudget: integer("daily_probe_budget").notNull().default(24),
+    dailyProbeBudget: integer("daily_probe_budget").notNull().default(96),
     probesClaimedToday: integer("probes_claimed_today").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
