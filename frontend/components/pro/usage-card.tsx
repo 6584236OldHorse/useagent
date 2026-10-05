@@ -31,10 +31,10 @@ export function contextSegments(context: ConversationContext): ContextSegment[] 
   const output = context.output ?? 0;
   const reasoning = context.reasoning ?? 0;
   const cacheWrite = context.cacheWrite ?? 0;
-  // Only a frame that carried an input figure has a fresh share to show; a bare
-  // total is not broken down into a bucket it never named.
-  const fresh =
-    context.input === undefined ? 0 : Math.max(0, context.used - cached - output - reasoning - cacheWrite);
+  // A frame that named no bucket at all (a bare total; the parser reads every
+  // missing bucket as 0) is not broken down into a fresh share it never gave.
+  const named = (context.input ?? 0) + cached + output + reasoning + cacheWrite > 0;
+  const fresh = named ? Math.max(0, context.used - cached - output - reasoning - cacheWrite) : 0;
   const buckets: { label: string; tokens: number }[] = [
     { label: "Fresh input", tokens: fresh },
     { label: "Cached input", tokens: cached },

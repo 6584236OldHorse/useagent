@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { deriveThreadContext } from "@/components/chat/native-events";
+import type { ConversationContext } from "./composer-status-bar";
 import { contextSegments, minutesLimit, spendLimit, UsageCard } from "./usage-card";
 
 const T3 = { used: 18_357, cached: 17_152, window: 258_400, input: 18_336, output: 21, reasoning: 0, cacheWrite: 0 };
@@ -24,8 +26,15 @@ describe("usage card figures", () => {
       "Output",
       "Cache write",
     ]);
-    // A frame that carried only a total names no bucket: nothing to draw.
+    // A frame that carried only a total names no bucket: nothing to draw, also
+    // through the parser, which reads every missing bucket as 0.
     expect(contextSegments({ used: 500, cached: 0, window: null })).toEqual([]);
+    const bare = deriveThreadContext(
+      [{ schemaVersion: 1, eventId: "u1", seq: 1, provider: "opencode", eventType: "part.step-finish", native: { sessionId: "ses_root", parentSessionId: null, messageId: null, partId: null, callId: null }, payload: { tokens: { total: 500 } } }],
+      new Set(),
+    );
+    expect(bare?.used).toBe(500);
+    expect(contextSegments(bare as ConversationContext)).toEqual([]);
   });
 
   test("the minutes row reads x of y with a share while a cap is set, x alone without", () => {
