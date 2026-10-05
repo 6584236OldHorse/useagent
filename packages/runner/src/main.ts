@@ -50,6 +50,7 @@ async function run(command: RunCommand): Promise<number> {
     backend,
     loginMounts: (requested) => logins.mounts(requested.filter((name) => command.shareLogins.includes(name))),
     onSandboxStopped: () => logins.syncBack().then(() => {}),
+    maxSandboxes: command.maxSandboxes,
   });
   let available: string[] = await logins.available().then((names) => names.filter((n) => command.shareLogins.includes(n)));
   let imageDigest: string | null = null;
@@ -115,12 +116,16 @@ async function uninstall(backendChoice: Parameters<typeof selectBackend>[0], dat
     emitStatus({ state: "error", detail: chosen.problem });
     return EXIT.noBackend;
   }
-  const containers = await chosen.backend.list({});
+  // Only this runner's sandboxes go; another runner on the same machine keeps its own.
+  const runnerId = runnerIdFromToken(process.env.USEAGENT_RUNNER_TOKEN?.trim() ?? "");
   let removed = 0;
-  for (const container of containers) {
-    if (!container.labels["useagent.runner"]) continue;
-    await chosen.backend.remove(container.name).catch(() => {});
-    removed += 1;
+  if (runnerId) {
+    for (const container of await chosen.backend.list({ "useagent.runner": runnerId })) {
+      await chosen.backend.remove(container.name).catch(() => {});
+      removed += 1;
+    }
+  } else {
+    emitStatus({ state: "starting", detail: "USEAGENT_RUNNER_TOKEN is not set, so no sandboxes are removed; only the data directory goes" });
   }
   const { rm } = await import("node:fs/promises");
   await rm(dataDir, { recursive: true, force: true });

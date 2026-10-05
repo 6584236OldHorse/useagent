@@ -28,8 +28,13 @@ export interface ServiceOptions {
   /** Mounts and env for the logins the plane asked for and this machine has. */
   readonly loginMounts: (logins: readonly string[]) => Promise<{ mounts: ContainerMount[]; env: Record<string, string> }>;
   readonly onSandboxStopped?: (sandboxId: string) => Promise<void> | void;
+  /** Running sandboxes this machine will hold at once; create refuses beyond it. */
+  readonly maxSandboxes?: number;
   readonly now?: () => number;
 }
+
+/** Session and command ids become path segments inside the container; nothing else is accepted. */
+const PLAIN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -40,6 +45,12 @@ function str(params: unknown, key: string): string {
     throw new RpcError("invalid_params", `${key} is required`);
   }
   return params[key];
+}
+
+function plainId(params: unknown, key: string): string {
+  const value = str(params, key);
+  if (!PLAIN_ID.test(value) || value.includes("..")) throw new RpcError("invalid_params", `${key} must be a plain identifier`);
+  return value;
 }
 
 function infoOf(container: ContainerInfo): LocalSandboxInfo {
@@ -57,6 +68,8 @@ function infoOf(container: ContainerInfo): LocalSandboxInfo {
 export class RunnerService {
   private readonly sessions: SessionManager;
   private readonly lastActivity = new Map<string, number>();
+  /** Streams open per sandbox; a sandbox with one is in use whatever the clock says. */
+  private readonly openStreams = new Map<string, number>();
   /** Open terminals by stream id, with the container-side tty each shell reported. */
   private readonly terminals = new Map<number, { terminal: Bun.Terminal; sandboxId: string; ttyFile: string }>();
   private readonly now: () => number;
@@ -133,19 +146,19 @@ export class RunnerService {
       case "session.create": {
         const id = str(params, "sandboxId");
         await this.owned(id);
-        await this.sessions.create(id, str(params, "sessionId"));
+        await this.sessions.create(id, plainId(params, "sessionId"));
         return null;
       }
       case "session.delete": {
         const id = str(params, "sandboxId");
         await this.owned(id);
-        await this.sessions.delete(id, str(params, "sessionId"));
+        await this.sessions.delete(id, plainId(params, "sessionId"));
         return null;
       }
       case "session.get": {
         const id = str(params, "sandboxId");
         await this.owned(id);
-        return this.sessions.get(id, str(params, "sessionId"));
+        return this.sessions.get(id, plainId(params, "sessionId"));
       }
       case "session.list": {
         const id = str(params, "sandboxId");
@@ -155,24 +168,24 @@ export class RunnerService {
       case "session.command": {
         const id = str(params, "sandboxId");
         await this.owned(id);
-        return this.sessions.command(id, str(params, "sessionId"), str(params, "commandId"));
+        return this.sessions.command(id, plainId(params, "sessionId"), plainId(params, "commandId"));
       }
       case "session.execute": {
         const id = str(params, "sandboxId");
         await this.owned(id);
         const p = params as { runAsync?: boolean; timeoutSeconds?: number };
-        return this.sessions.execute(id, str(params, "sessionId"), str(params, "command"), p.runAsync === true, p.timeoutSeconds);
+        return this.sessions.execute(id, plainId(params, "sessionId"), str(params, "command"), p.runAsync === true, p.timeoutSeconds);
       }
       case "session.logs": {
         const id = str(params, "sandboxId");
         await this.owned(id);
-        return this.sessions.logs(id, str(params, "sessionId"), str(params, "commandId"));
+        return this.sessions.logs(id, plainId(params, "sessionId"), plainId(params, "commandId"));
       }
       case "session.input": {
         const id = str(params, "sandboxId");
         await this.owned(id);
         const data = isRecord(params) && typeof params.data === "string" ? params.data : "";
-        await this.sessions.input(id, str(params, "sessionId"), str(params, "commandId"), data);
+        await this.sessions.input(id, plainId(params, "sessionId"), plainId(params, "commandId"), data);
         return null;
       }
       case "fs.details": {
@@ -207,6 +220,11 @@ export class RunnerService {
     if (present !== params.image.digest) {
       throw new RpcError("refused", `image ${params.image.ref} is not at digest ${params.image.digest} on this machine`);
     }
+    const max = this.options.maxSandboxes;
+    if (max !== undefined) {
+      const running = (await this.listOwned()).filter((container) => container.state === "running").length;
+      if (running >= max) throw new RpcError("refused", `this machine is at its limit of ${max} running sandbox${max === 1 ? "" : "es"}`);
+    }
     const logins = await this.options.loginMounts(params.logins ?? []);
     const name = `useagent-${crypto.randomUUID().slice(0, 8)}`;
     await backend.create({
@@ -224,13 +242,24 @@ export class RunnerService {
       memoryMb: params.memoryMb,
       mounts: logins.mounts,
     });
-    await backend.start(name);
-    // The workspace exists before the plane's readiness probe looks for it.
-    await backend.exec(name, ["sh", "-c", `mkdir -p ${SANDBOX_WORKDIR}`], { user: SANDBOX_USER, env: { HOME: SANDBOX_HOME } });
-    this.lastActivity.set(name, this.now());
-    const info = await backend.inspect(name);
-    if (!info) throw new RpcError("internal", "container vanished after create");
-    return infoOf(info);
+    // Nothing half-made stays behind: a failure past this point removes the container.
+    try {
+      await backend.start(name);
+      // The workspace exists before the plane's readiness probe looks for it.
+      const workspace = await backend.exec(name, ["sh", "-c", `mkdir -p ${SANDBOX_WORKDIR}`], { user: SANDBOX_USER, env: { HOME: SANDBOX_HOME } });
+      if (workspace.exitCode !== 0) throw new RpcError("internal", `workspace setup failed: ${workspace.stderr.trim() || `exit ${workspace.exitCode}`}`);
+      const info = await backend.inspect(name);
+      if (!info) throw new RpcError("internal", "container vanished after create");
+      // An engine that boots a tag rather than a digest is checked on what actually booted.
+      if (!backend.pinsByDigest && info.imageDigest !== params.image.digest) {
+        throw new RpcError("refused", `sandbox ${name} booted ${info.imageDigest || "an unknown image"}, not ${params.image.digest}`);
+      }
+      this.lastActivity.set(name, this.now());
+      return infoOf(info);
+    } catch (error) {
+      await backend.remove(name).catch(() => {});
+      throw error;
+    }
   }
 
   async stream(target: unknown, stream: MuxStream): Promise<void> {
@@ -242,6 +271,14 @@ export class RunnerService {
     });
     if (info.state !== "running") throw new StreamRefusedError("refused", `sandbox ${id} is not running`);
     const backend = this.options.backend;
+    this.openStreams.set(id, (this.openStreams.get(id) ?? 0) + 1);
+    void stream.done.then(
+      () => {},
+      () => {},
+    ).then(() => {
+      this.openStreams.set(id, Math.max(0, (this.openStreams.get(id) ?? 1) - 1));
+      this.lastActivity.set(id, this.now());
+    });
     switch (t.kind) {
       case "port": {
         if (!Number.isInteger(t.port) || t.port < 1 || t.port > 65_535) throw new StreamRefusedError("invalid_params", "port out of range");
@@ -306,7 +343,14 @@ export class RunnerService {
         return;
       }
       case "logs.follow": {
-        const handle = backend.spawn(id, this.sessions.followArgv(str(t, "sessionId"), str(t, "commandId")), { user: SANDBOX_USER });
+        const ids = (() => {
+          try {
+            return [plainId(t, "sessionId"), plainId(t, "commandId")] as const;
+          } catch (error) {
+            throw new StreamRefusedError("invalid_params", error instanceof Error ? error.message : String(error));
+          }
+        })();
+        const handle = backend.spawn(id, this.sessions.followArgv(ids[0], ids[1]), { user: SANDBOX_USER });
         handle.endStdin();
         const piped = pipeToStream(handle.stdout, stream, { end: false }).catch((error: unknown) => stream.reset(`follow failed: ${error instanceof Error ? error.message : String(error)}`));
         void handle.exited.then(async (code) => {
@@ -338,6 +382,7 @@ export class RunnerService {
       if (container.state !== "running") continue;
       const minutes = Number(container.labels[AUTOSTOP_LABEL] ?? 0);
       if (!(minutes > 0)) continue;
+      if ((this.openStreams.get(container.name) ?? 0) > 0) continue;
       const last = this.lastActivity.get(container.name) ?? this.now();
       if (!this.lastActivity.has(container.name)) this.lastActivity.set(container.name, last);
       if (this.now() - last < minutes * 60_000) continue;

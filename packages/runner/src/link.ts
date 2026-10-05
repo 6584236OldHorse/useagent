@@ -2,16 +2,7 @@
 // welcome, heartbeats, reconnect with backoff. Every RPC and stream the plane
 // sends is handed to the service. Nothing ever connects inward.
 
-import {
-  type HelloFrame,
-  type ImageRef,
-  Mux,
-  type MuxStream,
-  PROTOCOL_VERSION,
-  type RunnerBackendKind,
-  type RunnerCapacity,
-  type WelcomeFrame,
-} from "@useagent/runner-protocol";
+import { type HelloFrame, type ImageRef, Mux, type MuxStream, PROTOCOL_VERSION, type RunnerBackendKind, type RunnerCapacity, type WelcomeFrame, RpcError, StreamRefusedError } from "@useagent/runner-protocol";
 
 export const LINK_PATH = "/api/internal/runners/link";
 /** The oldest control plane protocol this runner can talk to. */
@@ -71,6 +62,7 @@ export class LinkClient {
   private stopped: LinkStop | null = null;
   private socket: WebSocket | null = null;
   private mux: Mux | null = null;
+  private online = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private wake: (() => void) | null = null;
   image: ImageRef | null = null;
@@ -132,8 +124,15 @@ export class LinkClient {
         },
       },
       {
-        onRpc: this.options.rpc,
-        onStreamOpen: this.options.stream,
+        // Nothing is served until the plane welcomed this link and the image is ready.
+        onRpc: (method, params) => {
+          if (!this.online) throw new RpcError("unavailable", "the runner is not online on this link yet");
+          return this.options.rpc(method, params);
+        },
+        onStreamOpen: (target, stream) => {
+          if (!this.online) throw new StreamRefusedError("unavailable", "the runner is not online on this link yet");
+          return this.options.stream(target, stream);
+        },
         onWelcome: (frame) => {
           void this.welcomed(frame, mux).then((stop) => {
             if (stop) finish(stop);
@@ -182,6 +181,7 @@ export class LinkClient {
       return null;
     }
     if (this.mux !== mux) return null;
+    this.online = true;
     this.options.onState("online", this.options.planeUrl);
     const beat = () => {
       mux.send({
@@ -198,6 +198,7 @@ export class LinkClient {
   }
 
   private teardown(): void {
+    this.online = false;
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
       this.heartbeat = null;

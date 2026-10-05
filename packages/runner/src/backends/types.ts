@@ -74,6 +74,8 @@ export interface TerminalProcess {
 
 export interface LocalBackend {
   readonly kind: RunnerBackendKind;
+  /** Whether `pinnedImage` names the digest itself; otherwise the service checks the digest after boot. */
+  readonly pinsByDigest: boolean;
   /** Null when the engine is usable, else why not. */
   available(): Promise<string | null>;
   pullImage(ref: string, onProgress?: (line: string) => void): Promise<void>;
@@ -89,7 +91,7 @@ export interface LocalBackend {
   inspect(id: string): Promise<ContainerInfo | null>;
   list(labels: Readonly<Record<string, string>>): Promise<ContainerInfo[]>;
   exec(id: string, argv: readonly string[], options?: ExecOptions): Promise<ExecResult>;
-  /** Long-lived process with piped stdio (file transfer, log follow, port dial on Docker). */
+  /** Long-lived process with piped stdio (file transfer, log follow, port dials). */
   spawn(id: string, argv: readonly string[], options?: Omit<ExecOptions, "stdin" | "timeoutMs">): ExecHandle;
   /** Interactive process attached to a host pseudo-terminal. */
   spawnTerminal(id: string, argv: readonly string[], terminal: Bun.Terminal, options?: Omit<ExecOptions, "stdin" | "timeoutMs">): TerminalProcess;

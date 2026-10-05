@@ -1,9 +1,12 @@
 // Apple containers through the `container` command line (macOS 26, Apple
-// silicon). Every container is its own lightweight VM with its own address,
-// so a port dial is a plain TCP connection from the host.
+// silicon). Every container is its own lightweight VM; a port dial goes
+// through socat inside it, like Docker, so a port bound to the container's
+// loopback is reachable and the tag cannot be re-resolved between the digest
+// check and the boot without the service noticing (the digest is checked on
+// the booted container because `container run` cannot name a digest).
 
 import type { LocalSandboxState } from "@useagent/runner-protocol";
-import { type CliFlags, cliExec, cliSpawn, cliSpawnTerminal, runCli } from "./cli-backend";
+import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, runCli } from "./cli-backend";
 import {
   BackendError,
   type ContainerInfo,
@@ -56,6 +59,8 @@ function infoFromInspect(container: AppleContainer): ContainerInfo {
 
 export class AppleContainerBackend implements LocalBackend {
   readonly kind = "apple" as const;
+  /** `container run` takes only a tag, so the digest is checked on the booted container. */
+  readonly pinsByDigest = false;
 
   async available(): Promise<string | null> {
     if (process.platform !== "darwin" || process.arch !== "arm64") return "Apple containers need macOS on Apple silicon";
@@ -167,10 +172,7 @@ export class AppleContainerBackend implements LocalBackend {
   }
 
   async dial(id: string, port: number): Promise<DialedConnection> {
-    const info = await this.inspect(id);
-    if (!info) throw new BackendError("not_found", `container ${id} not found`);
-    if (!info.ip) throw new BackendError("unavailable", `container ${id} has no address`);
-    return connectTcp(info.ip, port);
+    return cliDial(flags, id, port);
   }
 
   private failure(stderr: string, what: string): BackendError {
@@ -178,70 +180,4 @@ export class AppleContainerBackend implements LocalBackend {
       ? new BackendError("not_found", stderr.trim())
       : new BackendError("internal", `${what} failed: ${stderr.trim()}`);
   }
-}
-
-/** A TCP connection as a DialedConnection (also used by tests against any host). */
-export async function connectTcp(hostname: string, port: number): Promise<DialedConnection> {
-  let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const readable = new ReadableStream<Uint8Array>({
-    start(c) {
-      controller = c;
-    },
-  });
-  const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
-  let ended = false;
-  const socket = await Bun.connect({
-    hostname,
-    port,
-    socket: {
-      data(_socket, data) {
-        try {
-          controller.enqueue(new Uint8Array(data));
-        } catch {
-          /* consumer gone */
-        }
-      },
-      close() {
-        if (!ended) {
-          ended = true;
-          try {
-            controller.close();
-          } catch {
-            /* already closed */
-          }
-        }
-        resolveClosed();
-      },
-      error(_socket, error) {
-        ended = true;
-        try {
-          controller.error(error);
-        } catch {
-          /* already closed */
-        }
-        resolveClosed();
-      },
-    },
-  });
-  return {
-    readable,
-    async write(bytes) {
-      let offset = 0;
-      while (offset < bytes.byteLength) {
-        const written = socket.write(bytes.subarray(offset));
-        if (written <= 0) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          continue;
-        }
-        offset += written;
-      }
-    },
-    end() {
-      socket.shutdown();
-    },
-    close() {
-      socket.end();
-    },
-    closed,
-  };
 }

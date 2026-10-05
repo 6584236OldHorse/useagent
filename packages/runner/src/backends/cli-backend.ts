@@ -2,13 +2,7 @@
 // command line tool with exec, spawn and a pseudo-terminal. Each backend
 // supplies the tool name and the flags that differ.
 
-import {
-  BackendError,
-  type ExecHandle,
-  type ExecOptions,
-  type ExecResult,
-  type TerminalProcess,
-} from "./types";
+import { BackendError, type DialedConnection, type ExecHandle, type ExecOptions, type ExecResult, type TerminalProcess } from "./types";
 
 export interface CliFlags {
   readonly tool: string;
@@ -22,13 +16,21 @@ export async function runCli(
   argv: readonly string[],
   options: { readonly stdin?: Uint8Array; readonly timeoutMs?: number; readonly env?: Readonly<Record<string, string>> } = {},
 ): Promise<ExecResult> {
-  const proc = Bun.spawn([...argv], {
-    stdin: options.stdin ?? "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, ...options.env },
-    ...(options.timeoutMs ? { timeout: options.timeoutMs, killSignal: "SIGKILL" } : {}),
-  });
+  const spawn = () =>
+    Bun.spawn([...argv], {
+      stdin: options.stdin ?? "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, ...options.env },
+      ...(options.timeoutMs ? { timeout: options.timeoutMs, killSignal: "SIGKILL" } : {}),
+    });
+  let proc: ReturnType<typeof spawn>;
+  try {
+    proc = spawn();
+  } catch (error) {
+    // A tool that is not installed answers like a failed command, so callers report it instead of crashing.
+    return { exitCode: 127, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false };
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -109,6 +111,20 @@ export function cliSpawnTerminal(
         /* already gone */
       }
     },
+  };
+}
+
+/** No host port is published: socat inside the container bridges the exec's stdio to the port, so a port bound to the container's loopback is reachable. */
+export function cliDial(flags: CliFlags, id: string, port: number): DialedConnection {
+  const handle = cliSpawn(flags, id, ["socat", "-", `TCP:127.0.0.1:${port}`]);
+  const { promise: closed, resolve } = Promise.withResolvers<void>();
+  void handle.exited.then(() => resolve());
+  return {
+    readable: handle.stdout,
+    write: (bytes) => handle.writeStdin(bytes),
+    end: () => handle.endStdin(),
+    close: () => handle.kill(),
+    closed,
   };
 }
 

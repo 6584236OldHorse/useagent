@@ -51,6 +51,9 @@ export function pipe(): Pipe {
 
 export class FakeBackend implements LocalBackend {
   readonly kind = "docker" as const;
+  pinsByDigest = true;
+  /** What inspect reports as the booted image's digest when set (an engine that boots a tag). */
+  bootDigest: string | null = null;
   readonly containers = new Map<string, FakeContainer>();
   readonly calls: string[] = [];
   images = new Map<string, string>();
@@ -142,7 +145,7 @@ export class FakeBackend implements LocalBackend {
       state: c.state,
       labels: c.spec.labels,
       createdAt: "2026-09-08T00:00:00Z",
-      imageDigest: c.spec.image,
+      imageDigest: this.bootDigest ?? c.spec.image,
       ip: "10.0.0.2",
     };
   }

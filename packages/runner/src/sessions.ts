@@ -17,8 +17,18 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** Ids are single path segments; the service refuses anything else before it gets here. */
+function segment(id: string): string {
+  if (!id || id.includes("/") || id.includes("..") || id.includes("\0")) throw new BackendError("internal", `${JSON.stringify(id)} is not a plain identifier`);
+  return id;
+}
+
 export function sessionDir(sessionId: string): string {
-  return `${SESSION_ROOT}/${sessionId}`;
+  return `${SESSION_ROOT}/${segment(sessionId)}`;
+}
+
+function commandBase(sessionId: string, commandId: string): string {
+  return `${sessionDir(sessionId)}/${segment(commandId)}`;
 }
 
 /** Launcher for a detached command: records its pid, keeps a FIFO open for stdin, writes the exit code last. */
@@ -43,7 +53,8 @@ export function detachedLaunchScript(base: string, sessionId: string, commandId:
  */
 export function killSessionScript(dir: string): string {
   return [
-    `for f in ${shellQuote(dir)}/*.pid; do [ -e "$f" ] || continue; p=$(cat "$f"); case "$p" in ''|*[!0-9]*) continue;; esac`,
+    // A command that already wrote its exit code is gone; its pid may belong to someone else by now.
+    `for f in ${shellQuote(dir)}/*.pid; do [ -e "$f" ] || continue; [ -e "\${f%.pid}.exit" ] && continue; p=$(cat "$f"); case "$p" in ''|*[!0-9]*) continue;; esac`,
     `for st in /proc/[0-9]*/stat; do pid=\${st#/proc/}; pid=\${pid%/stat}; rest=$(sed 's/^.*) //' "$st" 2>/dev/null) || continue; set -- $rest; [ "$4" = "$p" ] && kill -TERM "$pid" 2>/dev/null; done`,
     `kill -TERM "$p" 2>/dev/null; done`,
   ].join("; ");
@@ -86,6 +97,7 @@ export class SessionManager {
   async get(sandboxId: string, sessionId: string): Promise<{ commands: LocalSessionCommand[] }> {
     const dir = sessionDir(sessionId);
     const result = await this.sh(sandboxId, `test -d ${shellQuote(dir)} && cd ${shellQuote(dir)} && for f in *.pid; do [ -e "$f" ] || continue; id=\${f%.pid}; if [ -s "$id.exit" ]; then printf '%s %s\\n' "$id" "$(cat "$id.exit")"; else printf '%s\\n' "$id"; fi; done`);
+    if (result.timedOut) throw new BackendError("unavailable", "the sandbox did not answer in time");
     if (result.exitCode !== 0) throw new BackendError("not_found", `session ${sessionId} not found`);
     return {
       commands: result.stdout
@@ -106,9 +118,12 @@ export class SessionManager {
   }
 
   async command(sandboxId: string, sessionId: string, commandId: string): Promise<LocalSessionCommand> {
-    const base = `${sessionDir(sessionId)}/${commandId}`;
+    const base = commandBase(sessionId, commandId);
     const result = await this.sh(sandboxId, `test -e ${shellQuote(`${base}.pid`)} || exit 3; cat ${shellQuote(`${base}.exit`)} 2>/dev/null || true`);
+    // A read that did not complete says nothing about the command; "still running" must never be assumed.
+    if (result.timedOut) throw new BackendError("unavailable", "the sandbox did not answer in time");
     if (result.exitCode === 3) throw new BackendError("not_found", `command ${commandId} not found in session ${sessionId}`);
+    if (result.exitCode !== 0) throw new BackendError("internal", `command status read failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
     const code = Number.parseInt(result.stdout.trim(), 10);
     return { id: commandId, ...(Number.isNaN(code) ? {} : { exitCode: code }) };
   }
@@ -130,7 +145,7 @@ export class SessionManager {
         exitCode: result.timedOut ? 124 : result.exitCode,
       };
     }
-    const base = `${sessionDir(sessionId)}/${commandId}`;
+    const base = commandBase(sessionId, commandId);
     const encoder = new TextEncoder();
     const staged = await this.sh(
       sandboxId,
@@ -145,20 +160,21 @@ export class SessionManager {
     // setsid + nohup + closed stdio: the process outlives this exec and the runner.
     const launched = await this.sh(
       sandboxId,
-      `cd ${shellQuote(this.env.workdir)} && nohup setsid sh ${shellQuote(`${base}.launch.sh`)} </dev/null >/dev/null 2>&1 &`,
+      `cd ${shellQuote(this.env.workdir)} || exit 1; nohup setsid sh ${shellQuote(`${base}.launch.sh`)} </dev/null >/dev/null 2>&1 &`,
     );
     if (launched.exitCode !== 0) throw new BackendError("internal", `session command launch failed: ${launched.stderr.trim()}`);
     return { cmdId: commandId, exitCode: 0 };
   }
 
   async logs(sandboxId: string, sessionId: string, commandId: string): Promise<{ output: string }> {
-    const result = await this.sh(sandboxId, `cat ${shellQuote(`${sessionDir(sessionId)}/${commandId}.log`)} 2>/dev/null || true`);
+    const result = await this.sh(sandboxId, `cat ${shellQuote(`${commandBase(sessionId, commandId)}.log`)} 2>/dev/null || true`);
+    if (result.timedOut) throw new BackendError("unavailable", "the sandbox did not answer in time");
     return { output: result.stdout };
   }
 
   /** Bytes for a detached command's stdin, through its FIFO. */
   async input(sandboxId: string, sessionId: string, commandId: string, data: string): Promise<void> {
-    const fifo = `${sessionDir(sessionId)}/${commandId}.in`;
+    const fifo = `${commandBase(sessionId, commandId)}.in`;
     const result = await this.sh(sandboxId, `test -p ${shellQuote(fifo)} || exit 3; cat > ${shellQuote(fifo)}`, {
       stdin: new TextEncoder().encode(data),
     });
@@ -168,7 +184,7 @@ export class SessionManager {
 
   /** Argv that follows a detached command's log until it exits (GNU tail). */
   followArgv(sessionId: string, commandId: string): string[] {
-    const base = `${sessionDir(sessionId)}/${commandId}`;
+    const base = commandBase(sessionId, commandId);
     return [
       "sh",
       "-c",

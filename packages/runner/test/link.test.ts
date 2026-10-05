@@ -123,6 +123,39 @@ describe("link client", () => {
     expect((await run).reason).toBe("stopped");
   });
 
+  test("nothing is served before the plane's welcome landed", async () => {
+    let releaseWelcome!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseWelcome = resolve;
+    });
+    const answered: unknown[] = [];
+    const plane = fakePlane({
+      onMux: (mux) => {
+        // The plane calls the moment the socket is up, before the runner is welcomed and its image ready.
+        setTimeout(() => {
+          answered.push(mux.rpc("sandbox.list", {}, { timeoutMs: 2000 }).then(() => "answered", (e: unknown) => (e as { code?: string }).code ?? String(e)));
+        }, 20);
+      },
+    });
+    const calls: string[] = [];
+    const { link } = client(plane.url, {
+      rpc: async (method) => {
+        calls.push(method);
+        return [];
+      },
+      onWelcome: () => gate,
+    });
+    void link.run();
+    await until(() => answered.length === 1);
+    expect(await answered[0]).toBe("unavailable");
+    expect(calls).toEqual([]);
+    releaseWelcome();
+    await until(() => plane.state.heartbeats >= 1);
+    expect(await plane.state.muxes[0]!.rpc("sandbox.list", {}, { timeoutMs: 2000 })).toEqual([]);
+    expect(calls).toEqual(["sandbox.list"]);
+    link.stop();
+  });
+
   test("a rejected token ends the link with exit reason token_rejected", async () => {
     const plane = fakePlane({ token: "uart_r1.other" });
     const { link } = client(plane.url);

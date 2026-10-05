@@ -11,6 +11,17 @@ describe("session scripts", () => {
     expect(sessionDir("s-1")).toBe("/tmp/useagent/sessions/s-1");
   });
 
+  test("session and command ids are single path segments", () => {
+    for (const bad of ["../x", "a/b", "", ".."]) {
+      expect(() => sessionDir(bad)).toThrow(/plain identifier/);
+    }
+    expect(sessionDir("skynet-t3.env_1")).toBe("/tmp/useagent/sessions/skynet-t3.env_1");
+  });
+
+  test("the kill script leaves alone a command that already recorded its exit", () => {
+    expect(killSessionScript("/tmp/useagent/sessions/s")).toContain('[ -e "${f%.pid}.exit" ] && continue');
+  });
+
   test("the kill script walks /proc by session id and never trusts a pid file blindly", () => {
     const script = killSessionScript("/tmp/useagent/sessions/s");
     expect(script).toContain("case \"$p\" in ''|*[!0-9]*) continue;; esac");

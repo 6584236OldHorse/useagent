@@ -3,7 +3,7 @@
 // the conformance suite exercises in CI.
 
 import type { LocalSandboxState } from "@useagent/runner-protocol";
-import { type CliFlags, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
+import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
 import {
   BackendError,
   type ContainerInfo,
@@ -45,6 +45,7 @@ function infoFromInspect(object: Record<string, unknown>): ContainerInfo {
 
 export class DockerBackend implements LocalBackend {
   readonly kind = "docker" as const;
+  readonly pinsByDigest = true;
 
   async available(): Promise<string | null> {
     const probe = await runCli(["docker", "info", "--format", "{{.ServerVersion}}"], { timeoutMs: 10_000 });
@@ -141,18 +142,8 @@ export class DockerBackend implements LocalBackend {
     return cliSpawnTerminal(flags, id, argv, terminal, options);
   }
 
-  /** No host port is published: socat inside the container bridges stdio to the port. */
   async dial(id: string, port: number): Promise<DialedConnection> {
-    const handle = this.spawn(id, ["socat", "-", `TCP:127.0.0.1:${port}`]);
-    const { promise: closed, resolve } = Promise.withResolvers<void>();
-    void handle.exited.then(() => resolve());
-    return {
-      readable: handle.stdout,
-      write: (bytes) => handle.writeStdin(bytes),
-      end: () => handle.endStdin(),
-      close: () => handle.kill(),
-      closed,
-    };
+    return cliDial(flags, id, port);
   }
 
   private failure(stderr: string, what: string): BackendError {

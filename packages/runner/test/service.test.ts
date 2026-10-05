@@ -6,10 +6,11 @@ import { connectPair, decoder, encoder, settled } from "./pair";
 
 const IMAGE = { ref: "ghcr.io/useagenthq/sandbox:test", digest: "sha256:" + "a".repeat(64) };
 
-function service(backend: FakeBackend, options: { now?: () => number; runnerId?: string } = {}) {
+function service(backend: FakeBackend, options: { now?: () => number; runnerId?: string; maxSandboxes?: number } = {}) {
   return new RunnerService({
     runnerId: options.runnerId ?? "rn1",
     backend,
+    maxSandboxes: options.maxSandboxes,
     loginMounts: async (logins) => ({
       mounts: logins.map((name) => ({ hostPath: `/staged/${name}`, containerPath: `/run/useagent/logins/${name}`, readonly: false })),
       env: Object.fromEntries(logins.map((name) => [`USEAGENT_LOGIN_${name.toUpperCase()}`, `/run/useagent/logins/${name}/auth.json`])),
@@ -49,6 +50,50 @@ describe("sandbox lifecycle", () => {
     expect(backend.containers.size).toBe(0);
   });
 
+  test("a create that fails after the container exists removes it", async () => {
+    const backend = new FakeBackend();
+    backend.images.set(IMAGE.ref, IMAGE.digest);
+    backend.start = async (id) => {
+      backend.calls.push(`start ${id}`);
+      throw new Error("out of memory");
+    };
+    await expect(service(backend).rpc("sandbox.create", createParams())).rejects.toThrow(/out of memory/);
+    expect(backend.containers.size).toBe(0);
+    expect(backend.calls.filter((c) => c.startsWith("remove")).length).toBe(1);
+    const noWorkspace = new FakeBackend();
+    noWorkspace.images.set(IMAGE.ref, IMAGE.digest);
+    noWorkspace.execScript = (_id, argv) => (argv.join(" ").includes("mkdir") ? { exitCode: 1, stdout: "", stderr: "read-only file system", timedOut: false } : { exitCode: 0, stdout: "", stderr: "", timedOut: false });
+    await expect(service(noWorkspace).rpc("sandbox.create", createParams())).rejects.toThrow(/workspace setup failed: read-only/);
+    expect(noWorkspace.containers.size).toBe(0);
+  });
+
+  test("an engine that boots a tag is checked on what booted", async () => {
+    const backend = new FakeBackend();
+    backend.pinsByDigest = false;
+    backend.images.set(IMAGE.ref, IMAGE.digest);
+    backend.bootDigest = "sha256:" + "c".repeat(64);
+    const error = await service(backend).rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+    expect((error as RpcError).code).toBe("refused");
+    expect(String(error)).toMatch(/booted sha256:c+, not/);
+    expect(backend.containers.size).toBe(0);
+    backend.bootDigest = IMAGE.digest;
+    expect(((await service(backend).rpc("sandbox.create", createParams())) as { state: string }).state).toBe("running");
+  });
+
+  test("create refuses beyond the machine's sandbox limit", async () => {
+    const backend = new FakeBackend();
+    backend.images.set(IMAGE.ref, IMAGE.digest);
+    backend.seed("one", { [RUNNER_LABEL]: "rn1" });
+    backend.seed("two", { [RUNNER_LABEL]: "rn1" });
+    backend.seed("parked", { [RUNNER_LABEL]: "rn1" }, "stopped");
+    backend.seed("theirs", { [RUNNER_LABEL]: "other" });
+    const error = await service(backend, { maxSandboxes: 2 }).rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+    expect((error as RpcError).code).toBe("refused");
+    expect(String(error)).toMatch(/limit of 2 running sandboxes/);
+    expect(backend.calls.filter((c) => c.startsWith("create"))).toEqual([]);
+    expect(((await service(backend, { maxSandboxes: 3 }).rpc("sandbox.create", createParams())) as { state: string }).state).toBe("running");
+  });
+
   test("get, list, start and delete work only on this runner's containers", async () => {
     const backend = new FakeBackend();
     backend.seed("mine", { [RUNNER_LABEL]: "rn1" }, "stopped");
@@ -75,6 +120,48 @@ describe("sandbox lifecycle", () => {
     expect(((await svc.rpc("sandbox.create", { image: {} }).catch((e: unknown) => e)) as RpcError).code).toBe("invalid_params");
     expect(((await svc.rpc("nope", {}).catch((e: unknown) => e)) as RpcError).code).toBe("unsupported");
     expect(((await svc.rpc("pty.resize", { streamId: 9, cols: 1, rows: 1 }).catch((e: unknown) => e)) as RpcError).code).toBe("not_found");
+  });
+});
+
+describe("sessions", () => {
+  test("session and command ids are plain identifiers, nowhere else in the filesystem", async () => {
+    const backend = new FakeBackend();
+    backend.seed("c1", { [RUNNER_LABEL]: "rn1" });
+    const svc = service(backend);
+    for (const bad of ["../../home/user", "a/b", "..", "", ".hidden/../x"]) {
+      for (const method of ["session.get", "session.delete", "session.command"]) {
+        const error = await svc.rpc(method, { sandboxId: "c1", sessionId: bad, commandId: "cmd" }).catch((e: unknown) => e);
+        expect((error as RpcError).code).toBe("invalid_params");
+      }
+      const error = await svc.rpc("session.logs", { sandboxId: "c1", sessionId: "s", commandId: bad }).catch((e: unknown) => e);
+      expect((error as RpcError).code).toBe("invalid_params");
+    }
+    expect(backend.calls.filter((c) => c.startsWith("exec"))).toEqual([]);
+    const { plane } = connectPair({}, { onStreamOpen: (target, stream) => svc.stream(target, stream) });
+    const refused = await plane.openStream({ kind: "logs.follow", sandboxId: "c1", sessionId: "s", commandId: "../../etc/passwd" }).catch((e: unknown) => e);
+    expect((refused as StreamRefusedError).code).toBe("invalid_params");
+  });
+
+  test("a status read that did not complete is an error, never a running command", async () => {
+    const backend = new FakeBackend();
+    backend.seed("c1", { [RUNNER_LABEL]: "rn1" });
+    backend.execScript = () => ({ exitCode: 137, stdout: "", stderr: "", timedOut: true });
+    const svc = service(backend);
+    for (const method of ["session.command", "session.get", "session.logs"]) {
+      const error = await svc.rpc(method, { sandboxId: "c1", sessionId: "s", commandId: "cmd" }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(RpcError);
+      expect(String(error)).toMatch(/did not answer in time/);
+    }
+    backend.execScript = () => ({ exitCode: 2, stdout: "", stderr: "permission denied", timedOut: false });
+    await expect(svc.rpc("session.command", { sandboxId: "c1", sessionId: "s", commandId: "cmd" })).rejects.toThrow(/status read failed: permission denied/);
+  });
+
+  test("a detached command fails to launch when its working directory is gone", async () => {
+    const backend = new FakeBackend();
+    backend.seed("c1", { [RUNNER_LABEL]: "rn1" });
+    await service(backend).rpc("session.execute", { sandboxId: "c1", sessionId: "s", command: "sleep 1", runAsync: true });
+    const launch = backend.calls.find((c) => c.includes("nohup setsid"))!;
+    expect(launch).toContain("cd '/home/user/work' || exit 1; nohup setsid");
   });
 });
 
@@ -115,6 +202,27 @@ describe("idle stop", () => {
     expect(backend.containers.get("idle")?.state).toBe("stopped");
     expect(backend.containers.get("busy")?.state).toBe("running");
     expect(backend.containers.get("forever")?.state).toBe("running");
+  });
+
+  test("a sandbox with an open stream is in use however long the clock says", async () => {
+    let now = 1_000_000;
+    const backend = new FakeBackend();
+    backend.seed("served", { [RUNNER_LABEL]: "rn1", [AUTOSTOP_LABEL]: "10" });
+    const fromContainer = pipe();
+    backend.dialScript = () => ({ readable: fromContainer.readable, write: async () => {}, end: () => fromContainer.end(), close: () => {}, closed: Promise.resolve() });
+    const svc = service(backend, { now: () => now });
+    const { plane } = connectPair({}, { onStreamOpen: (target, stream) => svc.stream(target, stream) });
+    const stream = await plane.openStream({ kind: "port", sandboxId: "served", port: 8080 });
+    await stream.write(encoder.encode("traffic"));
+    now += 60 * 60_000;
+    expect(await svc.stopIdle()).toEqual([]);
+    expect(backend.containers.get("served")?.state).toBe("running");
+    stream.end();
+    await stream.done;
+    // The stream just ended: the idle clock starts now, not when the stream opened.
+    expect(await svc.stopIdle()).toEqual([]);
+    now += 11 * 60_000;
+    expect(await svc.stopIdle()).toEqual(["served"]);
   });
 });
 
