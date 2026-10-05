@@ -222,7 +222,7 @@ describe("engine model catalog", () => {
             { id: "openai/gpt-5.6-luna", default: false, dispatchable: true, policyAllowed: true },
             { id: "new/dynamic:free", default: true, dispatchable: true, policyAllowed: true },
           ],
-          runtime: { kind: "t3", label: "T3 orchestration · cloud sandbox" },
+          runtime: { kind: "t3", label: "T3 orchestration · cloud" },
         },
       ],
       tools: { gatewayConfigured: false, declared: [] },
@@ -245,30 +245,30 @@ describe("engine model catalog", () => {
     expect(config.readiness.opencode).toEqual({ ready: true, reason: "enabled" });
     expect(config.runtimes.opencode).toEqual({
       kind: "t3",
-      label: "T3 orchestration · cloud sandbox",
+      label: "T3 orchestration · cloud",
     });
     expect(engineRuntimeCaption("opencode", config.runtimes.opencode, config.readiness.opencode)).toBe(
-      "any model · cloud sandbox",
+      "any model · cloud",
     );
     expect(
       engineRuntimeCaption(
         "claude",
-        { kind: "acp_compat", label: "Claude Code ACP compatibility · cloud sandbox" },
+        { kind: "acp_compat", label: "Claude Code ACP compatibility · cloud" },
         { ready: false, reason: "not_proven" },
       ),
-    ).toBe("Anthropic agent · cloud sandbox · needs attention");
+    ).toBe("Anthropic agent · cloud · needs attention");
   });
 
   test("primary engine captions never expose transport implementation names", () => {
     expect(engineRuntimeCaption(
       "codex",
-      { kind: "acp_compat", label: "Codex ACP compatibility · cloud sandbox" },
+      { kind: "acp_compat", label: "Codex ACP compatibility · cloud" },
       { ready: true, reason: "enabled" },
-    )).toBe("OpenAI agent · cloud sandbox");
+    )).toBe("OpenAI agent · cloud");
     expect(engineRuntimeCaption(
       "claude",
-      { kind: "t3", label: "T3 orchestration · cloud sandbox" },
+      { kind: "t3", label: "T3 orchestration · cloud" },
       { ready: true, reason: "enabled" },
-    )).toBe("Anthropic agent · cloud sandbox");
+    )).toBe("Anthropic agent · cloud");
   });
 });

@@ -146,3 +146,19 @@ export function runnerLoginAvailable(
     )
   );
 }
+
+/** Whether this user's own machine is online and allowed to run their work; the
+ *  plane sends new threads there ahead of the cloud. */
+export function runnerRunsUserWork(
+  policy: RunnerPolicy | null,
+  runners: readonly Runner[],
+  userId: string | null,
+  runnerEnabled: boolean,
+): boolean {
+  return (
+    runnerEnabled &&
+    userId !== null &&
+    policy?.allowLocalExecution === true &&
+    runners.some((runner) => runner.ownerUserId === userId && runner.status === "online")
+  );
+}

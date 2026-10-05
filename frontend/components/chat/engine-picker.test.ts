@@ -38,7 +38,7 @@ const MANIFEST: CapabilityCatalog = {
         dispatchable: true,
         policyAllowed: true,
       }],
-      runtime: { kind: "native", label: "any model · cloud sandbox" },
+      runtime: { kind: "native", label: "any model · cloud" },
     },
     {
       id: "claude",
@@ -46,7 +46,7 @@ const MANIFEST: CapabilityCatalog = {
       ready: false,
       defaultModel: "claude-opus-5",
       models: [],
-      runtime: { kind: "acp_compat", label: "Anthropic agent · cloud sandbox" },
+      runtime: { kind: "acp_compat", label: "Anthropic agent · cloud" },
     },
   ],
   tools: { gatewayConfigured: true, declared: [] },
@@ -93,7 +93,7 @@ describe("new-thread engine picker", () => {
               policyAllowed: false,
             },
           ],
-          runtime: { kind: "t3", label: "OpenAI agent · cloud sandbox" },
+          runtime: { kind: "t3", label: "OpenAI agent · cloud" },
         },
       ],
     };
@@ -110,6 +110,16 @@ describe("new-thread engine picker", () => {
     expect(config.models.codex).toEqual(["gpt-5.6-luna"]);
     expect(engineRuntimeCaption("codex", config.runtimes.codex, config.readiness.codex, true)).toBe(
       "Codex · machine login available",
+    );
+  });
+
+  test("the caption says local while the user's own machine runs new threads", () => {
+    const config = engineConfigFromCapabilityCatalog(MANIFEST);
+    expect(engineRuntimeCaption("opencode", config.runtimes.opencode, config.readiness.opencode, false, true)).toBe(
+      "any model · local",
+    );
+    expect(engineRuntimeCaption("opencode", config.runtimes.opencode, config.readiness.opencode, false, false)).toBe(
+      "any model · cloud",
     );
   });
 

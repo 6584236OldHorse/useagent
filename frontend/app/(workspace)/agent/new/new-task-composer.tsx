@@ -1,5 +1,6 @@
 "use client";
 
+import { useMachineRunsWork } from "@/components/runners/local-login-availability";
 import {
   RiAddLine,
   RiArrowUpLine,
@@ -101,6 +102,7 @@ export function NewTaskComposer({
   // on, so the picker never lets a user start a run the backend would 403. This is
   // the capability-driven engine manifest.
   const engineConfig = useEnabledEngineConfig();
+  const machineRunsWork = useMachineRunsWork();
   const enabledEngines = engineConfig.engines;
   const engineId = engine as EngineId;
   const selectableModels = modelOptionsForEngine(
@@ -353,6 +355,7 @@ export function NewTaskComposer({
               engineConfig.runtimes[e.id],
               engineConfig.readiness[e.id],
               engineConfig.localLoginOffered.includes(e.id),
+              machineRunsWork,
             ),
             icon: RiCpuLine,
           }),

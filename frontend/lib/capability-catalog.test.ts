@@ -14,7 +14,7 @@ const WIRE = {
         { id: "openai/gpt-5.6-luna", default: true, dispatchable: true, policyAllowed: true },
         { id: "new/free:free", default: false, dispatchable: true, policyAllowed: true },
       ],
-      runtime: { kind: "t3", label: "T3 orchestration · cloud sandbox" },
+      runtime: { kind: "t3", label: "T3 orchestration · cloud" },
       session: { declared: {}, currentRun: null },
       execution: { declaredFacilities: ["files"], currentRun: null },
     },
@@ -46,7 +46,7 @@ describe("browser capability catalog", () => {
     ]);
     expect(parsed?.engines[0]?.runtime).toEqual({
       kind: "t3",
-      label: "T3 orchestration · cloud sandbox",
+      label: "T3 orchestration · cloud",
     });
     expect(parsed?.tools.declared[0]).toMatchObject({
       name: "artifact_publish",
