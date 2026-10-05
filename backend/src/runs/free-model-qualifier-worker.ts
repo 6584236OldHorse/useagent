@@ -1,5 +1,6 @@
 import type { Db } from "../db/client";
 import { db } from "../db/client";
+import { awaitWithSignal } from "../util/abortable-operation";
 import type {
   FreeModelProbeErrorCode,
   FreeModelRegistryStateRow,
@@ -36,6 +37,10 @@ const QUALIFIER_BOOT_DELAY_MS = 1_000;
 /** Manual (picker) refresh cool-down. Process-global: the catalog and the
  * probe budget are deployment-wide, so one refresh serves every org. */
 const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
+/** How long the refresh request waits for the tick's catalog phase: the
+ * catalog timeout plus a margin. A tick held behind the admission lock (a
+ * deployment in progress) answers "pending" instead of holding the request. */
+export const MANUAL_REFRESH_WAIT_MS = 15_000;
 const PENDING_SUCCESS_RETRY_MS = 10 * 60_000;
 const QUALIFIED_SUCCESS_RETRY_MS = 6 * 60 * 60_000;
 const SYSTEM_FAILURE_RETRY_MS = 30 * 60_000;
@@ -460,4 +465,46 @@ export function startFreeModelQualifierWorker(
   });
   schedule(() => void tick(), QUALIFIER_BOOT_DELAY_MS, intervalMin * 60_000);
   return { tick, refresh };
+}
+
+export interface ManualRefreshResponse {
+  readonly status: 200 | 202 | 429 | 502 | 503;
+  readonly body: Record<string, unknown>;
+}
+
+/**
+ * The manual refresh route's decision without HTTP. Bounded: the request never
+ * outlives waitMs even when the tick is still waiting on the admission lock;
+ * the tick itself keeps running and publishes on its own.
+ */
+export async function respondToManualRefresh(
+  qualifier: FreeModelQualifier | null,
+  options: { readonly nowMs?: number; readonly waitMs?: number } = {},
+): Promise<ManualRefreshResponse> {
+  if (!qualifier) return { status: 503, body: { error: "qualifier_off" } };
+  const attempt = qualifier.refresh(options.nowMs);
+  if (!attempt.admitted) {
+    return { status: 429, body: { error: "rate_limited", retry_after_ms: attempt.retryAfterMs } };
+  }
+  let discovery: CatalogDiscoveryResult | null;
+  try {
+    discovery = await awaitWithSignal(
+      () => attempt.tick.discovery,
+      AbortSignal.timeout(options.waitMs ?? MANUAL_REFRESH_WAIT_MS),
+    );
+  } catch {
+    return { status: 202, body: { refreshed: false, stale: true, reason: "pending" } };
+  }
+  if (!discovery) {
+    const outcome = await attempt.tick.result.catch(() => null);
+    const reason = outcome?.status === "skipped_admission_closed" ? "admission_closed" : "tick_failed";
+    return { status: 502, body: { refreshed: false, stale: true, reason } };
+  }
+  if (!discovery.ok) {
+    return { status: 502, body: { refreshed: false, stale: true, reason: discovery.errorCode } };
+  }
+  return {
+    status: 200,
+    body: { refreshed: true, stale: false, discovered: discovery.candidates.length },
+  };
 }

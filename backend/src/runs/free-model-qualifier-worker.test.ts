@@ -9,6 +9,7 @@ import {
   desiredPublishedLane,
   fetchOpenRouterFreeModelCandidates,
   freeModelQualifierEnabled,
+  respondToManualRefresh,
   runFreeModelQualifierTick,
   startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
@@ -520,5 +521,86 @@ describe("free-model qualifier worker", () => {
     const tick = worker.tick();
     expect(await tick.discovery).toBeNull();
     expect((await tick.result).status).toBe("skipped_admission_closed");
+  });
+  test("the manual refresh answer is bounded and honest in every state", async () => {
+    expect(await respondToManualRefresh(null)).toEqual({
+      status: 503,
+      body: { error: "qualifier_off" },
+    });
+
+    const { repository } = fakeRepository({ state: registryState([]), candidates: [] });
+    const working = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: discovery("vendor/new:free"),
+      admission: openAdmission,
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!working) throw new Error("expected the worker");
+    expect(await respondToManualRefresh(working, { nowMs: NOW })).toEqual({
+      status: 200,
+      body: { refreshed: true, stale: false, discovered: 1 },
+    });
+    expect(await respondToManualRefresh(working, { nowMs: NOW + 1_000 })).toEqual({
+      status: 429,
+      body: { error: "rate_limited", retry_after_ms: 29_000 },
+    });
+
+    const failing = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: async () => ({ ok: false, errorCode: "rate_limited", httpStatus: 429 }),
+      admission: openAdmission,
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!failing) throw new Error("expected the worker");
+    expect(await respondToManualRefresh(failing, { nowMs: NOW })).toEqual({
+      status: 502,
+      body: { refreshed: false, stale: true, reason: "rate_limited" },
+    });
+
+    const closed = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: discovery(),
+      admission: async () => ({ ...(await openAdmission()), open: false }),
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!closed) throw new Error("expected the worker");
+    expect(await respondToManualRefresh(closed, { nowMs: NOW })).toEqual({
+      status: 502,
+      body: { refreshed: false, stale: true, reason: "admission_closed" },
+    });
+
+    // The admission read is blocked (a deployment holds the lock): the request
+    // still answers within its wait, and the tick keeps running behind it.
+    const gate = Promise.withResolvers<void>();
+    let catalogCalls = 0;
+    const blocked = startFreeModelQualifierWorker({
+      driver: null,
+      repository,
+      discover: async () => {
+        catalogCalls += 1;
+        return { ok: true, candidates: [] };
+      },
+      admission: async () => {
+        await gate.promise;
+        return openAdmission();
+      },
+      nowMs: () => NOW,
+      schedule: () => {},
+    }, {});
+    if (!blocked) throw new Error("expected the worker");
+    expect(await respondToManualRefresh(blocked, { nowMs: NOW, waitMs: 20 })).toEqual({
+      status: 202,
+      body: { refreshed: false, stale: true, reason: "pending" },
+    });
+    expect(catalogCalls).toBe(0);
+    gate.resolve();
+    await blocked.tick().result;
+    expect(catalogCalls).toBe(1);
   });
 });

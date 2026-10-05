@@ -109,6 +109,7 @@ import { freeModelLane, freeModelLaneCache } from "./runs/free-model-lane";
 import {
   freeModelQualifierEnabled,
   hydrateFreeModelLaneFromRegistry,
+  respondToManualRefresh,
   startFreeModelQualifierWorker,
   startFreeModelRegistryHydrator,
   type FreeModelQualifier,
@@ -410,40 +411,21 @@ app.get("/api/config", (c) => {
 
 // Manual Free-lane refresh (the picker's "Refresh free models" affordance).
 // Org-session authed by the universal adapter (NOT in the public allowlist).
-// Runs a qualifier tick now: the catalog is discovered before this responds,
-// the probe runs it queues finish in the background and publish on their own.
-// A process-global cool-down protects OpenRouter and the probe budget (the
-// lane is deployment-wide, so one refresh serves every org). Returns the
+// Runs a qualifier tick now: the catalog is discovered before this responds
+// (bounded: a tick held behind the admission lock answers 202 pending), the
+// probe runs it queues finish in the background and publish on their own. A
+// process-global cool-down protects OpenRouter and the probe budget (the lane
+// is deployment-wide, so one refresh serves every org). Always returns the
 // current manifest so the picker can swap its list in place.
 let freeModelQualifier: FreeModelQualifier | null = null;
 app.post("/api/config/models/refresh", async (c) => {
-  const manifest = () => ({
+  const response = await respondToManualRefresh(freeModelQualifier);
+  return c.json({
+    ...response.body,
     free: freeModelLane(),
     models: engineModelsForReadyEngines(),
     configuredModels: engineModelsForConfiguredEngines(),
-  });
-  if (!freeModelQualifier) {
-    return c.json({ error: "qualifier_off", ...manifest() }, 503);
-  }
-  const attempt = freeModelQualifier.refresh();
-  if (!attempt.admitted) {
-    return c.json({ error: "rate_limited", retry_after_ms: attempt.retryAfterMs }, 429);
-  }
-  const discovery = await attempt.tick.discovery;
-  if (!discovery) {
-    const outcome = await attempt.tick.result.catch(() => null);
-    const reason = outcome?.status === "skipped_admission_closed" ? "admission_closed" : "tick_failed";
-    return c.json({ refreshed: false, stale: true, reason, ...manifest() }, 502);
-  }
-  if (!discovery.ok) {
-    return c.json({ refreshed: false, stale: true, reason: discovery.errorCode, ...manifest() }, 502);
-  }
-  return c.json({
-    refreshed: true,
-    stale: false,
-    discovered: discovery.candidates.length,
-    ...manifest(),
-  });
+  }, response.status);
 });
 
 // Better Auth owns login, sessions, and organization membership.
