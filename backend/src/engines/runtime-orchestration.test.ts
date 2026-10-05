@@ -85,7 +85,7 @@ describe("T3 orchestration projection", () => {
     });
   });
 
-  test("maps useAgent OpenCode catalog ids onto T3 provider-qualified ids", () => {
+  test("maps UseAgent OpenCode catalog ids onto T3 provider-qualified ids", () => {
     expect(runtimeModelId("opencode", "openai/gpt-5.6-luna")).toBe(
       "openai/gpt-5.6-luna",
     );
@@ -267,7 +267,7 @@ describe("T3 orchestration projection", () => {
     };
     expect(activityStep(mcpCompleted)).toMatchObject({
       kind: "command",
-      label: "useAgent · memory_search",
+      label: "UseAgent · memory_search",
       code_json: {
         tool: "memory_search",
         server: "skynet-knowledge",
@@ -451,7 +451,7 @@ describe("T3 orchestration projection", () => {
     } as const;
     expect(shouldProjectRuntimeActivity(summaryOnlyMcp)).toBe(true);
     expect(activityStep(summaryOnlyMcp)).toMatchObject({
-      label: "useAgent · computer_screenshot",
+      label: "UseAgent · computer_screenshot",
       code_json: {
         server: "skynet-knowledge",
         tool: "computer_screenshot",
@@ -471,7 +471,7 @@ describe("T3 orchestration projection", () => {
         },
       },
     })).toMatchObject({
-      label: "useAgent · github_clone_repository",
+      label: "UseAgent · github_clone_repository",
       code_json: {
         server: "skynet-knowledge",
         tool: "github_clone_repository",
@@ -521,7 +521,7 @@ describe("T3 orchestration projection", () => {
         },
       },
     })).toMatchObject({
-      label: "useAgent · computer_screenshot",
+      label: "UseAgent · computer_screenshot",
       code_json: {
         server: "skynet-knowledge",
         tool: "computer_screenshot",
@@ -548,7 +548,7 @@ describe("T3 orchestration projection", () => {
       },
     } as const;
     expect(activityStep(structuredMcpActivity)).toMatchObject({
-      label: "useAgent · github_create_pull_request",
+      label: "UseAgent · github_create_pull_request",
       code_json: {
         server: "skynet-knowledge",
         tool: "github_create_pull_request",

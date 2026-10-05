@@ -138,7 +138,7 @@ export async function requestSlackAccess(input: {
         orgId: input.orgId,
         teamId: input.teamId,
         channel: admin.slackUserId,
-        text: `${who} asked to use useAgent from Slack. Let them in or not: ${env.FRONTEND_ORIGIN}/settings#team`,
+        text: `${who} asked to use UseAgent from Slack. Let them in or not: ${env.FRONTEND_ORIGIN}/settings#team`,
       });
     }
     return "asked";
@@ -605,8 +605,8 @@ async function welcome(orgId: string, requestId: string): Promise<void> {
       {
         from: config.from,
         to: [account.email],
-        subject: `You can now use ${workspace} on useAgent`,
-        text: [`An admin let you into ${workspace} on useAgent.`, "", `Sign in with this email address: ${env.FRONTEND_ORIGIN}/login`].join("\n"),
+        subject: `You can now use ${workspace} on UseAgent`,
+        text: [`An admin let you into ${workspace} on UseAgent.`, "", `Sign in with this email address: ${env.FRONTEND_ORIGIN}/login`].join("\n"),
       },
     );
   } catch (error) {

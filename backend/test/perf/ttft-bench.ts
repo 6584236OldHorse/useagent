@@ -173,7 +173,7 @@ async function streamOpenRouter(route: Route, prompt: string, apiKey: string, si
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "https://github.com/useagenthq/useagent",
-      "X-Title": "useAgent TTFT Bench",
+      "X-Title": "UseAgent TTFT Bench",
     },
     body: JSON.stringify({
       model: route.model,

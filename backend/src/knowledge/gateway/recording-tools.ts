@@ -189,7 +189,7 @@ export const RECORDING_TOOLS = [
     aliases: ["record_stop"],
     description:
       "Stop the active canonical desktop recording, validate the MP4, and publish it as " +
-      "a durable authenticated useAgent artifact. Returns working preview and download URLs.",
+      "a durable authenticated UseAgent artifact. Returns working preview and download URLs.",
     inputSchema: {
       type: "object",
       properties: {},

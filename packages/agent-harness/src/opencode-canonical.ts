@@ -410,7 +410,7 @@ export function translateOpenCode(
         } else suppressed = `${et} without a complete artifact descriptor`;
       }
       else if (et === "secrets.injected") produced.push(push(f.eventId, f.provider, { kind: "session.metadata", metadata: { secretsInjected: true } }, ident));
-      else produced.push(push(f.eventId, f.provider, { kind: "harness.warning", message: "unmapped useAgent event", rawEventType: et, rawPayload: f.payload }, ident));
+      else produced.push(push(f.eventId, f.provider, { kind: "harness.warning", message: "unmapped UseAgent event", rawEventType: et, rawPayload: f.payload }, ident));
     } else if (et === "question.asked") {
       const questionId = str(p?.id);
       const rawQuestions = Array.isArray(p?.questions) ? p.questions : [];

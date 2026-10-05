@@ -201,7 +201,7 @@ async function invokeRegisteredOperation(
       content: [
         {
           type: "text",
-          text: `A valid server-minted one-shot approval capability is required for ${name}. Call approval_request with this tool name and the exact argument object, have the user approve it in the useAgent session view, poll approval_poll for the approvalCapability, then retry ${name} with it.`,
+          text: `A valid server-minted one-shot approval capability is required for ${name}. Call approval_request with this tool name and the exact argument object, have the user approve it in the UseAgent session view, poll approval_poll for the approvalCapability, then retry ${name} with it.`,
         },
       ],
       structuredContent: { error: "approval_required" },

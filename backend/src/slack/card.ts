@@ -129,7 +129,7 @@ export function buildRunCard(input: RunCardInput): { blocks: unknown[]; text: st
         elements: [
           {
             type: "button",
-            text: { type: "plain_text", text: "Open in useAgent", emoji: true },
+            text: { type: "plain_text", text: "Open in UseAgent", emoji: true },
             url: input.webUrl,
             action_id: "open_in_useagent",
           },

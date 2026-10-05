@@ -128,11 +128,11 @@ describe("buildRunCard shape", () => {
     expect(taskCard(buildRunCard({ ...base, status: "error" }).blocks).status).toBe("error");
   });
 
-  test("the actions block has an 'Open in useAgent' url button", () => {
+  test("the actions block has an 'Open in UseAgent' url button", () => {
     const { blocks } = buildRunCard(base);
     const button = (blocks as any[])[1].elements[0];
     expect(button.type).toBe("button");
-    expect(button.text.text).toBe("Open in useAgent");
+    expect(button.text.text).toBe("Open in UseAgent");
     expect(button.action_id).toBe("open_in_useagent");
     expect(button.url).toBe("https://app.example.com/session/thread-1");
   });

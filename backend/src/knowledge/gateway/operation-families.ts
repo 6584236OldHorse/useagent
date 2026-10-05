@@ -88,7 +88,7 @@ function withApprovalRequirement(tool: GatewayToolDescriptor): GatewayToolDescri
         approvalCapability: {
           type: "string",
           description:
-            "Opaque, short-lived, one-shot capability minted by the authenticated useAgent backend for this exact operation.",
+            "Opaque, short-lived, one-shot capability minted by the authenticated UseAgent backend for this exact operation.",
         },
       },
       required: [...new Set([...(schema.required ?? []), "approvalCapability"])],

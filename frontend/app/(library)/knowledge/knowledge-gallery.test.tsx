@@ -42,7 +42,7 @@ test("rows clamp the body behind an expand affordance and keep pin/delete wired"
           id: "k1",
           title: "Prefer semantic tokens",
           body: "Use the design system tokens everywhere.",
-          folder: "useAgent",
+          folder: "UseAgent",
           kind: "policy",
           updated: "2d ago",
           pinned: false,

@@ -19,7 +19,7 @@ const base: RenderEmailInput = {
 describe("renderEmail", () => {
   it("builds a subject with status + truncated prompt", () => {
     const { subject } = renderEmail(base);
-    expect(subject).toBe("[useAgent] Run completed - build the thing");
+    expect(subject).toBe("[UseAgent] Run completed - build the thing");
   });
 
   it("marks a failed run in the subject", () => {
@@ -31,7 +31,7 @@ describe("renderEmail", () => {
     const long = "x".repeat(200);
     const { subject } = renderEmail({ ...base, prompt: long });
     // "[useAgent] Run completed - " + <=60 chars
-    expect(subject.length).toBeLessThanOrEqual("[useAgent] Run completed - ".length + 60);
+    expect(subject.length).toBeLessThanOrEqual("[UseAgent] Run completed - ".length + 60);
     expect(subject.endsWith("…")).toBe(true);
   });
 
@@ -49,7 +49,7 @@ describe("renderEmail", () => {
     expect(text).toContain("• Editing file [edit]");
     expect(text).toContain("Assistant output:");
     expect(text).toContain("All done.");
-    expect(text).toEndWith("- useAgent");
+    expect(text).toEndWith("- UseAgent");
   });
 
   it("shows (none) for a missing summary / assistant text and (no steps recorded)", () => {

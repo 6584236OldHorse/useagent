@@ -83,7 +83,7 @@ const compose = (context: ReturnType<typeof ctx>, resumed: boolean) =>
 
 describe("composeTurnPrompt — fresh vs resumed context", () => {
   test("uses the current product brand in model-visible workflow guidance", () => {
-    expect(W).toContain("useAgent automations");
+    expect(W).toContain("UseAgent automations");
     expect(W).not.toContain(`${"Sky"}net automations`);
   });
 

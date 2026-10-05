@@ -60,8 +60,8 @@ describe("compact now availability", () => {
 describe("composer placeholder honesty", () => {
   test("an explicit caller placeholder always wins", () => {
     expect(
-      composerPlaceholder({ explicit: "Reply to useAgent…", agentSlash: true, commandCount: 3 }),
-    ).toBe("Reply to useAgent…");
+      composerPlaceholder({ explicit: "Reply to UseAgent…", agentSlash: true, commandCount: 3 }),
+    ).toBe("Reply to UseAgent…");
   });
 
   test("hero hints the real / agent affordance", () => {

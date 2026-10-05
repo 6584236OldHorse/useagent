@@ -712,7 +712,7 @@ describe("Box sandbox provider", () => {
 describe("Box interactive terminal declaration", () => {
   test("names the missing Box CLI up front instead of failing every PTY attempt", async () => {
     expect(boxCliProblem(() => "/usr/local/bin/box")).toBeNull();
-    expect(boxCliProblem(() => null)).toMatch(/Box CLI \(box\) installed on the useAgent server/);
+    expect(boxCliProblem(() => null)).toMatch(/Box CLI \(box\) installed on the UseAgent server/);
     if (Bun.which("box")) return; // the live CLI is present here; the typed error path is covered by the fake above
     const api = fakeBoxApi([{ id: "bx_term", state: "ready", vcpu: 4, memoryGB: 8, subdomain: "bx-term" }]);
     const handle = await boxSandboxProvider(config, { fetchImpl: api.fetchImpl, sleep: async () => {} }).get("bx_term");

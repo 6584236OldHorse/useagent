@@ -879,7 +879,7 @@ describe("slack event → run", () => {
 
     const mirror = await waitFor(async () =>
       rec.messages.find((message) =>
-        message.channel === channel && message.text.includes(" in useAgent:")
+        message.channel === channel && message.text.includes(" in UseAgent:")
       ) ?? null,
     );
     expect(mirror.threadTs).toBe(threadTs);
@@ -889,7 +889,7 @@ describe("slack event → run", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(
       rec.messages.filter((message) =>
-        message.channel === channel && message.text.includes(" in useAgent:")
+        message.channel === channel && message.text.includes(" in UseAgent:")
       ),
     ).toHaveLength(1);
   });
@@ -943,7 +943,7 @@ describe("slack event → run", () => {
     const delivered = rec.messages
       .filter((message) => message.channel === channel && !message.blocks)
       .map((message) => message.text);
-    expect(delivered[0]).toContain(" in useAgent:");
+    expect(delivered[0]).toContain(" in UseAgent:");
     expect(delivered[0]).toContain(prompt);
     expect(delivered.at(-1)).toContain("healed result");
   });
@@ -3200,7 +3200,7 @@ describe("slack workspace identity (fail closed)", () => {
     expect(await findRunByPrompt(`hello ${first}`)).toBeNull();
     // The bound admin (U-HUMAN, an owner of the dev org) hears about it by DM.
     await waitFor(async () =>
-      rec.messages.find((m) => m.channel === "U-HUMAN" && m.text.includes("asked to use useAgent from Slack")) ?? null,
+      rec.messages.find((m) => m.channel === "U-HUMAN" && m.text.includes("asked to use UseAgent from Slack")) ?? null,
     );
     const listed = await json<{ requests: Array<{ id: string; name: string; email: string | null }> }>("/api/team/access-requests");
     expect(listed.status).toBe(200);

@@ -124,7 +124,7 @@ export async function distill(meta: SourceMeta, canonicalSource: string): Promis
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "https://github.com/useagenthq/useagent", // OpenRouter attribution
-      "X-Title": "useAgent Knowledge",
+      "X-Title": "UseAgent Knowledge",
     },
     body: JSON.stringify({
       model: env.distill.model,

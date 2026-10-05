@@ -80,7 +80,7 @@ async function generateSuggestions(
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "https://github.com/useagenthq/useagent",
-      "X-Title": "useAgent Follow-ups",
+      "X-Title": "UseAgent Follow-ups",
     },
     body: JSON.stringify({
       model: followupsModel(env),

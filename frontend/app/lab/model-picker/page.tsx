@@ -5,7 +5,7 @@ import { ThreadSidebar } from "@/components/shell/thread-sidebar";
 import { ModelPickerShowcase } from "../model-picker-showcase";
 
 export const metadata: Metadata = {
-  title: "Model picker sample - useAgent",
+  title: "Model picker sample - UseAgent",
   description:
     "The composer's model picker on a quiet page: the provider rail, quick search, radio rows and the effort selector, for visual review.",
 };

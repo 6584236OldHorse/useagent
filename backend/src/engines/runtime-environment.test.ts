@@ -60,7 +60,7 @@ function runtimeSandbox(
 }
 
 describe("T3 Cube environment", () => {
-  test("uses a release-specific useAgent identity for retained and warm sandboxes", () => {
+  test("uses a release-specific UseAgent identity for retained and warm sandboxes", () => {
     expect(RUNTIME_GENERATION_LABEL).toBe("useagent.runtime");
     expect(RUNTIME_GENERATION).toBe(runtimeGeneration(process.env));
     expect(RUNTIME_CUBE_WARM_POOL_NAME).toBe(RUNTIME_GENERATION);

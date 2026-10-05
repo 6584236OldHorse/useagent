@@ -109,7 +109,7 @@ test("compact dispatch and completion use the same accepted message identity", (
   });
 });
 
-test("Stop and timeout say only that useAgent stopped waiting", () => {
+test("Stop and timeout say only that UseAgent stopped waiting", () => {
   expect(RUNTIME_COMPACT_TIMEOUT_MS).toBe(600_000);
   expect(COMPACT_STOPPED_WAITING_SUMMARY).toStartWith("Stopped by user.");
   expect(COMPACT_STOPPED_WAITING_SUMMARY).toContain("may still finish");

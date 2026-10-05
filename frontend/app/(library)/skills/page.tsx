@@ -5,7 +5,7 @@ import { SkillsView } from "./skills-view";
 
 export const metadata: Metadata = {
   title: "Skills",
-  description: "Reusable skills useAgent follows for repeatable work.",
+  description: "Reusable skills UseAgent follows for repeatable work.",
 };
 
 export default async function SkillsPage() {

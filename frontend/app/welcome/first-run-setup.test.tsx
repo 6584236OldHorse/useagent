@@ -79,7 +79,7 @@ test("invitations answered for another workspace are dropped, not shown under th
 
 test("the first-run page offers the workspace name, the invitations and a way on; no allowance, no provider choice", () => {
   const html = render({ kind: "ready", workspace, invitations: [invitation] });
-  expect(html).toContain("Welcome to useAgent");
+  expect(html).toContain("Welcome to UseAgent");
   expect(html).toContain('value="Priya&#x27;s workspace"');
   expect(html).toContain("Save name");
   expect(html).toContain("Invite a teammate");

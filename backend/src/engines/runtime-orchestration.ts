@@ -368,7 +368,7 @@ export function buildRuntimeProjectCreateCommand(
     type: "project.create",
     commandId: stableId("skynet-project-create", ctx.runId),
     projectId,
-    title: `useAgent ${ctx.threadId ?? ctx.runId}`,
+    title: `UseAgent ${ctx.threadId ?? ctx.runId}`,
     workspaceRoot,
     createdAt,
   };
@@ -386,7 +386,7 @@ export function buildRuntimeThreadCreateCommand(
     commandId: stableId("skynet-thread-create", ctx.runId),
     threadId: runtimeThreadId(ctx),
     projectId: runtimeProjectId(ctx),
-    title: `useAgent ${ctx.threadId ?? ctx.runId}`,
+    title: `UseAgent ${ctx.threadId ?? ctx.runId}`,
     modelSelection,
     runtimeMode,
     interactionMode: "default",
@@ -425,7 +425,7 @@ export function buildRuntimeTurnStartCommand(
           bootstrap: {
             createThread: {
               projectId,
-              title: `useAgent ${ctx.threadId ?? ctx.runId}`,
+              title: `UseAgent ${ctx.threadId ?? ctx.runId}`,
               modelSelection,
               runtimeMode,
               interactionMode: "default",

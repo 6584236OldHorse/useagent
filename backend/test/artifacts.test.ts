@@ -972,11 +972,11 @@ describe("durable artifacts", () => {
     }>(path, {
       method: "PATCH",
       cookies: owner.cookies,
-      body: { expected_revision: 0, state: { text: "edited in useAgent" } },
+      body: { expected_revision: 0, state: { text: "edited in UseAgent" } },
     });
     expect(updated.status).toBe(200);
     expect(updated.body.workpiece.state_revision).toBe(1);
-    expect(updated.body.state).toEqual({ text: "edited in useAgent" });
+    expect(updated.body.state).toEqual({ text: "edited in UseAgent" });
 
     const stale = await fetchApi(path, {
       method: "PATCH",
@@ -987,7 +987,7 @@ describe("durable artifacts", () => {
     expect(await stale.json()).toMatchObject({
       error: "revision conflict",
       workpiece: { state_revision: 1 },
-      state: { text: "edited in useAgent" },
+      state: { text: "edited in UseAgent" },
     });
 
     const outside = await fetchApi(path, { cookies: outsider.cookies });

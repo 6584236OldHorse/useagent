@@ -109,7 +109,7 @@ describe("gateway approval-request lane (#77)", () => {
     expect(firstContent.status).toBe("pending");
     expect(firstContent.already_pending).toBe(false);
     const requestId = firstContent.approval_request_id as string;
-    expect(first.content[0]?.text).toContain("approve or deny it in the useAgent session view");
+    expect(first.content[0]?.text).toContain("approve or deny it in the UseAgent session view");
 
     const [row] = await db
       .select()

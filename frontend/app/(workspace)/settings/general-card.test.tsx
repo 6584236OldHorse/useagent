@@ -6,14 +6,14 @@ test("the General card shows the workspace's own name, as renamed, not a placeho
   const html = renderToStaticMarkup(<GeneralCard initialWorkspaceName="Acme Robotics" />);
   expect(html).toContain("Workspace name");
   expect(html).toContain("Acme Robotics");
-  expect(html).not.toContain(">useAgent<");
+  expect(html).not.toContain(">UseAgent<");
 });
 
 test("while the workspace list loads the row shows nothing rather than a wrong name", () => {
   const html = renderToStaticMarkup(<GeneralCard />);
   expect(html).toContain("Workspace name");
   expect(html).not.toContain("Not set");
-  expect(html).not.toContain(">useAgent<");
+  expect(html).not.toContain(">UseAgent<");
 });
 
 import { activeWorkspaceName } from "./general-card";

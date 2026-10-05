@@ -36,7 +36,7 @@ export function slackSendersNotice(senders: readonly SlackSender[] | undefined):
   const names = senders
     .map((sender) => `${sender.name} (Slack workspace ${sender.teamId})`)
     .join(", ");
-  return `Joining also lets ${names} use useAgent from Slack as you. If you do not know ${senders.length === 1 ? "this person" : "these people"}, do not join.`;
+  return `Joining also lets ${names} use UseAgent from Slack as you. If you do not know ${senders.length === 1 ? "this person" : "these people"}, do not join.`;
 }
 
 async function fetchInvitation(
@@ -128,7 +128,7 @@ export function AcceptInvitation({ id }: { id: string }) {
                 Try again
               </Button>
               <Button variant="ghost" size="small" onClick={() => router.replace("/")}>
-                Go to useAgent
+                Go to UseAgent
               </Button>
             </div>
           </>

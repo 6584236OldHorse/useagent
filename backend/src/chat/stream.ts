@@ -123,7 +123,7 @@ export async function* streamChat(
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "https://github.com/useagenthq/useagent",
-      "X-Title": "useAgent Chat",
+      "X-Title": "UseAgent Chat",
     },
     body: JSON.stringify({ model, messages: openRouterMessages(messages), stream: true }),
     signal,

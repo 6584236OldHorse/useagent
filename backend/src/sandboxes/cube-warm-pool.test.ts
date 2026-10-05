@@ -656,7 +656,7 @@ describe("CubeWarmPool", () => {
     expect((await pool.claim())?.id).toBe("cube-current-template");
   });
 
-  test("uses the useAgent template label before Cube system labels", async () => {
+  test("uses the UseAgent template label before Cube system labels", async () => {
     const conflictingTemplate = sandbox("cube-conflicting-template");
     const currentTemplate = sandbox("cube-current-template");
     conflictingTemplate.labels = {

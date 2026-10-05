@@ -26,7 +26,7 @@ import { backendFetch } from "@/lib/backend-fetch";
 import { compactNumber } from "@/utils/format";
 
 export const metadata: Metadata = {
-  title: "Dashboard - useAgent",
+  title: "Dashboard - UseAgent",
 };
 
 // Auth cookies are forwarded per-request, so this page must render dynamically.
