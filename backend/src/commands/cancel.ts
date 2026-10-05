@@ -97,11 +97,15 @@ export async function acceptRunCancel(input: {
         .select()
         .from(runs)
         .where(and(eq(runs.id, input.runId), eq(runs.orgId, input.orgId)))
-        .limit(1);
+        .limit(1)
+        .for("update");
       if (!run) return { status: "not_found" as const };
       if (run.status === "completed" || run.status === "failed") {
         return { status: "terminal" as const, runStatus: run.status };
       }
+      // A concurrent Stop may have recorded the intent while this one waited.
+      const priorUnderLock = await findCancel(input.orgId, input.runId, tx);
+      if (priorUnderLock !== null) return { status: "already" as const, threadId: priorUnderLock };
 
       // Durable intent record, written already-completed (never stuck).
       await tx.insert(commands).values({

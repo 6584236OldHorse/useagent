@@ -120,52 +120,69 @@ async function delegatedThreads(orgId: string, roots: readonly RunRow[]): Promis
   return [...found];
 }
 
-/** Turns this run handed to a bot inside an existing thread, whatever their state now: the bot threads this thread ever handed to are few, and the command that created each turn carries the source run. */
-async function handoffRuns(orgId: string, root: RunRow): Promise<RunRow[]> {
-  const botThreads = (
-    await db
-      .select({ threadId: botHandoffs.threadId })
-      .from(botHandoffs)
-      .where(and(eq(botHandoffs.orgId, orgId), eq(botHandoffs.parentThreadId, root.threadId)))
-  ).map((row) => row.threadId);
-  if (botThreads.length === 0) return [];
-  const ids: string[] = [];
-  for (const part of chunks(botThreads)) {
-    const rows = await db
-      .select({ runId: commands.runId, payload: commands.payload })
-      .from(commands)
-      .where(and(
-        eq(commands.orgId, orgId),
-        eq(commands.kind, RUN_CREATE),
-        inArray(commands.threadId, part),
-        like(commands.payload, `%${root.id}%`),
-      ));
-    for (const { runId, payload } of rows) {
-      if (!runId || !payload) continue;
-      try {
-        const provenance = (JSON.parse(payload) as { botHandoff?: { kind?: unknown; sourceRunId?: unknown } }).botHandoff;
-        if (provenance?.kind === "bot_handoff_followup" && provenance.sourceRunId === root.id) ids.push(runId);
-      } catch {
-        // audit text that is not JSON is not provenance
+/** Turns these runs handed to a bot inside an existing thread, whatever their state now: the bot threads a thread ever handed to are few, and the command that created each turn carries the source run. */
+async function handoffRuns(orgId: string, sources: readonly RunRow[]): Promise<RunRow[]> {
+  const found: RunRow[] = [];
+  for (const source of sources) {
+    const botThreads = (
+      await db
+        .select({ threadId: botHandoffs.threadId })
+        .from(botHandoffs)
+        .where(and(eq(botHandoffs.orgId, orgId), eq(botHandoffs.parentThreadId, source.threadId)))
+    ).map((row) => row.threadId);
+    const ids: string[] = [];
+    for (const part of chunks(botThreads)) {
+      const rows = await db
+        .select({ runId: commands.runId, payload: commands.payload })
+        .from(commands)
+        .where(and(
+          eq(commands.orgId, orgId),
+          eq(commands.kind, RUN_CREATE),
+          inArray(commands.threadId, part),
+          like(commands.payload, `%${source.id}%`),
+        ));
+      for (const { runId, payload } of rows) {
+        if (!runId || !payload) continue;
+        try {
+          const provenance = (JSON.parse(payload) as { botHandoff?: { kind?: unknown; sourceRunId?: unknown } }).botHandoff;
+          if (provenance?.kind === "bot_handoff_followup" && provenance.sourceRunId === source.id) ids.push(runId);
+        } catch {
+          // audit text that is not JSON is not provenance
+        }
       }
     }
+    for (const part of chunks(ids)) found.push(...await runsWhere(orgId, inArray(runs.id, part)));
   }
-  const found: RunRow[] = [];
-  for (const part of chunks(ids)) found.push(...await runsWhere(orgId, inArray(runs.id, part)));
   return found;
 }
 
-/** Live runs the stopped turn delegated, nearest first: handoffs and first-level threads, then deeper threads; queued before running everywhere, so nothing queued is dispatched behind a signalled run. */
-async function liveDelegatedRuns(orgId: string, root: RunRow): Promise<RunRow[]> {
-  const handoffs = await handoffRuns(orgId, root);
-  const threads = await delegatedThreads(orgId, [root, ...handoffs]);
-  const depth = new Map(threads.map((id, index) => [id, index + 1]));
-  const found: RunRow[] = handoffs.filter(live);
-  for (const part of chunks(threads)) {
-    found.push(...await runsWhere(orgId, and(inArray(runs.threadId, part), inArray(runs.status, LIVE_STATUSES))));
+/** Everything the stopped turn delegated, to a fixed point: the threads it opened and the handoffs it made, then what every run in those did in turn, whatever state those runs are in now. A thread's index is its depth. */
+async function delegation(orgId: string, root: RunRow): Promise<{ runs: RunRow[]; depth: Map<string, number> }> {
+  const known = new Map<string, RunRow>([[root.id, root]]);
+  const depth = new Map<string, number>();
+  let sources: RunRow[] = [root];
+  while (sources.length > 0) {
+    const fresh: RunRow[] = [];
+    const add = (run: RunRow) => {
+      if (known.has(run.id)) return;
+      known.set(run.id, run);
+      fresh.push(run);
+    };
+    for (const run of await handoffRuns(orgId, sources)) add(run);
+    const threads = (await delegatedThreads(orgId, sources)).filter((id) => !depth.has(id));
+    for (const [index, id] of threads.entries()) depth.set(id, depth.size + index + 1);
+    for (const part of chunks(threads)) for (const run of await runsWhere(orgId, inArray(runs.threadId, part))) add(run);
+    sources = fresh;
   }
-  const rank = (run: RunRow) => (run.status === "queued" ? 0 : 1_000_000) + (depth.get(run.threadId) ?? 0);
-  return found.toSorted((a, b) => rank(a) - rank(b));
+  known.delete(root.id);
+  return { runs: [...known.values()], depth };
+}
+
+/** Live runs the stopped turn delegated, nearest first; queued before running everywhere, so nothing queued is dispatched behind a signalled run. */
+async function liveDelegatedRuns(orgId: string, root: RunRow): Promise<RunRow[]> {
+  const found = await delegation(orgId, root);
+  const rank = (run: RunRow) => (run.status === "queued" ? 0 : 1_000_000) + (found.depth.get(run.threadId) ?? 0);
+  return found.runs.filter(live).toSorted((a, b) => rank(a) - rank(b));
 }
 
 export async function stopRun(input: StopInput): Promise<StopOutcome> {

@@ -1,4 +1,4 @@
-import { markRunStarted } from "./runs/run-state";
+import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
 import { buildThreadPreamble, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
@@ -136,8 +136,7 @@ export function spawnWorker(runId: string): void {
 export const pumpThread = (threadId: string): Promise<string | null> =>
   pumpThreadWithGate(threadId, spawnWorker);
 
-/** Settle the run's command, release its capacity lease (so the reconciler can
- *  admit queued work), and pump the thread's next turn. Every terminal path. */
+/** Settle the run's command, release its capacity lease, and pump the thread's next turn. Every terminal path. */
 async function onRunSettled(runId: string, threadId: string): Promise<void> {
   await settleCommandForRun(runId).catch((err) =>
     console.error(`[worker] settle command for run ${runId} failed:`, err),
@@ -148,17 +147,14 @@ async function onRunSettled(runId: string, threadId: string): Promise<void> {
   );
 }
 
-/** Start a real engine turn at the trusted worker boundary, before any optional
- * context or runtime preparation can add seconds of silent UI time. The row is
- * durable (so reload/reconnect sees the same state) and also published live.
- * Returns the next step index for the engine adapter. */
+/** Start a real engine turn at the trusted worker boundary, before context or runtime preparation adds silent time: a durable, live-published row. Returns the engine adapter's next step index. */
 export async function beginEngineRun(
   runId: string,
   threadId: string,
   orgId: string | null,
   origin: string | null = null,
 ): Promise<number> {
-  if (!(await markRunStarted(runId))) throw new Error("the run was stopped before it started");
+  if (!(await markRunStarted(runId))) throw new RunStoppedBeforeStartError();
   if (!isInternalRunOrigin(origin)) {
     publishRunLifecycleChange({ orgId, threadId, runId, kind: "running" });
   }
@@ -178,10 +174,8 @@ async function runWorker(runId: string): Promise<void> {
   const run = await getRun(runId);
   if (!run) return; // deleted before the actor started
 
-  // Cancellation plumbing (durable cancel): ONE AbortController per actor,
-  // registered so an out-of-band `run.cancel` can abort THIS live turn. The
-  // engine timeout aborts the same signal; `cancelReason` (set only on a user
-  // cancel) is how the finalize path tells the two apart.
+  // Durable cancel: one AbortController per actor, registered so an out-of-band
+  // `run.cancel` aborts this turn; `cancelReason` tells a user cancel from the timeout.
   const ac = new AbortController();
   let cancelReason: string | null = null;
   const requestCancel = (reason: string): void => {
@@ -195,6 +189,7 @@ async function runWorker(runId: string): Promise<void> {
   // scripted fixture). Fire-and-forget diagnostics - never on the critical path.
   const stageLedger: RunStageTimer | null =
     run.engine === "mock" ? null : createRunTimer(runId, run.threadId);
+  let stoppedBeforeStart = false;
 
   try {
     // Match mature agent UIs: expose a truthful, durable lifecycle row
@@ -436,6 +431,10 @@ async function runWorker(runId: string): Promise<void> {
       clearTimeout(ceiling);
     }
   } catch (err) {
+    if (err instanceof RunStoppedBeforeStartError) {
+      stoppedBeforeStart = true; // the Stop that settled the run owns its command, lease and pump
+      return;
+    }
     console.error(`[worker] run ${runId} failed before engine completion:`, err);
     const reason =
       err instanceof Error && err.message
@@ -447,9 +446,9 @@ async function runWorker(runId: string): Promise<void> {
     });
     await emitFinalizedEnd(runId, finalized);
   } finally {
-    // Free the thread and dispatch its next turn — whatever the outcome.
+    // Free the thread and dispatch its next turn, unless a Stop settled the run first and owns that pump.
     cancellers.delete(runId);
-    await onRunSettled(runId, run.threadId);
+    if (!stoppedBeforeStart) await onRunSettled(runId, run.threadId);
   }
 }
 
@@ -468,7 +467,7 @@ async function runChat(
     return;
   }
 
-  if (!(await markRunStarted(run.id))) throw new Error("the run was stopped before it started");
+  if (!(await markRunStarted(run.id))) throw new RunStoppedBeforeStartError();
   if (!isInternalRunOrigin(run.origin)) {
     publishRunLifecycleChange({
       orgId: run.orgId,

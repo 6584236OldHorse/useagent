@@ -1,3 +1,4 @@
+import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import type { StepKind } from "./db/schema.js";
 import {
   finalizeRun,
@@ -6,7 +7,7 @@ import {
 } from "./runs/finalize.js";
 import { publishRunLifecycleChange } from "./runs/org-signals.js";
 import { isInternalRunOrigin } from "./runs/origin.js";
-import { getRun, insertStep, setRunStatus } from "./runs/repo.js";
+import { getRun, insertStep } from "./runs/repo.js";
 import { bus, channel, type BusEvent } from "./worker-events.js";
 
 interface ScriptedStep {
@@ -76,7 +77,7 @@ export async function runMock(
   wasCancelled: () => string | null,
 ): Promise<void> {
   const startedAt = Date.now();
-  await setRunStatus(runId, "running");
+  if (!(await markRunStarted(runId))) throw new RunStoppedBeforeStartError();
   if (!isInternalRunOrigin(origin)) {
     publishRunLifecycleChange({ orgId, threadId, runId, kind: "running" });
   }

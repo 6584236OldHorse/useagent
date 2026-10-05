@@ -9,6 +9,14 @@ export async function setRunStatus(id: string, status: RunStatus): Promise<void>
   await db.update(runs).set({ status, updatedAt: new Date() }).where(eq(runs.id, id));
 }
 
+/** The worker arrived after a Stop settled the run: nothing to run, nothing to settle, nothing to pump. */
+export class RunStoppedBeforeStartError extends Error {
+  constructor() {
+    super("the run was stopped before it started");
+    this.name = "RunStoppedBeforeStartError";
+  }
+}
+
 /** Move a run to running for its worker. A run a stop already settled stays settled and must not start. */
 export async function markRunStarted(id: string): Promise<boolean> {
   const started = await db
