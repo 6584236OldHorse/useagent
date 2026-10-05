@@ -1,3 +1,7 @@
+// CONTRACT-SHAPED: these V2 frames are built from the runtime contract
+// (packages/contracts/src/orchestrationV2.ts at upstream ce90eec1f), not
+// recorded from a running runtime. Re-check them against the spike's recorded
+// frames (~/output/t3-v2/frames) and replace them with recordings.
 import { describe, expect, test } from "bun:test";
 import { createSecretRedactor } from "../secrets/redact";
 import { makeNativeFrame } from "../runs/native-events";
@@ -41,7 +45,7 @@ describe("subagent threads", () => {
       eventType: "t3.activity.task.started", nativeSessionId: CHILD, nativeParentSessionId: PARENT, nativeCallId: CHILD,
     });
     const done = runtimeThreadView(subagent("interrupted")).thread.activities;
-    expect(done[1]).toMatchObject({ kind: "task.completed", payload: { status: "cancelled", v2Status: "interrupted" } });
+    expect(done[1]).toMatchObject({ kind: "task.completed", payload: { status: "cancelled", v2: expect.objectContaining({ type: "subagent", status: "interrupted" }) } });
   });
 
   test("a child's tools and messages are owned by the child and stay off the parent's step timeline", () => {

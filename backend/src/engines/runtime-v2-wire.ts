@@ -285,7 +285,7 @@ export class RuntimeRpcError extends Error {
   /** The failing error's own `_tag`, or "Defect"/"Interrupt" when the server died or cancelled. */
   readonly errorTag: string;
   readonly detail: string | undefined;
-  /** Every `_tag` found in the failure, outermost first, for classification. */
+  /** Every `_tag` (or a nested defect's `name`) in the failure, outermost first. */
   readonly causeTags: readonly string[];
 
   constructor(rpcTag: string, errorTag: string, message: string, detail: string | undefined, causeTags: readonly string[]) {
@@ -300,7 +300,9 @@ export class RuntimeRpcError extends Error {
 
 function collectTags(value: unknown, into: string[], depth = 0): void {
   if (depth > 6 || !isRecord(value)) return;
-  if (typeof value._tag === "string") into.push(value._tag);
+  // A nested defect is encoded as `{name, message}`, not with a `_tag`.
+  const tag = typeof value._tag === "string" ? value._tag : typeof value.name === "string" ? value.name : null;
+  if (tag) into.push(tag);
   for (const key of ["error", "cause", "defect"]) {
     const nested = value[key];
     if (Array.isArray(nested)) for (const entry of nested) collectTags(entry, into, depth + 1);

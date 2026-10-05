@@ -1,3 +1,7 @@
+// CONTRACT-SHAPED: these V2 frames are built from the runtime contract
+// (packages/contracts/src/orchestrationV2.ts at upstream ce90eec1f), not
+// recorded from a running runtime. Re-check them against the spike's recorded
+// frames (~/output/t3-v2/frames) and replace them with recordings.
 import { describe, expect, test } from "bun:test";
 import type { PermissionMode } from "@useagent/agent-client/wire";
 import { json } from "./helpers";

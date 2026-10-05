@@ -7,8 +7,9 @@
 //
 // Activity ids are `<item id>:<phase>` (started, updated, completed): each
 // lifecycle phase is its own ledger row, and a later revision of the same
-// phase replaces its row (the ledger upserts by id). Command output and file
-// diffs never reach the plane: the runtime strips them from its wire copy.
+// phase replaces its row (the ledger upserts by id). Every payload carries the
+// runtime's own record under `v2`, untouched. Command output and file diffs
+// never reach the plane: the runtime strips them from its wire copy.
 import type { RuntimeActivity, RuntimeMessage, RuntimeThreadSnapshot } from "./runtime-orchestration";
 import { v2RunSettled, type V2Projection, type V2Run, type V2ThreadSnapshot, type V2TurnItem } from "./runtime-v2-wire";
 
@@ -132,7 +133,7 @@ function activity(item: V2TurnItem, kind: string, phase: string, payload: Rec, t
     tone,
     kind,
     summary: summaryOf(item, payload),
-    payload: { ...payload, v2Type: item.type, v2Status: item.status },
+    payload: { ...payload, v2: item },
     turnId: item.runId,
   };
 }
@@ -259,10 +260,16 @@ function itemActivities(item: V2TurnItem, projection: V2Projection): RuntimeActi
     }, "info")];
   }
   if (item.type === "error") {
+    // One error item per provider turn: while the provider retries it is
+    // running with the attempt, then it fails for good. A retry is a warning
+    // the no-progress watchdog counts; the final failure is the turn's error.
     const failure = record(item.failure);
-    return [activity(item, "runtime.error", "error", {
-      message: failure?.message, class: failure?.class, code: failure?.code, retryable: failure?.retryable,
-    }, "error")];
+    const reason = { message: failure?.message, class: failure?.class, code: failure?.code, retryable: failure?.retryable };
+    const retry = record(item.retry);
+    if (!v2RunSettled(item.status)) {
+      return [activity(item, "runtime.warning", "warning", { ...reason, ...(retry ? { detail: { attempt: retry.attempt } } : {}) }, "info")];
+    }
+    return [activity(item, "runtime.error", "error", reason, "error")];
   }
   const tool = toolActivity(item);
   return tool ? [tool] : [];
@@ -299,6 +306,7 @@ export function runtimeChildThreadActivities(snapshot: V2ThreadSnapshot, parentT
         text: message.text,
         status: message.streaming ? "running" : "completed",
         streamKind: "assistant_text",
+        v2: message,
       },
       turnId: message.runId,
     }));
@@ -317,7 +325,7 @@ function contextActivities(projection: V2Projection): RuntimeActivity[] {
       tone: "info" as const,
       kind: "context-window.updated",
       summary: "Context window",
-      payload: usage,
+      payload: { ...usage, v2: thread },
       turnId: run?.id ?? null,
     }];
   });

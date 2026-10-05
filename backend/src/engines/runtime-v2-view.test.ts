@@ -1,3 +1,7 @@
+// CONTRACT-SHAPED: these V2 frames are built from the runtime contract
+// (packages/contracts/src/orchestrationV2.ts at upstream ce90eec1f), not
+// recorded from a running runtime. Re-check them against the spike's recorded
+// frames (~/output/t3-v2/frames) and replace them with recordings.
 import { describe, expect, test } from "bun:test";
 import {
   activityStep,
@@ -117,6 +121,8 @@ describe("protocol 2 thread view", () => {
     expect(activity.payload).toMatchObject({ taskId: "child-1", agentKind: "agent", title: "Explorer", childSessionId: "child-1" });
     const event = runtimeActivityProviderEvent(ctx, "skynet-thread-thread-1", activity, redact);
     expect(event).toMatchObject({ eventType: "t3.activity.task.progress", nativeSessionId: "child-1", nativeCallId: "child-1" });
+    // The runtime's own record rides along, untouched.
+    expect(activity.payload).toMatchObject({ v2: { id: "si-1", type: "subagent", subagentId: "sa-1" } });
   });
 
   test("approvals and questions read as requested until their runtime request resolves", () => {
