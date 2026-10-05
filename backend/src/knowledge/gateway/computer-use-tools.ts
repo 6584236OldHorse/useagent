@@ -334,10 +334,18 @@ async function computerSandbox(claims: ToolTokenClaims): Promise<SandboxHandle> 
   return await resolveRunSandbox(run);
 }
 
+/** Desktop readiness per sandbox: a turn's tool calls probe the desktop once, not every call
+ *  (the probe and the relay file check cost seconds each over the provider API). A failed
+ *  command clears the entry so the next call probes again. */
+const desktopReadyUntil = new Map<string, number>();
+const DESKTOP_READY_TTL_MS = 60_000;
+
 async function readySandbox(claims: ToolTokenClaims): Promise<SandboxHandle> {
   const sandbox = await computerSandbox(claims);
+  if ((desktopReadyUntil.get(sandbox.id) ?? 0) > Date.now()) return sandbox;
   const desktop = await ensureSandboxDesktopView(sandbox, AbortSignal.timeout(60_000));
   if (!desktop.available) throw new Error(desktop.reason ?? "desktop failed readiness");
+  desktopReadyUntil.set(sandbox.id, Date.now() + DESKTOP_READY_TTL_MS);
   return sandbox;
 }
 
@@ -350,6 +358,7 @@ async function cubeCommand(sandbox: SandboxHandle, command: string): Promise<str
     60,
   );
   if ((executed.exitCode ?? 1) !== 0) {
+    desktopReadyUntil.delete(sandbox.id);
     throw new Error(
       (executed.result ?? "computer-use command failed; the desktop may still be starting - retry once").trim(),
     );
