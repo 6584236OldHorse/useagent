@@ -330,6 +330,12 @@ describe("deriveThreadContext", () => {
         native: { sessionId: "ses_child" },
         payload: { tokens: { input: 9_999, output: 1 } },
       }),
+      finish({
+        eventId: "u3",
+        seq: 3,
+        native: { sessionId: "ses_other", parentSessionId: "ses_root" },
+        payload: { tokens: { input: 8_888, output: 1 } },
+      }),
     ];
     expect(deriveThreadContext(frames, new Set(["ses_child"]))).toEqual({
       used: 530,

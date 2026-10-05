@@ -49,12 +49,14 @@ function messageId(frame: Record<string, unknown>, fallback: string): string {
 
 function usageFrame(
   message: Record<string, unknown> | null,
+  messageId: string,
   contextWindow?: number,
 ): NativeBridgeFrameBody | null {
   const usage = record(message?.usage);
   if (!usage) return null;
   return {
     kind: "usage.updated",
+    messageId,
     inputTokens: number(usage.input) ?? number(usage.inputTokens),
     outputTokens: number(usage.output) ?? number(usage.outputTokens),
     cacheReadTokens: number(usage.cacheRead),
@@ -291,7 +293,7 @@ function mapPiRpcFrame(frame: unknown, state: PiFrameState): readonly NativeBrid
           ? []
           : [{ kind: "message.authoritative", messageId: id, text: finalText } as const]),
         ...assistantToolCalls(message),
-        usageFrame(message, state.contextWindow),
+        usageFrame(message, id, state.contextWindow),
         assistantFailure(message),
         { kind: "message.completed", messageId: id },
       ].filter(Boolean) as NativeBridgeFrameBody[];

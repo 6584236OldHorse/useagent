@@ -300,6 +300,7 @@ export type CanonicalEventBody =
   | { kind: "mode.updated"; mode?: string; model?: string }
   | {
       kind: "usage.updated";
+      messageId?: string;
       inputTokens?: number;
       outputTokens?: number;
       cacheReadTokens?: number;

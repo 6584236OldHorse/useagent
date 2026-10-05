@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { limitRows } from "./codex-limits-card";
+import { limitRows } from "./subscription-limits-card";
 
 describe("limitRows", () => {
   const now = new Date("2026-09-13T12:00:00Z");

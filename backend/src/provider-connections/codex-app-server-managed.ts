@@ -64,8 +64,8 @@ export function createManagedCodexChatGptBroker(lifecycle: ManagedClientLifecycl
       scope: ProviderConnectionScope;
       appServer?: ManagedCodexAppServerClient;
     }): Promise<CodexRateLimits | null> => {
-      const appServer = input.appServer ?? await lifecycle.get(input.scope);
       try {
+        const appServer = input.appServer ?? await lifecycle.get(input.scope);
         return await readCodexRateLimits(appServer);
       } catch (error) {
         // A signed-out or unreachable account has no limits to show; the usage

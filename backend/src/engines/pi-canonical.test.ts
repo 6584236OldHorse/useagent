@@ -43,6 +43,7 @@ describe("Pi RPC canonical bridge mapping", () => {
     const usage = bodies.find((body) => body.kind === "usage.updated");
     expect(usage).toEqual({
       kind: "usage.updated",
+      messageId: "pi-message-5",
       inputTokens: 2,
       outputTokens: 1,
       cacheReadTokens: 40,

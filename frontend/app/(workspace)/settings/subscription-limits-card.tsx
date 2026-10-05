@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useOrgChanges } from "@/hooks/use-org-changes";
 import { AgentLimitsCard, type UsageLimit } from "@/components/pro/agent-limits-card";
 import { fetchCodexRateLimits } from "./provider-connections-api";
 import type { CodexRateLimits, CodexRateLimitWindow } from "./provider-connections-data";
@@ -52,21 +53,18 @@ const PLAN_NAMES: Record<string, string> = {
   free: "Free",
 };
 
-export function CodexLimitsCard() {
+export function SubscriptionLimitsCard() {
   const [limits, setLimits] = useState<CodexRateLimits | null>(null);
-  useEffect(() => {
-    let live = true;
+  const refresh = useCallback(() => {
     fetchCodexRateLimits()
-      .then((fresh) => {
-        if (live) setLimits(fresh);
-      })
-      .catch(() => {
-        /* no card without a readable subscription */
-      });
-    return () => {
-      live = false;
-    };
+      .then(setLimits)
+      .catch(() => setLimits(null));
   }, []);
+  useEffect(refresh, [refresh]);
+  // Connecting or revoking the account elsewhere on the page changes the answer.
+  useOrgChanges((change) => {
+    if (change.type === "provider_connection") refresh();
+  });
   if (!limits) return null;
   const rows = limitRows(limits, new Date());
   if (rows.length === 0) return null;

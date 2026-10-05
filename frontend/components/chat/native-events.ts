@@ -79,6 +79,7 @@ export function deriveThreadContext(
   let latest: { seq: number; context: ThreadContext } | null = null;
   for (const frame of frames) {
     if (frame.eventType !== "part.step-finish") continue;
+    if (frame.native.parentSessionId) continue;
     if (frame.native.sessionId && childSessionIds.has(frame.native.sessionId)) continue;
     if (latest && frame.seq <= latest.seq) continue;
     const payload = asRecord(frame.payload);

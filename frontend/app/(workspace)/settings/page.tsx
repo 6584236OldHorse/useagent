@@ -4,7 +4,7 @@ import { Chip } from "@/components/base/badges/chip";
 import { LocalLoginAvailability } from "@/components/runners/local-login-availability";
 import { MachinesCard } from "@/components/runners/machines-card";
 import { ApiKeysCard } from "./api-keys-card";
-import { CodexLimitsCard } from "./codex-limits-card";
+import { SubscriptionLimitsCard } from "./subscription-limits-card";
 import { ComputerConnectionsCard } from "./computer-connections-card";
 import { GeneralCard } from "./general-card";
 import { IntegrationConnections } from "./integration-connections";
@@ -138,7 +138,7 @@ export default function SettingsPage() {
                   bar was removed rather than faked. */}
                 {/* Plan usage windows of the ChatGPT subscription behind Codex,
                   when one is signed in. */}
-                <CodexLimitsCard />
+                <SubscriptionLimitsCard />
                 <UsageMeters />
               </Section>
 
