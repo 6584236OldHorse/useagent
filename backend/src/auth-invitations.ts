@@ -57,13 +57,54 @@ export function headerSafe(value: string): string {
 /** Longest a delivery may take before the invitation is left as link-only. */
 export const INVITATION_MAIL_TIMEOUT_MS = 20_000;
 
-export function invitationMessage(notice: InvitationNotice): { subject: string; text: string } {
+export const PRODUCT_NAME = "UseAgent";
+
+export interface AccountMail {
+  readonly subject: string;
+  readonly text: string;
+  readonly html: string;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+/** One layout for every account mail: the product name, a title, a paragraph,
+ *  one button, the small print, and the button's link spelled out for clients
+ *  that strip styles. Inline styles only; mail clients drop everything else. */
+export function accountMailHtml(mail: {
+  readonly title: string;
+  readonly intro: string;
+  readonly button: { readonly label: string; readonly href: string };
+  readonly notes: readonly string[];
+}): string {
+  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif";
+  const note = (html: string) => `<p style="margin:0 0 8px;font-size:13px;line-height:1.5;color:#6b7280">${html}</p>`;
+  return [
+    `<div style="margin:0;padding:32px 16px;background:#f5f6f8;font-family:${font};color:#111827">`,
+    '<div style="max-width:520px;margin:0 auto;padding:32px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px">',
+    `<p style="margin:0 0 24px;font-size:14px;font-weight:600;color:#111827">${PRODUCT_NAME}</p>`,
+    `<h1 style="margin:0 0 12px;font-size:20px;font-weight:600;line-height:1.3">${escapeHtml(mail.title)}</h1>`,
+    `<p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#374151">${escapeHtml(mail.intro)}</p>`,
+    `<a href="${escapeHtml(mail.button.href)}" style="display:inline-block;padding:12px 20px;background:#111827;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px">${escapeHtml(mail.button.label)}</a>`,
+    '<div style="margin-top:28px">',
+    ...mail.notes.map(note),
+    "</div>",
+    "</div>",
+    '<p style="max-width:520px;margin:16px auto 0;font-size:12px;line-height:1.5;color:#9ca3af;text-align:center;word-break:break-all">',
+    `If the button does not work, open this link:<br><a href="${escapeHtml(mail.button.href)}" style="color:#9ca3af">${escapeHtml(mail.button.href)}</a>`,
+    "</p>",
+    "</div>",
+  ].join("\n");
+}
+
+export function invitationMessage(notice: InvitationNotice): AccountMail {
   const role = notice.role === "admin" ? "an admin" : notice.role === "owner" ? "an owner" : "a member";
   const until = notice.expiresAt.toISOString().slice(0, 10);
   const inviter = headerSafe(notice.inviter) || "A teammate";
   const organization = headerSafe(notice.organization) || "a workspace";
   return {
-    subject: `${inviter} invited you to ${organization} on useAgent`,
+    subject: `${inviter} invited you to ${organization} on ${PRODUCT_NAME}`,
     text: [
       `${inviter} invited you to join ${organization} as ${role}.`,
       "",
@@ -71,6 +112,12 @@ export function invitationMessage(notice: InvitationNotice): { subject: string; 
       "",
       `Sign in with this email address. The link works until ${until}.`,
     ].join("\n"),
+    html: accountMailHtml({
+      title: `Join ${organization}`,
+      intro: `${inviter} invited you to join ${organization} as ${role}.`,
+      button: { label: "Accept invitation", href: notice.link },
+      notes: [`Sign in with this email address. The link works until ${until}.`],
+    }),
   };
 }
 
@@ -113,7 +160,7 @@ export async function deliverInvitation(
       pass: config.pass,
       timeoutMs: INVITATION_MAIL_TIMEOUT_MS,
     },
-    { from: config.from, to: [data.email], subject: message.subject, text: message.text },
+    { from: config.from, fromName: PRODUCT_NAME, to: [data.email], subject: message.subject, text: message.text, html: message.html },
   );
   console.log(`[auth] invitation ${data.id} emailed to ${data.email}`);
   return "sent";
@@ -177,11 +224,21 @@ export function confirmationLinks(token: string, origin: string = env.BETTER_AUT
   };
 }
 
-export function verificationMessage(links: ConfirmationLinks): { subject: string; text: string } {
+export function verificationMessage(links: ConfirmationLinks): AccountMail {
+  const intro = `Someone signed up for ${PRODUCT_NAME} with this address. If that was you, confirm it to sign in.`;
   return {
-    subject: "Confirm your useAgent sign-up",
+    subject: `Confirm your ${PRODUCT_NAME} sign-up`,
+    html: accountMailHtml({
+      title: "Confirm your sign-up",
+      intro,
+      button: { label: "Confirm email", href: links.confirm },
+      notes: [
+        `The password for this sign-up was chosen by whoever filled in the form. If that was not you, do not confirm; <a href="${escapeHtml(links.decline)}" style="color:#6b7280">cancel the sign-up</a> instead, and nothing is created.`,
+        "Both links work for one hour.",
+      ],
+    }),
     text: [
-      "Someone signed up for useAgent with this address. If that was you, confirm it to sign in:",
+      `Someone signed up for ${PRODUCT_NAME} with this address. If that was you, confirm it to sign in:`,
       "",
       links.confirm,
       "",
@@ -214,7 +271,7 @@ export async function deliverVerification(
       pass: config.pass,
       timeoutMs: INVITATION_MAIL_TIMEOUT_MS,
     },
-    { from: config.from, to: [email], subject: message.subject, text: message.text },
+    { from: config.from, fromName: PRODUCT_NAME, to: [email], subject: message.subject, text: message.text, html: message.html },
   );
   console.log(`[auth] sign-up verification emailed to ${email}`);
 }
