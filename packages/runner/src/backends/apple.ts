@@ -14,6 +14,7 @@ import {
   type DialedConnection,
   type ExecOptions,
   type LocalBackend,
+  type RegistryLogin,
 } from "./types";
 
 const flags: CliFlags = {
