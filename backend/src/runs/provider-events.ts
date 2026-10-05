@@ -3,9 +3,9 @@ import { db, type Executor } from "../db/client";
 import { providerEvents } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
 import { errorMessage } from "../util/error-message";
-import { executionGraphWriteEnabled } from "./execution-graph-rollout";
-import { shadowWriteExecutionGraph } from "./execution-graph-shadow-writer";
 import { noteCaptureLoss } from "./capture-loss";
+import { executionGraphEnabled } from "./execution-graph-switch";
+import { writeExecutionGraph } from "./execution-graph-writer";
 
 export const PROVIDER_PAYLOAD_CAP_BYTES = 32 * 1_024;
 export const CHILD_TRANSCRIPT_PAYLOAD_CAP_BYTES = 512 * 1_024;
@@ -284,8 +284,8 @@ async function persistAndPublishIfAbsent(
 
   if (inserted.length === 0) return false;
 
-  if (executionGraphWriteEnabled()) {
-    await shadowWriteExecutionGraph(input, assignedSeq);
+  if (executionGraphEnabled()) {
+    await writeExecutionGraph(input, assignedSeq);
   }
 
   publishNativeFrame(
@@ -330,8 +330,8 @@ async function persistAndPublish(input: ProviderEventInput, seq: RunSequencer): 
  *  transaction: a graph error can neither roll the native upsert back nor notify a
  *  subscriber before the commit it describes. */
 async function writeGraphAfterDurable(input: ProviderEventInput, assignedSeq: number): Promise<void> {
-  if (executionGraphWriteEnabled()) {
-    await shadowWriteExecutionGraph(input, assignedSeq);
+  if (executionGraphEnabled()) {
+    await writeExecutionGraph(input, assignedSeq);
   }
 }
 

@@ -621,7 +621,7 @@ async function recoverPendingObservations(
   }
 }
 
-async function writeExecutionGraph(
+async function applyExecutionGraphWrite(
   input: ProviderEventInput,
   deliverySeq: number,
   exec: Executor,
@@ -729,7 +729,9 @@ export async function auditExecutionGraphAtSeal(
       const source = providerInputFromRow(row);
       const observation = graphObservation(source.input);
       if (observation) {
-        await writeExecutionGraph(source.input, source.seq, exec);
+        // The strict core, not the fail-open wrapper: an audit must surface a
+        // reconstruction failure so the seal can fail closed on it.
+        await applyExecutionGraphWrite(source.input, source.seq, exec);
         continue;
       }
       const pointer = await executionGraphPendingObservationBySource({
@@ -768,14 +770,15 @@ export async function auditExecutionGraphAtSeal(
   return blockers.length;
 }
 
-/** Fail-open shadow writer. It never exposes payloads or rejects provider delivery. */
-export async function shadowWriteExecutionGraph(
+/** The execution graph writer, called after every durable provider event. Fail-open: it
+ *  never exposes payloads or rejects provider delivery. */
+export async function writeExecutionGraph(
   input: ProviderEventInput,
   deliverySeq: number,
   exec: Executor = db,
 ): Promise<void> {
   try {
-    const result = await writeExecutionGraph(input, deliverySeq, exec);
+    const result = await applyExecutionGraphWrite(input, deliverySeq, exec);
     if (result?.changed) {
       publishOrgChange(result.orgId, {
         type: "execution_graph",
@@ -785,7 +788,7 @@ export async function shadowWriteExecutionGraph(
       });
     }
   } catch (error) {
-    console.warn("[execution-graph-shadow] write failed", {
+    console.warn("[execution-graph] write failed", {
       runId: input.runId.slice(0, LOG_VALUE_CAP),
       eventId: input.id.slice(0, LOG_VALUE_CAP),
       provider: input.provider.slice(0, LOG_VALUE_CAP),

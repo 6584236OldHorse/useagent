@@ -19,7 +19,7 @@ import {
 import { acceptThreadFollowup } from "../runs/thread-followups";
 import { getThreadRelationship } from "../runs/thread-relationship-repo";
 import { defaultModelForEngine } from "../runs/model-policy";
-import { productChildThreadsEnabled } from "../runs/thread-relationship-rollout";
+import { productChildThreadsEnabled } from "../runs/thread-relationship-switch";
 import { botsEnabled } from "./rollout";
 import { BOT_HANDOFF_RUN_ORIGIN } from "../runs/origin";
 import {
@@ -618,7 +618,7 @@ export async function handoffToBot(input: {
 
 /** Handoffs are real only as independently messageable product child threads. */
 export function handoffsAvailable(orgId: string | null): boolean {
-  return botsEnabled(orgId) && productChildThreadsEnabled(orgId);
+  return botsEnabled(orgId) && productChildThreadsEnabled();
 }
 
 /**
@@ -636,7 +636,7 @@ export async function dispatchBotHandoffs(input: {
   readonly botIds: readonly string[];
 }): Promise<HandoffResult[]> {
   if (input.botIds.length === 0 || !botsEnabled(input.orgId)) return [];
-  if (!productChildThreadsEnabled(input.orgId)) {
+  if (!productChildThreadsEnabled()) {
     return input.botIds.map((botId) => ({
       botId,
       name: "",

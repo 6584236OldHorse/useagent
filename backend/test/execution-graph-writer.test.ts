@@ -13,11 +13,11 @@ import {
   runs,
 } from "../src/db/schema";
 import { piBridgeProviderEvent } from "../src/engines/pi-provider-events";
-import { executionGraphWriteEnabled } from "../src/runs/execution-graph-rollout";
+import { executionGraphEnabled } from "../src/runs/execution-graph-switch";
 import {
   executionGraphObservationKind,
-  shadowWriteExecutionGraph as writeExecutionGraph,
-} from "../src/runs/execution-graph-shadow-writer";
+  writeExecutionGraph,
+} from "../src/runs/execution-graph-writer";
 import type { ProviderEventInput } from "../src/runs/provider-events";
 import { subscribeOrg } from "../src/runs/org-signals";
 
@@ -55,7 +55,7 @@ async function seedRun(orgId: string): Promise<string> {
 
 /** Production invokes the graph writer only after provider-event durability.
  * Keep the focused writer tests on that real boundary. */
-async function shadowWriteExecutionGraph(
+async function writeProviderEventAndGraph(
   input: ProviderEventInput,
   deliverySeq: number,
   exec = testDb,
@@ -98,12 +98,12 @@ async function shadowWriteExecutionGraph(
   await writeExecutionGraph(input, deliverySeq, exec);
 }
 
-describe("execution graph shadow writer", () => {
-  test("keeps the writer disabled in off mode and enabled for shadow/read", () => {
-    expect(executionGraphWriteEnabled({})).toBe(false);
-    expect(executionGraphWriteEnabled({ EXECUTION_GRAPH_ROLLOUT: "off" })).toBe(false);
-    expect(executionGraphWriteEnabled({ EXECUTION_GRAPH_ROLLOUT: "shadow" })).toBe(true);
-    expect(executionGraphWriteEnabled({ EXECUTION_GRAPH_ROLLOUT: "read" })).toBe(true);
+describe("execution graph writer", () => {
+  test("the writer is on by default and off only behind the kill switch", () => {
+    expect(executionGraphEnabled({})).toBe(true);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "off" })).toBe(false);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "shadow" })).toBe(true);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "read" })).toBe(true);
   });
 
   test("classifies only graph-semantic events before any database lookup", () => {
@@ -153,7 +153,7 @@ describe("execution graph shadow writer", () => {
     const runId = await seedRun(orgId);
     const changes: unknown[] = [];
     const unsubscribe = subscribeOrg(orgId, (change) => changes.push(change));
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root:session`,
       runId,
       threadId: runId,
@@ -161,7 +161,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "root-session",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:child:session`,
       runId,
       threadId: runId,
@@ -177,7 +177,7 @@ describe("execution graph shadow writer", () => {
       graphCursor: 1,
     });
     unsubscribe();
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:task-wrapper`,
       runId,
       threadId: runId,
@@ -195,7 +195,7 @@ describe("execution graph shadow writer", () => {
         },
       },
     }, 2, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:resume-control-started`,
       runId,
       threadId: runId,
@@ -213,7 +213,7 @@ describe("execution graph shadow writer", () => {
         },
       },
     }, 3, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:ambiguous-child`,
       runId,
       threadId: runId,
@@ -239,7 +239,7 @@ describe("execution graph shadow writer", () => {
   test("attaches live Codex children to the unique root when provider parent identity differs", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -247,7 +247,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: `product-thread-${runId}`,
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:child-started`,
       runId,
       threadId: runId,
@@ -293,7 +293,7 @@ describe("execution graph shadow writer", () => {
   test("never mis-parents a reversed nested child to the root", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -301,7 +301,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: `product-thread-${runId}`,
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:nested-before-parent`,
       runId,
       threadId: runId,
@@ -331,7 +331,7 @@ describe("execution graph shadow writer", () => {
   test("recovers exact nested ancestry when the missing parent arrives later", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -339,7 +339,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: `product-thread-${runId}`,
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:nested-before-parent`,
       runId,
       threadId: runId,
@@ -367,7 +367,7 @@ describe("execution graph shadow writer", () => {
       }),
     ]);
 
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:parent-arrives`,
       runId,
       threadId: runId,
@@ -432,9 +432,9 @@ describe("execution graph shadow writer", () => {
         payload: { taskId: id, parentAgentId: parent, agentKind: "agent", agentPath: path },
       },
     } as const);
-    await shadowWriteExecutionGraph(task("child-b", "child-a", "/root/a/b"), 1, testDb);
-    await shadowWriteExecutionGraph(task("child-a", "root", "/root/a"), 2, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph(task("child-b", "child-a", "/root/a/b"), 1, testDb);
+    await writeProviderEventAndGraph(task("child-a", "root", "/root/a"), 2, testDb);
+    await writeProviderEventAndGraph({
       id: `${runId}:root`, runId, threadId: runId, provider: "t3",
       eventType: "session.started", nativeSessionId: "root",
     }, 3, testDb);
@@ -452,7 +452,7 @@ describe("execution graph shadow writer", () => {
   test("replays a terminal lifecycle that arrived before its spawn", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -460,7 +460,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "parent",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:terminal-before-spawn`,
       runId,
       threadId: runId,
@@ -473,7 +473,7 @@ describe("execution graph shadow writer", () => {
         payload: { taskId: "child", parentAgentId: "parent", agentKind: "agent", status: "completed" },
       },
     }, 1, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:spawn`,
       runId,
       threadId: runId,
@@ -500,7 +500,7 @@ describe("execution graph shadow writer", () => {
   test("persists edge-only control with an unknown target and never rewrites the child FK", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -508,7 +508,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "parent",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:wait`,
       runId,
       threadId: runId,
@@ -534,7 +534,7 @@ describe("execution graph shadow writer", () => {
       nativeTargetSessionId: "future-child",
       kind: "wait",
     });
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:future-child`,
       runId,
       threadId: runId,
@@ -561,13 +561,13 @@ describe("execution graph shadow writer", () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
     const base = { runId, threadId: runId, provider: "t3" } as const;
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       ...base,
       id: `${runId}:root`,
       eventType: "session.started",
       nativeSessionId: "parent",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       ...base,
       id: `${runId}:beta-complete-early`,
       eventType: "t3.activity.task.completed",
@@ -578,7 +578,7 @@ describe("execution graph shadow writer", () => {
         payload: { taskId: "beta", parentAgentId: "parent", agentKind: "agent" },
       },
     }, 1, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       ...base,
       id: `${runId}:spawn-alpha`,
       eventType: "t3.activity.task.started",
@@ -605,7 +605,7 @@ describe("execution graph shadow writer", () => {
         },
       },
     } as const;
-    await shadowWriteExecutionGraph(wait, 3, testDb);
+    await writeProviderEventAndGraph(wait, 3, testDb);
     const spawnBeta = {
       ...base,
       id: `${runId}:spawn-beta`,
@@ -617,12 +617,12 @@ describe("execution graph shadow writer", () => {
         payload: { taskId: "beta", parentAgentId: "parent", agentKind: "agent" },
       },
     } as const;
-    await shadowWriteExecutionGraph(spawnBeta, 4, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph(spawnBeta, 4, testDb);
+    await writeProviderEventAndGraph({
       ...spawnBeta,
       payload: { ...spawnBeta.payload, fixtureRevision: 2 },
     }, 5, testDb);
-    await shadowWriteExecutionGraph(wait, 6, testDb);
+    await writeProviderEventAndGraph(wait, 6, testDb);
 
     const executions = await testDb.select().from(agentExecutions).where(
       eq(agentExecutions.runId, runId),
@@ -651,7 +651,7 @@ describe("execution graph shadow writer", () => {
   test("treats a post-apply control target revision as structural mismatch", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`, runId, threadId: runId, provider: "t3",
       eventType: "session.started", nativeSessionId: "parent",
     }, 0, testDb);
@@ -674,8 +674,8 @@ describe("execution graph shadow writer", () => {
         },
       },
     } as const);
-    await shadowWriteExecutionGraph(control("child-a"), 1, testDb);
-    await shadowWriteExecutionGraph(control("child-b"), 2, testDb);
+    await writeProviderEventAndGraph(control("child-a"), 1, testDb);
+    await writeProviderEventAndGraph(control("child-b"), 2, testDb);
     expect(await testDb.select().from(delegationEdges).where(
       eq(delegationEdges.runId, runId),
     )).toEqual([
@@ -694,7 +694,7 @@ describe("execution graph shadow writer", () => {
   test("recovers a control whose exact parent execution arrived late", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -702,7 +702,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "root",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:late-control`,
       runId,
       threadId: runId,
@@ -723,7 +723,7 @@ describe("execution graph shadow writer", () => {
     expect(await testDb.select().from(delegationEdges).where(
       eq(delegationEdges.runId, runId),
     )).toEqual([]);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:late-parent`,
       runId,
       threadId: runId,
@@ -747,7 +747,7 @@ describe("execution graph shadow writer", () => {
   test("recovers an OpenCode child identity from a completed task receipt", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -755,7 +755,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: `product-thread-${runId}`,
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:delegate-complete`,
       runId,
       threadId: runId,
@@ -794,7 +794,7 @@ describe("execution graph shadow writer", () => {
   test("keeps T3 resume observations edge-only and does not mutate attempts", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -802,7 +802,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "parent",
     }, 0, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:task`,
       runId,
       threadId: runId,
@@ -822,7 +822,7 @@ describe("execution graph shadow writer", () => {
         },
       },
     }, 1, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:resume-control`,
       runId,
       threadId: runId,
@@ -840,7 +840,7 @@ describe("execution graph shadow writer", () => {
         },
       },
     }, 2, testDb);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:child-tool-complete`,
       runId,
       threadId: runId,
@@ -864,7 +864,7 @@ describe("execution graph shadow writer", () => {
   test("projects explicit Pi child identities without treating the parent session as the child", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -881,13 +881,13 @@ describe("execution graph shadow writer", () => {
       { kind: "child.completed", childId: "child-a", status: "ok", result: "A" },
     ] as const;
     for (const [index, body] of events.entries()) {
-      await shadowWriteExecutionGraph(
+      await writeProviderEventAndGraph(
         piBridgeProviderEvent({ runId, threadId: runId }, frames.frame(body)),
         index + 1,
         testDb,
       );
     }
-    await shadowWriteExecutionGraph(
+    await writeProviderEventAndGraph(
       piBridgeProviderEvent(
         { runId, threadId: runId },
         frames.frame({
@@ -931,7 +931,7 @@ describe("execution graph shadow writer", () => {
   test("fails open for unsupported and malformed observations", async () => {
     const orgId = `org-${crypto.randomUUID()}`;
     const runId = await seedRun(orgId);
-    await expect(shadowWriteExecutionGraph({
+    await expect(writeProviderEventAndGraph({
       id: `${runId}:unsupported`,
       runId,
       threadId: runId,
@@ -939,7 +939,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "ignored",
     }, 0, testDb)).resolves.toBeUndefined();
-    await expect(shadowWriteExecutionGraph({
+    await expect(writeProviderEventAndGraph({
       id: `${runId}:unknown`,
       runId,
       threadId: runId,
@@ -947,7 +947,7 @@ describe("execution graph shadow writer", () => {
       eventType: "t3.activity.unknown",
       payload: { unexpected: true },
     }, 1, testDb)).resolves.toBeUndefined();
-    await shadowWriteExecutionGraph({
+    await writeProviderEventAndGraph({
       id: `${runId}:root`,
       runId,
       threadId: runId,
@@ -955,7 +955,7 @@ describe("execution graph shadow writer", () => {
       eventType: "session.started",
       nativeSessionId: "root-one",
     }, 2, testDb);
-    await expect(shadowWriteExecutionGraph({
+    await expect(writeProviderEventAndGraph({
       id: `${runId}:conflicting-root`,
       runId,
       threadId: runId,

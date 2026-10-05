@@ -73,8 +73,10 @@ const EXECUTION: ExecutionCapabilitySnapshot = {
 const P = executionCapabilityPrompt(EXECUTION);
 const userRequest = (prompt: string) =>
   `<current_user_request>\n${prompt}\n</current_user_request>`;
+// Product fan-out routing is on by default; the shape tests below switch it off so the
+// exact section order stays readable. The fan-out advert has its own tests.
 const compose = (context: ReturnType<typeof ctx>, resumed: boolean) =>
-  composeTurnPrompt(context, resumed, EXECUTION, {});
+  composeTurnPrompt(context, resumed, EXECUTION, { PRODUCT_CHILD_THREADS: "off" });
 
 describe("composeTurnPrompt — fresh vs resumed context", () => {
   test("uses the current product brand in model-visible workflow guidance", () => {
@@ -107,16 +109,12 @@ describe("composeTurnPrompt — fresh vs resumed context", () => {
       .not.toContain("child_session_create_many");
   });
 
-  test("advertises product fan-out only to eligible public canary org turns", () => {
-    const env = {
-      PRODUCT_CHILD_THREADS: "off",
-      PRODUCT_CHILD_CANARY_ORG_IDS: "org-canary",
-    };
-    expect(composeTurnPrompt(ctx({ orgId: "org-canary" }), true, EXECUTION, env))
+  test("advertises product fan-out to public turns by default, never when switched off or to internal turns", () => {
+    expect(composeTurnPrompt(ctx({ orgId: "org-any" }), true, EXECUTION, {}))
       .toContain("child_session_create_many");
-    expect(composeTurnPrompt(ctx({ orgId: "org-other" }), true, EXECUTION, env))
+    expect(composeTurnPrompt(ctx({ orgId: "org-any" }), true, EXECUTION, { PRODUCT_CHILD_THREADS: "off" }))
       .not.toContain("child_session_create_many");
-    expect(composeTurnPrompt(ctx({ orgId: "org-canary", origin: "internal:eval" }), true, EXECUTION, env))
+    expect(composeTurnPrompt(ctx({ orgId: "org-any", origin: "internal:eval" }), true, EXECUTION, {}))
       .not.toContain("child_session_create_many");
   });
 

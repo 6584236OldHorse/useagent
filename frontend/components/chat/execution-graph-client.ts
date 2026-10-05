@@ -1,13 +1,10 @@
 import { type StoredCanonicalEvent, validateCanonicalEvent } from "./canonical-timeline";
 
-export type ExecutionGraphClientMode = "off" | "shadow" | "read";
-
-export const EXECUTION_GRAPH_CLIENT_MODE: ExecutionGraphClientMode =
-  process.env.NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT === "read"
-    ? "read"
-    : process.env.NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT === "shadow"
-      ? "shadow"
-      : "off";
+/** Execution graph kill switch on the client, a build-time input. On unless the build
+ *  sets `NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=off`; the variable keeps its historical
+ *  name so an existing `read` value means on. */
+export const EXECUTION_GRAPH_CLIENT_ENABLED =
+  process.env.NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT?.trim().toLowerCase() !== "off";
 
 export interface ExecutionGraphRow {
   readonly id: string;

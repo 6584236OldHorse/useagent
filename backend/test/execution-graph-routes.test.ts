@@ -6,10 +6,7 @@ import { isBearerAllowedPath } from "../src/middleware/bearer";
 import { MODEL_QUALIFICATION_RUN_ORIGIN } from "../src/runs/origin";
 import { persistCanonicalEvents } from "../src/runs/canonical-events";
 import { createRootExecution, recordNativeChildSpawn } from "../src/runs/execution-graph-repo";
-import {
-  executionGraphReadEnabled,
-  executionGraphRolloutMode,
-} from "../src/runs/execution-graph-rollout";
+import { executionGraphEnabled } from "../src/runs/execution-graph-switch";
 import { createOrgSession, json, uid } from "./helpers";
 
 const previousMode = process.env.EXECUTION_GRAPH_ROLLOUT;
@@ -19,15 +16,15 @@ afterEach(() => {
   else process.env.EXECUTION_GRAPH_ROLLOUT = previousMode;
 });
 
-describe("execution graph rollout", () => {
-  test("defaults missing and invalid values to off", () => {
-    expect(executionGraphRolloutMode({})).toBe("off");
-    expect(executionGraphRolloutMode({ EXECUTION_GRAPH_ROLLOUT: "invalid" })).toBe("off");
-    expect(executionGraphRolloutMode({ EXECUTION_GRAPH_ROLLOUT: " SHADOW " })).toBe("shadow");
-    expect(executionGraphReadEnabled({ EXECUTION_GRAPH_ROLLOUT: "read" })).toBe(true);
+describe("execution graph switch", () => {
+  test("is on unless switched off; the historical read and shadow values both mean on", () => {
+    expect(executionGraphEnabled({})).toBe(true);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "read" })).toBe(true);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: "shadow" })).toBe(true);
+    expect(executionGraphEnabled({ EXECUTION_GRAPH_ROLLOUT: " OFF " })).toBe(false);
   });
 
-  test("keeps the graph route session-only and hidden until read mode", async () => {
+  test("keeps the graph route session-only and hidden while switched off", async () => {
     const owner = await createOrgSession(uid("graph-owner"));
     const outsider = await createOrgSession(uid("graph-outsider"));
     const accepted = await json<{ id: string }>("/api/runs", {
@@ -40,10 +37,8 @@ describe("execution graph rollout", () => {
     const path = `/api/runs/${accepted.body.id}/executions`;
     expect(isBearerAllowedPath("GET", path)).toBe(false);
 
-    for (const mode of ["off", "shadow"] as const) {
-      process.env.EXECUTION_GRAPH_ROLLOUT = mode;
-      expect((await json(path, { cookies: owner.cookies })).status).toBe(404);
-    }
+    process.env.EXECUTION_GRAPH_ROLLOUT = "off";
+    expect((await json(path, { cookies: owner.cookies })).status).toBe(404);
 
     process.env.EXECUTION_GRAPH_ROLLOUT = "read";
     const own = await json<{

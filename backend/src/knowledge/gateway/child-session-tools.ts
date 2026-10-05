@@ -14,7 +14,7 @@ import {
 } from "../../runs/child-sessions";
 import { acceptProductChildBatch } from "../../runs/child-thread-batch-service";
 import { CHILD_BATCH_LIMIT, CHILD_PROMPT_MAX_CHARS, CHILD_TITLE_MAX_CHARS } from "../../runs/child-session-policy";
-import { productChildThreadsEnabled } from "../../runs/thread-relationship-rollout";
+import { productChildThreadsEnabled } from "../../runs/thread-relationship-switch";
 import { MENTIONS_MAX, distinctBotsHandedOffByRun, handoffToBot, handoffsAvailable, resolveBotMention } from "../../bots/handoffs";
 import type { GatewayToolListOptions } from "./operation-registry";
 import { botsEnabled } from "../../bots/rollout";
@@ -316,7 +316,7 @@ async function createMany(
   args: Record<string, unknown>,
 ): Promise<ToolCallResult> {
   const run = await currentRun(claims);
-  if (!run || !(await childSessionToolsEnabled(claims)) || !productChildThreadsEnabled(claims.orgId)) {
+  if (!run || !(await childSessionToolsEnabled(claims)) || !productChildThreadsEnabled()) {
     return errorResult("Product child fan-out is not enabled for the current live run.");
   }
   const idempotencyKey = cleanString(args.idempotencyKey);

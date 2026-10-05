@@ -28,6 +28,7 @@ for service in backend gateway frontend; do
     --platform linux/amd64 \
     --file "$repo_root/Dockerfile.${service}" \
     --build-arg "RELEASE_COMMIT=${commit}" \
+    --build-arg "NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=${NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT:-read}" \
     --provenance=mode=max \
     --sbom=true \
     --tag "$image" \

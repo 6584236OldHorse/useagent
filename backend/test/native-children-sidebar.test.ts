@@ -74,10 +74,8 @@ describe("sidebar native-children projection", () => {
       status: "running",
     });
 
-    for (const mode of ["off", "shadow"] as const) {
-      process.env.EXECUTION_GRAPH_ROLLOUT = mode;
-      expect((await summaryFor(rootId))?.native_children).toBeUndefined();
-    }
+    process.env.EXECUTION_GRAPH_ROLLOUT = "off";
+    expect((await summaryFor(rootId))?.native_children).toBeUndefined();
 
     process.env.EXECUTION_GRAPH_ROLLOUT = "read";
     expect((await summaryFor(rootId))?.native_children).toHaveLength(1);
