@@ -32,7 +32,7 @@ describe("sandbox boot entrypoint", () => {
   });
 
   test("the baked boot starts the runtime with the plane's flags", () => {
-    expect(script).toContain('"mcp=off,continuations=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
+    expect(script).toContain('"mcp=off,continuations=off,instructions=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"');
     // The baked boot starts the runtime with third-party telemetry off.
     expect(script).toContain("export T3CODE_TELEMETRY_ENABLED=false");
   });

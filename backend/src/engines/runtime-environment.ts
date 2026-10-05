@@ -49,10 +49,11 @@ const RUNTIME_FLAGS_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-flag
 /** Present while the image's boot entrypoint is still bringing the runtime up. */
 export const RUNTIME_BOOT_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-booting`;
 
-// The runtime's own MCP tools, its self-started continuations and its telemetry are always off;
-// they ride the marker so a runtime started without the switches is never accepted as ready.
+// The runtime's own MCP tools, its self-started continuations, its runtime text in the agent's
+// instructions and its telemetry are always off; they ride the marker so a runtime started without
+// the switches is never accepted as ready.
 export function runtimeEnvironmentFlags(): string {
-  return "mcp=off,continuations=off,telemetry=off";
+  return "mcp=off,continuations=off,instructions=off,telemetry=off";
 }
 /** Pins the runtime settings that would let it start runs by itself (both default off today). */
 const RUNTIME_SETTINGS_PINS_SCRIPT =
@@ -199,6 +200,8 @@ export function buildRuntimeEnvironmentLaunchCommand(
     // forks or schedules the plane never sees, and no run the runtime starts by itself.
     "export T3_PROVIDER_MCP=off",
     "export T3_PROVIDER_CONTINUATIONS=off",
+    // The plane writes the agent's preamble; none of the runtime's own text is added to it.
+    "export T3_PROVIDER_INSTRUCTIONS=off",
     // Not secret: the runtime's own Claude session helpers (fork, subagent resume) look
     // transcripts up here, where the Claude wrapper keeps them.
     `export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR}"`,

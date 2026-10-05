@@ -518,11 +518,11 @@ describe("T3 Cube environment", () => {
 
 describe("runtime flags marker", () => {
   test("the launch records the flags it started with and readiness checks the plane still wants them", () => {
-    expect(runtimeEnvironmentFlags()).toBe("mcp=off,continuations=off,telemetry=off");
+    expect(runtimeEnvironmentFlags()).toBe("mcp=off,continuations=off,instructions=off,telemetry=off");
     expect(buildRuntimeEnvironmentLaunchCommand({})).toContain(
-      `printf '%s\\n' "mcp=off,continuations=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"`,
+      `printf '%s\\n' "mcp=off,continuations=off,instructions=off,telemetry=off" > "/root/.skynet/t3/.useagent-runtime-flags"`,
     );
-    expect(buildRuntimeEnvironmentReadinessCommand()).toContain('.useagent-runtime-flags" 2>/dev/null)" = "mcp=off,continuations=off,telemetry=off"');
+    expect(buildRuntimeEnvironmentReadinessCommand()).toContain('.useagent-runtime-flags" 2>/dev/null)" = "mcp=off,continuations=off,instructions=off,telemetry=off"');
   });
 
   test("every launch turns the runtime's third-party telemetry off, and an older launch is not ready", () => {
@@ -533,7 +533,7 @@ describe("runtime flags marker", () => {
       expect(launch.indexOf("export T3CODE_TELEMETRY_ENABLED=false")).toBeLessThan(launch.indexOf(" serve --host"));
     }
     // A runtime an older image booted wrote a marker without the switches; readiness refuses it.
-    for (const older of ["child-forwarding=off", "child-forwarding=off,telemetry=off"]) {
+    for (const older of ["child-forwarding=off", "child-forwarding=off,telemetry=off", "mcp=off,continuations=off,telemetry=off"]) {
       expect(Bun.spawnSync(["sh", "-c", `test "${older}" = "${runtimeEnvironmentFlags()}"`]).exitCode).not.toBe(0);
     }
   });
@@ -569,6 +569,7 @@ describe("runtime flags marker", () => {
       for (const line of [
         "export T3_PROVIDER_MCP=off",
         "export T3_PROVIDER_CONTINUATIONS=off",
+        "export T3_PROVIDER_INSTRUCTIONS=off",
         `export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR}"`,
       ]) {
         expect(launch).toContain(line);
