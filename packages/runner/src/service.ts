@@ -23,8 +23,12 @@ export const AUTOSTOP_LABEL = "useagent.autostop-minutes";
 export const SANDBOX_USER = "1000:1000";
 export const SANDBOX_HOME = "/home/user";
 export const SANDBOX_WORKDIR = "/home/user/work";
-/** How long a create waits for an image this machine does not hold yet, well under the plane's own create timeout; the pull goes on past it. */
-export const CREATE_PULL_WAIT_MS = 5 * 60_000;
+/**
+ * How long a create waits for an image this machine does not hold yet; the
+ * pull goes on past it. The plane gives a create ten minutes in all, and an
+ * Apple container run plus start can take four, so the wait stays at four.
+ */
+export const CREATE_PULL_WAIT_MS = 4 * 60_000;
 
 export interface ImagePullReport {
   readonly ref: string;
