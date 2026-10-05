@@ -542,4 +542,33 @@ describe("POST /api/chat accounting", () => {
     expect(await spent()).toBeCloseTo(0.37, 6);
   });
 
+  test("a request the provider accepted whose body failed before its first frame keeps its charge open and unresolved, not deleted", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(0);
+    const known = new Set((await chatEntries()).map((row) => row.chargeKey));
+    globalThis.fetch = (async () => new Response(
+      new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("body lost")); } }),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )) as typeof fetch;
+    const res = await ask("accepted then lost");
+    expect(res.status).toBe(200);
+    expect((await readSse(res, { timeoutMs: 8_000 })).some((event) => event.event === "error")).toBe(true);
+    // The open charge is not dropped: the provider accepted the request and may have billed it.
+    const pending = await waitFor(async () => (await chatEntries()).find((row) => !known.has(row.chargeKey)) ?? null);
+    await Bun.sleep(300); // past any settlement write
+    expect(await chatEntries().then((rows) => rows.find((row) => row.chargeKey === pending.chargeKey))).toMatchObject({ source: "pending", generationId: null, figureSource: null });
+    // Nothing can price it: the sweep counts it unresolved and admission pauses the member.
+    await settlePendingChatCharges(0);
+    const [account] = await db.select({ unresolved: spendAccounts.unresolved }).from(spendAccounts)
+      .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId)));
+    expect(account!.unresolved).toBe(1);
+    const refused = await json<{ error: string }>("/api/chat", {
+      method: "POST", cookies: session.cookies, body: { messages: [{ role: "user", content: "again" }] },
+    });
+    expect(refused.status).toBe(402);
+    expect(refused.body.error).toBe("spend_unresolved");
+    // An operator settles it by hand; the next sweep clears the member.
+    await db.delete(spendEntries).where(eq(spendEntries.chargeKey, pending.chargeKey));
+    await settlePendingChatCharges(0);
+  });
 });

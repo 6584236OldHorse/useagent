@@ -57,9 +57,12 @@ export interface ChatUsage {
 export interface ChatAccount {
   generationId: string | null;
   usage: ChatUsage | null;
+  /** The provider accepted the request (a 200 with a body): it may have billed
+   *  the turn even when nothing was named before the stream ended. */
+  accepted: boolean;
 }
 
-export const newChatAccount = (): ChatAccount => ({ generationId: null, usage: null });
+export const newChatAccount = (): ChatAccount => ({ generationId: null, usage: null, accepted: false });
 
 const finiteNumber = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -103,6 +106,7 @@ export async function* streamChat(
     const detail = await res.text().catch(() => "");
     throw new ChatStreamError(`openrouter ${res.status}: ${detail.slice(0, 200)}`);
   }
+  if (account) account.accepted = true;
 
   const decoder = new TextDecoder();
   const reader = res.body.getReader();

@@ -63,10 +63,11 @@ export async function* chatTurnStream(
     yield* streamChat(messages, run.model, credential.value, signal, account);
     completed = true;
   } finally {
-    // A stream that ended normally is a model call even when the provider
-    // named neither a generation nor usage: it is recorded (unpriced) rather
-    // than skipped. A stream that broke before naming anything has nothing.
-    if (account.usage || account.generationId || completed) {
+    // A request the provider accepted is a model call even when it named
+    // neither a generation nor usage before the stream ended: it is recorded
+    // (the settlement leaves an unpriced one open for the sweep rather than
+    // charging a zero). A request the provider never accepted has nothing.
+    if (account.usage || account.generationId || account.accepted || completed) {
       const charge = await settleChatCharge(account, credential);
       await recordProviderEvent({
         id: `${run.id}:chat:usage`,
@@ -79,6 +80,8 @@ export async function* chatTurnStream(
           ...(charge.cost === null ? {} : { cost: charge.cost }),
           costSource: charge.costSource,
           generationId: account.generationId,
+          accepted: account.accepted,
+          completed,
         },
       });
     }
@@ -149,7 +152,7 @@ export async function chargeChatTurn(input: {
   readonly completed?: boolean;
 }): Promise<void> {
   const where = `chat charge ${input.key} (${input.orgId}/${input.userId})`;
-  if (!input.account.usage && !input.account.generationId && !input.completed) {
+  if (!input.account.usage && !input.account.generationId && !input.account.accepted && !input.completed) {
     unsettledChatCharges.delete(input.key);
     await discardSpendCharge(input.key).catch((error) => {
       console.error(`[spend] ${where} was never billed and could not be dropped:`, errorMessage(error));
@@ -157,18 +160,22 @@ export async function chargeChatTurn(input: {
     return;
   }
   const charge = await settleChatCharge(input.account, input.credential);
-  if (charge.cost === null && input.account.generationId) {
-    // Billed (the provider named a generation) but not priced here: the stream
-    // broke before its usage, or the record is not up yet, or a member's own
-    // key served it and cannot be read back. Never a zero: the entry stays
-    // pending with its generation, and the sweep prices it from the
-    // provider's record or counts it unresolved.
+  if (charge.cost === null && (input.account.generationId || (input.account.accepted && !input.completed))) {
+    // Billed (the provider named a generation, or accepted a request whose
+    // stream then broke) but not priced here: the stream broke before its
+    // usage or before its first frame, the record is not up yet, or a member's
+    // own key served it and cannot be read back. Never a zero: the entry stays
+    // pending with what is known, and the sweep prices it from the provider's
+    // record or counts it unresolved. A stream that completed naming nothing
+    // has nothing to price and settles unpriced below.
     const generationId = input.account.generationId;
-    const noted = await persistChatWrite(`${where} generation`, () => noteSpendGeneration(input.key, generationId));
-    if (!noted && !unsettledChatCharges.has(input.key)) {
-      unsettledChatCharges.set(input.key, { orgId: input.orgId, userId: input.userId, generationId, figure: null });
+    if (generationId) {
+      const noted = await persistChatWrite(`${where} generation`, () => noteSpendGeneration(input.key, generationId));
+      if (!noted && !unsettledChatCharges.has(input.key)) {
+        unsettledChatCharges.set(input.key, { orgId: input.orgId, userId: input.userId, generationId, figure: null });
+      }
     }
-    console.warn(`[spend] ${where} is billed but not priced yet; left pending with generation ${generationId} for the sweep`);
+    console.warn(`[spend] ${where} is billed but not priced yet; left pending${generationId ? ` with generation ${generationId}` : " with no generation"} for the sweep`);
     return;
   }
   const figure: SpendFigure = {

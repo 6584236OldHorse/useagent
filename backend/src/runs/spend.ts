@@ -193,6 +193,8 @@ export interface RunCharge {
   readonly source: SettledSpendSource;
   /** The provider's generation id a chat usage row named, if any. */
   readonly generationId: string | null;
+  /** Whether the provider accepted a chat request whose stream then broke before naming anything. */
+  readonly lost: boolean;
 }
 
 /**
@@ -222,6 +224,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   let priced = false;
   let settled = false;
   let generationId: string | null = null;
+  let lost = false;
   const perIdentity = new Map<string, UsageFigure>();
   for (const row of rows) {
     let stored: Record<string, unknown> | null = null;
@@ -238,6 +241,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
       // priced from its activities below.
       if (row.provider === "t3") continue;
       if (typeof stored.generationId === "string" && stored.generationId) generationId ??= stored.generationId;
+      lost ||= stored.accepted === true && stored.completed !== true;
       const figure = stepFinishFigure(stored);
       const bounded = boundedCost(figure.cost, `run ${runId} event ${row.id}`);
       if (bounded !== null) {
@@ -271,7 +275,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   if (source === "unpriced" && tokens > 0) {
     console.warn(`[spend] run ${runId} reported ${tokens} tokens but no cost; charged as unpriced`);
   }
-  return { cost, tokens, source, generationId };
+  return { cost, tokens, source, generationId, lost };
 }
 
 // ── Charging ────────────────────────────────────────────────────────────────
@@ -457,10 +461,11 @@ export async function accrueRunSpend(
 ): Promise<void> {
   if (!run.orgId || !run.userId) return;
   const charge = await priceRunUsage(run.id, exec);
-  if (charge.source === "unpriced" && charge.generationId) {
-    // Billed (the provider named a generation) but not priced here: never a
-    // zero. The run's charge stays open with its generation, and the sweep
-    // prices it from the provider's record or counts it unresolved.
+  if (charge.source === "unpriced" && (charge.generationId || charge.lost)) {
+    // Billed (the provider named a generation, or accepted a request whose
+    // stream then broke) but not priced here: never a zero. The run's charge
+    // stays open with what is known, and the sweep prices it from the
+    // provider's record or counts it unresolved.
     await openSpendCharge({ key: run.id, orgId: run.orgId, userId: run.userId }, exec);
     if (charge.generationId) await noteSpendGeneration(run.id, charge.generationId, exec);
     console.warn(`[spend] run ${run.id} is billed but not priced yet; left pending for the sweep`);
