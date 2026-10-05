@@ -1,10 +1,12 @@
 "use client";
 
-// The web-native spreadsheet grid over the canonical v2 workbook. It renders the
-// active sheet's computed cells (via the shared formula engine), a value bar that
-// shows the RAW formula while the cell shows the computed value, a number-format +
-// styling toolbar, multi-sheet tabs (add / rename / reorder), and column-width
-// drag. Cell fill/text colors are DOCUMENT data, so they apply as raw inline
+// The spreadsheet editor over the canonical v2 workbook. The active sheet renders
+// through the AI kit's records table (components/ai/records-table.tsx): row 1
+// names the columns, every later row is a record, headers sort, the footer counts.
+// Around it: a value bar that shows the RAW formula while the cell shows the
+// computed value (single-click a cell to select it, double-click to edit it in
+// the bar), a number-format + styling toolbar, and multi-sheet tabs (add / rename
+// / reorder). Cell fill/text colors are DOCUMENT data, so they apply as raw inline
 // styles; the surrounding chrome uses semantic tokens. The visible grid is capped
 // (windowed) so a 10000-row sheet never renders raw.
 
@@ -18,7 +20,6 @@ import {
 import {
   activeWorksheet,
   columnLabel,
-  columnWidth,
   evaluateWorkbook,
   formatA1,
   parseA1,
@@ -31,14 +32,22 @@ import {
   type Workbook,
   type Worksheet,
 } from "@useagent/artifact-workspace";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  RECORDS_CELL,
+  RECORDS_HEADER_CELL,
+  RECORDS_ROW,
+  RECORDS_SORT_BUTTON,
+  RECORDS_STICKY,
+  RecordsNameCell,
+  RecordsSortMark,
+  RecordsTableFrame,
+} from "@/components/ai/records-table";
+import { cx } from "@/utils/cx";
 
 /** Visible grid caps so a large sheet windows honestly instead of rendering raw. */
 const VISIBLE_ROW_CAP = 200;
 const VISIBLE_COL_CAP = 40;
-const MIN_VISIBLE_ROWS = 12;
-const MIN_VISIBLE_COLS = 6;
-const MIN_COL_WIDTH = 56;
 
 const NUMERIC = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
@@ -123,13 +132,6 @@ export function applyCellFormat(
   return replaceSheet(workbook, grownDimensions({ ...sheet, cells }, position.row, position.col));
 }
 
-function setColumnWidth(workbook: Workbook, sheetId: string, col: number, px: number): Workbook {
-  const sheet = workbook.sheets.find((item) => item.id === sheetId);
-  if (!sheet) return workbook;
-  const colWidths = { ...sheet.colWidths, [columnLabel(col)]: Math.max(MIN_COL_WIDTH, Math.round(px)) };
-  return replaceSheet(workbook, { ...sheet, colWidths });
-}
-
 function uniqueSheetId(workbook: Workbook): string {
   const ids = new Set(workbook.sheets.map((sheet) => sheet.id));
   let n = workbook.sheets.length + 1;
@@ -186,12 +188,97 @@ function toColorInput(hex: string | undefined, fallback: string): string {
 function cellStyle(cell: SheetCell | undefined, numeric: boolean): CSSProperties {
   const fmt = cell?.fmt;
   return {
-    fontWeight: fmt?.bold ? 700 : 400,
-    fontStyle: fmt?.italic ? "italic" : "normal",
+    fontWeight: fmt?.bold ? 600 : undefined,
+    fontStyle: fmt?.italic ? "italic" : undefined,
     textAlign: fmt?.align ?? (numeric ? "right" : "left"),
     ...(fmt?.color ? { color: fmt.color } : {}),
     ...(fmt?.fill ? { background: fmt.fill } : {}),
   };
+}
+
+// --- The records table's view of a sheet ------------------------------------
+
+type WorkbookEvaluation = ReturnType<typeof evaluateWorkbook>;
+
+export interface SheetRecordCell {
+  readonly ref: string;
+  readonly display: string;
+  readonly numeric: boolean;
+  /** The computed scalar, for numeric-aware sorting; null when empty or an error. */
+  readonly value: string | number | boolean | null;
+  readonly error: string | null;
+  readonly style: CSSProperties;
+}
+
+export interface SheetRecord {
+  /** The sheet row (zero-based), so a click still selects the real cell. */
+  readonly row: number;
+  readonly cells: readonly SheetRecordCell[];
+}
+
+export interface SheetRecordColumn {
+  readonly col: number;
+  /** Row 1's value, or the column letter when row 1 leaves it blank. */
+  readonly label: string;
+  readonly ref: string;
+}
+
+/** Row 1 names the columns and every later row is a record, the way the records
+ *  table reads a sheet. Windowed to the visible caps. */
+export function sheetRecords(
+  sheet: Worksheet,
+  evaluation: WorkbookEvaluation,
+): { readonly columns: readonly SheetRecordColumn[]; readonly records: readonly SheetRecord[] } {
+  const colCount = Math.min(VISIBLE_COL_CAP, Math.max(1, sheet.colCount));
+  const rowCount = Math.min(VISIBLE_ROW_CAP, sheet.rowCount);
+  const columns = Array.from({ length: colCount }, (_, col) => {
+    const ref = formatA1(0, col);
+    const display = evaluation.cell(sheet.id, ref).display.trim();
+    return { col, label: display || columnLabel(col), ref };
+  });
+  const records = Array.from({ length: Math.max(0, rowCount - 1) }, (_, index) => {
+    const row = index + 1;
+    return {
+      row,
+      cells: columns.map(({ col }) => {
+        const ref = formatA1(row, col);
+        const evaluated = evaluation.cell(sheet.id, ref);
+        return {
+          ref,
+          display: evaluated.display,
+          numeric: evaluated.numeric,
+          value: evaluated.error ? null : evaluated.value,
+          error: evaluated.error,
+          style: cellStyle(sheet.cells[ref], evaluated.numeric),
+        };
+      }),
+    };
+  });
+  return { columns, records };
+}
+
+export interface SheetSort {
+  readonly col: number;
+  readonly dir: 1 | -1;
+}
+
+/** Records in column order: numbers before text, blanks last, ties by row. */
+export function sortedRecords(records: readonly SheetRecord[], sort: SheetSort | null): readonly SheetRecord[] {
+  if (!sort) return records;
+  const rank = (cell: SheetRecordCell | undefined): [number, number | string] => {
+    if (!cell || cell.value === null || cell.display === "") return [2, ""];
+    if (typeof cell.value === "number") return [0, cell.value];
+    return [1, cell.display];
+  };
+  return records.toSorted((a, b) => {
+    const [ka, va] = rank(a.cells[sort.col]);
+    const [kb, vb] = rank(b.cells[sort.col]);
+    if (ka !== kb) return ka - kb;
+    const order = typeof va === "number" && typeof vb === "number"
+      ? va - vb
+      : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" });
+    return (order || a.row - b.row) * (ka === 2 ? 1 : sort.dir);
+  });
 }
 
 export function SheetGridSurface({
@@ -207,10 +294,13 @@ export function SheetGridSurface({
   const [draft, setDraft] = useState("");
   const [editingBar, setEditingBar] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [sort, setSort] = useState<SheetSort | null>(null);
   const barRef = useRef<HTMLInputElement>(null);
 
   const sheet = workbook ? activeWorksheet(workbook) : null;
   const evaluation = useMemo(() => (workbook ? evaluateWorkbook(workbook) : null), [workbook]);
+  const table = useMemo(() => (sheet && evaluation ? sheetRecords(sheet, evaluation) : null), [sheet, evaluation]);
+  const records = useMemo(() => (table ? sortedRecords(table.records, sort) : []), [table, sort]);
 
   const selectedRef = sheet ? formatA1(selected.row, selected.col) : "A1";
   const selectedCell = sheet?.cells[selectedRef];
@@ -221,7 +311,7 @@ export function SheetGridSurface({
     if (!editingBar) setDraft(rawOfSelected);
   }, [rawOfSelected, editingBar]);
 
-  if (!workbook || !sheet || !evaluation) {
+  if (!workbook || !sheet || !evaluation || !table) {
     return (
       <p className="mt-4 rounded-xl border border-dashed border-border-button-default px-4 py-8 text-center text-body-2-regular text-text-secondary">
         Loading workbook...
@@ -229,8 +319,6 @@ export function SheetGridSurface({
     );
   }
 
-  const visibleRows = Math.min(VISIBLE_ROW_CAP, Math.max(MIN_VISIBLE_ROWS, sheet.rowCount));
-  const visibleCols = Math.min(VISIBLE_COL_CAP, Math.max(MIN_VISIBLE_COLS, sheet.colCount));
   const capped = sheet.rowCount > VISIBLE_ROW_CAP || sheet.colCount > VISIBLE_COL_CAP;
 
   const commitBar = () => {
@@ -240,26 +328,18 @@ export function SheetGridSurface({
   const patchFmt = (patch: Partial<SheetCellFormat>) =>
     onChange(applyCellFormat(workbook, sheet.id, selectedRef, patch));
 
-  const startWidthDrag = (event: ReactPointerEvent, col: number) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const startX = event.clientX;
-    const startWidth = columnWidth(sheet, col);
-    const move = (moveEvent: globalThis.PointerEvent) => {
-      onChange(setColumnWidth(workbook, sheet.id, col, startWidth + (moveEvent.clientX - startX)));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  const select = (row: number, col: number) => setSelected({ row, col });
+  const edit = (row: number, col: number) => {
+    setSelected({ row, col });
+    barRef.current?.focus();
   };
+  const toggleSort = (col: number) =>
+    setSort((current) => (current?.col === col ? { col, dir: current.dir === 1 ? -1 : 1 } : { col, dir: 1 }));
 
   const fmt = selectedCell?.fmt;
 
   return (
-    <section className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
+    <section className="mt-4 flex h-full min-h-0 flex-1 flex-col gap-3">
       {/* Value bar: active cell ref + its RAW value/formula (the cell shows the
           computed value). */}
       <div className="flex items-center gap-2">
@@ -380,70 +460,82 @@ export function SheetGridSurface({
         </label>
       </div>
 
-      {/* The windowed grid. */}
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-border-button-default bg-background-primary-default">
-        <table className="border-collapse" style={{ tableLayout: "fixed" }}>
-          <thead>
-            <tr>
-              <th className="sticky left-0 top-0 z-10 h-8 w-12 min-w-12 border-b border-r border-border-button-default bg-background-secondary-default" />
-              {Array.from({ length: visibleCols }, (_, col) => (
+      {/* The sheet through the records table: row 1 as the header (click sorts,
+          double-click edits it in the bar), later rows as records, the count in
+          the footer. Cell fill/text colors are the document's own. */}
+      <RecordsTableFrame count={records.length} columns={Math.max(0, table.columns.length - 1)} fill>
+        <thead>
+          <tr className="border-border-button-default border-b">
+            {table.columns.map((column, index) => {
+              const active = selected.row === 0 && selected.col === column.col;
+              return (
                 <th
-                  key={col}
-                  className="relative h-8 border-b border-r border-border-button-default bg-background-secondary-default text-center font-mono text-caption-1-medium text-text-tertiary"
-                  style={{ width: columnWidth(sheet, col), minWidth: columnWidth(sheet, col) }}
+                  key={column.col}
+                  aria-sort={sort?.col === column.col ? (sort.dir === 1 ? "ascending" : "descending") : undefined}
+                  className={cx(
+                    index === 0 && cx(RECORDS_STICKY, "bg-background-primary-default"),
+                    RECORDS_HEADER_CELL,
+                    active && "ring-2 ring-inset ring-border-focus-ring",
+                  )}
                 >
-                  {columnLabel(col)}
-                  {/* Column-width drag handle on the right edge. */}
-                  <span
-                    role="separator"
-                    aria-label={`Resize column ${columnLabel(col)}`}
-                    onPointerDown={(event) => startWidthDrag(event, col)}
-                    className="absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize"
-                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleSort(column.col)}
+                    onDoubleClick={() => edit(0, column.col)}
+                    title={`Sort by ${column.label}. Double-click to edit ${column.ref}`}
+                    className={cx(RECORDS_SORT_BUTTON, "w-full")}
+                  >
+                    <span className="truncate">{column.label}</span>
+                    <RecordsSortMark direction={sort?.col === column.col ? sort.dir : null} />
+                  </button>
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Array.from({ length: visibleRows }, (_, row) => (
-              <tr key={row}>
-                <td className="sticky left-0 z-10 h-8 w-12 min-w-12 border-b border-r border-border-button-default bg-background-secondary-default text-center align-middle font-mono text-caption-1-medium text-text-tertiary">
-                  {row + 1}
-                </td>
-                {Array.from({ length: visibleCols }, (_, col) => {
-                  const ref = formatA1(row, col);
-                  const evaluated = evaluation.cell(sheet.id, ref);
-                  const isActive = row === selected.row && col === selected.col;
-                  return (
-                    <td
-                      key={col}
-                      className="border-b border-r border-border-button-default p-0"
-                      style={{ width: columnWidth(sheet, col), minWidth: columnWidth(sheet, col) }}
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {records.map((record) => (
+            <tr key={record.row} className={RECORDS_ROW}>
+              {record.cells.map((cell, index) => {
+                const column = table.columns[index]!;
+                const active = selected.row === record.row && selected.col === column.col;
+                const numeric = cell.numeric && index > 0;
+                return (
+                  <td
+                    key={cell.ref}
+                    className={cx(
+                      index === 0 && RECORDS_STICKY,
+                      RECORDS_CELL,
+                      active && "ring-2 ring-inset ring-border-focus-ring",
+                    )}
+                    style={cell.style.background ? { background: cell.style.background } : undefined}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => select(record.row, column.col)}
+                      onDoubleClick={() => edit(record.row, column.col)}
+                      title={cell.error ?? `${cell.ref}. Double-click to edit`}
+                      style={{ ...cell.style, background: undefined }}
+                      className={cx(
+                        "block w-full min-w-0 truncate outline-none",
+                        index === 0
+                          ? "text-left"
+                          : cx(
+                              "text-caption-1-regular text-text-secondary",
+                              numeric ? "text-right tabular-nums" : "text-left",
+                            ),
+                        cell.error && "text-text-error-primary",
+                      )}
                     >
-                      <button
-                        type="button"
-                        onClick={() => setSelected({ row, col })}
-                        onDoubleClick={() => barRef.current?.focus()}
-                        title={evaluated.error ?? undefined}
-                        style={cellStyle(sheet.cells[ref], evaluated.numeric)}
-                        className={
-                          isActive
-                            ? "block h-8 w-full truncate px-2 text-body-2-regular text-text-primary outline-none ring-2 ring-inset ring-border-focus-ring"
-                            : "block h-8 w-full truncate px-2 text-body-2-regular text-text-primary outline-none hover:bg-background-secondary-default"
-                        }
-                      >
-                        <span className={evaluated.error ? "text-text-error-primary" : undefined}>
-                          {evaluated.display}
-                        </span>
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                      {index === 0 ? <RecordsNameCell name={cell.display} /> : cell.display || "\u00a0"}
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </RecordsTableFrame>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -476,7 +568,7 @@ export function SheetGridSurface({
         </button>
         {capped && (
           <span className="text-caption-1-regular text-text-tertiary">
-            Large sheet - showing the first {visibleRows} rows and {visibleCols} columns.
+            Large sheet - showing the first {VISIBLE_ROW_CAP} rows and {VISIBLE_COL_CAP} columns.
           </span>
         )}
       </div>
