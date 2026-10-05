@@ -346,3 +346,64 @@ test("a mail failure on resend still renews the invitation and answers 200", asy
     relay.stop(true);
   }
 });
+
+test("the desktop app's referer passes the resend check the way the library allows it", async () => {
+  const org = await createOrgSession("desktop");
+  const invite = await json("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "desktop@example.test", role: "member" },
+  });
+  expect(invite.status).toBe(200);
+  const res = await json("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    headers: { origin: "", referer: "useagent:/settings" },
+    body: { organizationId: org.orgId, email: "desktop@example.test", role: "member", resend: true },
+  });
+  expect(res.status).toBe(200);
+  const nulled = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    headers: { origin: "null" },
+    body: { organizationId: org.orgId, email: "desktop@example.test", role: "member", resend: true },
+  });
+  expect(nulled.status).toBe(403);
+});
+
+test("a deployment that cannot create accounts refuses to invite an address without one", async () => {
+  const org = await createOrgSession("closed-signup");
+  const existing = await createOrgSession("has-account");
+  const saved = { NODE_ENV: process.env.NODE_ENV, GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET };
+  process.env.NODE_ENV = "production";
+  delete process.env.GOOGLE_CLIENT_ID;
+  delete process.env.GOOGLE_CLIENT_SECRET;
+  try {
+    const unknown = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: "nobody-yet@example.test", role: "member" },
+    });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.message).toContain("cannot create one");
+    const known = await json("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: org.cookies,
+      body: { organizationId: org.orgId, email: existing.email, role: "member" },
+    });
+    expect(known.status).toBe(200);
+    // An outsider learns nothing about who has an account.
+    const outsider = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: existing.cookies,
+      body: { organizationId: org.orgId, email: "nobody-yet@example.test", role: "member" },
+    });
+    expect(outsider.status).toBe(403);
+    expect(outsider.body.message).toBe("You are not allowed to invite people to this workspace");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
