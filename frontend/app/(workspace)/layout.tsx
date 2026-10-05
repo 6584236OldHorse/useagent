@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DesktopRunnerOnboarding } from "@/components/runners/desktop-runner-onboarding";
 import { AppShell } from "@/components/shell/app-shell";
 import { ThreadSidebar } from "@/components/shell/thread-sidebar";
 
@@ -10,5 +11,10 @@ import { ThreadSidebar } from "@/components/shell/thread-sidebar";
  * The rail derives its active item from the pathname.
  */
 export default function WorkspaceLayout({ children }: { children: ReactNode }) {
-  return <AppShell sidebar={<ThreadSidebar />}>{children}</AppShell>;
+  return (
+    <AppShell sidebar={<ThreadSidebar />}>
+      {children}
+      <DesktopRunnerOnboarding />
+    </AppShell>
+  );
 }

@@ -1,0 +1,119 @@
+export const RUNNER_STATUSES = ["enrolled", "online", "offline", "revoked"] as const;
+export type RunnerStatus = (typeof RUNNER_STATUSES)[number];
+
+export const RUNNER_PLATFORMS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-x64",
+] as const;
+export type RunnerPlatform = (typeof RUNNER_PLATFORMS)[number];
+
+export interface Runner {
+  readonly id: string;
+  readonly name: string;
+  readonly platform: RunnerPlatform;
+  readonly backend: string | null;
+  readonly version: string | null;
+  readonly status: RunnerStatus;
+  readonly lastSeenAt: string | null;
+  readonly logins: string[];
+  readonly imageDigest: string | null;
+}
+
+export interface RunnerPolicy {
+  readonly allowLocalExecution: boolean;
+  readonly allowLocalLogins: boolean;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function nullableString(value: unknown): string | null | undefined {
+  return value === null ? null : typeof value === "string" ? value : undefined;
+}
+
+export function decodeRunner(value: unknown): Runner | null {
+  const row = record(value);
+  if (!row) return null;
+  const backend = nullableString(row.backend);
+  const version = nullableString(row.version);
+  const lastSeenAt = nullableString(row.lastSeenAt);
+  const imageDigest = nullableString(row.imageDigest);
+  if (
+    typeof row.id !== "string" ||
+    typeof row.name !== "string" ||
+    !RUNNER_PLATFORMS.includes(row.platform as RunnerPlatform) ||
+    !RUNNER_STATUSES.includes(row.status as RunnerStatus) ||
+    backend === undefined ||
+    version === undefined ||
+    lastSeenAt === undefined ||
+    imageDigest === undefined ||
+    !Array.isArray(row.logins) ||
+    !row.logins.every((login) => typeof login === "string")
+  ) {
+    return null;
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    platform: row.platform as RunnerPlatform,
+    backend,
+    version,
+    status: row.status as RunnerStatus,
+    lastSeenAt,
+    logins: [...new Set(row.logins)],
+    imageDigest,
+  };
+}
+
+export function decodeRunners(value: unknown): Runner[] {
+  return Array.isArray(value)
+    ? value.map(decodeRunner).filter((runner): runner is Runner => runner !== null)
+    : [];
+}
+
+export function decodeRunnerPolicy(value: unknown): RunnerPolicy | null {
+  const policy = record(value);
+  return policy &&
+    typeof policy.allowLocalExecution === "boolean" &&
+    typeof policy.allowLocalLogins === "boolean"
+    ? {
+        allowLocalExecution: policy.allowLocalExecution,
+        allowLocalLogins: policy.allowLocalLogins,
+      }
+    : null;
+}
+
+export function localRunnerId(sandboxId: string | null): string | null {
+  if (!sandboxId?.startsWith("local:")) return null;
+  const [, runnerId, containerId, ...rest] = sandboxId.split(":");
+  return runnerId && containerId && rest.length === 0 ? runnerId : null;
+}
+
+export function runnerLocationLabel(
+  sandboxId: string | null,
+  sandboxProvider: unknown,
+  runners: readonly Runner[],
+): string {
+  const runnerId = localRunnerId(sandboxId);
+  if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
+  return typeof sandboxProvider === "string" && sandboxProvider.trim()
+    ? sandboxProvider
+    : "Unknown runtime";
+}
+
+export function runnerLoginAvailable(
+  login: string,
+  policy: RunnerPolicy | null,
+  runners: readonly Runner[],
+): boolean {
+  return (
+    policy?.allowLocalLogins === true &&
+    runners.some((runner) => runner.status === "online" && runner.logins.includes(login))
+  );
+}
