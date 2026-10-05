@@ -141,47 +141,61 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
         `[slack] turn identity lookups for run ${runId} hit the ${deadlineMs}ms deadline; stamping what resolved`,
       );
     }
-    const known = run.connector;
-    const connector: RunConnector = {
-      source: "slack",
-      sender_name: known?.sender_name ?? profile?.name ?? null,
-      sender_avatar_url: known?.sender_avatar_url ?? profile?.image ?? null,
-      permalink: known?.permalink ?? permalink ?? null,
-    };
-    if (
-      known &&
-      known.sender_name === connector.sender_name &&
-      known.sender_avatar_url === connector.sender_avatar_url &&
-      known.permalink === connector.permalink
-    ) {
-      // Nothing new resolved this time; the owed row waits for the next attempt.
-      return "unavailable";
-    }
-    const complete = stampComplete(connector, senderOwed);
-    // One transaction: the stamp lands (`updated_at` moves so an open session's
-    // merge treats the fresh row as new) and, once nothing is owed, the row goes
-    // with it. The stamp merges onto exactly the row it read, so a concurrent
-    // stamp that resolved more is never overwritten. The run row can be held by
-    // a terminal write; the wait is bounded and a timeout leaves the owed row
-    // for the sweep.
-    const updated = await db.transaction(async (tx) => {
-      await tx.execute(sql`select set_config('lock_timeout', ${STAMP_LOCK_TIMEOUT}, true)`);
-      const rows = await tx
-        .update(runs)
-        .set({ connector, updatedAt: new Date() })
-        .where(and(
-          eq(runs.id, runId),
-          known ? sql`${runs.connector} = ${JSON.stringify(known)}::jsonb` : isNull(runs.connector),
-        ))
-        .returning({ id: runs.id });
-      if (rows.length > 0 && complete) {
-        await tx.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+    let known = run.connector;
+    for (let attempt = 0; ; attempt += 1) {
+      const connector: RunConnector = {
+        source: "slack",
+        sender_name: known?.sender_name ?? profile?.name ?? null,
+        sender_avatar_url: known?.sender_avatar_url ?? profile?.image ?? null,
+        permalink: known?.permalink ?? permalink ?? null,
+      };
+      if (
+        known &&
+        known.sender_name === connector.sender_name &&
+        known.sender_avatar_url === connector.sender_avatar_url &&
+        known.permalink === connector.permalink
+      ) {
+        // Nothing new resolved this time; the owed row waits for the next attempt.
+        return "unavailable";
       }
-      return rows;
-    });
-    if (updated.length === 0) return "already_stamped";
-    publishThreadChange(run.threadId, { runId, kind: "created" });
-    return "stamped";
+      const complete = stampComplete(connector, senderOwed);
+      // One transaction: the stamp lands (`updated_at` moves so an open session's
+      // merge treats the fresh row as new) and, once nothing is owed, the row goes
+      // with it. The stamp merges onto exactly the row it read, so a concurrent
+      // stamp that resolved more is never overwritten. The run row can be held by
+      // a terminal write; the wait is bounded and a timeout leaves the owed row
+      // for the sweep.
+      const updated = await db.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('lock_timeout', ${STAMP_LOCK_TIMEOUT}, true)`);
+        const rows = await tx
+          .update(runs)
+          .set({ connector, updatedAt: new Date() })
+          .where(and(
+            eq(runs.id, runId),
+            known ? sql`${runs.connector} = ${JSON.stringify(known)}::jsonb` : isNull(runs.connector),
+          ))
+          .returning({ id: runs.id });
+        if (rows.length > 0 && complete) {
+          await tx.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+        }
+        return rows;
+      });
+      if (updated.length > 0) {
+        publishThreadChange(run.threadId, { runId, kind: "created" });
+        return "stamped";
+      }
+      // A concurrent stamp wrote first (a detached stamp and the sweep can meet
+      // on one run): what resolved here is merged onto its row, once, so a stamp
+      // that resolved more is not lost to the next sweep.
+      if (attempt > 0) return "already_stamped";
+      const [latest] = await db.select({ connector: runs.connector }).from(runs).where(eq(runs.id, runId)).limit(1);
+      if (!latest) return "unavailable";
+      known = latest.connector;
+      if (known && stampComplete(known, senderOwed)) {
+        await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+        return "already_stamped";
+      }
+    }
   } catch (error) {
     if (isLockTimeout(error)) {
       console.warn(`[slack] turn identity stamp for run ${runId} waited ${STAMP_LOCK_TIMEOUT} on its run row; the boot sweep retries it`);
