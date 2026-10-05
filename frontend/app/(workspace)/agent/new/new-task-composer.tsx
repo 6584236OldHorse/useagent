@@ -600,7 +600,7 @@ export function NewTaskComposer({
                     effort={reasoningEffort}
                     onEffortChange={(next) => setReasoningEffort(next || null)}
                     placement="bottom end"
-                    className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
+                    className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-body-2-medium text-text-secondary"
                   />
                 </div>
               )}
