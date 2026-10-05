@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { and, eq, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { artifacts, providerEvents, slackOutbox, slackThreads } from "../src/db/schema";
@@ -50,6 +50,14 @@ async function slackRootRun(prompt: string): Promise<{ runId: string; channel: s
   await createSlackRunResponse({ runId, teamId: TEAM, channel, threadTs: ts });
   return { runId, channel, ts };
 }
+
+// This suite proves what finalization ENQUEUES and never drains it: the relay
+// is not always running when it does, so its rows would otherwise sit pending
+// and be claimed ahead of a later suite's own rows (a single delivery pass
+// claims twenty). They are this suite's alone: remove them on the way out.
+afterAll(async () => {
+  await db.delete(slackOutbox).where(like(slackOutbox.idempotencyKey, "%:T-SKYNET-DEV:%"));
+});
 
 describe("slack reply durability at finalization (GAP 3)", () => {
   test("a completed Slack run commits its reply row transactionally (no watcher/relay)", async () => {
