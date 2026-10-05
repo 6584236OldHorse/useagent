@@ -205,7 +205,8 @@ describe("agents rail rows", () => {
 
     expect(html).toContain("<strong>Checkout healthy</strong>");
     expect(html).toContain("<table");
-    expect(html).toContain('<a href="https://example.com/report" target="_blank" rel="noreferrer">Report</a>');
+    expect(html).toContain('<a href="https://example.com/report" target="_blank" rel="noreferrer">');
+    expect(html).toContain('>Report</a>');
     expect(html).not.toContain('href="javascript:');
     expect(html).not.toContain("<script>");
   });

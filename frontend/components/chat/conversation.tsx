@@ -71,6 +71,7 @@ import {
   type RunStatus,
 } from "@/components/chat/types";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import { AnsweredAt } from "@/components/session-ui/answered-at";
 import { MessageCopyButton } from "@/components/session-ui/message-copy-button";
 import { MessageScrollerRail } from "@/components/session-ui/message-scroller-rail";
 import { unavailableEngineLabel } from "@/components/session-ui/provider-status-banner";
@@ -416,12 +417,11 @@ const TurnBlock = memo(function TurnBlock({
           onOpenProductChild={onOpenProductChild}
         />
 
-        {/* Hover copy on the settled answer (T3 grammar). The durable summary IS
-            the answer markdown even when the timeline's final narration burst
-            rendered it, so one affordance covers both render paths. */}
+        {/* Hover copy and answer time on the settled answer; the durable summary IS the answer markdown on both render paths. */}
         {!live && summary && (
-          <div className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover/turn:opacity-100">
+          <div className="flex items-center gap-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/turn:opacity-100">
             <MessageCopyButton text={summary} />
+            <AnsweredAt iso={run.updated_at} />
           </div>
         )}
       </div>

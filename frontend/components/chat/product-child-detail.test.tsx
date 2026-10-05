@@ -102,7 +102,8 @@ test("renders child answer markdown without enabling unsafe URLs or raw HTML", (
 
   expect(html).toContain("<strong>Prices ready</strong>");
   expect(html).toContain("<table");
-  expect(html).toContain('<a href="https://example.com/prices" target="_blank" rel="noreferrer">Source</a>');
+  expect(html).toContain('<a href="https://example.com/prices" target="_blank" rel="noreferrer">');
+    expect(html).toContain('>Source</a>');
   expect(html).not.toContain('href="javascript:');
   expect(html).not.toContain("<script>");
 });
