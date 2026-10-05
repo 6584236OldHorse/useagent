@@ -99,3 +99,89 @@ test("only an owner can resend an owner invitation, whatever role the resend nam
   });
   expect(byOwner.status).toBe(200);
 });
+
+
+test("the resend guard resolves the organisation itself and sees past an expired row", async () => {
+  const org = await createOrgSession("guard");
+  const admin = await createOrgSession("guard-admin");
+  const [adminUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, admin.email));
+  await db.insert(member).values({
+    id: `member_${crypto.randomUUID()}`,
+    organizationId: org.orgId,
+    userId: adminUser!.id,
+    role: "admin",
+    createdAt: new Date(),
+  });
+  // An expired member invitation for the same address sits beside the live owner one.
+  const [ownerUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, org.email));
+  await db.insert(invitation).values({
+    id: `inv_${crypto.randomUUID()}`,
+    organizationId: org.orgId,
+    email: "twice@example.test",
+    role: "member",
+    status: "pending",
+    expiresAt: new Date(Date.now() - 1000),
+    inviterId: ownerUser!.id,
+  });
+  const ownerInvite = await json("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: "twice@example.test", role: "owner" },
+  });
+  expect(ownerInvite.status).toBe(200);
+  // The admin's session must have the org active for the empty-id case to mean anything.
+  const activate = await json("/api/auth/organization/set-active", {
+    method: "POST",
+    cookies: admin.cookies,
+    body: { organizationId: org.orgId },
+  });
+  expect(activate.status).toBe(200);
+  for (const organizationId of ["", undefined]) {
+    const attempt = await json<{ message?: string }>("/api/auth/organization/invite-member", {
+      method: "POST",
+      cookies: admin.cookies,
+      body: { organizationId, email: "twice@example.test", role: "member", resend: true },
+    });
+    expect(attempt.status).toBe(403);
+  }
+});
+
+test("the invitation preview answers the recipient, even after the inviter has left", async () => {
+  const org = await createOrgSession("preview");
+  const invitee = await createOrgSession("invitee");
+  const invite = await json<{ id: string }>("/api/auth/organization/invite-member", {
+    method: "POST",
+    cookies: org.cookies,
+    body: { organizationId: org.orgId, email: invitee.email, role: "admin" },
+  });
+  expect(invite.status).toBe(200);
+  const stranger = await createOrgSession("stranger");
+  const wrong = await json(`/api/auth/invitation-preview?id=${invite.body.id}`, { cookies: stranger.cookies });
+  expect(wrong.status).toBe(403);
+  const missing = await json("/api/auth/invitation-preview?id=nope", { cookies: invitee.cookies });
+  expect(missing.status).toBe(404);
+  const ok = await json<{ organizationName: string; inviterEmail: string | null; role: string }>(
+    `/api/auth/invitation-preview?id=${invite.body.id}`,
+    { cookies: invitee.cookies },
+  );
+  expect(ok.status).toBe(200);
+  expect(ok.body.organizationName).toContain("Org preview");
+  expect(ok.body.inviterEmail).toBe(org.email);
+  expect(ok.body.role).toBe("admin");
+  // The inviter leaves; the invitation still previews and still accepts.
+  const [inviter] = await db.select({ id: user.id }).from(user).where(eq(user.email, org.email));
+  await db.delete(member).where(eq(member.userId, inviter!.id));
+  const after = await json<{ inviterEmail: string | null }>(`/api/auth/invitation-preview?id=${invite.body.id}`, {
+    cookies: invitee.cookies,
+  });
+  expect(after.status).toBe(200);
+  expect(after.body.inviterEmail).toBe(org.email);
+  const accepted = await json("/api/auth/organization/accept-invitation", {
+    method: "POST",
+    cookies: invitee.cookies,
+    body: { invitationId: invite.body.id },
+  });
+  expect(accepted.status).toBe(200);
+  const gone = await json(`/api/auth/invitation-preview?id=${invite.body.id}`, { cookies: invitee.cookies });
+  expect(gone.status).toBe(404);
+});

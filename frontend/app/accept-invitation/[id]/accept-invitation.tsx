@@ -16,14 +16,15 @@ import { invitationProblem } from "./invitation-problem";
 
 export interface InvitationView {
   readonly organizationName: string;
-  readonly inviterEmail: string;
+  /** Null once the inviter has left the organisation; the invitation still stands. */
+  readonly inviterEmail: string | null;
   readonly email: string;
   readonly role: string;
 }
 
 async function fetchInvitation(id: string): Promise<{ view: InvitationView } | { problem: string }> {
   try {
-    const res = await backendFetch(`/api/auth/organization/get-invitation?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const res = await backendFetch(`/api/auth/invitation-preview?id=${encodeURIComponent(id)}`, { cache: "no-store" });
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { message?: string } | null;
       return { problem: invitationProblem(res.status, body?.message ?? null) };
@@ -108,7 +109,8 @@ export function AcceptInvitation({ id }: { id: string }) {
           <>
             <h1 className="text-title-3-medium text-text-primary">Join {state.view.organizationName}</h1>
             <p className="text-body-2-regular text-text-secondary">
-              {state.view.inviterEmail} invited {state.view.email} as {state.view.role === "admin" ? "an admin" : state.view.role === "owner" ? "an owner" : "a member"}.
+              {state.view.inviterEmail ?? "A teammate"} invited {state.view.email} as{" "}
+              {state.view.role === "admin" ? "an admin" : state.view.role === "owner" ? "an owner" : "a member"}.
             </p>
             <Button variant="primary" size="medium" disabled={joining || joined} onClick={() => void join()}>
               {joined ? "Joined" : joining ? "Joining..." : "Join workspace"}

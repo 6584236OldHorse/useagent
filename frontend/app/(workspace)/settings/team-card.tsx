@@ -11,6 +11,7 @@ import * as Modal from "@/components/base/modal/modal";
 import { Select, SelectItem } from "@/components/base/select/select";
 import { useAuthConfig, useSession } from "@/lib/auth";
 import { AVATAR_GRADIENT } from "./general-card";
+import { relTime } from "./relative-time";
 import {
   type MemberRole,
   type PendingInvitation,
@@ -143,7 +144,9 @@ export function TeamCard() {
                   {row.name}
                   {row.userId === me ? <span className="text-text-tertiary"> (you)</span> : null}
                 </p>
-                <p className="truncate text-caption-1-regular text-text-secondary">{row.email}</p>
+                <p className="truncate text-caption-1-regular text-text-secondary">
+                  {row.email} · joined {relTime(row.joinedAt)}
+                </p>
               </div>
               {editable ? (
                 <>
