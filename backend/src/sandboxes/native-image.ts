@@ -19,7 +19,7 @@ import {
   buildNativeRuntimeInstallCommand,
   NATIVE_RUNTIME_ARTIFACT,
 } from "../engines/native-runtime-artifact";
-import { buildRuntimeEnvironmentBootScript, runtimeEnvironmentBootPath } from "../engines/runtime-environment-boot";
+import { buildRuntimeEnvironmentBootScript, desktopLaunchPath, runtimeEnvironmentBootPath } from "../engines/runtime-environment-boot";
 import {
   buildPiRuntimeEnsureCommand,
   PI_RUNTIME_LOCK_SHA256,
@@ -35,7 +35,8 @@ import {
   SANDBOX_BUN_VERSION,
 } from "../engines/sandbox-bun";
 import { claudeProviderGatewayEnvironment } from "../provider-gateway/sandbox-config";
-import { DESKTOP_REQUIRED_BINARIES } from "../engines/desktop-workstation";
+import { desktopCdpRelaySource } from "../engines/desktop-cdp-relay";
+import { buildDesktopLaunchScript, DESKTOP_REQUIRED_BINARIES } from "../engines/desktop-workstation";
 
 /** Bump when a step changes in a way the fingerprinted inputs cannot express. */
 const NATIVE_IMAGE_RECIPE_VERSION = 3;
@@ -231,6 +232,7 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
   const probe = desktopToolchainProbeCommand();
   const desktopDir = `${layout.home}/Desktop`;
   return [
+    `chmod 0755 ${q(desktopLaunchPath(layout))}`,
     `if ${probe}; then exit 0; fi`,
     "export DEBIAN_FRONTEND=noninteractive",
     `${sudo}apt-get update -qq`,
@@ -363,7 +365,10 @@ export function nativeImageSteps(
     },
     {
       name: "desktop",
-      files: [],
+      files: [
+        { path: desktopLaunchPath(layout), bytes: Buffer.from(buildDesktopLaunchScript(), "utf8") },
+        { path: `${home}/.skynet/cdp-relay.mjs`, bytes: Buffer.from(desktopCdpRelaySource(), "utf8") },
+      ],
       command: desktopToolchainCommand(layout),
       timeoutSeconds: 900,
     },

@@ -284,6 +284,38 @@ describe("shared sandbox desktop", () => {
     }
   });
 
+  test("waits for a desktop the image is still booting instead of starting a second one", async () => {
+    let healthChecks = 0;
+    const launched: string[] = [];
+    const sandbox = sandboxFixture("sandbox-booting-desktop", {
+      executeCommand: async (command: string) => {
+        if (command.includes('printf "HOME=')) {
+          return {
+            exitCode: 0,
+            result: "HOME=/root\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nSESSION=0\nMCP=0\nDESKTOP_BOOT=1\n",
+          };
+        }
+        if (command.includes("/vnc.html")) {
+          healthChecks += 1;
+          return { exitCode: healthChecks >= 2 ? 0 : 1, result: "" };
+        }
+        return { exitCode: 0, result: "" };
+      },
+      deleteSession: async () => {},
+      createSession: async () => {},
+      executeSessionCommand: async (_name: string, input: { command: string }) => {
+        launched.push(input.command);
+        return { cmdId: "desktop-command" };
+      },
+    });
+
+    await expect(
+      ensureSandboxDesktopView(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ available: true, browserExecutable: "/usr/bin/chromium" });
+    expect(launched).toEqual([]);
+    expect(healthChecks).toBe(2);
+  });
+
   test("repairs when stale desktop sessions are already absent", async () => {
     let launched = false;
     const sandbox = sandboxFixture("sandbox-missing-desktop-sessions", {

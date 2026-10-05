@@ -9,6 +9,7 @@ import { BROWSER_CDP_ENDPOINT, ensureResidentBrowserMcp, PLAYWRIGHT_MCP_VERSION 
 import {
   buildDesktopLaunchCommand,
   buildDesktopReadinessCommand,
+  DESKTOP_BOOT_MARKER_NAME,
   DESKTOP_PORT,
   DESKTOP_REQUIRED_BINARIES,
   rfbProbeCommand,
@@ -40,6 +41,15 @@ export interface SandboxDesktop {
   readonly workdir: string;
   readonly browserExecutable: string | null;
   readonly reason?: string;
+}
+
+async function waitForDesktop(sandbox: SandboxHandle, signal: AbortSignal, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline && !signal.aborted) {
+    if (await localDesktopHealthy(sandbox)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
 }
 
 async function localDesktopHealthy(sandbox: SandboxHandle): Promise<boolean> {
@@ -107,8 +117,9 @@ async function provisionSandboxDesktopView(
         `cdp=0; curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && cdp=1; ` +
         `cdp_relay=0; ${desktopCdpRelayProbeCommand()} && ${providerCdpRelayProbeCommand()} && cdp_relay=1; ` +
         `session=0; ${desktopSessionProbeCommand()} && session=1; ` +
+        `boot=0; [ -e "$HOME/.skynet/${DESKTOP_BOOT_MARKER_NAME}" ] && boot=1; ` +
         'mcp=0; [ -x "$HOME/.local/bin/playwright-mcp" ] && mcp=1; ' +
-        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nSESSION=%s\\nMCP=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$session" "$mcp"',
+        'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nSESSION=%s\\nMCP=%s\\nDESKTOP_BOOT=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$session" "$mcp" "$boot"',
       undefined,
       undefined,
       20,
@@ -146,8 +157,11 @@ async function provisionSandboxDesktopView(
       });
     }
 
-    const requiredRepair = !healthy;
-    if (!healthy) {
+    let available = healthy;
+    // The image is still bringing its desktop up: wait for it instead of starting a second one.
+    if (!available && /^DESKTOP_BOOT=1$/m.test(output)) available = await waitForDesktop(sandbox, signal, 60_000);
+    const requiredRepair = !available;
+    if (!available) {
       // The resident MCP may still hold a CDP connection to the browser we are
       // about to replace. Stop it first so the next engine turn receives one
       // clean MCP generation attached to the new Chrome process.
@@ -165,15 +179,7 @@ async function provisionSandboxDesktopView(
       );
     }
 
-    let available = healthy;
-    if (!available) {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline && !signal.aborted) {
-        available = await localDesktopHealthy(sandbox);
-        if (available) break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-    }
+    if (!available) available = await waitForDesktop(sandbox, signal, 30_000);
     available = !signal.aborted && available;
     if (!available) {
       return finish(signal.aborted ? RUN_TIMING_OUTCOMES.aborted : RUN_TIMING_OUTCOMES.unavailable, {
