@@ -67,7 +67,7 @@ function lineCount(text: string): number {
 // out of scope (they grow with fixtures and cases).
 const BACKEND_SIZE_BASELINE: Record<string, number> = {
   // Read-only and windowed thread routes live in runs/read-routes.ts.
-  "runs/routes.ts": 1041,
+  "runs/routes.ts": 1022,
   "memory/team-memory.ts": 1005,
   // Scripted mock execution and worker events live in focused worker modules.
   "worker.ts": 830,

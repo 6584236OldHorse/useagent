@@ -51,7 +51,6 @@ import {
 import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
-import { stopRun } from "./stop";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
 import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
@@ -74,6 +73,7 @@ import {
   USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
+import { registerRunCancelRoute } from "./cancel-route";
 import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
@@ -499,35 +499,7 @@ export async function handleRunCreate(
 
 runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
-// POST /:id/cancel — durable user Stop. Records a `run.cancel` command
-// (idempotent), fails a not-yet-started (queued) run atomically, signals a live
-// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
-// runs still working in threads this one delegated to. Org-scoped (a
-// cross-org/missing id is a 404). A run that already settled is a no-op.
-// `?only=queued` (Remove from the queue) cancels only a run that has not
-// started; one that started meanwhile answers 409 and is left running.
-runsRoutes.post("/:id/cancel", async (c) => {
-  const id = c.req.param("id");
-  const outcome = await stopRun({
-    orgId: c.get("orgId"),
-    actorId: c.get("userId"),
-    runId: id,
-    onlyQueued: c.req.query("only") === "queued",
-  });
-  switch (outcome.status) {
-    case "not_found":
-      return c.json({ error: "run not found" }, 404);
-    case "started":
-      return c.json({ id, status: outcome.runStatus, error: "run already started" }, 409);
-    case "settled":
-      return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
-    case "cancelling":
-      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
-    default:
-      return assertNever(outcome);
-  }
-});
-
+registerRunCancelRoute(runsRoutes);
 registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);
