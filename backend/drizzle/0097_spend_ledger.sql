@@ -18,5 +18,8 @@ CREATE TABLE IF NOT EXISTS "spend_entries" (
 	"cost_usd" numeric(14, 6) NOT NULL,
 	"tokens" integer DEFAULT 0 NOT NULL,
 	"source" text NOT NULL,
+	"generation_id" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spend_entries_pending_idx" ON "spend_entries" ("created_at") WHERE "source" = 'pending';

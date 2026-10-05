@@ -1,4 +1,4 @@
-import { and, eq, like, or, sql } from "drizzle-orm";
+import { and, eq, like, lt, or, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { providerEvents, spendAccounts, spendEntries, type SpendSource } from "../db/schema";
 
@@ -178,10 +178,13 @@ function runtimeActivityFigure(stored: Record<string, unknown>): UsageFigure | n
   return { cost, tokens: usageTokens(usage) };
 }
 
+/** A charge's figure once settled: every source but `pending`. */
+export type SettledSpendSource = Exclude<SpendSource, "pending">;
+
 export interface RunCharge {
   readonly cost: number;
   readonly tokens: number;
-  readonly source: SpendSource;
+  readonly source: SettledSpendSource;
 }
 
 /**
@@ -254,7 +257,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
   }
   cost = Math.min(cost, SPEND_CHARGE_MAX_USD);
   tokens = boundedTokens(tokens);
-  const source: SpendSource = settled ? "provider_generation" : priced ? "usage" : "unpriced";
+  const source: SettledSpendSource = settled ? "provider_generation" : priced ? "usage" : "unpriced";
   if (source === "unpriced" && tokens > 0) {
     console.warn(`[spend] run ${runId} reported ${tokens} tokens but no cost; charged as unpriced`);
   }
@@ -267,7 +270,8 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
  * Record one charge and add it to the member's account, once and together.
  * The per-charge entry is the guard: a second settlement, a replayed finalize
  * or a concurrent charge under the same key inserts nothing and charges
- * nothing. Handed the pool, it runs as one short transaction, so no reader
+ * nothing; an entry opened as `pending` before its turn ran is filled in
+ * here, once. Handed the pool, it runs as one short transaction, so no reader
  * ever sees the entry without its account movement. The account upsert takes
  * the member's row lock, so a caller inside a larger transaction must make
  * this its LAST statement: a transaction that holds that lock must never go
@@ -280,25 +284,37 @@ export async function chargeSpend(
     readonly userId: string;
     readonly cost: number;
     readonly tokens: number;
-    readonly source: SpendSource;
+    readonly source: SettledSpendSource;
+    readonly generationId?: string | null;
   },
   exec: Executor = db,
 ): Promise<boolean> {
   if (exec === db) return db.transaction((tx) => chargeSpend(input, tx));
   const cost = boundedCost(input.cost, `charge ${input.key}`) ?? 0;
-  const inserted = await exec
+  const tokens = Number.isFinite(input.tokens) ? boundedTokens(input.tokens) : 0;
+  const settled = await exec
     .insert(spendEntries)
     .values({
       chargeKey: input.key,
       orgId: input.orgId,
       userId: input.userId,
       costUsd: cost,
-      tokens: Number.isFinite(input.tokens) ? boundedTokens(input.tokens) : 0,
+      tokens,
       source: input.source,
+      generationId: input.generationId ?? null,
     })
-    .onConflictDoNothing()
+    .onConflictDoUpdate({
+      target: spendEntries.chargeKey,
+      set: {
+        costUsd: cost,
+        tokens,
+        source: input.source,
+        generationId: sql`coalesce(excluded.generation_id, ${spendEntries.generationId})`,
+      },
+      setWhere: eq(spendEntries.source, "pending"),
+    })
     .returning({ chargeKey: spendEntries.chargeKey });
-  if (inserted.length === 0) return false; // already charged
+  if (settled.length === 0) return false; // already charged
   await exec
     .insert(spendAccounts)
     .values({ orgId: input.orgId, userId: input.userId, spentUsd: cost, runs: 1 })
@@ -311,6 +327,56 @@ export async function chargeSpend(
       },
     });
   return true;
+}
+
+/**
+ * Open a charge before the work it pays for runs, so the intent to charge is
+ * durable from the start: a completion that fails to write leaves a pending
+ * entry to be settled (chargeSpend fills it in; chat/turn.ts sweeps what the
+ * process never completed), never a lost figure. Idempotent under its key.
+ */
+export async function openSpendCharge(input: {
+  readonly key: string;
+  readonly orgId: string;
+  readonly userId: string;
+}): Promise<void> {
+  await db
+    .insert(spendEntries)
+    .values({ chargeKey: input.key, orgId: input.orgId, userId: input.userId, costUsd: 0, tokens: 0, source: "pending" })
+    .onConflictDoNothing();
+}
+
+/** Drop a charge opened for a turn that never made a model call. */
+export async function discardSpendCharge(key: string): Promise<void> {
+  await db.delete(spendEntries).where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
+}
+
+/** Note the provider's generation id on an open charge as soon as the stream
+ *  names it, so a charge the process never completes can still be priced from
+ *  the provider's record. */
+export async function noteSpendGeneration(key: string, generationId: string): Promise<void> {
+  await db
+    .update(spendEntries)
+    .set({ generationId })
+    .where(and(eq(spendEntries.chargeKey, key), eq(spendEntries.source, "pending")));
+}
+
+/** Charges opened before `openedBefore` and never filled in. */
+export async function pendingSpendCharges(openedBefore: Date): Promise<Array<{
+  readonly key: string;
+  readonly orgId: string;
+  readonly userId: string;
+  readonly generationId: string | null;
+}>> {
+  return db
+    .select({
+      key: spendEntries.chargeKey,
+      orgId: spendEntries.orgId,
+      userId: spendEntries.userId,
+      generationId: spendEntries.generationId,
+    })
+    .from(spendEntries)
+    .where(and(eq(spendEntries.source, "pending"), lt(spendEntries.createdAt, openedBefore)));
 }
 
 /** Charge a settled run to its member from the usage it carries. Runs without

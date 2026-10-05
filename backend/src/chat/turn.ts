@@ -1,7 +1,7 @@
 import type { ResolvedProviderCredential } from "../provider-gateway/credentials";
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
 import { recordProviderEvent } from "../runs/provider-events";
-import { chargeSpend } from "../runs/spend";
+import { chargeSpend, discardSpendCharge } from "../runs/spend";
 import { errorMessage } from "../util/error-message";
 import {
   fetchGenerationCost,
@@ -85,38 +85,62 @@ export async function* chatTurnStream(
   }
 }
 
+/** A charge write is retried with its figure before it is left to the sweep. */
+const CHAT_CHARGE_ATTEMPTS = 3;
+const CHAT_CHARGE_RETRY_MS = 500;
+
+const usd = (n: number): string => `$${n.toFixed(4)}`;
+
 /**
  * Charge one stateless chat turn (POST /api/chat, which has no run row) to the
- * member it served, under its own `chat:` key. Best effort by contract: a
- * failure to charge is logged, never thrown into the response stream.
+ * member it served: the entry opened under `key` before the model call is
+ * filled in with the settled figure, and the account moved, in one
+ * transaction. A write that fails is retried with the same figure and logged
+ * each time; one that keeps failing leaves the entry pending, with the
+ * generation the stream named, for the sweep (charge-sweep.ts) to price from
+ * the provider's record. A stream that never named anything made no model call:
+ * its open charge is dropped. Nothing here is thrown into the response stream.
  */
 export async function chargeChatTurn(input: {
+  readonly key: string;
   readonly orgId: string;
-  readonly userId: string | null;
+  readonly userId: string;
   readonly account: ChatAccount;
   readonly credential: ResolvedProviderCredential;
   /** The stream ended normally: charged even without a figure, as an unpriced entry. */
   readonly completed?: boolean;
 }): Promise<void> {
-  if (!input.userId) return;
-  if (!input.account.usage && !input.account.generationId && !input.completed) return;
-  try {
-    const charge = await settleChatCharge(input.account, input.credential);
-    await chargeSpend({
-      key: `chat:${crypto.randomUUID()}`,
-      orgId: input.orgId,
-      userId: input.userId,
-      cost: charge.cost ?? 0,
-      tokens: charge.tokens,
-      source: charge.costSource === "provider_generation"
-        ? "provider_generation"
-        : charge.cost === null
-          ? "unpriced"
-          : "usage",
+  const where = `chat charge ${input.key} (${input.orgId}/${input.userId})`;
+  if (!input.account.usage && !input.account.generationId && !input.completed) {
+    await discardSpendCharge(input.key).catch((error) => {
+      console.error(`[spend] ${where} was never billed and could not be dropped:`, errorMessage(error));
     });
-  } catch (error) {
-    console.error(`[spend] chat turn charge failed for ${input.orgId}/${input.userId}:`, errorMessage(error));
+    return;
   }
+  const charge = await settleChatCharge(input.account, input.credential);
+  const write = {
+    key: input.key,
+    orgId: input.orgId,
+    userId: input.userId,
+    cost: charge.cost ?? 0,
+    tokens: charge.tokens,
+    source: charge.costSource === "provider_generation"
+      ? ("provider_generation" as const)
+      : charge.cost === null
+        ? ("unpriced" as const)
+        : ("usage" as const),
+    generationId: input.account.generationId,
+  };
+  for (let attempt = 1; attempt <= CHAT_CHARGE_ATTEMPTS; attempt += 1) {
+    try {
+      await chargeSpend(write);
+      return;
+    } catch (error) {
+      console.error(`[spend] ${where} write ${attempt}/${CHAT_CHARGE_ATTEMPTS} of ${usd(write.cost)} failed:`, errorMessage(error));
+      if (attempt < CHAT_CHARGE_ATTEMPTS) await Bun.sleep(CHAT_CHARGE_RETRY_MS * attempt);
+    }
+  }
+  console.error(`[spend] ${where} of ${usd(write.cost)} is left pending for the sweep`);
 }
 
 /** What a failed chat turn records: a spent provider key is named plainly; any

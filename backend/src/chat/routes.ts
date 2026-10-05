@@ -13,7 +13,13 @@ import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
 import { chatModel, newChatAccount, streamChat, type ChatMessage } from "./stream";
 import { chargeChatTurn } from "./turn";
-import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
+import {
+  assertSpendAllowance,
+  noteSpendGeneration,
+  openSpendCharge,
+  SpendAllowanceExceededError,
+} from "../runs/spend";
+import { errorMessage } from "../util/error-message";
 
 /**
  * Lightweight Chat API (#122) - mounted at /api/chat. A NO-SANDBOX conversational
@@ -107,6 +113,22 @@ chatRoutes.post("/", async (c) => {
     if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     throw error;
   }
+  // The member's charge is opened BEFORE any model call, so the intent to
+  // charge is durable from the start: a completion that fails to write leaves
+  // a pending entry the sweep settles, never a lost figure. A ledger that
+  // cannot take the intent takes no turn.
+  const charge = userId ? { key: `chat:${crypto.randomUUID()}`, orgId, userId } : null;
+  if (charge) {
+    try {
+      await openSpendCharge(charge);
+    } catch (error) {
+      console.error(`[spend] could not open chat charge ${charge.key}:`, errorMessage(error));
+      return c.json(
+        { error: "ledger_unavailable", message: "The spend ledger is unavailable. Try again in a moment." },
+        503,
+      );
+    }
+  }
   console.info(`[chat] org ${orgId} served by ${resolved.source}`);
 
   // Retrieve against the latest user message; the surface is stateless so a
@@ -182,8 +204,17 @@ chatRoutes.post("/", async (c) => {
           ].filter(Boolean).join("\n\n");
           const llmMessages: ChatMessage[] = [{ role: "system", content: system }, ...messages];
           let answer = "";
+          let generationNoted = false;
           for await (const delta of streamChat(llmMessages, model, resolved.value, signal, account)) {
             if (closed) return;
+            if (charge && !generationNoted && account.generationId) {
+              // Noted as soon as the stream names it, so a charge this process
+              // never completes can still be priced from the provider's record.
+              generationNoted = true;
+              void noteSpendGeneration(charge.key, account.generationId).catch((error) => {
+                console.error(`[spend] could not note the generation on chat charge ${charge.key}:`, errorMessage(error));
+              });
+            }
             answer += delta;
             sendEvent("delta", { delta });
           }
@@ -200,7 +231,7 @@ chatRoutes.post("/", async (c) => {
           if (!closed) sendEvent("error", { error: "chat request failed" });
         } finally {
           // Charged however the stream ended; the response never waits on it.
-          void chargeChatTurn({ orgId, userId, account, credential: resolved, completed });
+          if (charge) void chargeChatTurn({ ...charge, account, credential: resolved, completed });
           cleanup();
         }
       })();

@@ -20,6 +20,7 @@ import {
 import { isPublicApiPath, orgScope } from "./middleware/org";
 import { bearerAuth } from "./middleware/bearer";
 import { chatRoutes } from "./chat/routes";
+import { startChatChargeSweep } from "./chat/charge-sweep";
 import { botsRoutes } from "./bots/routes";
 import { toolGatewayConfig } from "./knowledge/gateway/config";
 import { knowledgeRoutes } from "./knowledge/routes";
@@ -455,6 +456,8 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
 // (org knowledge + published wiki + team memory). Org-scoped; inert without
 // OPENROUTER_API_KEY (503). Distinct from /api/runs (which spins sandboxes).
 app.route("/api/chat", chatRoutes);
+// Chat charges a crash or a failed write left pending are priced from the provider's record.
+startChatChargeSweep();
 
 app.route("/api/runs", runsRoutes);
 app.route("/api/spend", spendRoutes);

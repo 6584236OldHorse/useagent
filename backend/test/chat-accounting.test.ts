@@ -1,7 +1,8 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
+import { settlePendingChatCharges } from "../src/chat/charge-sweep";
 import { chatTurnStream } from "../src/chat/turn";
 import { finalizeRun } from "../src/runs/finalize";
 import { drainProviderEvents } from "../src/runs/provider-events";
@@ -152,6 +153,37 @@ describe("chat turns with no figure at all", () => {
   });
 });
 
+/** This member's chat charges. */
+const chatEntries = () => db.select().from(spendEntries)
+  .where(and(eq(spendEntries.orgId, session.orgId), eq(spendEntries.userId, userId), like(spendEntries.chargeKey, "chat:%")));
+
+const setSpent = (spentUsd: number) => db.insert(spendAccounts).values({ orgId: session.orgId, userId, spentUsd })
+  .onConflictDoUpdate({ target: [spendAccounts.orgId, spendAccounts.userId], set: { spentUsd } });
+
+const spent = async () => (await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)
+  .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId))))[0]?.spent ?? 0;
+
+/** Fail this member's next `count` account writes with a trigger; the count lives
+ *  in a sequence, so it survives the transactions it makes roll back. */
+async function failAccountWrites(count: number): Promise<() => Promise<void>> {
+  await db.execute(sql`create sequence if not exists spend_fail_seq`);
+  await db.execute(sql`select setval('spend_fail_seq', 1, false)`);
+  await db.execute(sql.raw(`
+    create or replace function spend_fail_writes() returns trigger language plpgsql as $$
+    begin
+      if nextval('spend_fail_seq') <= ${count} then raise exception 'synthetic account write failure'; end if;
+      return new;
+    end $$`));
+  await db.execute(sql.raw(`
+    create or replace trigger spend_fail_writes before insert or update on spend_accounts
+    for each row when (new.user_id = '${userId}') execute function spend_fail_writes()`));
+  return async () => {
+    await db.execute(sql`drop trigger if exists spend_fail_writes on spend_accounts`);
+  };
+}
+
+const ask = (content: string) => fetchApi("/api/chat", { method: "POST", cookies: session.cookies, body: { messages: [{ role: "user", content }] } });
+
 describe("POST /api/chat accounting", () => {
   test("a member's completed stream with no figure is charged as one unpriced entry", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
@@ -163,12 +195,11 @@ describe("POST /api/chat accounting", () => {
     });
     expect(res.status).toBe(200);
     await readSse(res, { timeoutMs: 8_000 });
-    const entries = await waitFor(async () => {
-      const rows = await db.select().from(spendEntries)
-        .where(and(eq(spendEntries.orgId, session.orgId), eq(spendEntries.userId, userId), like(spendEntries.chargeKey, "chat:%")));
-      return rows.length > before.length ? rows : null;
-    });
-    expect(entries.some((row) => row.source === "unpriced" && row.costUsd === 0)).toBe(true);
+    const known = new Set(before.map((row) => row.key));
+    const entry = await waitFor(async () =>
+      (await chatEntries()).find((row) => !known.has(row.chargeKey) && row.source !== "pending") ?? null,
+    );
+    expect(entry).toMatchObject({ source: "unpriced", costUsd: 0 });
   });
 
   test("the dev fallback is anonymous: answered on the house key, charged to nobody, capped by nothing", async () => {
@@ -220,4 +251,58 @@ describe("POST /api/chat accounting", () => {
     expect(refused.body.message).toContain("$100.00 of your $100.00");
     expect(calls.length).toBe(before);
   });
+
+  test("a charge write that fails once is retried with its figure, and the member is then refused at the cap", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(99.9);
+    const known = new Set((await chatEntries()).map((row) => row.chargeKey));
+    const restore = await failAccountWrites(1);
+    try {
+      mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
+      const res = await ask("retry me");
+      expect(res.status).toBe(200);
+      expect((await readSse(res, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
+      const entry = await waitFor(async () =>
+        (await chatEntries()).find((row) => !known.has(row.chargeKey) && row.source !== "pending") ?? null,
+      );
+      expect(entry).toMatchObject({ costUsd: 0.25, tokens: 42, source: "provider_generation", generationId: "gen-abc" });
+      expect(await spent()).toBeCloseTo(100.15, 6);
+    } finally {
+      await restore();
+    }
+    const refused = await ask("again");
+    expect(refused.status).toBe(402);
+  });
+
+  test("a charge whose writes keep failing stays pending with its generation, and the sweep settles it from the provider's record", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(99.9);
+    const known = new Set((await chatEntries()).map((row) => row.chargeKey));
+    const restore = await failAccountWrites(1_000_000);
+    let key = "";
+    try {
+      mockProvider([chunk("Hi"), usage(0.2), "[DONE]"], 0.25);
+      const res = await ask("crash me");
+      expect(res.status).toBe(200);
+      expect((await readSse(res, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
+      // The intent was recorded before the model call and the generation noted
+      // as the stream named it; the retries all fail and the entry stays pending.
+      const pending = await waitFor(async () =>
+        (await chatEntries()).find((row) => !known.has(row.chargeKey) && row.generationId !== null) ?? null,
+      );
+      expect(pending).toMatchObject({ source: "pending", generationId: "gen-abc" });
+      key = pending.chargeKey;
+      await Bun.sleep(2_000); // past the last retry
+      expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ source: "pending" });
+      expect(await spent()).toBeCloseTo(99.9, 6);
+    } finally {
+      await restore();
+    }
+    // The ledger is back: the sweep prices the charge from the provider's record.
+    await settlePendingChatCharges(0);
+    expect((await chatEntries()).find((row) => row.chargeKey === key)).toMatchObject({ costUsd: 0.25, source: "provider_generation" });
+    expect(await spent()).toBeCloseTo(100.15, 6);
+    const refused = await ask("again");
+    expect(refused.status).toBe(402);
+  }, 20_000);
 });
