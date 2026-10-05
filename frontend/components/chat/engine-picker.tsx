@@ -1,6 +1,7 @@
 "use client";
 
-import { RiArrowDownSLine, RiCheckLine, RiCpuLine, RiRefreshLine } from "@remixicon/react";
+import { RiArrowDownSLine, RiCheckLine, RiRefreshLine } from "@remixicon/react";
+import { vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   ENGINES,
@@ -343,6 +344,11 @@ export function useEnabledEngines(): EngineId[] {
  * the current engine label + a dropdown of the sandbox engines. This is the
  * engine selector integrated "next to the model" per spec.
  */
+function RowMark({ option }: { option: string }) {
+  const Mark = vendorMarkForModel(option);
+  return <Mark className="text-foreground-icon-secondary size-4 shrink-0" aria-hidden />;
+}
+
 export function ModelPicker({
   engine,
   model,
@@ -404,6 +410,7 @@ export function ModelPicker({
     }
   };
 
+  const SelectedMark = vendorMarkForModel(model);
   return (
     <div className={cn("relative", className)}>
       <button
@@ -415,11 +422,9 @@ export function ModelPicker({
         title={`Model: ${selectedLabel}`}
         className="text-text-primary hover:bg-background-primary-hover flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-body-2-medium transition-colors"
       >
-        {/* Engine chip glyph — the AsteriskMark is useAgent's brand, not an
-            engine's; match the composer's neutral cpu icon instead. Below sm the
-            label folds into the accessible name so the reply placeholder keeps
-            one line at phone width. */}
-        <RiCpuLine className="text-text-secondary size-4" aria-hidden />
+        {/* The selected model's vendor mark. Below sm the label folds into the
+            accessible name so the reply placeholder keeps one line at phone width. */}
+        <SelectedMark className="text-text-secondary size-4" aria-hidden />
         <span className="max-w-[11rem] truncate whitespace-nowrap max-sm:sr-only">{selectedLabel}</span>
         <RiArrowDownSLine className="text-text-tertiary size-4 max-sm:hidden" aria-hidden />
       </button>
@@ -482,6 +487,7 @@ export function ModelPicker({
                       >
                         <RiCheckLine className="size-4" aria-hidden />
                       </span>
+                      <RowMark option={e.value} />
                       <span className="min-w-0 flex-1">
                         <span className="text-body-2-regular text-text-primary block">
                           {e.label}

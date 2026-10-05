@@ -16,7 +16,6 @@ import {
   DropdownPopover,
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
-import { AsteriskMark } from "@/components/foundations/brand/asterisk-mark";
 import { cx } from "@/utils/cx";
 
 type IconComponent = ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
@@ -26,10 +25,8 @@ export interface PickerOption {
   label: string;
   /** Secondary line under the label (e.g. a skill's tag). */
   caption?: string;
-  /** Leading remixicon (folder, disk…). */
+  /** Leading icon: a remixicon (folder, disk…) or a vendor mark (models, engines). */
   icon?: IconComponent;
-  /** When set, render a tinted ✳ mark instead of an icon (model marks). */
-  markTint?: string;
   /** Monospace label styling (machine snapshots). */
   mono?: boolean;
 }
@@ -57,9 +54,6 @@ export interface SearchablePickerProps {
 }
 
 function OptionMark({ option }: { option: PickerOption }) {
-  if (option.markTint) {
-    return <AsteriskMark className={cx("size-4 shrink-0", option.markTint)} />;
-  }
   if (option.icon) {
     const Icon = option.icon;
     return <Icon className="size-4 shrink-0 text-foreground-icon-secondary" aria-hidden />;
@@ -97,7 +91,7 @@ export function SearchablePicker({
 
   // One left inset for every row: when any option carries a glyph, all rows
   // render the fixed leading column so plain labels share the same edge.
-  const hasGlyphs = groups.some((g) => g.options.some((o) => o.icon || o.markTint));
+  const hasGlyphs = groups.some((g) => g.options.some((o) => o.icon));
   const searchActions = groups.flatMap((group, index) =>
     group.action ? [<span key={group.label ?? index}>{group.action}</span>] : [],
   );

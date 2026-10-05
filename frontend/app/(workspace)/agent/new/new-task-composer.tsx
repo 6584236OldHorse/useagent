@@ -6,7 +6,6 @@ import {
   RiArrowUpLine,
   RiBookMarkedLine,
   RiCloseLine,
-  RiCpuLine,
   RiFlashlightLine,
   RiRefreshLine,
 } from "@remixicon/react";
@@ -32,6 +31,7 @@ import {
   resolveEnabledEngine,
   useEnabledEngineConfig,
 } from "@/components/chat/engine-picker";
+import { engineMarkFor, vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
 import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
@@ -129,7 +129,7 @@ export function NewTaskComposer({
     const toOption = (m: (typeof selectableModels)[number]) => ({
       value: m.value,
       label: m.label,
-      markTint: m.tint,
+      icon: vendorMarkForModel(m.value),
     });
     // Zero-cost OpenRouter ":free" variants (OpenCode only) get their own
     // section; membership is manifest-driven via the shared partition.
@@ -357,7 +357,7 @@ export function NewTaskComposer({
               engineConfig.localLoginOffered.includes(e.id),
               machineRunsWork,
             ),
-            icon: RiCpuLine,
+            icon: engineMarkFor(e.id),
           }),
         ),
       },
