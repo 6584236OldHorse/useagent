@@ -18,6 +18,7 @@ import {
 } from "../runs/engine-readiness";
 import { allowedModelsForEngine, defaultModelForEngine } from "../runs/model-policy";
 import { modelOfferedTo } from "../provider-gateway/provider-accounts";
+import { providerForEngine, type ProviderId } from "../provider-gateway/provider";
 import { reasoningEffortSupport } from "../runs/reasoning-effort";
 import type { NativeCodexModelCatalog } from "../provider-connections/codex-model-catalog";
 import { engineAuthMode } from "../runs/engine-auth-mode";
@@ -47,6 +48,8 @@ export interface CapabilityCatalogModel {
   readonly dispatchable: boolean;
   readonly policyAllowed: boolean;
   readonly displayName?: string;
+  /** Whose key pays for this model's run, so a picker can say which key it needs. */
+  readonly provider?: ProviderId;
   readonly nativeAvailable?: true;
   readonly defaultReasoningEffort?: string;
   readonly supportedReasoningEfforts?: readonly string[];
@@ -180,12 +183,14 @@ function buildEngine(
     // The effort seam the picker may offer: the native Codex catalog's own list
     // when it knows the model, the engine's policy set otherwise, none elsewhere.
     const effort = reasoningEffortSupport(engine as EngineId, nativeModel);
+    const provider = providerForEngine(engine as EngineId, id);
     return {
       id,
       default: id === defaultModel,
       dispatchable,
       policyAllowed,
       ...(nativeModel?.displayName ? { displayName: nativeModel.displayName } : {}),
+      ...(provider ? { provider } : {}),
       ...(nativeModel ? { nativeAvailable: true as const } : {}),
       ...(effort.defaultEffort ? { defaultReasoningEffort: effort.defaultEffort } : {}),
       ...(effort.efforts.length ? { supportedReasoningEfforts: effort.efforts } : {}),

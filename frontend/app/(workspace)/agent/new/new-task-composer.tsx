@@ -38,6 +38,7 @@ import {
 import {
   type EngineId,
   engineLabel,
+  isFreeModel,
   modelOptionsForEngine,
   type PermissionMode,
 } from "@/components/chat/types";
@@ -64,11 +65,12 @@ import { type RepoItem, RepoMultiPicker } from "./repo-multi-picker";
 import { type PickerGroup, SearchablePicker } from "./searchable-picker";
 import type { Skill } from "./skills-data";
 import {
-  AddOpenRouterKey,
-  FreeLaneNote,
+  AddProviderKey,
+  keyRequiredError,
   START_FREE_ERROR,
   StartFreePrompt,
   startFreeModel,
+  startFreeVisible,
   useStartFree,
 } from "./start-free-prompt";
 import { mentionedBotIds } from "@/components/chat/composer-mentions";
@@ -137,16 +139,25 @@ export function NewTaskComposer({
   // re-derives it on demand (same affordance as the chat surface's picker).
   const [refreshingModels, setRefreshingModels] = useState(false);
   const { refreshModels } = engineConfig;
-  // A member with no model key: the start-free card, the picker's Free action
-  // and the send check below. A machine thread runs on the machine's logins.
+  // What the member's keys can run: the start-free card, the picker's "Needs
+  // key" rows and Free action, the free fallback and the send check below. A
+  // machine thread runs on the machine's logins, so nothing needs a key there.
   const startFree = useStartFree();
+  const keyAccess = onMachine ? null : startFree.access;
+  const lockedBy =
+    keyAccess?.missing(engineId, engineConfig.modelDetails[engineId]?.find((entry) => entry.id === model)?.provider) ?? null;
+  const runnableFree = (engineConfig.modelDetails.opencode ?? [])
+    .filter((entry) => entry.dispatchable && isFreeModel(entry.id) && !keyAccess?.missing("opencode", entry.provider))
+    .map((entry) => entry.id);
   const modelPicked = useRef(false);
-  const freeModel = engineConfig.loaded && !onMachine ? startFreeModel(startFree, engineConfig.models) : null;
+  const freeModel =
+    engineConfig.loaded && !onMachine ? startFreeModel(startFree, runnableFree, lockedBy !== null) : null;
   useEffect(() => {
-    if (!freeModel || modelPicked.current) return;
+    // A model picked here stays unless it needs a key the member lacks.
+    if (!freeModel || (modelPicked.current && !lockedBy)) return;
     setEngine("opencode");
     setModel(freeModel);
-  }, [freeModel]);
+  }, [freeModel, lockedBy]);
   const refreshFreeModels = useCallback(
     async (preserveModel: string, target: EngineId) => {
       setRefreshingModels(true);
@@ -176,19 +187,10 @@ export function NewTaskComposer({
             engineConfig.localLoginOffered.includes(candidate.id),
             machineRunsWork,
           ),
-          startFree.openRouterMissing ? <FreeLaneNote onAdd={startFree.openForm} /> : undefined,
+          keyAccess,
         ),
       ),
-    [
-      enabledEngines,
-      engineConfig,
-      machineRunsWork,
-      model,
-      refreshFreeModels,
-      refreshingModels,
-      startFree.openForm,
-      startFree.openRouterMissing,
-    ],
+    [enabledEngines, engineConfig, keyAccess, machineRunsWork, model, refreshFreeModels, refreshingModels],
   );
   // Per-repo branch overrides (repo full_name -> branch). An absent entry means
   // "clone the repo's default branch"; only overrides are sent to the backend.
@@ -387,8 +389,15 @@ export function NewTaskComposer({
       setError(readiness.message ?? `${engineLabel(engineId)} is not ready. Check Settings and retry.`);
       return;
     }
-    if (startFree.needsKey && !onMachine) {
-      setError(START_FREE_ERROR);
+    const keyError = onMachine
+      ? null
+      : startFree.needsKey
+        ? START_FREE_ERROR
+        : lockedBy
+          ? keyRequiredError(lockedBy)
+          : null;
+    if (keyError) {
+      setError(keyError);
       return;
     }
     setSubmitting(true);
@@ -462,13 +471,22 @@ export function NewTaskComposer({
     }
   }
 
+  // The key a send refusal offers to add, read off the refusal itself.
+  const errorKey =
+    error === START_FREE_ERROR ? "openrouter" : lockedBy && error === keyRequiredError(lockedBy) ? lockedBy : null;
+
   return (
     <div>
-      {startFree.visible && !onMachine ? (
+      {!onMachine &&
+      startFreeVisible(
+        startFree.needsKey || (lockedBy !== null && !freeModel && startFree.openRouterMissing),
+        startFree.dismissed,
+        startFree.formProvider,
+      ) ? (
         <StartFreePrompt
-          formOpen={startFree.formOpen}
-          connection={startFree.openRouterConnection}
-          onAdd={startFree.openForm}
+          formProvider={startFree.formProvider}
+          connection={startFree.formConnection}
+          onAdd={() => startFree.openForm("openrouter")}
           onDismiss={startFree.dismiss}
           onSaved={async () => {
             await startFree.saved();
@@ -685,10 +703,10 @@ export function NewTaskComposer({
       {error ? (
         <p role="alert" className="mt-2 text-caption-1-regular text-text-error-primary">
           {error}
-          {error === START_FREE_ERROR ? (
+          {errorKey ? (
             <>
               {" "}
-              <AddOpenRouterKey onClick={startFree.openForm} />
+              <AddProviderKey provider={errorKey} onClick={() => startFree.openForm(errorKey)} />
             </>
           ) : null}
         </p>

@@ -55,6 +55,12 @@ describe("capability catalog", () => {
     expect(codex?.degradationReason).toBe("provider_unhealthy");
     expect(codex?.models.every((model) => model.dispatchable === false)).toBe(true);
     expect(opencode?.models.some((model) => model.id.endsWith(":free"))).toBe(true);
+    // Each model names whose key pays for it, so a picker can say which key it needs.
+    expect(opencode?.models.find((model) => model.id === "openai/gpt-5.6-luna")?.provider).toBe("openai");
+    expect(opencode?.models.find((model) => model.id.endsWith(":free"))?.provider).toBe("openrouter");
+    expect(codex?.models.every((model) => model.provider === "openai")).toBe(true);
+    expect(catalog.engines.find((engine) => engine.id === "chat")?.models.every((model) => model.provider === "openrouter"))
+      .toBe(true);
     expect(opencode?.models.find((model) => model.default)?.id).toBe(opencode?.defaultModel);
     expect(opencode?.runtime).toEqual({
       kind: "t3",

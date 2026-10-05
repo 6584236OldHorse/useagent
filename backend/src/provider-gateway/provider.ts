@@ -1,4 +1,5 @@
 import type { EngineId } from "../db/schema";
+import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 
 export const PROVIDER_IDS = ["anthropic", "openai", "openrouter", "cerebras", "opencode"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
@@ -54,14 +55,19 @@ export function providerCredentialName(provider: ProviderId): string {
   }
 }
 
-/** Which model providers this deployment serves from its own keys. A provider
- *  NAME is not a secret; the value never leaves the server. Lets Settings say
- *  "provided by this deployment" instead of "not connected" beside a working
- *  product. */
+/** Which model providers this deployment serves a member's run from its own
+ *  keys, by the same rule as resolveProviderCredentialForRun: a house key
+ *  serves runs only in dev mode, except the Zen key that runs the free Zen
+ *  lane everywhere. A key held for other work (wiki, distill) is not served.
+ *  A provider NAME is not a secret; the value never leaves the server. */
 export function deploymentProvidedProviders(
   env: Record<string, string | undefined> = process.env,
 ): Record<ProviderId, boolean> {
+  const devMode = runtimeDevModeEnabled(env);
   return Object.fromEntries(
-    PROVIDER_IDS.map((provider) => [provider, Boolean(env[providerCredentialName(provider)]?.trim())]),
+    PROVIDER_IDS.map((provider) => [
+      provider,
+      (devMode || provider === "opencode") && Boolean(env[providerCredentialName(provider)]?.trim()),
+    ]),
   ) as Record<ProviderId, boolean>;
 }

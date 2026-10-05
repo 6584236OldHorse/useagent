@@ -24,4 +24,15 @@ describe("OpenCode Zen as a model provider", () => {
     expect(deploymentProvidedProviders({ OPENCODE_API_KEY: "zen-house" }).opencode).toBe(true);
     expect(deploymentProvidedProviders({}).opencode).toBe(false);
   });
+
+  test("in production a house key held for other work serves no member, the Zen lane key still does", () => {
+    const keys = { OPENROUTER_API_KEY: "house", OPENAI_API_KEY: "house", OPENCODE_API_KEY: "zen-house" };
+    expect(deploymentProvidedProviders({ ...keys, NODE_ENV: "production" })).toMatchObject({
+      openrouter: false,
+      openai: false,
+      opencode: true,
+    });
+    expect(deploymentProvidedProviders({ ...keys, USEAGENT_DEV_MODE: "false" }).openrouter).toBe(false);
+    expect(deploymentProvidedProviders({ ...keys, USEAGENT_DEV_MODE: "true", NODE_ENV: "production" }).openrouter).toBe(true);
+  });
 });

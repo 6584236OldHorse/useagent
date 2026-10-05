@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { engineProvider, type ProviderCatalog } from "./catalog-model-picker";
+import { engineProvider, type ModelKeyAccess, type ProviderCatalog, selectionFallback } from "./catalog-model-picker";
 
 /** The manifest shape after engineConfigFromCapabilityCatalog: dispatchable ids
  *  per engine plus the discovered details. */
@@ -83,5 +83,37 @@ describe("engine rail entries", () => {
     const provider = engineProvider("claude", CATALOG);
     expect(provider.label).toBe("Claude Code");
     expect(provider.sections.every((s) => s.rows.length === 0)).toBe(true);
+  });
+});
+
+describe("the reply composer's selection", () => {
+  const KEYED: ProviderCatalog = {
+    models: { opencode: ["openai/gpt-5.6-luna", "minimax/minimax-m3:free"] },
+    modelDetails: {
+      opencode: [
+        { id: "openai/gpt-5.6-luna", default: true, dispatchable: true, policyAllowed: true, provider: "openai" },
+        { id: "minimax/minimax-m3:free", default: false, dispatchable: true, policyAllowed: true, provider: "openrouter" },
+      ],
+    },
+  };
+  const holding = (served: readonly string[]): ModelKeyAccess => ({
+    missing: (_engine, provider) =>
+      provider === "openai" || provider === "openrouter" ? (served.includes(provider) ? null : provider) : null,
+    onAdd: () => {},
+  });
+
+  test("a thread model that needs a key the member lacks swaps to a free model they can run", () => {
+    const provider = engineProvider("opencode", KEYED, undefined, undefined, holding(["openrouter"]));
+    expect(selectionFallback(provider, "openai/gpt-5.6-luna", null)).toBe("minimax/minimax-m3:free");
+  });
+
+  test("a model they can run, unknown keys, or no free model they can run keep the selection", () => {
+    expect(selectionFallback(engineProvider("opencode", KEYED, undefined, undefined, holding(["openai"])), "openai/gpt-5.6-luna", null))
+      .toBeNull();
+    expect(selectionFallback(engineProvider("opencode", KEYED), "openai/gpt-5.6-luna", null)).toBeNull();
+    expect(selectionFallback(engineProvider("opencode", KEYED, undefined, undefined, holding([])), "openai/gpt-5.6-luna", null))
+      .toBeNull();
+    // A removed model's replacement still wins.
+    expect(selectionFallback(engineProvider("opencode", KEYED), "gone", "openai/gpt-5.6-luna")).toBe("openai/gpt-5.6-luna");
   });
 });
