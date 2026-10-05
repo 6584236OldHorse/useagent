@@ -378,21 +378,44 @@ describe("review findings", () => {
     expect(runner.openStreams).toBe(0);
   });
 
-  test("a stream that fails before it is accepted rejects the opener at once", async () => {
-    let runner!: Mux;
-    const frames: string[] = [];
-    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") frames.push(m); queueMicrotask(() => runner.receive(m)); } }, {}, { window: 1 });
-    runner = new Mux("runner", { send: () => {} }, { onStreamOpen: () => new Promise(() => {}) });
-    const opening = plane.openStream({}, { timeoutMs: 5000 }).then(() => "resolved", (e: unknown) => e);
-    await settled();
-    // Before stream.opened the opener allows an older peer the protocol default; past that it resets.
-    const frame = new Uint8Array(5 + 256 * 1024 + 1);
-    frame.set([1, 0, 0, 0, 2]);
-    plane.receive(frame);
-    const error = await opening;
-    expect(error).toBeInstanceOf(StreamRefusedError);
-    expect((error as StreamRefusedError).message).toMatch(/window/);
-    expect(plane.openStreams).toBe(0);
+  test("a stream that fails before it is accepted rejects the opener at once and cancels its timer", async () => {
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const timer = realSetTimeout(...args);
+      armed.push(timer);
+      return timer;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => {
+      cleared.push(timer);
+      return realClearTimeout(timer);
+    }) as typeof clearTimeout;
+    try {
+      let runner!: Mux;
+      const frames: string[] = [];
+      const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") frames.push(m); queueMicrotask(() => runner.receive(m)); } }, {}, { window: 1 });
+      runner = new Mux("runner", { send: () => {} }, { onStreamOpen: () => new Promise(() => {}) });
+      const before = armed.length;
+      const opening = plane.openStream({}, { timeoutMs: 5000 }).then(() => "resolved", (e: unknown) => e);
+      const timer = armed.slice(before);
+      expect(timer.length).toBe(1);
+      await settled();
+      // Before stream.opened the opener allows an older peer the protocol default; past that it resets.
+      const frame = new Uint8Array(5 + 256 * 1024 + 1);
+      frame.set([1, 0, 0, 0, 2]);
+      plane.receive(frame);
+      const error = await opening;
+      expect(error).toBeInstanceOf(StreamRefusedError);
+      expect((error as StreamRefusedError).message).toMatch(/window/);
+      expect(plane.openStreams).toBe(0);
+      // The opening timer is cancelled with the opener, not left to fire five seconds later.
+      expect(cleared).toContain(timer[0]);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
   });
 
   test("a result that serialises to nothing is an error", async () => {
