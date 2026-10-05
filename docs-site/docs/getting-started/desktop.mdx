@@ -1,43 +1,41 @@
 ---
 title: Desktop app
-description: Planned v0.0.5 macOS setup for installing the shell, connecting a Mac, sharing qualified local CLI logins, and choosing a self-hosted control plane.
+description: Private v0.0.5 macOS preview for connecting a Mac, sharing qualified local CLI logins, and choosing a self-hosted control plane.
 sidebar:
   order: 3
 ---
 
-The UseAgent desktop app pairs a small macOS shell with a local runner. Work
+The useAgent desktop app pairs a small macOS shell with a local runner. Work
 executes in Linux containers on your Mac while the thread record and product
-services stay on the UseAgent control plane.
+services stay on the useAgent control plane.
 
 :::warning
-Desktop version `v0.0.5` is a preview and has not been published yet. No
-download, signed build, notarized build, or production release is being claimed
-by this page.
+Desktop version `v0.0.5` is a private, access-required preview. No download,
+signed build, notarized build, or production desktop release is currently
+published.
 :::
 
-## Install
+## Access
 
-When `v0.0.5` is published, its macOS artifacts named
-`UseAgent-${version}-darwin-${arch}.dmg` and
-`UseAgent-${version}-darwin-${arch}.zip` will appear in the private
+Approved users can check the private
 [`useagenthq/useagent-pro` GitHub Releases page](https://github.com/useagenthq/useagent-pro/releases/latest).
-Repository access is required. Choose the package for Apple silicon or Intel,
-open the DMG, and move `UseAgent.app` to Applications.
-
-Until those assets exist, use the web app and treat the desktop flow below as
-the intended `v0.0.5` behavior rather than certified release instructions.
+Repository access is required. Until a desktop asset is published, use the web
+app and treat the flow below as intended preview behavior, not certified
+installation instructions.
 
 ## Sign in and connect this Mac
 
-The intended sign-in flow starts in your system browser and returns to the app
-through a one-use PKCE handoff. The handoff does not put API keys, personal
-access tokens, or raw OAuth tokens in the redirect URL. This browser-first flow
-is still being built and has not completed release certification.
+The intended sign-in flow uses Better Auth with Google in your system browser
+and returns to the app through a one-use PKCE handoff. Self-service signup is
+closed, so an existing account is required. Invitations only add existing
+accounts to teams. The handoff does not put API keys, personal access tokens, or
+raw OAuth tokens in the redirect URL. This browser-first flow has not completed
+release certification.
 
 <Steps>
   <Step title="Sign in through the browser">
-    Complete the normal control-plane sign-in in your system browser, then
-    return to the desktop app through the one-use handoff.
+    Complete useAgent Google sign-in in your system browser, then return to the
+    desktop app through the one-use handoff.
   </Step>
   <Step title="Connect this Mac">
     Select **Connect this Mac**. The plane enrols the runner. The app protects
@@ -59,8 +57,9 @@ an inbound connection or publish container ports on your Mac.
 
 The `v0.0.5` product target is Codex and Claude using subscriptions you already
 own. Once those paths are qualified, sign in with the supported local CLIs
-first, then opt in to sharing those logins when connecting the runner. UseAgent
-does not ask you to paste those credentials into the app.
+first. The current frozen bridge does not expose in-app login-sharing controls;
+qualified sharing is configured through the runner CLI, not a toggle in the
+app. useAgent does not ask you to paste those credentials into the app.
 
 The runner command contract also reserves optional login sharing for OpenCode,
 but local execution still requires qualification for each exact engine,
@@ -69,7 +68,7 @@ as subscription-backed desktop support.
 
 ## What stays on the plane
 
-The desktop app is a runner and a window, not another UseAgent deployment. The
+The desktop app is a runner and a window, not another useAgent deployment. The
 following remain on useagent.org or on your self-hosted control plane:
 
 - the database and durable thread record
@@ -82,10 +81,10 @@ move through the local runner path.
 
 ## Connect to a self-hosted plane
 
-Quit UseAgent first, then start a new app process with the plane URL:
+Quit useAgent first, then start a new app process with the plane URL:
 
 ```bash
-open --env USEAGENT_PLANE_URL=https://agents.example.com /Applications/UseAgent.app
+open --env USEAGENT_PLANE_URL=https://agents.example.com /Applications/useAgent.app
 ```
 
 The environment applies only to a new launch. The same desktop client and local
