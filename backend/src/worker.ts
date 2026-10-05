@@ -1,6 +1,6 @@
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
-import { buildThreadPreamble, buildUnseenTurnsContext, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
+import { buildThreadPreamble, buildUnseenTurnsContext, getRun, getThreadProviderSessionState, insertStep, markRunPromptDelivered, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
@@ -342,7 +342,9 @@ async function runWorker(runId: string): Promise<void> {
       // session gets them through bootstrapContext instead.
       timedContextOperation("worker.unseen_turns", async () => {
         const state = await providerSessionStatePromise;
-        return state.runId ? buildUnseenTurnsContext(run.threadId, run.id, state.runId) : "";
+        return state.binding || state.legacySessionId
+          ? buildUnseenTurnsContext(run.threadId, run.id, run.engine)
+          : "";
       }),
     ]);
     const providerSession = providerSessionState.binding ?? undefined;
@@ -738,6 +740,12 @@ async function runEngine(
     commandProvider,
     commandCatalogRevision,
     saveProviderSession: createProviderSessionSaver(runId),
+    // Best-effort for the turn itself: a missing delivery stamp can only make a
+    // later turn repeat history, never lose it, so it must not fail a live turn.
+    markPromptDelivered: () =>
+      markRunPromptDelivered(runId).catch((err) =>
+        console.error(`[worker] failed to record prompt delivery for ${runId}:`, err),
+      ),
     signal,
     emit,
     // In-place step enrichment (same idx → SSE clients upsert): a tool call

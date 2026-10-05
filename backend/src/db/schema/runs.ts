@@ -72,6 +72,11 @@ export const runs = pgTable(
     // current writes persist both atomically and the migration constrains them
     // to the same native id.
     providerSession: jsonb("provider_session").$type<ProviderSessionBinding>(),
+    // Delivery evidence, separate from session authority: set once the engine
+    // runtime ACCEPTED this run's prompt (the steer returned ok), never merely
+    // because a session was bound. Null on a run whose prompt never reached an
+    // engine, so the thread's next turn can carry that message as history.
+    promptDeliveredAt: timestamp("prompt_delivered_at", { withTimezone: true }),
     // The Daytona sandbox this run executed in. Persisted so the thread→sandbox
     // mapping SURVIVES backend restarts — the next turn resumes the same box
     // (workspace + resident engine server) instead of provisioning a new one.
