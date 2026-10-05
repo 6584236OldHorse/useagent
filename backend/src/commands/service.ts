@@ -16,7 +16,7 @@ import { isModelAllowedForEngine, isPersistedModelAllowedForEngine } from "../ru
 import { dispatchReadyForUser } from "../engines/sandbox-login";
 import { withThreadLifecycleLock } from "../runs/thread-lifecycle-lock";
 import { assertRunAdmissionOpen } from "./admission";
-import { assertSandboxMinutes, SandboxMinutesExceededError } from "../runs/sandbox-minutes";
+import { assertSpendAllowance } from "../runs/spend";
 import { assertRunPromptLimit } from "./prompt-policy";
 import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { commands, runs } from "../db/schema";
@@ -63,7 +63,6 @@ function serializeRunCommandPayload(
     resolvedResources: input.run.resolvedResources ?? [],
     attachmentIds: input.run.attachmentIds ?? [],
     memoryScope: input.run.memoryScope,
-    permissionMode: input.run.permissionMode ?? null,
     skillId: input.run.skillId,
     skillVersion: input.run.skillVersion,
     commandName: input.run.commandName,
@@ -144,7 +143,7 @@ async function assertExpectedSandboxMapping(
     eq(runs.orgId, input.orgId),
     eq(runs.threadId, input.run.threadId),
     isNotNull(runs.sandboxId),
-  )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
+  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
   if (
     !mapping ||
     mapping.sandboxId !== expected.sandboxId ||
@@ -335,7 +334,7 @@ async function acceptRunCommandWithOrigin(
           const [head] = await tx.select({ id: runs.id }).from(runs).where(and(
             eq(runs.orgId, input.orgId),
             eq(runs.threadId, input.run.threadId),
-          )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
+          )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
           if (head?.id !== input.expectedThreadHeadRunId) throw new StaleThreadHeadError();
         }
         if (expectedSandbox) await assertExpectedSandboxMapping(input, expectedSandbox, tx);
@@ -344,10 +343,9 @@ async function acceptRunCommandWithOrigin(
         // close waits for already-accepting transactions, then every later new
         // acceptance observes the durable closed state.
         await assertRunAdmissionOpen(tx);
-        // Sandbox minutes are checked here, on NEW work only (a keyed replay
-        // above still returns its original run), as a lock-free read of the
-        // committed ledger. A chat turn holds no sandbox and passes.
-        if (input.run.engine !== "chat") await assertSandboxMinutes(input.orgId, input.actorId, tx);
+        // The spend cap is checked here, on NEW work only, under the same
+        // transaction: a keyed replay above still returns its original run.
+        await assertSpendAllowance(input.orgId, input.actorId, tx);
         assertRunPromptLimit(intent.prompt);
         assertRunPromptLimit(input.run.prompt);
 
@@ -400,10 +398,8 @@ async function acceptRunCommandWithOrigin(
   } catch (err) {
     // A concurrent request with the same org/key but a different root thread can
     // win the unique index. The losing transaction is aborted, so resolve the
-    // winner only AFTER withThreadLifecycleLock rolls it back. The same applies
-    // to a minutes refusal: a keyed retry that read the fast path before its
-    // winner committed, then met the cap, still replays the committed winner.
-    if (input.idempotencyKey && (isUniqueViolation(err) || err instanceof SandboxMinutesExceededError)) {
+    // winner only AFTER withThreadLifecycleLock rolls it back.
+    if (input.idempotencyKey && isUniqueViolation(err)) {
       const existing = await findCommandByKey(input.orgId, input.idempotencyKey);
       if (existing) return classifyReplay(existing, fingerprint, origin, source);
     }

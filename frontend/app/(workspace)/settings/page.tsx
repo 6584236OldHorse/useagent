@@ -9,9 +9,8 @@ import { ComputerConnectionsCard } from "./computer-connections-card";
 import { GeneralCard } from "./general-card";
 import { IntegrationConnections } from "./integration-connections";
 import { ProviderConnectionsCard } from "./provider-connections-card";
-import { SandboxMinutesRow } from "./sandbox-minutes-row";
-import { SandboxProviderRow } from "./sandbox-provider-row";
 import { SecretsCard } from "./secrets-card";
+import { SpendRow } from "./spend-row";
 import { SettingsRail } from "./settings-rail";
 import {
   SETTINGS_ACTIVATION_RATIO,
@@ -132,7 +131,7 @@ export default function SettingsPage() {
                       Starter - Free
                     </Chip>
                   </SettingsRow>
-                  <SandboxMinutesRow />
+                  <SpendRow />
                 </SettingsCard>
 
                 {/* Real per-model token burn from GET /api/fleet (same live source
@@ -151,10 +150,7 @@ export default function SettingsPage() {
                 title="Infrastructure"
                 description="View the managed runtime and connect optional sandbox accounts."
               >
-                <div className="flex flex-col gap-4">
-                  <SandboxProviderRow />
-                  <ComputerConnectionsCard />
-                </div>
+                <ComputerConnectionsCard />
               </Section>
 
               <Section

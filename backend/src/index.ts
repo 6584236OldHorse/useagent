@@ -31,8 +31,7 @@ import { reposRoutes } from "./github/routes";
 import { pullsRoutes } from "./github/pulls-routes";
 import { desktopProxyRoutes } from "./runs/desktop-proxy";
 import { fleetRoutes } from "./runs/fleet-routes";
-import { sandboxMinutesRoutes } from "./runs/sandbox-minutes-routes";
-import { sandboxPreferenceRoutes } from "./sandboxes/preference-routes";
+import { spendRoutes } from "./runs/spend-routes";
 import { portProxyRoutes } from "./runs/port-proxy";
 import { recoverStaleRuns, startReconcileLoop } from "./runs/recovery";
 import {
@@ -42,7 +41,6 @@ import {
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
 import { terminalRoutes } from "./runs/terminal";
-import { runFeedbackRoutes } from "./runs/feedback-routes";
 import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
 import { runnerBridgeRoutes } from "./runners/bridge";
 import { runnerRoutes } from "./runners/routes";
@@ -449,7 +447,7 @@ app.post("/api/config/models/refresh", async (c) => {
 });
 
 // Better Auth owns login, sessions, and organization membership.
-app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env));
+app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw));
 
 // Lightweight Chat (#122): a NO-SANDBOX conversational surface at /. Streams a
 // model completion directly (OpenRouter), augmented with read-only retrieval
@@ -458,8 +456,7 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => handleAuthRequest(c.req.raw, c.env
 app.route("/api/chat", chatRoutes);
 
 app.route("/api/runs", runsRoutes);
-app.route("/api/sandbox-minutes", sandboxMinutesRoutes);
-app.route("/api/sandbox-preference", sandboxPreferenceRoutes);
+app.route("/api/spend", spendRoutes);
 app.route("/api/capabilities", capabilityCatalogRoutes);
 // Session-authenticated human approval minting. This stays on the product API;
 // the sandbox-reachable gateway can only consume the resulting exact capability.
@@ -473,8 +470,6 @@ app.route("/api/uploads", uploadRoutes);
 // Interactive terminal WS bridge (browser xterm ⇄ sandbox PTY). Mounted before
 // nothing — separate router so the SSE/step routes stay untouched.
 app.route("/api/runs", terminalRoutes);
-// In-app feedback on a run: stored, then a Slack notice through the outbox.
-app.route("/api/runs", runFeedbackRoutes);
 // Same-origin bridge to a thread's opencode server for the embedded "Live" tab
 // (frontend/public/opencode-app). Injects the Daytona preview token, streams
 // SSE through untouched.

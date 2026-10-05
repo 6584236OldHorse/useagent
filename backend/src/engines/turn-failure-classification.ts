@@ -22,6 +22,8 @@
 // reported truthfully and can be re-dispatched on the thread.
 // ---------------------------------------------------------------------------
 
+import { providerKeyLimitReason } from "../provider-gateway/key-limit";
+
 /** Substrings that mark a dropped provider stream (transient infrastructure
  *  interruption, e.g. the backend restarting under a live turn) rather than a
  *  real provider/engine error. Sourced from the runtime thread stream
@@ -39,6 +41,8 @@ export interface TurnFailureClassification {
   readonly kind: TurnFailureKind;
   /** True when the run can be safely re-dispatched on its thread. */
   readonly resumable: boolean;
+  /** The terminal step's label. */
+  readonly label: string;
   /** User-visible failure summary (no em dashes; truncated for storage). */
   readonly summary: string;
 }
@@ -71,16 +75,24 @@ export function classifyTurnFailure(
     return {
       kind: "transient",
       resumable: true,
+      label: "Interrupted (resumable)",
       summary:
         "interrupted: the backend restarted or the provider stream dropped " +
         "before the turn settled. This is transient, not a provider error - " +
         "resend the message to resume.",
     };
   }
+  // A spent provider key is the one provider error worth naming plainly: the
+  // engine relays the provider's refusal text, and the fix is an admin's.
+  const keyLimit = providerKeyLimitReason(errorMessage(error));
+  if (keyLimit) {
+    return { kind: "provider", resumable: false, label: "Provider key limit reached", summary: keyLimit };
+  }
   const message = redactText(errorMessage(error));
   return {
     kind: "provider",
     resumable: false,
+    label: "Engine error",
     summary: message
       ? `error: ${message.replace(/\s+/g, " ").slice(0, 180)}`
       : "engine error",

@@ -2,11 +2,12 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
 import {
   ENGINE_IDS,
+  MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
-import { PermissionModeUnsupportedError } from "../engines/permission-mode";
+import { isMemoryScope } from "../memory/scope";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
@@ -27,7 +28,6 @@ import {
   type RunCommandIntent,
 } from "../commands";
 import { FleetQueueLimitError } from "../fleet/intake";
-import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
@@ -51,6 +51,7 @@ import {
 import { bus, channel, pumpThread, type BusEvent } from "../worker";
 import { turnStream, type DeltaKind } from "./turn-stream";
 import { assertNever } from "../util/exhaustive";
+import { stopRun } from "./stop";
 import { getNativeFramesSince, subscribeNative, type NativeFrame } from "./native-events";
 import { parseResumeCursor, resolveResumeCursor, resumeFramePayload } from "./thread-resume";
 import {
@@ -73,7 +74,6 @@ import {
   USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
-import { registerRunCancelRoute } from "./cancel-route";
 import { registerSandboxReleaseRoute } from "./sandbox-release";
 import { parseProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import { UploadClaimError } from "../uploads/repo";
@@ -82,8 +82,9 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, type RunCreateBody } from "./run-create-policy";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
+import { SpendAllowanceExceededError } from "./spend";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
 runsRoutes.use("*", orgScope);
@@ -217,16 +218,23 @@ export async function handleRunCreate(
   }
 
   // Memory scope: an explicit choice from the authenticated user (validated) wins;
-  // otherwise a reply INHERITS its parent's and a root run defaults to "org".
-  // Permission mode: only an explicit choice is taken here; an omitted mode is
-  // resolved at the insert, under the thread lock, so an older parent or a read
-  // made before a narrowing reply cannot widen the thread.
-  const scope = runMemoryScope(body.memory_scope, parentScope);
-  if (!scope.ok) return c.json({ error: scope.error }, 400);
-  const { memoryScope, requestedMemoryScope } = scope;
-  const permission = runPermissionMode(body.permission_mode);
-  if (!permission.ok) return c.json({ error: permission.error }, 400);
-  const { permissionMode } = permission;
+  // otherwise a reply INHERITS its parent's scope and a root run defaults to "org".
+  // ONLY the scope enum is read from the body — never any identity (org/user is
+  // always server-resolved). An unknown value is a client error, not a fallback.
+  let memoryScope: MemoryScope;
+  let requestedMemoryScope: MemoryScope | null = null;
+  if (body.memory_scope !== undefined && body.memory_scope !== null) {
+    if (!isMemoryScope(body.memory_scope)) {
+      return c.json(
+        { error: `memory_scope must be one of: ${MEMORY_SCOPES.join(", ")}` },
+        400,
+      );
+    }
+    requestedMemoryScope = body.memory_scope;
+    memoryScope = requestedMemoryScope;
+  } else {
+    memoryScope = parentScope ?? "org";
+  }
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -298,7 +306,6 @@ export async function handleRunCreate(
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
-    permissionMode: permissionMode ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -434,7 +441,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId
@@ -446,7 +453,6 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
-    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
     if (error instanceof UploadClaimError) {
       return c.json({ error: "upload_unavailable" }, 409);
     }
@@ -459,7 +465,7 @@ export async function handleRunCreate(
       );
     }
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
-    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
@@ -493,7 +499,26 @@ export async function handleRunCreate(
 
 runsRoutes.post("/", runCreateBodyLimit, (c) => handleRunCreate(c));
 
-registerRunCancelRoute(runsRoutes);
+// POST /:id/cancel — durable user Stop. Records a `run.cancel` command
+// (idempotent), fails a not-yet-started (queued) run atomically, signals a live
+// actor to abort, pumps the thread so the QUEUED lane continues, and stops the
+// runs still working in threads this one delegated to. Org-scoped (a
+// cross-org/missing id is a 404). A run that already settled is a no-op.
+runsRoutes.post("/:id/cancel", async (c) => {
+  const id = c.req.param("id");
+  const outcome = await stopRun({ orgId: c.get("orgId"), actorId: c.get("userId"), runId: id });
+  switch (outcome.status) {
+    case "not_found":
+      return c.json({ error: "run not found" }, 404);
+    case "settled":
+      return c.json({ id, status: outcome.runStatus, note: "already settled" }, 200);
+    case "cancelling":
+      return c.json({ id, status: "cancelling", children: outcome.children }, outcome.replay ? 200 : 202);
+    default:
+      return assertNever(outcome);
+  }
+});
+
 registerSandboxReleaseRoute(runsRoutes);
 registerRunChangesRoute(runsRoutes);
 registerRunReadRoutes(runsRoutes);

@@ -2,7 +2,7 @@ import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { RunAdmissionClosedError } from "../commands";
-import { SandboxMinutesExceededError } from "../runs/sandbox-minutes";
+import { SpendAllowanceExceededError } from "../runs/spend";
 import { FleetQueueLimitError } from "./intake";
 import {
   FleetBatchIdempotencyConflictError,
@@ -76,7 +76,7 @@ fleetBatchRoutes.post("/", async (c) => {
     if (error instanceof RunAdmissionClosedError) {
       return c.json({ error: error.code, retryable: true }, 503);
     }
-    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    if (error instanceof SpendAllowanceExceededError) return c.json(error.body, 402);
     if (error instanceof Error && error.message === "fleet_batch_idempotency_key_invalid") {
       return c.json({ error: "idempotency_key_invalid" }, 400);
     }

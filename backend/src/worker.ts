@@ -44,7 +44,7 @@ import { frameTurnContexts } from "./engines/turn-contexts";
 import { formatInputContext, runInputFiles } from "./uploads/materialize";
 import { CHAT_SYSTEM_PROMPT } from "./chat/prompt";
 import { retrieveChatContext } from "./chat/retrieve";
-import { streamChat, type ChatMessage } from "./chat/stream";
+import { chatFailure, chatTurnStream, type ChatMessage } from "./chat/turn";
 import { resolveChatProviderCredential } from "./provider-gateway/credentials";
 import { subscribeNative } from "./runs/native-events";
 import { createSlidingInactivityWatchdog } from "./runs/inactivity-watchdog";
@@ -534,7 +534,7 @@ async function runChat(
     if (!resolvedChat) throw new Error("chat is not configured (no OpenRouter credential)");
     console.info(`[chat] run ${run.id} served by ${resolvedChat.source}`);
 
-    for await (const delta of streamChat(messages, run.model, resolvedChat.value, signal)) {
+    for await (const delta of chatTurnStream(run, messages, resolvedChat, signal)) {
       const reason = wasCancelled();
       if (reason !== null) throw new Error(reason);
       answer += delta;
@@ -553,11 +553,12 @@ async function runChat(
     bus.emit(channel(run.id), { type: "step", step: done } satisfies BusEvent);
     const finalized = await finalizeRun(run.id, "completed", finalText, Date.now() - startedAt);
     await emitFinalizedEnd(run.id, finalized);
-  } catch {
+  } catch (error) {
     const cancelledReason = wasCancelled();
     const timedOut = signal.aborted && cancelledReason === null;
+    const failure = chatFailure(error);
     const label = cancelledReason ??
-      (timedOut ? `Timed out after ${ADAPTER_TIMEOUT_MS / 1000}s` : "Chat error");
+      (timedOut ? `Timed out after ${ADAPTER_TIMEOUT_MS / 1000}s` : failure.label);
     const done = await insertStep({
       runId: run.id,
       idx: 1,
@@ -571,7 +572,7 @@ async function runChat(
       cancelledReason ??
       (timedOut
         ? `timed out after ${ADAPTER_TIMEOUT_MS / 1000}s`
-        : "chat request failed");
+        : failure.reason);
     const finalized = await finalizeRun(run.id, "failed", reason, Date.now() - startedAt);
     await emitFinalizedEnd(run.id, finalized);
   } finally {
@@ -808,9 +809,7 @@ async function runEngine(
         ? cancelledReason
         : timedOut
           ? `Timed out after ${ADAPTER_TIMEOUT_MS / 1000}s`
-          : failure?.kind === "transient"
-            ? "Interrupted (resumable)"
-            : "Engine error",
+          : failure?.label ?? "Engine error",
       chip: null,
     }).catch(() => {});
     // Surface the REAL failure reason (truncated) — a bare "engine error"
