@@ -32,27 +32,36 @@ describe("Markdown links", () => {
     expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
-  test("renders unpublished local files as honest inert chips", () => {
-    for (const href of [
-      "/home/user/work/report.pdf",
-      "output/report.pdf",
-      "file:///Users/me/report.pdf",
-      "sandbox:/root/work/report.pdf",
-      "C:/Users/me/report.pdf",
-    ]) {
-      const html = renderToStaticMarkup(<Markdown>{`[Download the PDF](${href})`}</Markdown>);
-      expect(html).toContain("Download the PDF");
-      expect(html).toContain('title="Local file path - not published"');
+  test("a sandbox path of any file type never becomes a link", () => {
+    for (const href of ["/root/work/notes.md", "/home/user/work/page.html", "out/chart.svg"]) {
+      const html = renderToStaticMarkup(<Markdown>{`[Report](${href})`}</Markdown>);
       expect(html).not.toContain("href=");
-      expect(html).not.toContain("Published under Session files");
+      expect(html).toContain("Report");
     }
   });
 
-  test("keeps unsafe schemes inert", () => {
+  test("a file: link loses its dead anchor and keeps its text", () => {
+    const html = renderToStaticMarkup(<Markdown>{"[Report](file:///root/work/a.pdf)"}</Markdown>);
+    expect(html).toContain("Report");
+    expect(html).not.toContain("<a");
+  });
+
+  test("renders a sandbox path as a named chip, never as a dead link", () => {
     const html = renderToStaticMarkup(
-      <Markdown>{"[Open report](javascript:alert('nope'))"}</Markdown>,
+      <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>,
     );
-    expect(html).not.toContain("javascript:");
+    expect(html).toContain("Download the PDF");
+    expect(html).not.toContain("href=");
+    expect(html).toContain("workspace");
+  });
+
+  test("a workspace path that is not a deliverable keeps its ordinary anchor, and formatted labels survive", () => {
+    expect(isSandboxPath("/root/work/data.json")).toBe(false);
+    expect(isSandboxPath("src/index.ts")).toBe(false);
+    const html = renderToStaticMarkup(<Markdown>{"[**Quarterly notes**](output/notes.md)"}</Markdown>);
+    expect(html).toContain("<strong>Quarterly notes</strong>");
+    expect(html).not.toContain("href=");
+    expect(html).not.toContain(">Open<");
   });
 
   test("keeps ordinary links on the plain markdown link path", () => {
