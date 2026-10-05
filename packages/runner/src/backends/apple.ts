@@ -21,31 +21,34 @@ const flags: CliFlags = {
 };
 
 interface AppleContainer {
-  readonly status?: string;
   readonly configuration?: {
     readonly id?: string;
     readonly labels?: Record<string, string>;
-    readonly image?: { readonly reference?: string; readonly digest?: string };
+    readonly image?: { readonly reference?: string; readonly descriptor?: { readonly digest?: string } };
   };
-  readonly networks?: ReadonlyArray<{ readonly address?: string; readonly ipv4Address?: string }>;
+  readonly status?: {
+    readonly state?: string;
+    readonly startedDate?: string;
+    readonly networks?: ReadonlyArray<{ readonly ipv4Address?: string }>;
+  };
 }
 
-function stateOf(status: string | undefined): LocalSandboxState {
-  if (status === "running") return "running";
-  if (status === "stopping" || status === "stopped") return "stopped";
+function stateOf(state: string | undefined): LocalSandboxState {
+  if (state === "running") return "running";
+  if (state === "stopping" || state === "stopped") return "stopped";
   return "created";
 }
 
 function infoFromInspect(container: AppleContainer): ContainerInfo {
   const id = container.configuration?.id ?? "";
-  const address = container.networks?.[0]?.address ?? container.networks?.[0]?.ipv4Address ?? null;
+  const address = container.status?.networks?.[0]?.ipv4Address ?? null;
   return {
     id,
     name: id,
-    state: stateOf(container.status),
+    state: stateOf(container.status?.state),
     labels: container.configuration?.labels ?? {},
-    createdAt: "",
-    imageDigest: container.configuration?.image?.digest ?? container.configuration?.image?.reference ?? "",
+    createdAt: container.status?.startedDate ?? "",
+    imageDigest: container.configuration?.image?.descriptor?.digest ?? container.configuration?.image?.reference ?? "",
     // "192.168.64.3/24" -> "192.168.64.3"
     ip: address ? address.split("/")[0] ?? null : null,
   };
@@ -115,13 +118,13 @@ export class AppleContainerBackend implements LocalBackend {
   }
 
   async stop(id: string): Promise<void> {
-    const result = await runCli(["container", "stop", id], { timeoutMs: 60_000 });
+    const result = await runCli(["container", "stop", "-t", "5", id], { timeoutMs: 60_000 });
     if (result.exitCode !== 0) throw this.failure(result.stderr, "container stop");
   }
 
+  /** Force covers a running container; a graceful stop first would wait out the full grace period. */
   async remove(id: string): Promise<void> {
-    await runCli(["container", "stop", id], { timeoutMs: 60_000 });
-    const result = await runCli(["container", "delete", id], { timeoutMs: 60_000 });
+    const result = await runCli(["container", "delete", "--force", id], { timeoutMs: 60_000 });
     if (result.exitCode !== 0 && !/not found|does not exist/i.test(result.stderr)) throw this.failure(result.stderr, "container delete");
   }
 
