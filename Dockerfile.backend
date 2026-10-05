@@ -104,7 +104,7 @@ RUN set -eux; \
 
 RUN ln -s backend/node_modules /app/node_modules \
     && ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
-    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box; do \
+    && for package in agent-client agent-harness artifact-formats artifact-workspace sandbox-contract sandbox-daytona sandbox-cube sandbox-box runner-protocol sandbox-local; do \
       rm -rf "/app/backend/node_modules/@useagent/${package}"; \
       ln -s "../../../packages/${package}" "/app/backend/node_modules/@useagent/${package}"; \
     done \
