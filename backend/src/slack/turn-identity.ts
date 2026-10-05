@@ -6,11 +6,13 @@
  * key, so the write never waits on the run row's terminal lock and never holds
  * the serial inbox. The stamp runs off that path: the two lookups share one
  * deadline, whatever resolved by then is stamped on the run row under a bounded
- * lock wait, the lookup row is deleted in the same transaction, and the thread
- * stream is woken so an open session shows the sender within the same second.
- * A crash or a lock wait that ran out leaves the lookup row; the boot sweep
- * finishes it, however old the row is. Idempotent: a replayed delivery finds the stamp and cleans up.
- * A lookup failure never fails the accepted run.
+ * lock wait, and the thread stream is woken so an open session shows the sender
+ * within the same second. The lookup row stays until everything it owes has
+ * resolved (the sender's profile when a sender is known, and the permalink): a
+ * failed or cut lookup leaves a partial stamp and the row, so a redelivery or
+ * the boot sweep fills the rest; only then is the row deleted, in the same
+ * transaction as the stamp. A crash or a lock wait that ran out leaves the row
+ * too, however old it gets. A lookup failure never fails the accepted run.
  */
 import type { RunConnector } from "@useagent/agent-client/wire";
 import { and, eq, isNull, notExists, sql } from "drizzle-orm";
@@ -31,10 +33,12 @@ const DEFAULT_LOOKUP_MS = 5_000;
 const STAMP_LOCK_TIMEOUT = "30s";
 const RECOVERY_LIMIT = 200;
 /** A sender's profile resolves once per team and user for a few minutes, so ten
- *  messages from one person cost one users.info; the permalink stays per message. */
+ *  messages from one person cost one users.info; the permalink stays per message.
+ *  Only a profile Slack returned is cached: a failure or a deadline cut is asked
+ *  again next time, never remembered as "no name". */
 const SENDER_PROFILE_TTL_MS = 5 * 60 * 1000;
 const SENDER_PROFILE_CACHE_MAX = 1000;
-const senderProfiles = new Map<string, { profile: SlackUserProfile | null; until: number }>();
+const senderProfiles = new Map<string, { profile: SlackUserProfile; until: number }>();
 
 /** How long both Slack lookups may take together; a response that never
  *  completes is cut here and the socket released. */
@@ -53,8 +57,7 @@ function within<T>(lookup: Promise<T | null> | undefined, signal: AbortSignal): 
   });
 }
 
-/** The sender's profile, from the cache while fresh, else from Slack. A lookup
- *  the deadline cut is not cached: the next message asks again. */
+/** The sender's profile, from the cache while fresh, else from Slack. */
 async function senderProfile(
   client: SlackClient,
   teamId: string,
@@ -65,11 +68,16 @@ async function senderProfile(
   const cached = senderProfiles.get(key);
   if (cached && cached.until > Date.now()) return cached.profile;
   const profile = await within(client.userInfo?.({ user: userId, signal }), signal);
-  if (!signal.aborted) {
+  if (profile && !signal.aborted) {
     if (senderProfiles.size >= SENDER_PROFILE_CACHE_MAX) senderProfiles.clear();
     senderProfiles.set(key, { profile, until: Date.now() + SENDER_PROFILE_TTL_MS });
   }
   return profile;
+}
+
+/** Whether a stamp has everything the lookup row owes. */
+function stampComplete(connector: RunConnector, senderOwed: boolean): boolean {
+  return (!senderOwed || connector.sender_name !== null) && connector.permalink !== null;
 }
 
 /** Record, durably and before the inbox claim completes, what the stamp owes.
@@ -95,7 +103,8 @@ export async function recordSlackTurnIdentityIntent(input: {
   return recorded.length > 0 ? "recorded" : "already_recorded";
 }
 
-/** Finish the stamp a recorded lookup owes. Never throws. */
+/** Finish the stamp a recorded lookup owes: everything still missing is looked
+ *  up and merged into what an earlier stamp already resolved. Never throws. */
 export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnIdentityOutcome> {
   try {
     const [owed] = await db
@@ -110,7 +119,8 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
       .where(eq(runs.id, runId))
       .limit(1);
     if (!run?.orgId) return "unavailable";
-    if (run.connector) {
+    const senderOwed = owed.slackUserId !== null;
+    if (run.connector && stampComplete(run.connector, senderOwed)) {
       await db.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
       return "already_stamped";
     }
@@ -131,24 +141,42 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
         `[slack] turn identity lookups for run ${runId} hit the ${deadlineMs}ms deadline; stamping what resolved`,
       );
     }
+    const known = run.connector;
     const connector: RunConnector = {
       source: "slack",
-      sender_name: profile?.name ?? null,
-      sender_avatar_url: profile?.image ?? null,
-      permalink: permalink ?? null,
+      sender_name: known?.sender_name ?? profile?.name ?? null,
+      sender_avatar_url: known?.sender_avatar_url ?? profile?.image ?? null,
+      permalink: known?.permalink ?? permalink ?? null,
     };
+    if (
+      known &&
+      known.sender_name === connector.sender_name &&
+      known.sender_avatar_url === connector.sender_avatar_url &&
+      known.permalink === connector.permalink
+    ) {
+      // Nothing new resolved this time; the owed row waits for the next attempt.
+      return "unavailable";
+    }
+    const complete = stampComplete(connector, senderOwed);
     // One transaction: the stamp lands (`updated_at` moves so an open session's
-    // merge treats the fresh row as new) and the owed row goes with it. The
-    // run row can be held by a terminal write; the wait is bounded and a
-    // timeout leaves the owed row for the sweep.
+    // merge treats the fresh row as new) and, once nothing is owed, the row goes
+    // with it. The stamp merges onto exactly the row it read, so a concurrent
+    // stamp that resolved more is never overwritten. The run row can be held by
+    // a terminal write; the wait is bounded and a timeout leaves the owed row
+    // for the sweep.
     const updated = await db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('lock_timeout', ${STAMP_LOCK_TIMEOUT}, true)`);
       const rows = await tx
         .update(runs)
         .set({ connector, updatedAt: new Date() })
-        .where(and(eq(runs.id, runId), isNull(runs.connector)))
+        .where(and(
+          eq(runs.id, runId),
+          known ? sql`${runs.connector} = ${JSON.stringify(known)}::jsonb` : isNull(runs.connector),
+        ))
         .returning({ id: runs.id });
-      await tx.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+      if (rows.length > 0 && complete) {
+        await tx.delete(slackIdentityLookups).where(eq(slackIdentityLookups.runId, runId));
+      }
       return rows;
     });
     if (updated.length === 0) return "already_stamped";
@@ -166,17 +194,14 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
 
 /** Boot sweep: finish the stamps whose lookup row is still owed, oldest first,
  *  a page at a time. Only a row nothing can finish is dropped first: its run is
- *  gone or already carries a connector. An owed row for an unstamped run is
- *  never expired, however old; it waits its turn across boots. Returns how many
- *  stamps landed. */
+ *  gone. A row whose run is already complete is dropped by its stamp; an owed
+ *  row for a run still missing something is never expired, however old; it
+ *  waits its turn across boots. Returns how many stamps landed. */
 export async function recoverSlackTurnIdentities(): Promise<number> {
   await db
     .delete(slackIdentityLookups)
     .where(notExists(
-      db
-        .select({ id: runs.id })
-        .from(runs)
-        .where(and(eq(runs.id, slackIdentityLookups.runId), isNull(runs.connector))),
+      db.select({ id: runs.id }).from(runs).where(eq(runs.id, slackIdentityLookups.runId)),
     ));
   const owed = await db
     .select({ runId: slackIdentityLookups.runId })

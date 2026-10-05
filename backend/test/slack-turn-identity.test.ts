@@ -38,6 +38,8 @@ const GHOST = "U-GHOST";
 const STUCK = "U-STUCK";
 /** A member whose first users.info hangs until aborted and whose later ones answer. */
 const GATED = "U-GATED";
+/** A member whose first users.info fails outright and whose later ones answer. */
+const FLAKY = "U-FLAKY";
 const PROFILES: Record<string, { name: string; email: string | null; image: string | null }> = {
   [SUNDAR]: { name: "Sundar", email: null, image: "https://avatars.example/sundar-192.png" },
   [PRIYA]: { name: "Priya", email: null, image: null },
@@ -57,6 +59,7 @@ const savedEnv: Record<string, string | undefined> = {};
 const calls = { userInfo: [] as string[], permalinks: [] as string[] };
 let stuckAborted = false;
 let gatedCalls = 0;
+let flakyCalls = 0;
 function permalinkFor(channel: string, ts: string): string {
   return `https://example.slack.com/archives/${channel}/p${ts.replace(".", "")}`;
 }
@@ -82,6 +85,7 @@ const client: SlackClient = {
       });
     }
     if (id === GATED) return Promise.resolve({ name: "Gated", email: null, image: null });
+    if (id === FLAKY) return Promise.resolve(flakyCalls++ === 0 ? null : { name: "Flaky", email: null, image: null });
     return Promise.resolve(PROFILES[id] ?? null);
   },
   getPermalink: async ({ channel, messageTs }) => {
@@ -151,7 +155,7 @@ beforeAll(async () => {
   if (!me) throw new Error("session user missing");
   userId = me.id;
   await upsertSlackWorkspace({ teamId: TEAM, orgId: org.orgId, userId });
-  for (const slackUserId of [SUNDAR, PRIYA, GHOST, STUCK, GATED]) {
+  for (const slackUserId of [SUNDAR, PRIYA, GHOST, STUCK, GATED, FLAKY]) {
     await upsertSlackUser({ teamId: TEAM, slackUserId, orgId: org.orgId, userId });
   }
   setSlackClientForTest(client);
@@ -262,13 +266,49 @@ describe("slack turn identity", () => {
       thread_ts: rootTs,
     }));
     await processSlackInbox(handleSlackInboxClaim);
-    const row = await stampedRow(await runIdForMessage(channel, ghostTs));
+    const ghostId = await runIdForMessage(channel, ghostTs);
+    const row = await stampedRow(ghostId);
     expect(row.connector).toEqual({
       source: "slack",
       sender_name: null,
       sender_avatar_url: null,
       permalink: permalinkFor(channel, ghostTs),
     });
+    // The sender is still owed: the row stays for a later attempt.
+    expect(await owedLookup(ghostId)).not.toBeNull();
+  });
+
+  test("a failed lookup is not remembered: the next message resolves the name and the sweep completes the earlier turn", async () => {
+    const firstTs = "1700000000.000610";
+    const secondTs = "1700000000.000620";
+    await persistSlackInboxEvent(envelope({ type: "message", channel, user: FLAKY, text: "first", ts: firstTs, thread_ts: rootTs }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const firstId = await runIdForMessage(channel, firstTs);
+    const first = await stampedRow(firstId);
+    expect(first.connector?.sender_name).toBeNull();
+    expect(first.connector?.permalink).toBe(permalinkFor(channel, firstTs));
+    expect(await owedLookup(firstId)).not.toBeNull();
+
+    await persistSlackInboxEvent(envelope({ type: "message", channel, user: FLAKY, text: "second", ts: secondTs, thread_ts: rootTs }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const secondId = await runIdForMessage(channel, secondTs);
+    const second = await waitFor(async () => {
+      const row = await runRow(secondId);
+      return row.connector?.sender_name ? row : null;
+    });
+    expect(second.connector?.sender_name).toBe("Flaky");
+    await waitFor(async () => ((await owedLookup(secondId)) === null ? true : null));
+
+    // The earlier turn is still owed its sender; the boot sweep fills it in.
+    expect(await recoverSlackTurnIdentities()).toBeGreaterThanOrEqual(1);
+    expect((await runRow(firstId)).connector).toEqual({
+      source: "slack",
+      sender_name: "Flaky",
+      sender_avatar_url: null,
+      permalink: permalinkFor(channel, firstTs),
+    });
+    expect(await owedLookup(firstId)).toBeNull();
+    expect(flakyCalls).toBe(2);
   });
 
   test("a lookup that never completes neither holds the inbox nor loses the turn", async () => {
