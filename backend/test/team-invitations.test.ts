@@ -480,7 +480,9 @@ test("a workspace keeps at least one owner, even when two owners demote each oth
       body: { organizationId: a.orgId, memberId, role: "member" },
     });
   const [first, second] = await Promise.all([demote(a.cookies, bMemberId), demote(b.cookies, aMember!.id)]);
-  expect([first.status, second.status].sort()).toEqual([200, 400]);
+  // The first demotion goes through; the second is checked once it holds the
+  // turn, by which time its author is no longer a manager.
+  expect([first.status, second.status].sort()).toEqual([200, 403]);
   const owners = await db.select({ role: member.role }).from(member).where(eq(member.organizationId, a.orgId));
   expect(owners.filter((row) => row.role.split(",").map((r) => r.trim()).includes("owner"))).toHaveLength(1);
   // The remaining owner can neither be removed nor leave.
