@@ -78,7 +78,7 @@ function NavGroup({ route }: { route: Route }) {
           <Icon
             className={cn(
               "size-3.5 shrink-0",
-              route.tone ? NAV_ICON_TONE[route.tone] : "text-foreground-icon-tertiary",
+              route.tone ? NAV_ICON_TONE[route.tone] : "text-text-secondary",
             )}
             aria-hidden
           />
@@ -86,7 +86,7 @@ function NavGroup({ route }: { route: Route }) {
         <span className="min-w-0 flex-1 truncate text-left">{route.title}</span>
         <RiArrowDownSLine
           className={cn(
-            "size-4 shrink-0 text-foreground-icon-tertiary transition-transform",
+            "size-4 shrink-0 text-text-secondary transition-transform",
             open && "rotate-180",
           )}
           aria-hidden
@@ -148,7 +148,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                       ? "text-text-primary"
                       : route.tone
                         ? NAV_ICON_TONE[route.tone]
-                        : "text-foreground-icon-tertiary",
+                        : "text-text-secondary",
                   )}
                   aria-hidden
                 />
@@ -203,7 +203,7 @@ export function UserFooter() {
                     </span>
                   </span>
                   <RiExpandUpDownLine
-                    className="ml-auto size-4 shrink-0 text-foreground-icon-tertiary"
+                    className="ml-auto size-4 shrink-0 text-text-secondary"
                     aria-hidden
                   />
                 </>

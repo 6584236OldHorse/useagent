@@ -85,14 +85,15 @@ export function SidebarSectionToggle({
 
 export type NavIconTone = "blue" | "purple" | "green" | "orange" | "primary";
 
-/** Nav icons are one quiet grey: the tones stay as routing metadata only, so a
- *  future accent can return without touching every route definition. */
+/** Nav icons share the idle label colour (text-secondary clears 3:1 on the rail
+ *  in every theme, unlike the icon-tertiary grey). The tones stay as routing
+ *  metadata only, so a future accent can return without touching every route. */
 export const NAV_ICON_TONE: Record<NavIconTone, string> = {
-  blue: "text-foreground-icon-tertiary",
-  purple: "text-foreground-icon-tertiary",
-  green: "text-foreground-icon-tertiary",
-  orange: "text-foreground-icon-tertiary",
-  primary: "text-foreground-icon-tertiary",
+  blue: "text-text-secondary",
+  purple: "text-text-secondary",
+  green: "text-text-secondary",
+  orange: "text-text-secondary",
+  primary: "text-text-secondary",
 };
 
 export interface SidebarNavItemProps {
@@ -129,7 +130,7 @@ export function SidebarNavItem({
       className={cx(
         "flex items-center gap-2 rounded-2lg px-2.5 py-1.5 text-body-2-medium transition-colors",
         active
-          ? "bg-background-secondary-hover text-text-primary"
+          ? "bg-background-secondary-hover font-semibold text-text-primary"
           : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
       )}
     >
@@ -143,7 +144,7 @@ export function SidebarNavItem({
                   ? "text-text-primary"
                   : tone
                     ? NAV_ICON_TONE[tone]
-                    : "text-foreground-icon-tertiary",
+                    : "text-text-secondary",
               )}
               aria-hidden
             />
