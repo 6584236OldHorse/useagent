@@ -3,7 +3,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
-import { createPersonalOrgForUser, ensurePersonalOrgForUser } from "./auth-hooks";
+import { createPersonalOrgForUser, ensurePersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
 import {
   INVITATION_EXPIRES_IN_SECONDS,
   deliverInvitation,
@@ -11,6 +11,7 @@ import {
   invitedSignupAllowed,
   verificationLink,
 } from "./auth-invitations";
+import { fixedWindow } from "./auth/signup-routes";
 import { db } from "./db/client";
 import * as schema from "./db/auth-schema";
 import {
@@ -28,6 +29,10 @@ import {
  *  limiter and the sign-up limiter then both see the address the edge saw. */
 const TRUSTED_PROXIES = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"];
 
+/** Confirmation mails per address per hour, whatever asks for them: the
+ *  sign-up, the card's resend, or a sign-in with the right password. */
+export const VERIFICATION_MAILS_PER_ADDRESS = 5;
+
 /**
  * Better Auth server with Google, existing-account password sign-in, and
  * organizations. A closed deployment creates no accounts on its own: a verified
@@ -39,6 +44,7 @@ export function createAuthServer() {
   const google = googleAuthConfig();
   const allowSignup = selfSignupEnabled();
   const open = openSignupConfig();
+  const mailAllowed = fixedWindow(VERIFICATION_MAILS_PER_ADDRESS, 60 * 60 * 1000);
   if (signupSwitchOn() && !open) {
     console.warn(
       "[auth] SIGNUP_OPEN is set but no account mail transport is configured (CONNECTOR_EMAIL_HOST and CONNECTOR_EMAIL_FROM): sign-up stays closed, an address cannot be verified without mail.",
@@ -60,6 +66,10 @@ export function createAuthServer() {
       ? {
           sendOnSignIn: true,
           sendVerificationEmail: async ({ user, url }) => {
+            if (!mailAllowed(user.email)) {
+              console.warn(`[auth] confirmation mail for ${user.email} held: ${VERIFICATION_MAILS_PER_ADDRESS} already sent this hour`);
+              return;
+            }
             // The account exists whatever the mail does; the card can ask again.
             void deliverVerification(user.email, verificationLink(url, user.id)).catch((error: unknown) => {
               console.error(`[auth] verification mail for ${user.email} could not be sent:`, (error as Error).message);
@@ -81,11 +91,7 @@ export function createAuthServer() {
           },
         }
       : {},
-    // While sign-up is open, a local account that never verified its address is
-    // nobody's yet: a Google identity with that address must not link to it and
-    // inherit its password. The address's owner signs up and verifies, then
-    // Google links. A closed deployment keeps linking to provisioned accounts.
-    account: { accountLinking: { requireLocalEmailVerified: open !== null } },
+    account: { accountLinking: { requireLocalEmailVerified: false } },
     advanced: { ipAddress: { trustedProxies: TRUSTED_PROXIES } },
     plugins: [
       organization({
@@ -122,6 +128,21 @@ export function createAuthServer() {
             // An open sign-up gets its organisation once the address is verified
             // (afterEmailVerification above); everyone else on creation.
             if (user.emailVerified || !open) await createPersonalOrgForUser(user);
+          },
+        },
+      },
+      account: {
+        create: {
+          before: async (account) => {
+            // A provider identity must not link to a claim (an account that never
+            // confirmed its address and belongs nowhere): the link would confirm
+            // the address and keep a stranger's password. The address's owner
+            // signs up, which replaces the claim, and confirms; then the provider
+            // links. Provisioned and Slack-created accounts have an organisation
+            // and keep linking as before.
+            if (account.providerId !== "credential" && (await unverifiedClaim(account.userId))) {
+              throw APIError.from("FORBIDDEN", { code: "UNCONFIRMED_CLAIM", message: "Sign up with this address and confirm it first" });
+            }
           },
         },
       },

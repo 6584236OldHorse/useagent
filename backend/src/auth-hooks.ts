@@ -1,3 +1,5 @@
+import { and, eq, notExists } from "drizzle-orm";
+import { session, user } from "./db/auth-schema";
 import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
 import { withOrgLock } from "./org-lock";
@@ -55,6 +57,21 @@ export async function ensurePersonalOrgForUser(user: { id: string; name?: string
   await withOrgLock(`user:${user.id}`, async () => {
     if (!(await firstOrgForUser(user.id))) await createPersonalOrgForUser(user);
   });
+}
+
+/** The user rows that are a claim on an address rather than a person: the
+ *  address never confirmed, no organisation, never signed in. Only an open
+ *  sign-up produces such rows; provisioned, invited and development accounts
+ *  have their organisation from creation. */
+export const claimCondition = and(
+  eq(user.emailVerified, false),
+  notExists(db.select({ id: member.id }).from(member).where(eq(member.userId, user.id))),
+  notExists(db.select({ id: session.id }).from(session).where(eq(session.userId, user.id))),
+);
+
+export async function unverifiedClaim(userId: string): Promise<boolean> {
+  const [row] = await db.select({ id: user.id }).from(user).where(and(eq(user.id, userId), claimCondition)).limit(1);
+  return row !== undefined;
 }
 
 /** Lowercase, hyphenate, and bound a label into a DNS-ish org slug stem. */

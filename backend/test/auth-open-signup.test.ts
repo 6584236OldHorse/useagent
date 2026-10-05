@@ -11,20 +11,27 @@ const OPEN = {
   CONNECTOR_EMAIL_FROM: "hello@example.test",
   SIGNUP_ALLOWED_DOMAINS: "example.test",
   SIGNUP_INVITE_CODE: "feedback-2026",
+  GOOGLE_CLIENT_ID: "google-test-client",
+  GOOGLE_CLIENT_SECRET: "google-test-secret",
 };
 const prior = Object.fromEntries(Object.keys(OPEN).map((name) => [name, process.env[name]]));
 const { BASE, ORIGIN } = await import("./helpers");
 Object.assign(process.env, OPEN);
 const { createAuthServer } = await import("../src/auth");
 const { handleAuthRequest } = await import("../src/auth/routes");
-const { SIGNUP_ATTEMPTS_PER_ADDRESS, SIGNUP_ATTEMPTS_PER_CLIENT, createSignupRoutes } = await import("../src/auth/signup-routes");
+const { SIGNUP_ATTEMPTS_PER_ADDRESS, SIGNUP_ATTEMPTS_PER_CLIENT, createSignupRoutes, fixedWindow } = await import("../src/auth/signup-routes");
 const { createEmailVerificationToken } = await import("better-auth/api");
 const { db } = await import("../src/db/client");
 const { env } = await import("../src/env");
-const { member, organization, user } = await import("../src/db/auth-schema");
+const { account, member, organization, user } = await import("../src/db/auth-schema");
 
 const auth = createAuthServer();
 const routes = createSignupRoutes(auth);
+// A Google identity whose verified address is the token itself.
+const google = (await auth.$context).socialProviders.find((provider) => provider.id === "google");
+if (!google) throw new Error("Google test provider missing");
+google.verifyIdToken = async () => true;
+google.getUserInfo = async ({ idToken }) => ({ user: { id: `google-${idToken}`, email: idToken, emailVerified: true, name: idToken } });
 const prefix = `open-signup-${crypto.randomUUID().slice(0, 8)}`;
 const PASSWORD = "password-1234";
 const CODE = "feedback-2026";
@@ -181,6 +188,25 @@ describe("open sign-up", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).token).toBeNull();
     expect(await row(email)).toMatchObject({ id: userId });
+  });
+
+  test("a provider identity never links to a claim, and still links to a confirmed account", async () => {
+    const email = address("google-claim");
+    expect((await signUp(email)).status).toBe(200);
+    const claim = await row(email);
+    await expect(auth.api.signInSocial({ body: { provider: "google", idToken: { token: email } } })).rejects.toThrow(/link/);
+    expect(await row(email)).toMatchObject({ id: claim!.id, emailVerified: false });
+    expect(await db.select().from(account).where(eq(account.userId, claim!.id))).toHaveLength(1); // the password only
+
+    const confirmed = address("waits"); // confirmed above
+    const linked = await auth.api.signInSocial({ body: { provider: "google", idToken: { token: confirmed } } });
+    expect(linked.user.email).toBe(confirmed);
+    expect(await db.select().from(account).where(eq(account.userId, linked.user.id))).toHaveLength(2);
+  });
+
+  test("a fixed window counts attempts per key and starts over once it has passed", () => {
+    const allow = fixedWindow(2, 50);
+    expect([allow("a"), allow("a"), allow("a"), allow("b")]).toEqual([true, true, false, true]);
   });
 
   test("nobody can have a link sent to an address they merely typed", async () => {

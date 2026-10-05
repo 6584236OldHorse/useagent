@@ -1,9 +1,10 @@
 import { getIp } from "better-auth/api";
-import { and, eq, notExists } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import type { createAuthServer } from "../auth";
+import { claimCondition } from "../auth-hooks";
 import { db } from "../db/client";
-import { member, session, user } from "../db/auth-schema";
+import { user } from "../db/auth-schema";
 import { env, openSignupConfig, signupRefusal } from "../env";
 import type { AppEnv } from "../http";
 
@@ -76,20 +77,11 @@ function tokenEmail(token: string): string | null {
   }
 }
 
-/** Delete the account for this address if it never verified the address and
- *  was never used (no organisation, no session): a claim, not a person, so the
- *  one who reads that mailbox can always finish a sign-up and a stale claim
- *  cannot hold the address. Provisioned and development accounts have their
- *  organisation from creation and stay. */
+/** Delete the claim on this address, if that is all the account is, so the one
+ *  who reads that mailbox can always finish a sign-up and a stale claim cannot
+ *  hold the address. */
 async function releaseUnverifiedClaim(email: string): Promise<void> {
-  await db.delete(user).where(
-    and(
-      eq(user.email, email),
-      eq(user.emailVerified, false),
-      notExists(db.select({ id: member.id }).from(member).where(eq(member.userId, user.id))),
-      notExists(db.select({ id: session.id }).from(session).where(eq(session.userId, user.id))),
-    ),
-  );
+  await db.delete(user).where(and(eq(user.email, email), claimCondition));
 }
 
 export function createSignupRoutes(auth: Auth): Hono<AppEnv> {
