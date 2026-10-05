@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import type { DesktopFocusGuardDoc } from "./desktop-pane";
 import {
   buildDesktopFrameSrc,
+  DESKTOP_FRAME_SANDBOX,
   DESKTOP_PROBE_MAX_DELAY,
   DESKTOP_PROBE_MIN_DELAY,
   desktopProbeStatus,
-  guardDesktopFocusSteal,
   nextDesktopProbeDelay,
   shouldReleaseStolenFocus,
   watchDesktopFocusSteal,
@@ -98,21 +97,26 @@ describe("Desktop product surface", () => {
     }
   });
 
-  test("noVNC resolves its WebSocket to the thread desktop proxy", () => {
-    const threadId = "thread-1";
-    const frameUrl = new URL(buildDesktopFrameSrc(threadId), "http://localhost:3401");
-    const path = frameUrl.searchParams.get("path");
-    if (!path) throw new Error("desktop frame is missing its noVNC WebSocket path");
+  test("the frame opens the session entry; the backend owns noVNC's socket path", () => {
+    const frameUrl = new URL(buildDesktopFrameSrc("thread-1"), "http://localhost:3401");
+    expect(frameUrl.pathname).toBe("/api/desktop-proxy/thread-1/vnc.html");
+    // The capability view the entry redirects to is the only valid socket path.
+    expect(frameUrl.searchParams.get("path")).toBeNull();
     expect(frameUrl.searchParams.get("reconnect")).toBe("true");
     expect(frameUrl.searchParams.get("reconnect_delay")).toBe("500");
-    // Current noVNC resolves relative to vnc.html.
-    const currentSocketUrl = new URL(path, frameUrl);
-    // The Cube template currently carries a legacy noVNC that concatenates
-    // `ws(s)://host/` + path. URL parsing normalizes the traversal segments.
-    const legacySocketUrl = new URL(`wss://localhost/${path}`);
+  });
 
-    expect(currentSocketUrl.pathname).toBe(`/api/desktop-proxy/${threadId}/websockify`);
-    expect(legacySocketUrl.pathname).toBe(`/api/desktop-proxy/${threadId}/websockify`);
+  test("sandbox-served noVNC runs in an opaque origin", () => {
+    const desktopPane = read("./desktop-pane.tsx");
+    expect(desktopPane).toContain("sandbox={DESKTOP_FRAME_SANDBOX}");
+    expect(DESKTOP_FRAME_SANDBOX.split(" ").toSorted()).toEqual([
+      "allow-downloads",
+      "allow-forms",
+      "allow-popups",
+      "allow-scripts",
+    ]);
+    // The pane never reaches into the frame's document.
+    expect(desktopPane).not.toContain("contentDocument");
   });
 
   test("the embedded noVNC iframe cannot steal composer focus implicitly", () => {
@@ -135,12 +139,6 @@ describe("Desktop product surface", () => {
   test("the mount/connect path never grabs keyboard focus: noVNC steals are bounced", () => {
     const desktopPane = read("./desktop-pane.tsx");
 
-    // The guard watches the frame's own document, because noVNC focuses its
-    // canvas on RFB connect - AFTER iframe load, where the onLoad blur cannot
-    // reach it.
-    expect(desktopPane).toContain("guardDesktopFocusSteal({");
-    expect(desktopPane).toContain("frameRef.current?.contentDocument ?? null");
-    expect(desktopPane).toContain("isCaptured: () => inputCapturedRef.current");
     // Stolen focus returns to the last legitimate outer element (the composer).
     expect(desktopPane).toContain('window.addEventListener("focusin", rememberOuterFocus, true)');
     expect(desktopPane).toContain("lastOuterFocusRef.current = target");
@@ -156,15 +154,16 @@ describe("Desktop product surface", () => {
     const desktopPane = read("./desktop-pane.tsx");
 
     // The iframe's onLoad fires about 2.5s before noVNC connects (sweep m9), so
-    // load alone never counts as connected: the pane polls the same-origin
-    // frame document for noVNC's connected marker and stops once it appears.
+    // load alone never counts as connected: the sandboxed frame reports noVNC's
+    // connected marker by message, and a dropped session reloads the frame.
     expect(desktopPane).not.toContain("const connected = ready && loaded;");
     expect(desktopPane).toContain("const connected = ready && loaded && frameConnected;");
-    expect(desktopPane).toContain("watchDesktopFrameConnected({");
     expect(desktopPane).toContain(
-      "isDesktopFrameConnected(frameRef.current?.contentDocument ?? null)",
+      "desktopFrameConnection(event, frameRef.current?.contentWindow)",
     );
-    expect(desktopPane).toContain("window.setInterval(tick, DESKTOP_CONNECT_POLL_INTERVAL)");
+    expect(desktopPane).toContain('window.addEventListener("message", onMessage)');
+    expect(desktopPane).toContain("setFrameKey((key) => key + 1)");
+    expect(desktopPane).toContain("key={frameKey}");
     // A thread switch starts over from Loading.
     expect(desktopPane).toContain("setFrameConnected(false);");
     // Everything the sweep saw lift early keys off that connected flag.
@@ -207,58 +206,6 @@ describe("Desktop product surface", () => {
     expect(agentScreen).toContain("ref={openButtonRef}");
     expect(desktopPane).toContain("surfaceRef={surfaceRef}");
     expect(desktopPane).not.toContain("Click to control desktop");
-  });
-
-  test("the focus-steal guard bounces only while input is not captured", () => {
-    const listeners = new Map<string, { listener: () => void; capture: boolean }>();
-    const innerDoc: DesktopFocusGuardDoc = {
-      addEventListener: (type, listener, capture) => listeners.set(type, { listener, capture }),
-      removeEventListener: (type) => listeners.delete(type),
-    };
-    let captured = false;
-    let restores = 0;
-
-    const release = guardDesktopFocusSteal({
-      innerDoc,
-      isCaptured: () => captured,
-      restoreFocus: () => {
-        restores += 1;
-      },
-    });
-
-    // Installed as a capture-phase focusin listener on the frame document.
-    const entry = listeners.get("focusin");
-    if (!entry) throw new Error("guard did not watch focusin on the frame document");
-    expect(entry.capture).toBe(true);
-
-    // First open: noVNC autofocuses its canvas on connect - focus is handed back.
-    entry.listener();
-    expect(restores).toBe(1);
-
-    // After the user explicitly clicks to control, focus may live in the pane.
-    captured = true;
-    entry.listener();
-    expect(restores).toBe(1);
-
-    // Clicking outside releases capture - the guard bounces again.
-    captured = false;
-    entry.listener();
-    expect(restores).toBe(2);
-
-    // Cleanup detaches the listener.
-    release();
-    expect(listeners.has("focusin")).toBe(false);
-  });
-
-  test("the focus-steal guard degrades to a no-op without a same-origin document", () => {
-    const release = guardDesktopFocusSteal({
-      innerDoc: null,
-      isCaptured: () => false,
-      restoreFocus: () => {
-        throw new Error("must not restore focus without a document to guard");
-      },
-    });
-    expect(() => release()).not.toThrow();
   });
 
   test("the cross-origin steal check fires only when the iframe element holds focus", () => {
@@ -337,8 +284,8 @@ describe("Desktop product surface", () => {
     // Runs only while the pane is watched (loaded, not captured).
     expect(desktopPane).toContain("if (!loaded || inputCaptured) return;");
     expect(desktopPane).toContain("watchDesktopFocusSteal({");
-    // Keys off the iframe ELEMENT being activeElement - observable cross-origin,
-    // unlike the inner document guardDesktopFocusSteal needs.
+    // Keys off the iframe ELEMENT being activeElement - observable from the
+    // outer page, unlike the sandboxed frame's own document.
     expect(desktopPane).toContain("activeElement: document.activeElement");
     expect(desktopPane).toContain("frame: frameRef.current");
     expect(desktopPane).toContain("captured: inputCapturedRef.current");

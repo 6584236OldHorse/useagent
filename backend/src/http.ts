@@ -18,5 +18,8 @@ export type AppEnv = {
      *  must not treat the dev user as a person read this instead of resolving
      *  the session a second time. */
     identitySource?: "session" | "dev";
+    /** Set only by the preview capability scope (runs/preview-capability.ts):
+     *  the sandbox port a capability-authenticated preview request may reach. */
+    previewPort?: number;
   };
 };
