@@ -2031,6 +2031,73 @@ describe("slack durable inbox", () => {
     }
   });
 
+  test("a request deferred by a deployment outlives both expiry thresholds and starts exactly once when admission reopens", async () => {
+    await stopSlackInboxPumpForTest();
+    const operationId = `slack-long-deployment-test:${crypto.randomUUID()}`;
+    const prompt = `patient ${uid("longwait")}`;
+    const envelope = eventCallback({
+      type: "app_mention",
+      channel: `C${uid("ch")}`,
+      user: "U-HUMAN",
+      text: `<@${BOT}> ${prompt}`,
+      ts: `${uid("ts")}.1`,
+    }) as SlackEnvelope;
+    const inboxKey = slackInboxKey(envelope);
+    const row = async () => (await db.select().from(commands).where(eq(commands.id, inboxKey)))[0]!;
+    const deferOf = (payload: string | null) => (JSON.parse(payload!) as SlackInboxPayload).defer!;
+    const runsStarted = async () =>
+      (await db.select({ id: runs.id }).from(runs).where(eq(runs.prompt, prompt))).length;
+    // One inbox tick: the pump retries a deferred row once nextAttemptAt has
+    // passed, so each simulated tick moves that moment into the past first.
+    const tick = async () => {
+      const current = JSON.parse((await row()).payload!) as SlackInboxPayload;
+      if (current.defer) {
+        await db.update(commands).set({
+          payload: JSON.stringify({
+            ...current,
+            defer: { ...current.defer, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() },
+          }),
+        }).where(eq(commands.id, inboxKey));
+      }
+      await processSlackInbox(replaySlackInboxClaim);
+      return row();
+    };
+    await setRunAdmission({ open: false, operationId, actor: "test", reason: "long deployment wait" });
+    try {
+      await persistSlackInboxEvent(envelope);
+      let current = await tick();
+      expect(deferOf(current.payload)).toMatchObject({ reason: "run_admission_closed", count: 1 });
+
+      // The release has been waiting for in-flight runs for 35 minutes: past
+      // the 30-minute lifetime of an ordinary retry, and the next 24 ticks pass
+      // its 20-deferral count as well.
+      const aged = JSON.parse(current.payload!) as SlackInboxPayload;
+      await db.update(commands).set({
+        payload: JSON.stringify({
+          ...aged,
+          defer: { ...aged.defer!, firstDeferredAt: new Date(Date.now() - 35 * 60 * 1000).toISOString() },
+        }),
+      }).where(eq(commands.id, inboxKey));
+      for (let n = 2; n <= 25; n += 1) {
+        current = await tick();
+        expect(current.state).toBe("queued");
+        expect(deferOf(current.payload)).toMatchObject({ reason: "run_admission_closed", count: n });
+      }
+      expect(current.error ?? "").not.toContain("deferred_expired");
+      expect(await runsStarted()).toBe(0);
+
+      await setRunAdmission({ open: true, operationId, actor: "test", reason: "deployment complete" });
+      current = await tick();
+      expect(current.state).toBe("completed");
+      expect(await runsStarted()).toBe(1);
+      await tick();
+      expect(await runsStarted()).toBe(1);
+    } finally {
+      await setRunAdmission({ open: true, operationId, actor: "test", reason: "test cleanup" });
+      restartSlackInboxPumpForTest();
+    }
+  });
+
   test("persists one duplicate event while closed and drains it once after restart/open", async () => {
     await stopSlackInboxPumpForTest();
     const operationId = `slack-deferred-test:${crypto.randomUUID()}`;
