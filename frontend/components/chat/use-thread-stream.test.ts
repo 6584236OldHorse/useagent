@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { createThreadStore } from "./thread-store";
 import type { ApiRun, RunStatus } from "./types";
 import {
-  freshThreadStore,
+  acquireThreadStore,
+  claimThreadStore,
+  releaseThreadStore,
   resetRetainedThreadStoresForTest,
   resumeCursors,
   seedThreadStore,
@@ -66,27 +68,44 @@ describe("shouldRetireOptimistic (keep an accepted reply until its durable run i
 });
 
 describe("retained stores (return to a thread without replaying it)", () => {
-  test("the same root gets the retained store back, merged with the new SSR payload", () => {
-    const first = seedThreadStore("A", [makeRun("A")]);
-    const again = seedThreadStore("A", [makeRun("A"), makeRun("B", "queued", "A")]);
+  test("a released store is acquired back for the same root, merged with the new SSR payload", () => {
+    const first = acquireThreadStore("A", [makeRun("A")]);
+    releaseThreadStore("A", first);
+    const again = acquireThreadStore("A", [makeRun("A"), makeRun("B", "queued", "A")]);
     expect(again).toBe(first);
     expect(again.getSnapshot().runs.map((r) => r.id)).toEqual(["A", "B"]);
   });
 
-  test("retention is bounded to the last four threads, least recently used first", () => {
-    const [a, b] = ["A", "B", "C", "D"].map((id) => seedThreadStore(id, [makeRun(id)]));
-    seedThreadStore("A", []); // touch A: B is now the oldest
-    seedThreadStore("E", [makeRun("E")]);
-    expect(seedThreadStore("A", [])).toBe(a);
-    expect(seedThreadStore("B", [])).not.toBe(b);
+  test("a store has one owner: acquiring takes it out of retention, a second view gets its own", () => {
+    const first = acquireThreadStore("A", [makeRun("A")]);
+    releaseThreadStore("A", first);
+    const owner = acquireThreadStore("A", []);
+    const sibling = acquireThreadStore("A", []);
+    expect(owner).toBe(first);
+    expect(sibling).not.toBe(first);
   });
 
-  test("a fresh store replaces the retained one for its root", () => {
-    const kept = seedThreadStore("A", [makeRun("A")]);
-    const fresh = freshThreadStore("A");
-    expect(fresh).not.toBe(kept);
-    expect(fresh.getSnapshot().runs.length).toBe(0);
-    expect(seedThreadStore("A", [])).toBe(fresh);
+  test("claiming takes back this exact store when a teardown released it under the same mount", () => {
+    const store = acquireThreadStore("A", [makeRun("A")]);
+    releaseThreadStore("A", store);
+    claimThreadStore("A", store);
+    expect(acquireThreadStore("A", [])).not.toBe(store);
+  });
+
+  test("retention is bounded to the last four released, oldest release first", () => {
+    const stores = ["A", "B", "C", "D", "E"].map((id) => {
+      const s = acquireThreadStore(id, [makeRun(id)]);
+      releaseThreadStore(id, s);
+      return s;
+    });
+    expect(acquireThreadStore("A", [])).not.toBe(stores[0]);
+    expect(acquireThreadStore("B", [])).toBe(stores[1]);
+  });
+
+  test("seedThreadStore never retains: the server-render path keeps nothing between requests", () => {
+    const first = seedThreadStore("A", [makeRun("A")]);
+    expect(seedThreadStore("A", [makeRun("A")])).not.toBe(first);
+    expect(acquireThreadStore("A", []).getSnapshot().runs.length).toBe(0);
   });
 });
 
@@ -99,7 +118,7 @@ describe("resume cursors (what the store already holds)", () => {
   test("an empty store carries no cursors and the plain stream URL", () => {
     const store = createThreadStore();
     const cursors = resumeCursors(store.getSnapshot());
-    expect(cursors).toEqual({ canonicalAfter: 0, nativeAfter: new Map() });
+    expect(cursors).toEqual({ canonicalAfter: 0, canonicalId: null, nativeAfter: new Map() });
     expect(threadEventsUrl("A", cursors)).toBe("/api/runs/A/thread-events");
   });
 
@@ -117,7 +136,10 @@ describe("resume cursors (what the store already holds)", () => {
     }
     const cursors = resumeCursors(store.getSnapshot());
     expect(cursors.canonicalAfter).toBe(12);
-    expect([...cursors.nativeAfter]).toEqual([["A", 4], ["B", 2]]);
-    expect(threadEventsUrl("A", cursors)).toBe("/api/runs/A/thread-events?canonicalAfter=12&nativeAfter=A%3A4%2CB%3A2");
+    expect(cursors.canonicalId).toBe("B-12");
+    expect([...cursors.nativeAfter]).toEqual([["A", { seq: 4, eventId: "A:e4" }], ["B", { seq: 2, eventId: "B:e2" }]]);
+    expect(threadEventsUrl("A", cursors)).toBe(
+      "/api/runs/A/thread-events?canonicalAfter=12&canonicalId=B-12&nativeAfter=A%3A4%3AA%3Ae4&nativeAfter=B%3A2%3AB%3Ae2",
+    );
   });
 });

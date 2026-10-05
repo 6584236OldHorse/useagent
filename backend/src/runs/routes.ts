@@ -772,7 +772,7 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
   const rootRun = await getCustomerRunForOrg(orgId, rootRunId);
   if (!rootRun) return c.json({ error: "run not found" }, 404);
   const threadId = rootRun.threadId;
-  const requested = parseResumeCursors(c.req.query("canonicalAfter"), c.req.query("nativeAfter"));
+  const requested = parseResumeCursors(c.req.query("canonicalAfter"), c.req.query("canonicalId"), c.req.queries("nativeAfter"));
 
   const encoder = new TextEncoder();
   const signal = c.req.raw.signal;

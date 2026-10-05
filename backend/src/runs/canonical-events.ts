@@ -146,13 +146,13 @@ export async function persistCanonicalEvents(
   return inserted.map(rowToDelivered);
 }
 
-/** The thread's newest delivery cursor (0 when it has no canonical rows yet). */
-export async function maxCanonicalDeliverySeq(threadId: string): Promise<number> {
+/** The event id at one delivery cursor of a thread, or null when no such row exists. */
+export async function canonicalEventIdAt(threadId: string, deliverySeq: number): Promise<string | null> {
   const [row] = await db
-    .select({ seq: max(canonicalEvents.deliverySeq) })
+    .select({ eventId: canonicalEvents.eventId })
     .from(canonicalEvents)
-    .where(eq(canonicalEvents.threadId, threadId));
-  return row?.seq ?? 0;
+    .where(and(eq(canonicalEvents.threadId, threadId), eq(canonicalEvents.deliverySeq, deliverySeq)));
+  return row?.eventId ?? null;
 }
 
 /** Publish already-persisted events to their thread channel (persist-before-publish

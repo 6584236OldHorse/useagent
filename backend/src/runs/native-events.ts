@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { and, asc, count, eq, gt, max } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray } from "drizzle-orm";
 import { NATIVE_SCHEMA_VERSION } from "@useagent/agent-client/wire";
 import type { NativeFrame } from "@useagent/agent-client/wire";
 import { db } from "../db/client";
@@ -120,13 +120,21 @@ export async function getNativeFramesSince(
   return rows.map(rowToNativeFrame);
 }
 
-/** Newest native seq per run of a thread; a run without frames is absent. */
-export async function maxNativeSeqByRun(threadId: string): Promise<Map<string, number>> {
-  const rows = await db.select({ runId: providerEvents.runId, seq: max(providerEvents.seq) })
+/** The event id stored at each (run, seq) cursor of a thread; a cursor with no row is absent. */
+export async function nativeEventIdsAt(
+  threadId: string,
+  cursors: ReadonlyArray<{ runId: string; seq: number }>,
+): Promise<Map<string, string>> {
+  if (cursors.length === 0) return new Map();
+  const rows = await db.select({ id: providerEvents.id, runId: providerEvents.runId, seq: providerEvents.seq })
     .from(providerEvents)
-    .where(eq(providerEvents.threadId, threadId))
-    .groupBy(providerEvents.runId);
-  return new Map(rows.flatMap((r) => (r.seq === null ? [] : [[r.runId, r.seq] as const])));
+    .where(and(
+      eq(providerEvents.threadId, threadId),
+      inArray(providerEvents.runId, cursors.map((c) => c.runId)),
+      inArray(providerEvents.seq, [...new Set(cursors.map((c) => c.seq))]),
+    ));
+  const wanted = new Map(cursors.map((c) => [c.runId, c.seq]));
+  return new Map(rows.filter((r) => wanted.get(r.runId) === r.seq).map((r) => [r.runId, r.id]));
 }
 
 export async function countNativeFrames(runId: string): Promise<number> {

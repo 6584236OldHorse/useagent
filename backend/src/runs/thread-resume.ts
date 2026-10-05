@@ -1,22 +1,31 @@
 // Resume cursors for the thread stream. A browser that already holds part of a
 // thread (a retained store, or a reconnect) tells the server what it has, and the
-// server replays only what is newer. Cursors this backend cannot prove (ahead of the
-// durable maximum: a rollback, a different database) are refused as a whole: the
-// replay is from zero and the `resume` frame says so, so the client drops what it
-// retained before applying the replay. Absent or malformed cursors mean from zero,
+// server replays only what is newer. A cursor is honoured only when the exact row it
+// names exists here (same delivery seq and event id, same run seq and event id), so
+// history from a rollback, a restore or another database is refused as a whole: the
+// replay is then from zero and the `resume` frame says so, and the client drops what
+// it retained before applying the replay. Absent or malformed cursors mean from zero,
 // exactly what an older client gets.
-import { maxCanonicalDeliverySeq } from "./canonical-events";
-import { maxNativeSeqByRun } from "./native-events";
+import { canonicalEventIdAt } from "./canonical-events";
+import { nativeEventIdsAt } from "./native-events";
 
-export interface ResumeCursors {
-  /** Newest canonical delivery seq the client holds (0: none). */
-  readonly canonicalAfter: number;
-  /** Newest native seq the client holds, per run (absent: none for that run). */
-  readonly nativeAfter: ReadonlyMap<string, number>;
+export interface NativeCursor {
+  readonly seq: number;
+  readonly eventId: string;
 }
 
-export interface ResolvedResume extends ResumeCursors {
-  /** The request's cursors were ahead of this backend's durable state; replay is from zero. */
+export interface ResumeCursors {
+  /** Newest canonical delivery seq the client holds (0: none) and that row's event id. */
+  readonly canonicalAfter: number;
+  readonly canonicalId: string | null;
+  /** Newest native frame the client holds, per run (absent: none for that run). */
+  readonly nativeAfter: ReadonlyMap<string, NativeCursor>;
+}
+
+export interface ResolvedResume {
+  readonly canonicalAfter: number;
+  readonly nativeAfter: ReadonlyMap<string, number>;
+  /** The request's cursors were not all provable here; replay is from zero. */
   readonly reset: boolean;
 }
 
@@ -26,39 +35,46 @@ function nonNegativeInt(value: string | undefined): number | null {
   return value !== undefined && /^\d{1,15}$/.test(value) ? Number(value) : null;
 }
 
-/** `canonicalAfter=<deliverySeq>&nativeAfter=<runId>:<seq>,<runId>:<seq>`. Anything
+/** `canonicalAfter=<deliverySeq>&canonicalId=<eventId>&nativeAfter=<runId>:<seq>:<eventId>`
+ *  (`nativeAfter` repeated per run; the event id may itself contain colons). Anything
  *  malformed reads as absent, never as an error: a bad cursor costs a full replay. */
 export function parseResumeCursors(
   canonicalAfter: string | undefined,
-  nativeAfter: string | undefined,
+  canonicalId: string | undefined,
+  nativeAfter: readonly string[] | undefined,
 ): ResumeCursors {
-  const native = new Map<string, number>();
-  for (const part of (nativeAfter ?? "").split(",")) {
-    const at = part.lastIndexOf(":");
-    if (at <= 0) continue;
-    const seq = nonNegativeInt(part.slice(at + 1));
-    if (seq !== null) native.set(part.slice(0, at), seq);
+  const native = new Map<string, NativeCursor>();
+  for (const part of nativeAfter ?? []) {
+    const [runId, seqText, ...rest] = part.split(":");
+    const seq = nonNegativeInt(seqText);
+    const eventId = rest.join(":");
+    if (runId && seq !== null && eventId) native.set(runId, { seq, eventId });
   }
-  return { canonicalAfter: nonNegativeInt(canonicalAfter) ?? 0, nativeAfter: native };
+  const canonical = nonNegativeInt(canonicalAfter) ?? 0;
+  return {
+    canonicalAfter: canonicalId ? canonical : 0,
+    canonicalId: canonical > 0 && canonicalId ? canonicalId : null,
+    nativeAfter: native,
+  };
 }
 
-/** Honour only cursors at or below the durable maximum. One cursor ahead of it means
- *  the client holds state this database never produced, so nothing is honoured. */
+/** Honour the cursors only when every row they name exists here with the same id. */
 export async function resolveResumeCursors(
   threadId: string,
   requested: ResumeCursors,
 ): Promise<ResolvedResume> {
   if (requested.canonicalAfter === 0 && requested.nativeAfter.size === 0) return FROM_ZERO;
-  const [canonicalMax, nativeMax] = await Promise.all([
-    maxCanonicalDeliverySeq(threadId),
-    maxNativeSeqByRun(threadId),
+  const [canonicalId, nativeIds] = await Promise.all([
+    requested.canonicalAfter > 0 ? canonicalEventIdAt(threadId, requested.canonicalAfter) : null,
+    nativeEventIdsAt(threadId, [...requested.nativeAfter].map(([runId, c]) => ({ runId, seq: c.seq }))),
   ]);
-  if (requested.canonicalAfter > canonicalMax) return { ...FROM_ZERO, reset: true };
-  for (const [runId, seq] of requested.nativeAfter) {
-    const known = nativeMax.get(runId);
-    if (known === undefined || seq > known) return { ...FROM_ZERO, reset: true };
+  if (requested.canonicalAfter > 0 && canonicalId !== requested.canonicalId) return { ...FROM_ZERO, reset: true };
+  const nativeAfter = new Map<string, number>();
+  for (const [runId, cursor] of requested.nativeAfter) {
+    if (nativeIds.get(runId) !== cursor.eventId) return { ...FROM_ZERO, reset: true };
+    nativeAfter.set(runId, cursor.seq);
   }
-  return { ...requested, reset: false };
+  return { canonicalAfter: requested.canonicalAfter, nativeAfter, reset: false };
 }
 
 /** The wire shape of the `resume` frame (the first frame of every connection). */

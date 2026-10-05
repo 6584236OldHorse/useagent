@@ -45,23 +45,54 @@ export interface ThreadStreamState {
   mergeRuns: (runs: readonly ApiRun[]) => void;
 }
 
-/** Stores retained across navigation, keyed by root thread id and ordered oldest to
- *  most recently used. Leaving a thread and coming back mounts the store it already
- *  had, and the reconnect asks the server only for what is newer than it holds.
+/** A new, unretained store for this root. */
+export function freshThreadStore(rootRunId: string): ThreadStore {
+  return createThreadStore({
+    rootThreadId: rootRunId,
+    executionSummaryEnabled: EXECUTION_SUMMARY_ROLLOUT_MODE !== "off",
+  });
+}
+
+function seed(store: ThreadStore, rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+  // Seed from `initialThread` ONLY when it actually belongs to this root, so a stale
+  // SSR payload from a previously viewed thread never bleeds into a new one (Codex
+  // finding 2).
+  if (initialThread.length && initialThread[0]?.id === rootRunId) store.applySnapshot([...initialThread]);
+  return store;
+}
+
+/** A fresh store seeded for this root: the server-render path (a request never
+ *  keeps state for the next one) and the store a `reset` replaces with. */
+export function seedThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+  return seed(freshThreadStore(rootRunId), rootRunId, initialThread);
+}
+
+/** Stores the browser keeps after leaving a thread, keyed by root thread id and
+ *  ordered oldest to most recently released. Coming back acquires the store the
+ *  thread already had, so the reconnect asks the server only for what is newer than
+ *  it holds. A store has ONE owner: acquiring takes it out of retention, releasing
+ *  puts it back, so two mounted views of the same thread never share one store (each
+ *  opens its own connection, and transient deltas are appended, not deduped).
  *  Bounded to the last few threads so memory stays flat. */
 const RETAINED_STORES = 4;
 const retained = new Map<string, ThreadStore>();
 
-/** A new store for this root, replacing whatever was retained for it. */
-export function freshThreadStore(rootRunId: string): ThreadStore {
-  const store = createThreadStore({
-    rootThreadId: rootRunId,
-    executionSummaryEnabled: EXECUTION_SUMMARY_ROLLOUT_MODE !== "off",
-  });
+export function acquireThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+  const kept = retained.get(rootRunId);
+  retained.delete(rootRunId);
+  return seed(kept ?? freshThreadStore(rootRunId), rootRunId, initialThread);
+}
+
+export function releaseThreadStore(rootRunId: string, store: ThreadStore): void {
   retained.delete(rootRunId);
   retained.set(rootRunId, store);
   while (retained.size > RETAINED_STORES) retained.delete(retained.keys().next().value as string);
-  return store;
+}
+
+/** Take this exact store back out of retention if a release put it there while the
+ *  hook still owned it (an effect torn down and re-run for the same mount). */
+export function claimThreadStore(rootRunId: string, store: ThreadStore): void {
+  if (retained.get(rootRunId) === store) retained.delete(rootRunId);
 }
 
 /** Test seam: forget every retained store. */
@@ -69,50 +100,60 @@ export function resetRetainedThreadStoresForTest(): void {
   retained.clear();
 }
 
-/** The retained store for a thread, or a fresh one, seeded from `initialThread` ONLY
- *  when it actually belongs to this root, so a stale SSR payload from a previously
- *  viewed thread never bleeds into a new one (Codex finding 2). Pure + testable. */
-export function seedThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
-  const kept = retained.get(rootRunId);
-  if (kept) {
-    retained.delete(rootRunId);
-    retained.set(rootRunId, kept);
-  }
-  const store = kept ?? freshThreadStore(rootRunId);
-  if (initialThread.length && initialThread[0]?.id === rootRunId) {
-    store.applySnapshot([...initialThread]);
-  }
-  return store;
+export interface NativeCursor {
+  readonly seq: number;
+  readonly eventId: string;
 }
 
 export interface ResumeCursors {
   readonly canonicalAfter: number;
-  readonly nativeAfter: ReadonlyMap<string, number>;
+  readonly canonicalId: string | null;
+  readonly nativeAfter: ReadonlyMap<string, NativeCursor>;
 }
 
 /** What the store already holds, as the server's resume cursors: the newest canonical
- *  delivery seq across the thread and the newest native seq per run. */
+ *  delivery seq across the thread and the newest native seq per run, each with the
+ *  event id at that row so the server can prove it holds the same history. */
 export function resumeCursors(snapshot: ThreadSnapshot): ResumeCursors {
   let canonicalAfter = 0;
-  const nativeAfter = new Map<string, number>();
+  let canonicalId: string | null = null;
+  const nativeAfter = new Map<string, NativeCursor>();
   for (const view of snapshot.byId.values()) {
-    for (const e of view.canonical) if (e.deliverySeq > canonicalAfter) canonicalAfter = e.deliverySeq;
-    let seq = -1;
-    for (const f of view.native.nativeFrames) if (f.seq > seq) seq = f.seq;
-    if (seq >= 0) nativeAfter.set(view.run.id, seq);
+    for (const e of view.canonical) {
+      if (e.deliverySeq > canonicalAfter) {
+        canonicalAfter = e.deliverySeq;
+        canonicalId = e.eventId;
+      }
+    }
+    let newest: NativeCursor | null = null;
+    for (const f of view.native.nativeFrames) {
+      if (!newest || f.seq > newest.seq) newest = { seq: f.seq, eventId: f.eventId };
+    }
+    if (newest) nativeAfter.set(view.run.id, newest);
   }
-  return { canonicalAfter, nativeAfter };
+  return { canonicalAfter, canonicalId, nativeAfter };
 }
 
 /** The stream URL, carrying only the cursors that are above zero. */
 export function threadEventsUrl(rootRunId: string, cursors: ResumeCursors): string {
   const params = new URLSearchParams();
-  if (cursors.canonicalAfter > 0) params.set("canonicalAfter", String(cursors.canonicalAfter));
-  if (cursors.nativeAfter.size > 0) {
-    params.set("nativeAfter", [...cursors.nativeAfter].map(([runId, seq]) => `${runId}:${seq}`).join(","));
+  if (cursors.canonicalAfter > 0 && cursors.canonicalId) {
+    params.set("canonicalAfter", String(cursors.canonicalAfter));
+    params.set("canonicalId", cursors.canonicalId);
+  }
+  for (const [runId, cursor] of cursors.nativeAfter) {
+    params.append("nativeAfter", `${runId}:${cursor.seq}:${cursor.eventId}`);
   }
   const query = params.toString();
   return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;
+}
+
+/** Retention is a browser matter: a server render must never keep one request's
+ *  thread for the next. */
+function mountThreadStore(rootRunId: string, initialThread: readonly ApiRun[]): ThreadStore {
+  return typeof window === "undefined"
+    ? seedThreadStore(rootRunId, initialThread)
+    : acquireThreadStore(rootRunId, initialThread);
 }
 
 /** Whether an accepted optimistic reply can be retired: only once its durable run
@@ -230,10 +271,10 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
   // Store lifetime is keyed by the ROOT thread id: recreate + reseed when rootRunId
   // changes, but NOT when a run is added to the same thread (adjust-state-on-prop-
   // change — cheaper + flicker-free vs. remount-by-key; Codex finding 2).
-  const [store, setStore] = useState<ThreadStore>(() => seedThreadStore(rootRunId, initialThread));
+  const [store, setStore] = useState<ThreadStore>(() => mountThreadStore(rootRunId, initialThread));
   const [storeRoot, setStoreRoot] = useState(rootRunId);
   if (rootRunId !== storeRoot) {
-    setStore(seedThreadStore(rootRunId, initialThread));
+    setStore(mountThreadStore(rootRunId, initialThread));
     setStoreRoot(rootRunId);
   }
   const storeRef = useRef(store);
@@ -253,6 +294,12 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
   }, []);
 
   useEffect(() => {
+    // The store this effect owns: the one mounted for this root, replaced by a reset.
+    // Every late result (a poll, a settlement fetch) lands here, never on whatever
+    // store a later navigation mounted, and never after this effect is torn down.
+    let active = storeRef.current;
+    let cancelled = false;
+    claimThreadStore(rootRunId, active);
     // Coalesce SSE frames: opening a long SETTLED run replays hundreds of native
     // frames back-to-back (this run: 463 frames / ~1MB). Applying each immediately
     // notifies the store per frame -> a full re-render + timeline rebuild of the
@@ -283,7 +330,7 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
       if (buffer.length === 0) return;
       const burst = buffer;
       buffer = [];
-      let target = storeRef.current;
+      let target = active;
       let pending: DecodedFrame[] = [];
       for (const f of burst) {
         const frame = decodeFrame(f.event, f.data);
@@ -294,6 +341,7 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
           applyBurst(target, pending);
           pending = [];
           target = freshThreadStore(rootRunId);
+          active = target;
           storeRef.current = target;
           setStore(target);
           continue;
@@ -309,8 +357,8 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
     };
     const reconcileSettlement = async (runId: string): Promise<boolean> => {
       const runs = await fetchThread(rootRunId);
-      if (!runs) return false;
-      storeRef.current.applySnapshot(runs);
+      if (!runs || cancelled) return false;
+      active.applySnapshot(runs);
       const run = runs.find((candidate) => candidate.id === runId);
       return !!run && run.status !== "queued" && run.status !== "running";
     };
@@ -318,14 +366,14 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
       // Recomputed on every (re)connect: the store's cursors tell the server what
       // to skip, so a reconnect or a return to a retained thread replays only the
       // newer frames instead of the whole history.
-      url: () => threadEventsUrl(rootRunId, resumeCursors(storeRef.current.getSnapshot())),
+      url: () => threadEventsUrl(rootRunId, resumeCursors(active.getSnapshot())),
       frameTypes: THREAD_FRAME_TYPES,
       healthFrame: "snapshot",
       createEventSource: browserEventSource,
       onFrame,
       poll: () => {
         void fetchThread(rootRunId).then((runs) => {
-          if (runs) storeRef.current.applySnapshot(runs);
+          if (runs && !cancelled) active.applySnapshot(runs);
         });
       },
       reconcileSettlement,
@@ -343,6 +391,8 @@ export function useThreadStream(rootRunId: string, initialThread: ApiRun[]): Thr
         else clearTimeout(scheduled as ReturnType<typeof setTimeout>);
       }
       conn.stop();
+      cancelled = true;
+      releaseThreadStore(rootRunId, active);
     };
     // Keyed by the ROOT thread id ONLY: a new run in the same thread never tears
     // down/reopens the connection; a genuine thread navigation does.
