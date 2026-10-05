@@ -104,6 +104,8 @@ const defaultDependencies: SubscriptionDependencies = {
 /** What a kept thread session holds on this host: the relay and both bridges. */
 interface SubscriptionSessionParts extends CodexThreadSessionParts {
   readonly cwd: string;
+  /** The thread-scoped gateway bearer the session's app-server holds. */
+  readonly toolGatewayBearer: string | null;
   readonly relay: CodexRelaySession;
   readonly codeModeBridge: ReturnType<typeof openCodexCodeModeBridge>;
 }
@@ -146,8 +148,8 @@ export async function prepareCodexSubscription(input: {
   const run = {
     runId: ctx.runId,
     model: ctx.model?.trim() || DEFAULT_CODEX_MODEL,
-    toolGatewayBearer: toolGateway?.bearerToken ?? null,
   };
+  const toolGatewayBearer = toolGateway?.bearerToken ?? null;
   const sessionKey = codexThreadSessionKey(scope);
 
   // One round trip: admit only this run's code-mode bearer from now on, then
@@ -168,10 +170,15 @@ export async function prepareCodexSubscription(input: {
 
   // A follow-up turn on a sandbox whose services never went away takes the
   // thread's kept session: the runtime's Codex session is still connected to
-  // it, so the run only becomes the one it serves.
+  // it, so the run only becomes the one it serves. Its app-server holds the
+  // gateway bearer it started with, so it serves only runs given that same
+  // bearer: once the thread's bearer is re-minted, a fresh session starts.
   if (reuse && servicesUp) {
     const kept = claimCodexThreadSession<SubscriptionSessionParts>(sessionKey);
-    if (kept && !kept.parts.relay.closed && kept.parts.cwd === workdir) {
+    if (
+      kept && !kept.parts.relay.closed && kept.parts.cwd === workdir &&
+      kept.parts.toolGatewayBearer === toolGatewayBearer
+    ) {
       kept.parts.codeModeBridge.rotateBearer(codeModeBearer);
       kept.parts.relay.activate(run);
       return {
@@ -257,7 +264,9 @@ export async function prepareCodexSubscription(input: {
       runtime,
       execServerUrl: execBridge.url,
       codeModeHostUrl: codeModeBridge.url,
-      toolGateway: toolGateway ? { serverName: toolGateway.serverName, url: toolGateway.url } : null,
+      toolGateway: toolGateway
+        ? { serverName: toolGateway.serverName, url: toolGateway.url, bearerToken: toolGateway.bearerToken }
+        : null,
       reusable: reuse,
     });
     relay.activate(run);
@@ -287,6 +296,7 @@ export async function prepareCodexSubscription(input: {
   const parts: SubscriptionSessionParts = {
     environmentId,
     cwd: workdir,
+    toolGatewayBearer,
     relay: ownedRelay,
     codeModeBridge: ownedCodeModeBridge,
     close() {

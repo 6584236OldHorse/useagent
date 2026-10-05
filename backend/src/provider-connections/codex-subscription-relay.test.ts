@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { link, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -33,6 +33,7 @@ import {
 } from "./codex-native-output-import";
 import {
   codexSubscriptionAppServerArgs,
+  codexSubscriptionAppServerEnvironment,
   codexSubscriptionRelayPublicOrigin,
   codexSubscriptionRelayRoutes,
   issueCodexSubscriptionRelayCapability,
@@ -64,11 +65,10 @@ describe("Codex subscription relay public origin", () => {
     const toolGateway = {
       serverName: "useagent",
       url: "https://useagent.example.test/api/internal/tool-gateway",
-      headersFile: "/var/lib/useagent/codex-app-server/h/useagent-relay/s.json",
-    };
-    expect(() => codexSubscriptionAppServerArgs({ ...toolGateway, headersFile: "/tmp/a b.json" }, "http://127.0.0.1:43112"))
-      .toThrow("whitespace");
-    expect(codexSubscriptionAppServerArgs(toolGateway, "http://127.0.0.1:43112")).toEqual([
+      bearerToken: "mcp-bearer-secret",
+    } as const;
+    const args = codexSubscriptionAppServerArgs(toolGateway, "http://127.0.0.1:43112");
+    expect(args).toEqual([
       "app-server",
       "--stdio",
       "--code-mode-host",
@@ -79,8 +79,18 @@ describe("Codex subscription relay public origin", () => {
       "-c",
       'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
       "-c",
-      'mcp_servers.useagent.http_headers_helper="/bin/cat /var/lib/useagent/codex-app-server/h/useagent-relay/s.json"',
+      'mcp_servers.useagent.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"',
     ]);
+    // The bearer travels in the environment only, and no override makes Codex
+    // start a helper or command here: it would run in the thread's cwd, which
+    // exists only in the sandbox (a headers helper died there with EACCES).
+    expect(args.join(" ")).not.toContain("mcp-bearer-secret");
+    expect(args.filter((arg) => /(^|\.)(\w+_helper|command)=/.test(arg))).toEqual([]);
+    expect(codexSubscriptionAppServerEnvironment("/host/codex-home", toolGateway)).toMatchObject({
+      CODEX_HOME: "/host/codex-home",
+      USEAGENT_TOOL_GATEWAY_BEARER_TOKEN: "mcp-bearer-secret",
+    });
+    expect(codexSubscriptionAppServerEnvironment("/host/codex-home", null)).not.toHaveProperty("USEAGENT_TOOL_GATEWAY_BEARER_TOKEN");
   });
 
   test("never starts an app-server that would run model code on this host", () => {
@@ -196,8 +206,6 @@ describe("Codex subscription run relay", () => {
     const authorization = Promise.withResolvers<CodexSubscriptionRuntimeSelection | null>();
     let authorizationCalls = 0;
     let spawnInput: unknown;
-    const headersRoot = await mkdtemp(join(tmpdir(), "useagent-relay-headers-"));
-    tempRoots.push(headersRoot);
     setCodexSubscriptionRelayDependenciesForTest({
       selectRuntime: async () => {
         authorizationCalls += 1;
@@ -209,7 +217,6 @@ describe("Codex subscription run relay", () => {
         spawnInput = input;
         return child.process;
       },
-      headersDirectory: () => headersRoot,
     });
     const capability = issueCodexSubscriptionRelayCapability({
       binding: binding(),
@@ -252,16 +259,12 @@ describe("Codex subscription run relay", () => {
       codexHome: "/host/codex-home",
       execServerUrl: "ws://127.0.0.1:43111/opaque-exec-grant",
       codeModeHostUrl: "http://127.0.0.1:43112",
-      toolGateway: {
+      toolGateway: expect.objectContaining({
         serverName: "useagent",
         url: "https://useagent.example.test/api/internal/tool-gateway",
-        headersFile: expect.stringContaining(headersRoot),
-      },
+        bearerToken: "mcp-bearer-secret",
+      }),
     });
-    // The bearer reaches the app-server's MCP client only through a private file.
-    const headersFile = (spawnInput as { toolGateway: { headersFile: string } }).toolGateway.headersFile;
-    expect(JSON.parse(await Bun.file(headersFile).text())).toEqual({ Authorization: "Bearer mcp-bearer-secret" });
-    expect((await stat(headersFile)).mode & 0o777).toBe(0o600);
     await finishRelayInitialization(socket, child, 1);
     child.received.splice(0);
 
@@ -1028,7 +1031,7 @@ describe("Codex relay sessions across runs", () => {
       scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
       toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
     });
-    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
 
     const first = await opened(session.url);
     sockets.push(first);
@@ -1071,7 +1074,7 @@ describe("Codex relay sessions across runs", () => {
       scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
       toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
     });
-    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
     const socket = await opened(session.url);
     sockets.push(socket);
     await initializeRelay(socket, child, 1);
@@ -1087,37 +1090,30 @@ describe("Codex relay sessions across runs", () => {
     session.close();
   });
 
-  test("between runs a turn is refused and the gateway bearer withdrawn; the next run brings its own model and bearer", async () => {
+  test("between runs a turn is refused and nothing connects; the next run brings its own model", async () => {
     const server = startRelayServer();
     const children = [fakeAppServer(), fakeAppServer()];
-    let spawned = 0;
-    const headersRoot = await mkdtemp(join(tmpdir(), "useagent-relay-session-"));
-    tempRoots.push(headersRoot);
+    const spawnedWith: unknown[] = [];
     setCodexSubscriptionRelayDependenciesForTest({
       selectRuntime: async () => runtime(),
       loadThreadBinding: async () => "provider-thread-1",
-      spawnAppServer: () => children[spawned++]!.process,
-      headersDirectory: () => headersRoot,
+      spawnAppServer: (input) => {
+        spawnedWith.push(input.toolGateway);
+        return children[spawnedWith.length - 1]!.process;
+      },
     });
+    const toolGateway = { serverName: "useagent", url: "https://useagent.example.test/api/internal/tool-gateway", bearerToken: "thread-bearer"  } as const;
     const session = openCodexRelaySession({
       scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
-      toolGateway: { serverName: "useagent", url: "https://useagent.example.test/api/internal/tool-gateway" },
-      reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+      toolGateway, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
     });
-    const headers = async () => {
-      const [file] = await readdir(headersRoot);
-      return JSON.parse(await Bun.file(join(headersRoot, file!)).text()) as Record<string, string>;
-    };
-    expect(await headers()).toEqual({});
-    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: "bearer-one" });
-    expect(await headers()).toEqual({ Authorization: "Bearer bearer-one" });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
 
     const first = await opened(session.url);
     sockets.push(first);
     await initializeRelay(first, children[0]!, 1);
     await resume(first, children[0]!, 2, "gpt-5.5");
     session.deactivate();
-    expect(await headers()).toEqual({});
     const refused = socketClosed(first);
     first.send(turnStart(3, "gpt-5.5"));
     expect(await refused).toMatchObject({ code: 1008 });
@@ -1129,10 +1125,9 @@ describe("Codex relay sessions across runs", () => {
     const betweenRunsClosed = socketClosed(betweenRuns);
     await opened(betweenRuns).catch(() => {});
     expect((await betweenRunsClosed).code).toBe(1008);
-    expect(spawned).toBe(1);
+    expect(spawnedWith).toHaveLength(1);
 
-    session.activate({ runId: "run-2", model: "gpt-5.6-luna", toolGatewayBearer: "bearer-two" });
-    expect(await headers()).toEqual({ Authorization: "Bearer bearer-two" });
+    session.activate({ runId: "run-2", model: "gpt-5.6-luna" });
     const second = await opened(session.url);
     sockets.push(second);
     await initializeRelay(second, children[1]!, 1);
@@ -1142,38 +1137,8 @@ describe("Codex relay sessions across runs", () => {
     const mismatched = socketClosed(second);
     second.send(turnStart(4, "gpt-5.5"));
     expect(await mismatched).toMatchObject({ code: 1008 });
-    session.close();
-  });
-
-  test("activating the next run on a live connection makes the app-server reconnect its tools with that run's bearer", async () => {
-    const server = startRelayServer();
-    const child = fakeAppServer();
-    setCodexSubscriptionRelayDependenciesForTest({
-      selectRuntime: async () => runtime(),
-      loadThreadBinding: async () => "provider-thread-1",
-      spawnAppServer: () => child.process,
-    });
-    const session = openCodexRelaySession({
-      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
-      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
-    });
-    session.activate({ runId: "run-1", model: "gpt-5.5", toolGatewayBearer: null });
-    const socket = await opened(session.url);
-    sockets.push(socket);
-    await initializeRelay(socket, child, 1);
-    await resume(socket, child, 2, "gpt-5.5");
-    child.received.splice(0);
-
-    session.deactivate();
-    session.activate({ runId: "run-2", model: "gpt-5.5", toolGatewayBearer: null });
-    await eventually(() => expect(child.received.some((frame) => frame.includes('"method":"config/mcpServer/reload"'))).toBe(true));
-    const reload = JSON.parse(child.received.find((frame) => frame.includes("config/mcpServer/reload"))!) as { id: string };
-    // The relay's own request is answered to the relay, never to the runtime.
-    const toRuntime: string[] = [];
-    socket.onmessage = (event) => void toRuntime.push(String(event.data));
-    child.stdout.write(`${JSON.stringify({ id: reload.id, result: {} })}\n`);
-    child.stdout.write('{"method":"item/started","params":{"id":"after"}}\n');
-    await eventually(() => expect(toRuntime).toEqual(['{"method":"item/started","params":{"id":"after"}}']));
+    // Every app-server of the session holds its one thread-scoped bearer.
+    expect(spawnedWith).toEqual([toolGateway, toolGateway]);
     session.close();
   });
 
@@ -1200,7 +1165,7 @@ describe("Codex relay sessions across runs", () => {
       runtime: selected, execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
       toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
     });
-    session.activate({ runId: fixture.runId, model: "gpt-5.5", toolGatewayBearer: null });
+    session.activate({ runId: fixture.runId, model: "gpt-5.5" });
     const socket = await opened(session.url);
     sockets.push(socket);
     await initializeRelay(socket, child, 800);
@@ -1211,7 +1176,7 @@ describe("Codex relay sessions across runs", () => {
 
     // The next run is active by the time the first turn's image lands.
     session.deactivate();
-    session.activate({ runId: nextRunId, model: "gpt-5.5", toolGatewayBearer: null });
+    session.activate({ runId: nextRunId, model: "gpt-5.5" });
     const imagePath = join(fixture.generatedImages, "late.png");
     await writeFile(imagePath, PNG);
     const forwarded = collectMessages(socket, 1);
