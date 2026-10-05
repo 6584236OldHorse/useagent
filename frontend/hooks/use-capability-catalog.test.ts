@@ -170,7 +170,7 @@ describe("shared capability catalog", () => {
   test("every consumer on a page reads one request until the ttl passes", async () => {
     const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
     let fetchCount = 0;
-    const load = createCapabilityCatalogLoader(async () => {
+    const { load, invalidate } = createCapabilityCatalogLoader(async () => {
       fetchCount += 1;
       return capabilityCatalog(false);
     }, { isShared: () => true });
@@ -178,12 +178,15 @@ describe("shared capability catalog", () => {
     expect(a).toBe(b);
     await load();
     expect(fetchCount).toBe(1);
+    invalidate();
+    await load();
+    expect(fetchCount).toBe(2);
   });
 
   test("a refresh retry asks for a fresh catalog and a failed load is not kept", async () => {
     const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
     let fetchCount = 0;
-    const load = createCapabilityCatalogLoader(async () => {
+    const { load } = createCapabilityCatalogLoader(async () => {
       fetchCount += 1;
       return fetchCount === 1 ? null : capabilityCatalog(fetchCount < 3);
     }, { isShared: () => true });

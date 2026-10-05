@@ -77,7 +77,9 @@ export function BotsPanel({
   }, [initialBots, initialError]);
 
   // A page hop carries the roster the server fetched for it; take that instead
-  // of fetching the same list again from here.
+  // of fetching the same list again from here. Back and forward restore a page
+  // from the router cache, whose roster can be older than this column, so a
+  // history traversal fetches once.
   useEffect(
     () =>
       subscribeRoster((list) => {
@@ -86,6 +88,11 @@ export function BotsPanel({
       }),
     [],
   );
+  useEffect(() => {
+    const onTraversal = () => void refresh();
+    window.addEventListener("popstate", onTraversal);
+    return () => window.removeEventListener("popstate", onTraversal);
+  }, [refresh]);
 
   const attention = bots?.filter((bot) => bot.state === "attention").length ?? 0;
 

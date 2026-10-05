@@ -1,14 +1,15 @@
 /**
- * One shared request per browser page: concurrent callers await the same
- * promise, later callers reuse the settled value until `ttlMs` passes, and a
- * failed request is not kept. The server never shares (a module-level cache
- * there would cross requests and users), so a caller outside the browser gets
- * a fresh load every time.
+ * One shared request per browser page: callers join a pending request, later
+ * callers reuse the settled value until `ttlMs` after it settled, and a
+ * failed request is not kept. `invalidate` forgets the value and detaches a
+ * pending request so its late result is not kept either. The server never
+ * shares (a module-level cache there would cross requests and users), so a
+ * caller outside the browser gets a fresh load every time.
  */
 export interface CachedRequest<T> {
-  /** The shared request; `fresh` skips whatever is cached and replaces it. */
+  /** The shared request; `fresh` skips a settled value (a pending request is joined). */
   get(fresh?: boolean): Promise<T>;
-  /** The last settled value, when there is one the next `get` would reuse. */
+  /** The settled value the next `get` would reuse, if any. */
   peek(): T | undefined;
   invalidate(): void;
 }
@@ -23,30 +24,36 @@ export function cachedRequest<T>(
 ): CachedRequest<T> {
   const ttlMs = options.ttlMs ?? Number.POSITIVE_INFINITY;
   const isShared = options.isShared ?? (() => typeof window !== "undefined");
-  let entry: { promise: Promise<T>; at: number; value?: { current: T } } | null = null;
+  let pending: Promise<T> | null = null;
+  let settled: { value: T; at: number } | null = null;
+  const current = (): T | undefined =>
+    settled && Date.now() - settled.at < ttlMs ? settled.value : undefined;
   return {
     get(fresh = false) {
       if (!isShared()) return load();
-      const now = Date.now();
-      if (!fresh && entry && now - entry.at < ttlMs) return entry.promise;
-      const next: NonNullable<typeof entry> = { promise: load(), at: now };
-      entry = next;
-      next.promise.then(
+      if (pending) return pending;
+      if (!fresh) {
+        const value = current();
+        if (value !== undefined) return Promise.resolve(value);
+      }
+      const request = load();
+      pending = request;
+      request.then(
         (value) => {
-          if (entry === next) next.value = { current: value };
+          if (pending !== request) return;
+          pending = null;
+          settled = { value, at: Date.now() };
         },
         () => {
-          if (entry === next) entry = null;
+          if (pending === request) pending = null;
         },
       );
-      return next.promise;
+      return request;
     },
-    peek() {
-      if (!entry?.value || Date.now() - entry.at >= ttlMs) return undefined;
-      return entry.value.current;
-    },
+    peek: current,
     invalidate() {
-      entry = null;
+      settled = null;
+      pending = null;
     },
   };
 }

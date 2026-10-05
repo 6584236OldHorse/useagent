@@ -23,13 +23,6 @@ const SidebarThreadRelationshipsContext = createContext<readonly ThreadRelations
  *  its snapshot anyway (a blocked or slow stream must not leave the shell empty). */
 export const STREAM_OPEN_GRACE_MS = 1_500;
 
-/** The last snapshot this page loaded: a remounted shell (every page hop today)
- *  renders it at once and corrects it after the stream is open again. */
-let lastSnapshot: {
-  runs: SidebarRun[];
-  relationships: readonly ThreadRelationship[];
-} = { runs: [], relationships: [] };
-
 export function refreshesSidebarThreads(change: OrgChange): boolean {
   return (
     change.type === "run" ||
@@ -41,10 +34,8 @@ export function refreshesSidebarThreads(change: OrgChange): boolean {
 
 /** Owns the shell's single thread snapshot and refreshes it from the shared SSE. */
 export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
-  const [runs, setRuns] = useState<SidebarRun[]>(lastSnapshot.runs);
-  const [relationships, setRelationships] = useState<readonly ThreadRelationship[]>(
-    lastSnapshot.relationships,
-  );
+  const [runs, setRuns] = useState<SidebarRun[]>([]);
+  const [relationships, setRelationships] = useState<readonly ThreadRelationship[]>([]);
 
   const load = useCallback(async (revalidate = false) => {
     try {
@@ -52,12 +43,8 @@ export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
         fetchSidebarRuns({ revalidate }),
         fetchThreadRelationshipIndex({ revalidate }),
       ]);
-      if (nextRuns.status === "fulfilled") {
-        lastSnapshot = { ...lastSnapshot, runs: nextRuns.value };
-        setRuns(nextRuns.value);
-      }
+      if (nextRuns.status === "fulfilled") setRuns(nextRuns.value);
       if (nextRelationships.status === "fulfilled") {
-        lastSnapshot = { ...lastSnapshot, relationships: nextRelationships.value.relationships };
         setRelationships(nextRelationships.value.relationships);
       }
     } catch {

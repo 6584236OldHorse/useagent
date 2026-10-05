@@ -20,31 +20,38 @@ export interface Session {
   user: SessionUser;
 }
 
+/** How long a page reuses one session answer across the components that read
+ *  it; a session that expires or changes server-side is seen again within this. */
+export const SESSION_TTL_MS = 60_000;
+
+/** Anonymous is an answer (null); a failed request throws so it is never kept. */
 async function fetchSession(fetcher: typeof backendFetch): Promise<Session | null> {
-  try {
-    const res = await fetcher("/api/auth/get-session");
-    if (!res.ok) return null;
-    const data = (await res.json()) as { user?: SessionUser } | null;
-    return data?.user ? { user: data.user } : null;
-  } catch {
-    return null;
-  }
+  const res = await fetcher("/api/auth/get-session");
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(`get-session failed: ${res.status}`);
+  const data = (await res.json()) as { user?: SessionUser } | null;
+  return data?.user ? { user: data.user } : null;
 }
 
 /** One session request per page, shared by every `useSession` consumer. */
 export function createSessionRequest(
   fetcher: typeof backendFetch = backendFetch,
-  options: { readonly isShared?: () => boolean } = {},
+  options: { readonly isShared?: () => boolean; readonly ttlMs?: number } = {},
 ): CachedRequest<Session | null> {
-  return cachedRequest(() => fetchSession(fetcher), options);
+  return cachedRequest(() => fetchSession(fetcher), { ttlMs: SESSION_TTL_MS, ...options });
 }
 
 const sessionRequest = createSessionRequest();
 
 /** The authenticated session, or null when anonymous (incl. the dev-org path,
- *  where domain APIs still work but no better-auth session cookie exists). */
-export function getSession(): Promise<Session | null> {
-  return sessionRequest.get();
+ *  where domain APIs still work but no better-auth session cookie exists) and
+ *  when the request failed; a failure is not cached. */
+export async function getSession(): Promise<Session | null> {
+  try {
+    return await sessionRequest.get();
+  } catch {
+    return null;
+  }
 }
 
 /** Forget the cached session so the next read asks the backend again. */

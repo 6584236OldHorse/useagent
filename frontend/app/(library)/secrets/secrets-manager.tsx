@@ -17,6 +17,7 @@ import { BackendUnreachable } from "@/components/shared/backend-unreachable";
 import { REVEAL_ON_HOVER } from "@/components/customize/list-row";
 import { cx } from "@/utils/cx";
 import { relTime } from "@/app/(workspace)/settings/relative-time";
+import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
 import { deleteSecret, fetchSecrets, putSecret } from "./secrets-api";
 import { isValidSecretName, SECRET_KINDS, type SecretKind, type SecretMeta } from "./secrets-data";
 
@@ -98,6 +99,7 @@ export function SecretsManager({
     setSaveError(null);
     try {
       const meta = await putSecret(trimmedName, value, kind);
+      invalidateCapabilityCatalog();
       setSecrets((prev) => {
         const without = prev.filter((s) => s.name !== meta.name);
         return [...without, meta].sort(byName);
@@ -120,6 +122,7 @@ export function SecretsManager({
     setSecrets((list) => list.filter((s) => s.name !== target));
     try {
       await deleteSecret(target);
+      invalidateCapabilityCatalog();
     } catch {
       setSecrets(prev);
     }

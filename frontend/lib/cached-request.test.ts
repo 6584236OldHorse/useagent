@@ -12,14 +12,44 @@ test("concurrent and later callers share one request", async () => {
   expect(calls).toBe(1);
 });
 
-test("fresh and invalidate replace the cached value", async () => {
+test("fresh replaces a settled value but joins a pending request", async () => {
   let calls = 0;
-  const request = cachedRequest(async () => ++calls, shared);
-  await request.get();
-  expect(await request.get(true)).toBe(2);
+  let release: (() => void) | undefined;
+  const request = cachedRequest(
+    () => new Promise<number>((resolve) => {
+      calls += 1;
+      release = () => resolve(calls);
+    }),
+    shared,
+  );
+  const first = request.get();
+  const joined = request.get(true);
+  release?.();
+  expect(await Promise.all([first, joined])).toEqual([1, 1]);
+  const second = request.get(true);
+  release?.();
+  expect(await second).toBe(2);
+  expect(calls).toBe(2);
+});
+
+test("invalidate forgets the value and detaches a pending request", async () => {
+  let calls = 0;
+  let release: (() => void) | undefined;
+  const request = cachedRequest(
+    () => new Promise<number>((resolve) => {
+      calls += 1;
+      release = () => resolve(calls);
+    }),
+    shared,
+  );
+  const stale = request.get();
   request.invalidate();
+  release?.();
+  expect(await stale).toBe(1);
   expect(request.peek()).toBeUndefined();
-  expect(await request.get()).toBe(3);
+  const next = request.get();
+  release?.();
+  expect(await next).toBe(2);
 });
 
 test("a failed request is not kept", async () => {
@@ -33,10 +63,11 @@ test("a failed request is not kept", async () => {
   expect(await request.get()).toBe(2);
 });
 
-test("the value expires after the ttl", async () => {
+test("the value expires after the ttl, counted from when it settled", async () => {
   let calls = 0;
   const request = cachedRequest(async () => ++calls, { ...shared, ttlMs: 0 });
   await request.get();
+  expect(request.peek()).toBeUndefined();
   expect(await request.get()).toBe(2);
 });
 

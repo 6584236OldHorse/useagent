@@ -8,7 +8,7 @@ import { Button } from "@/components/base/buttons/button";
 import { Divider } from "@/components/base/divider/divider";
 import { Input } from "@/components/base/input/input";
 import { OrbitKnotMark } from "@/components/foundations/brand/orbit-knot-mark";
-import { useAuthConfig } from "@/lib/auth";
+import { invalidateSession, useAuthConfig } from "@/lib/auth";
 import { backendFetch } from "@/lib/backend-fetch";
 
 const COPY = {
@@ -49,6 +49,7 @@ export function AuthForm() {
         return;
       }
 
+      invalidateSession();
       router.push("/");
       router.refresh();
     } catch {

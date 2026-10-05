@@ -58,14 +58,16 @@ export function BotThreadPane({ bot, thread }: { bot: ApiBot; thread: ThreadView
     void refreshBot();
   }, [refreshBot]);
 
-  // `bot` and `thread` are the server's projection for this navigation, so the
-  // header starts from them; the stream's first newest-turn report matches the
-  // thread's tail and only a later turn (or the timer) fetches again.
+  // The header starts from the server's projection and fetches the bot once
+  // on mount (the page read the bot before its thread, so a run queued between
+  // those reads is only visible here); the stream's first newest-turn report
+  // matches the thread's tail, so it does not fetch again.
   useEffect(() => {
     setLiveBot(bot);
     newestKey.current = newestTurnKey(thread);
     refreshVersion.current += 1;
-  }, [bot, thread]);
+    void refreshBot();
+  }, [bot, thread, refreshBot]);
 
   useEffect(() => {
     const timer = window.setInterval(() => void refreshBot(), BOT_REFRESH_MS);

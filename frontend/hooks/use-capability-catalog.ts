@@ -19,16 +19,27 @@ export const CAPABILITY_CATALOG_TTL_MS = 30_000;
 export function createCapabilityCatalogLoader(
   fetchCatalog: () => Promise<CapabilityCatalog | null>,
   options: { readonly ttlMs?: number; readonly isShared?: () => boolean } = {},
-): (fresh?: boolean) => Promise<CapabilityCatalog | null> {
+): {
+  load: (fresh?: boolean) => Promise<CapabilityCatalog | null>;
+  invalidate: () => void;
+} {
   const request = cachedRequest(fetchCatalog, { ttlMs: CAPABILITY_CATALOG_TTL_MS, ...options });
-  return async (fresh = false) => {
-    const catalog = await request.get(fresh);
-    if (catalog === null) request.invalidate();
-    return catalog;
+  return {
+    load: async (fresh = false) => {
+      const catalog = await request.get(fresh);
+      if (catalog === null) request.invalidate();
+      return catalog;
+    },
+    invalidate: () => request.invalidate(),
   };
 }
 
-export const loadCapabilityCatalog = createCapabilityCatalogLoader(() => fetchCapabilityCatalog());
+const sharedCatalog = createCapabilityCatalogLoader(() => fetchCapabilityCatalog());
+export const loadCapabilityCatalog = sharedCatalog.load;
+
+/** Forget the shared catalog after a change that feeds it (a provider
+ *  connection, a secret, a model refresh) so the next reader asks again. */
+export const invalidateCapabilityCatalog = sharedCatalog.invalidate;
 
 type CapabilityCatalogTimer = ReturnType<typeof setTimeout> | number;
 
