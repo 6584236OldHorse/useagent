@@ -821,13 +821,11 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
         for (const s of steps) m.set(s.idx, `${s.id}|${s.code_json ?? ""}`);
       };
 
+      const nativeSeen = (runId: string): Map<string, number> =>
+        nativeSeenByRun.get(runId) ?? nativeSeenByRun.set(runId, new Map()).get(runId)!;
       // Emit a native frame if it advances its eventId's seq (dedupe replay/live).
       const sendNative = (runId: string, frame: NativeFrame): void => {
-        let m = nativeSeenByRun.get(runId);
-        if (!m) {
-          m = new Map();
-          nativeSeenByRun.set(runId, m);
-        }
+        const m = nativeSeen(runId);
         if ((m.get(frame.eventId) ?? -1) >= frame.seq) return;
         m.set(frame.eventId, frame.seq);
         sendFrame("native", { threadId, runId, frame });
@@ -901,14 +899,13 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
       // was withheld but the live step/delta/native listeners stayed bound, leaking
       // frames cross-thread/cross-org (Codex review finding 1). Org-scoped read fails
       // closed; a run outside this thread is ignored without ever attaching.
-      let nativeSince = (_runId: string): number => -1; // set once the cursors resolve (step 3)
       const projectRun = async (runId: string): Promise<void> => {
         const run = await getRunWithSteps(orgId, runId);
         if (!run || run.thread_id !== threadId) return;
         attachRun(runId);
         seedStepDedupe(runId, run.steps);
         sendFrame("run", { threadId, run });
-        for (const frame of await getNativeFramesSince(runId, nativeSince(runId))) {
+        for (const frame of await getNativeFramesSince(runId, -1)) {
           if (closed) return;
           sendNative(runId, frame);
         }
@@ -932,11 +929,13 @@ runsRoutes.get("/:rootRunId/thread-events", async (c) => {
 
         // 3. Runs whose canonicalization is COMPLETE (H2), read BEFORE the canonical rows so a
         //    run finalized between the reads announces completion via the live loop. A sealed
-        //    run's native replay starts after the browser's cursor; the rest replay every frame.
+        //    run the browser proved it holds (thread-resume.ts) counts as sent up to its cursor
+        //    and replays only what is above it; every other run replays every frame.
         const completes = await completeCanonicalRuns(threadId);
-        nativeSince = await resolveNativeResume(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
+        const native = await resolveNativeResume(requested.native, new Map(completes.map((c) => [c.runId, c.sourceFrameMax])), { epoch: requested.epoch, reset: resume.reset });
         for (const run of thread) {
-          for (const frame of await getNativeFramesSince(run.id, nativeSince(run.id))) {
+          for (const held of native.retained(run.id)) nativeSeen(run.id).set(held.eventId, held.seq);
+          for (const frame of await native.replay(run.id)) {
             if (closed) return;
             sendNative(run.id, frame);
           }

@@ -3,6 +3,7 @@
 // is covered by thread-connection.test.ts + the browser proof; these lock the two
 // pure decisions the hook is built on.
 
+import { nativeHoldDigest } from "@useagent/agent-client";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { NATIVE_SCHEMA_VERSION } from "./native-events";
 import { createThreadStore } from "./thread-store";
@@ -148,9 +149,10 @@ describe("resume cursor (what the store already holds)", () => {
     expect(threadEventsUrl("A", resumeCursor(store.getSnapshot()), "boot-1")).toBe("/api/runs/A/thread-events");
     store.markCanonicalComplete("A");
     const cursor = resumeCursor(store.getSnapshot());
-    // The hold's fingerprint travels with the cursor: three frames, seqs 0 + 1 + 2.
-    expect(cursor.nativeAfter).toEqual(new Map([["A", { seq: 2, count: 3, seqTotal: 3 }]]));
-    expect(threadEventsUrl("A", cursor, "boot-1")).toBe("/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2%3A3%3A3");
+    // The digest of the held (eventId, seq) pairs travels with the cursor.
+    const digest = nativeHoldDigest([0, 1, 2].map((seq) => ({ eventId: `A-n${seq}`, seq })));
+    expect(cursor.nativeAfter).toEqual(new Map([["A", { seq: 2, digest }]]));
+    expect(threadEventsUrl("A", cursor, "boot-1")).toBe(`/api/runs/A/thread-events?epoch=boot-1&nativeAfter=A%3A2%3A${digest}`);
     // Without the epoch that minted the store's rows, no cursor of either lane is sent.
     expect(threadEventsUrl("A", cursor, null)).toBe("/api/runs/A/thread-events");
   });

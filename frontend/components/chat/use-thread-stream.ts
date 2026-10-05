@@ -7,6 +7,7 @@ import {
   type DecodedFrame,
   decodeFrame,
   type EventSourceLike,
+  nativeHoldDigest,
   THREAD_FRAME_TYPES,
   type ThreadConnection,
   RUN_STATUSES,
@@ -100,12 +101,11 @@ export function resetRetainedThreadStoresForTest(): void {
   retained.clear();
 }
 
-/** What the store holds of one sealed run's native lane: the newest seq, and as the
- *  hold's fingerprint the number of frames and the total of their seqs. */
+/** What the store holds of one sealed run's native lane: the newest seq, and the digest
+ *  of the (eventId, seq) pairs it holds (`nativeHoldDigest`, shared with the server). */
 export interface NativeHold {
   readonly seq: number;
-  readonly count: number;
-  readonly seqTotal: number;
+  readonly digest: string;
 }
 
 export interface ResumeCursor {
@@ -118,9 +118,9 @@ export interface ResumeCursor {
 /** What the store already holds, as the server's resume cursors: the newest canonical
  *  delivery seq across the thread with the event id at that row, so the server can prove
  *  it still holds the same history, and per SEALED run the newest native seq with the
- *  fingerprint of the frames held, which the server checks against the seal's watermark
- *  and its own rows below the cursor before it skips them. A live run's native frames
- *  always replay from zero (their seq is not a commit order). */
+ *  digest of the frames held, which the server checks against the seal's watermark and
+ *  its own rows below the cursor before it skips them. A live run's native frames always
+ *  replay from zero (their seq is not a commit order). */
 export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
   let canonicalAfter = 0;
   let canonicalId: string | null = null;
@@ -133,11 +133,7 @@ export function resumeCursor(snapshot: ThreadSnapshot): ResumeCursor {
       }
     }
     if (view.canonicalComplete && view.native.nativeCursor >= 0) {
-      nativeAfter.set(runId, {
-        seq: view.native.nativeCursor,
-        count: view.native.nativeFrames.length,
-        seqTotal: view.native.nativeFrames.reduce((total, frame) => total + frame.seq, 0),
-      });
+      nativeAfter.set(runId, { seq: view.native.nativeCursor, digest: nativeHoldDigest(view.native.nativeFrames) });
     }
   }
   return { canonicalAfter, canonicalId, nativeAfter };
@@ -157,9 +153,7 @@ export function threadEventsUrl(rootRunId: string, cursor: ResumeCursor, epoch: 
       params.set("canonicalAfter", String(cursor.canonicalAfter));
       params.set("canonicalId", cursor.canonicalId as string);
     }
-    for (const [runId, hold] of cursor.nativeAfter) {
-      params.append("nativeAfter", `${runId}:${hold.seq}:${hold.count}:${hold.seqTotal}`);
-    }
+    for (const [runId, hold] of cursor.nativeAfter) params.append("nativeAfter", `${runId}:${hold.seq}:${hold.digest}`);
   }
   const query = params.toString();
   return `/api/runs/${rootRunId}/thread-events${query ? `?${query}` : ""}`;

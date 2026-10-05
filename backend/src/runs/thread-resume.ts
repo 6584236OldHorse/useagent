@@ -16,11 +16,13 @@
 // exception: its canonicalization completed against a stable watermark (the highest
 // native seq the seal counted). The watermark alone is not proof that a browser holds
 // every frame below its cursor (the seal drains only this process's writes; the other
-// writer can commit a lower seq after it), so the browser also reports a fingerprint of
-// its hold, and the run resumes after the cursor only when this database's rows at or
-// below the cursor carry the same fingerprint.
+// writer can commit a lower seq after it), so the browser also reports a digest of the
+// (eventId, seq) pairs it holds, and the run resumes after the cursor only when this
+// database's rows at or below the cursor are exactly that set, checked in the same
+// snapshot that reads the rows above it.
+import type { NativeHoldEntry } from "@useagent/agent-client";
 import { canonicalEventIdAt } from "./canonical-events";
-import { nativeFingerprint } from "./native-events";
+import { getNativeFramesSince, type NativeFrame, type NativeHold, resumeNativeLanes } from "./native-events";
 
 /** Minted once per backend process; a cursor from another epoch is never honoured. */
 export const STREAM_EPOCH = crypto.randomUUID();
@@ -33,14 +35,6 @@ export interface ResumeCursor {
   readonly epoch: string | null;
   /** Per run the client saw sealed, what it holds of the run's native lane. */
   readonly native: ReadonlyMap<string, NativeHold>;
-}
-
-/** What a browser holds of one run's native lane: the newest seq, and as the hold's
- *  fingerprint the number of frames and the total of their seqs. */
-export interface NativeHold {
-  readonly seq: number;
-  readonly count: number;
-  readonly seqTotal: number;
 }
 
 export interface ResolvedResume {
@@ -80,41 +74,56 @@ export function resumeFramePayload(threadId: string, resolved: ResolvedResume) {
   return { threadId, resume: { canonicalAfter: resolved.canonicalAfter, reset: resolved.reset, epoch: STREAM_EPOCH } };
 }
 
-/** Per-run native cursors, `nativeAfter=<runId>:<seq>:<count>:<seqTotal>` repeated, for
- *  the runs whose canonical lane the browser saw complete. A malformed entry reads as
- *  absent; at most 200 are read. */
+/** Per-run native cursors, `nativeAfter=<runId>:<seq>:<digest>` repeated, for the runs
+ *  whose canonical lane the browser saw complete: the newest seq it holds and the digest
+ *  of the (eventId, seq) pairs it holds (`nativeHoldDigest` in the client library). A
+ *  malformed entry reads as absent; at most 200 are read. */
 export function parseNativeCursors(values: readonly string[] | undefined): ReadonlyMap<string, NativeHold> {
   const cursors = new Map<string, NativeHold>();
   for (const value of (values ?? []).slice(0, 200)) {
-    const match = /^([A-Za-z0-9._-]{1,64}):(\d{1,15}):(\d{1,9}):(\d{1,18})$/.exec(value);
-    if (match) cursors.set(match[1]!, { seq: Number(match[2]), count: Number(match[3]), seqTotal: Number(match[4]) });
+    const match = /^([A-Za-z0-9._-]{1,64}):(\d{1,15}):([0-9a-f]{16})$/.exec(value);
+    if (match) cursors.set(match[1]!, { seq: Number(match[2]), digest: match[3]! });
   }
   return cursors;
 }
 
-/** The native seq each run's replay starts after (-1: from the start). A run's cursor is
- *  honoured only on a connection this process minted whose canonical cursor was not
- *  refused (a reset drops the browser's retained store, native frames included), only
- *  when the run is sealed here with a watermark the cursor has reached (a browser cut
- *  off mid-replay holds less than the seal counted), and only when the browser's hold
- *  fingerprint equals this database's rows at or below the cursor: a frame the other
- *  writer committed below the cursor after the seal, or a re-sequenced frame, sends the
- *  run back to a full replay. Frames written after the seal with a higher seq (artifact
- *  receipts, follow-ups) still arrive. Only this thread's sealed runs are ever looked up. */
+/** What one connection replays of each run's native lane. */
+export interface NativeReplay {
+  /** The (eventId, seq) pairs the browser proved it holds for a resumed run (none otherwise),
+   *  for the connection to treat as already sent. */
+  retained(runId: string): readonly NativeHoldEntry[];
+  /** The frames to send: those above an honoured cursor, else the run's whole lane. */
+  replay(runId: string): Promise<readonly NativeFrame[]>;
+}
+
+/** A run's cursor is honoured only on a connection this process minted whose canonical
+ *  cursor was not refused (a reset drops the browser's retained store, native frames
+ *  included), only when the run is sealed here with a watermark the cursor has reached (a
+ *  browser cut off mid-replay holds less than the seal counted), and only when the digest
+ *  of this database's rows at or below the cursor equals the browser's hold digest, read in
+ *  the same snapshot as the rows above the cursor: a frame the other writer committed below
+ *  the cursor after the hold was taken, or a revision that moved a frame, sends the run
+ *  back to a full replay. Frames above the cursor (artifact receipts, follow-ups written
+ *  after the seal) still arrive. Only this thread's sealed runs are ever looked up. */
 export async function resolveNativeResume(
   cursors: ReadonlyMap<string, NativeHold>,
   sealedWatermarks: ReadonlyMap<string, number>,
   connection: { readonly epoch: string | null; readonly reset: boolean },
-  fingerprint: typeof nativeFingerprint = nativeFingerprint,
-): Promise<(runId: string) => number> {
-  const starts = new Map<string, number>();
+  resume: typeof resumeNativeLanes = resumeNativeLanes,
+): Promise<NativeReplay> {
+  const candidates = new Map<string, NativeHold>();
   if (connection.epoch === STREAM_EPOCH && !connection.reset) {
     for (const [runId, hold] of cursors) {
       const watermark = sealedWatermarks.get(runId);
-      if (watermark === undefined || hold.seq < watermark) continue;
-      const stored = await fingerprint(runId, hold.seq);
-      if (stored.count === hold.count && stored.seqTotal === hold.seqTotal) starts.set(runId, hold.seq);
+      if (watermark !== undefined && hold.seq >= watermark) candidates.set(runId, hold);
     }
   }
-  return (runId) => starts.get(runId) ?? -1;
+  const resumed = await resume(candidates);
+  return {
+    retained: (runId) => resumed.get(runId)?.retained ?? [],
+    replay: (runId) => {
+      const lane = resumed.get(runId);
+      return lane ? Promise.resolve(lane.frames) : getNativeFramesSince(runId, -1);
+    },
+  };
 }

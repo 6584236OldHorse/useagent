@@ -55,6 +55,32 @@ export interface ResumeFrame {
   readonly epoch: string | null;
 }
 
+/** One native frame a client retained, as the pair the hold digest is built from. */
+export interface NativeHoldEntry {
+  readonly eventId: string;
+  readonly seq: number;
+}
+
+/** A digest of what a client holds of one run's native lane: the set of (eventId, seq)
+ *  pairs it retained, order-independent, so the server can tell in one comparison whether
+ *  its own rows at or below the client's cursor are exactly that set. A frame committed
+ *  below the cursor after the hold was taken changes it (a new id), and so does a revision
+ *  that moved a frame to another seq. Two FNV-1a 32-bit passes over the sorted `eventId:seq`
+ *  lines, 16 hex characters. Not a cryptographic hash: an accidental collision is a 2^-64
+ *  event whose only consequence is one client missing a frame until its next connection. */
+export function nativeHoldDigest(frames: Iterable<NativeHoldEntry>): string {
+  const text = Array.from(frames, (frame) => `${frame.eventId}:${frame.seq}`).sort().join("\n");
+  const fnv1a = (basis: number): string => {
+    let hash = basis;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  };
+  return fnv1a(0x811c9dc5) + fnv1a(0x050c5d1f);
+}
+
 /** A decoded thread frame. `native`/`run`/`step`/`delta`/`snapshot` carry raw product
  *  payloads the useAgent hook still projects natively; the client library validates +
  *  owns only the canonical lane. `unknown` is a forward-compatible catch-all: an

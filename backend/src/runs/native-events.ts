@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
-import { and, asc, count, eq, gt, lte, sum } from "drizzle-orm";
+import { and, asc, count, eq, gt, lte } from "drizzle-orm";
 import { NATIVE_SCHEMA_VERSION } from "@useagent/agent-client/wire";
+import { type NativeHoldEntry, nativeHoldDigest } from "@useagent/agent-client";
 import type { NativeFrame } from "@useagent/agent-client/wire";
 import { db } from "../db/client";
 import { providerEvents } from "../db/schema";
@@ -126,10 +127,42 @@ export async function countNativeFrames(runId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-/** A run's native frames at or below a seq, as the two numbers a browser reports about
- *  what it retained: how many frames, and the total of their seqs. */
-export async function nativeFingerprint(runId: string, upToSeq: number): Promise<{ count: number; seqTotal: number }> {
-  const [row] = await db.select({ count: count(), seqTotal: sum(providerEvents.seq) }).from(providerEvents)
-    .where(and(eq(providerEvents.runId, runId), lte(providerEvents.seq, upToSeq)));
-  return { count: row?.count ?? 0, seqTotal: Number(row?.seqTotal ?? 0) };
+/** What a browser reports it holds of one sealed run's native lane: its newest seq and the
+ *  digest of the (eventId, seq) pairs it retained. */
+export interface NativeHold {
+  readonly seq: number;
+  readonly digest: string;
+}
+
+/** A resumed run: the pairs the browser proved it holds, and the frames above its cursor. */
+export interface ResumedNativeLane {
+  readonly retained: readonly NativeHoldEntry[];
+  readonly frames: readonly NativeFrame[];
+}
+
+/** Resume sealed runs' native lanes after the browser's cursors, in ONE read-only
+ *  repeatable-read transaction so the check and the read see the same rows. A run is
+ *  honoured when the digest of this database's (id, seq) pairs at or below its cursor equals
+ *  the browser's hold digest; its value is then those pairs (so the connection can treat
+ *  them as sent) and the frames above the cursor. A run whose hold differs (a frame
+ *  committed below the cursor after the hold was taken, a revision that moved a frame) is
+ *  absent from the result and replays from the start. */
+export async function resumeNativeLanes(
+  holds: ReadonlyMap<string, NativeHold>,
+): Promise<ReadonlyMap<string, ResumedNativeLane>> {
+  const resumed = new Map<string, ResumedNativeLane>();
+  if (holds.size === 0) return resumed;
+  await db.transaction(async (tx) => {
+    for (const [runId, hold] of holds) {
+      const rows = await tx.select({ id: providerEvents.id, seq: providerEvents.seq }).from(providerEvents)
+        .where(and(eq(providerEvents.runId, runId), lte(providerEvents.seq, hold.seq)));
+      const retained = rows.map((row) => ({ eventId: row.id, seq: row.seq }));
+      if (nativeHoldDigest(retained) !== hold.digest) continue;
+      const above = await tx.select().from(providerEvents)
+        .where(and(eq(providerEvents.runId, runId), gt(providerEvents.seq, hold.seq)))
+        .orderBy(asc(providerEvents.seq));
+      resumed.set(runId, { retained, frames: above.map(rowToNativeFrame) });
+    }
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+  return resumed;
 }
