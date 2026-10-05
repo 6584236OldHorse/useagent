@@ -232,21 +232,18 @@ routes.post("/api/auth/organization/invite-member", async (c) => {
     const manager = await managerFor(request, body);
     if ("status" in manager) return c.json({ message: manager.message }, manager.status);
     if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
-    // One creation at a time per organisation and address: the library checks
-    // for an existing invitation and then inserts, and two managers inviting the
-    // same person at once would otherwise both get a live link.
-    return withOrgLock(invitationKey(manager.organizationId, body.email), () =>
-      auth.handler(pinned(request, body, manager.organizationId)),
-    );
+    // One invitation change at a time per organisation, the same lock acceptance,
+    // cancellation and rejection take: the library checks for a member and a
+    // pending invitation and then inserts, and a creation racing an acceptance
+    // or another creation would otherwise hand out a second link.
+    return withOrgLock(manager.organizationId, () => auth.handler(pinned(request, body, manager.organizationId)));
   }
   const manager = await managerFor(request, body);
   if ("status" in manager) return c.json({ message: manager.message }, manager.status);
   const { session, organizationId, roles: mine } = manager;
   if (!(await canSignIn(body.email))) return c.json({ message: NO_WAY_IN }, 400);
-  return withOrgLock(invitationKey(organizationId, body.email), () => resend(c, session, organizationId, mine, body.email as string));
+  return withOrgLock(organizationId, () => resend(c, session, organizationId, mine, body.email as string));
 });
-
-const invitationKey = (organizationId: string, email: string) => `${organizationId}:${email.trim().toLowerCase()}`;
 
 async function resend(
   c: Context<AppEnv>,
@@ -329,20 +326,22 @@ routes.post("/api/auth/organization/cancel-invitation", async (c) => {
   });
 });
 
-/** Acceptance runs under the organisation's lock too, so it cannot interleave
- *  with a cancellation or an owner change. */
-routes.post("/api/auth/organization/accept-invitation", async (c) => {
-  const request = c.req.raw;
-  const body = await jsonBody(request);
-  if (!body || typeof body.invitationId !== "string") return auth.handler(request);
-  const [target] = await db
-    .select({ organizationId: invitation.organizationId })
-    .from(invitation)
-    .where(eq(invitation.id, body.invitationId))
-    .limit(1);
-  if (!target) return auth.handler(request);
-  return withOrgLock(target.organizationId, () => auth.handler(request));
-});
+/** Acceptance and rejection run under the organisation's lock too, so neither
+ *  can interleave with a cancellation, a creation or an owner change. */
+for (const path of ["/api/auth/organization/accept-invitation", "/api/auth/organization/reject-invitation"]) {
+  routes.post(path, async (c) => {
+    const request = c.req.raw;
+    const body = await jsonBody(request);
+    if (!body || typeof body.invitationId !== "string") return auth.handler(request);
+    const [target] = await db
+      .select({ organizationId: invitation.organizationId })
+      .from(invitation)
+      .where(eq(invitation.id, body.invitationId))
+      .limit(1);
+    if (!target) return auth.handler(request);
+    return withOrgLock(target.organizationId, () => auth.handler(request));
+  });
+}
 /** The invitation a link points at, for the person it was sent to. better-auth's
  *  own preview refuses once the inviter has left the organisation, although the
  *  invitation itself still accepts; this one checks only what matters: a

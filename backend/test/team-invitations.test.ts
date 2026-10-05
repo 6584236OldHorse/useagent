@@ -551,6 +551,9 @@ test("an invitation cannot be cancelled once accepted, and two managers inviting
   expect(accepted.status).toBe(200);
   const late = await json<{ message?: string }>("/api/auth/organization/cancel-invitation", { method: "POST", cookies: org.cookies, body: { invitationId: invite.body.id } });
   expect(late.status).toBe(409);
+  // Nor can the recipient reject what they already accepted.
+  const rejected = await json("/api/auth/organization/reject-invitation", { method: "POST", cookies: guest.cookies, body: { invitationId: invite.body.id } });
+  expect(rejected.status).toBe(400);
   const [row] = await db.select({ status: invitation.status }).from(invitation).where(eq(invitation.id, invite.body.id));
   expect(row!.status).toBe("accepted");
   const [guestUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, guest.email));
