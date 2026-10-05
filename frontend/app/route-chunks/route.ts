@@ -33,8 +33,10 @@ export async function GET(request: Request): Promise<Response> {
   let result: { buildId: string; chunks: string[] };
   try {
     result = await cached;
-  } catch {
-    // The dev server has no complete manifest set; nothing to warm there.
+  } catch (error: unknown) {
+    // The dev server has no complete manifest set; nothing to warm there. In
+    // production this means the build directory moved: say so once per process.
+    if (process.env.NODE_ENV === "production") console.warn("route-chunks: no build manifests found", error);
     return Response.json({ buildId: "development", chunks: [] }, { headers: { "cache-control": "no-store" } });
   }
   const etag = `"${result.buildId}"`;
