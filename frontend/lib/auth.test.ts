@@ -69,6 +69,7 @@ test("provider config uses the dedicated route and fails closed", async () => {
     google: true,
     emailPassword: false,
     allowDevOrg: false,
+    invitationEmail: null, // the server did not say
   });
   expect(seen).toEqual(["/api/auth/provider-config"]);
 
@@ -79,6 +80,7 @@ test("provider config uses the dedicated route and fails closed", async () => {
     google: false,
     emailPassword: false,
     allowDevOrg: false,
+    invitationEmail: null,
   });
 });
 

@@ -43,6 +43,7 @@ import { terminalRoutes } from "./runs/terminal";
 import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
 import { runnerBridgeRoutes } from "./runners/bridge";
 import { runnerRoutes } from "./runners/routes";
+import { teamRoutes } from "./team/routes";
 import { runnerConfigBlock } from "./runners/policy";
 import { runnerRegistry } from "./runners/registry";
 import { schedulesRoutes } from "./schedules/routes";
@@ -333,6 +334,7 @@ app.route("/api/internal/codex-relay", codexSubscriptionRelayRoutes);
 app.route("/api/internal/runners", runnerLinkRoutes);
 app.route("/api/internal/runners", runnerBridgeRoutes);
 app.route("/api/runners", runnerRoutes);
+app.route("/api/team", teamRoutes);
 // The sandbox image, served to runners under the standard registry API.
 app.route("/", runnerRegistryProxyRoutes);
 app.route("/api/threads", threadRelationshipRoutes);

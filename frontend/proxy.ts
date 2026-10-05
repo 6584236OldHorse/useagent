@@ -33,6 +33,12 @@ export function proxy(request: NextRequest): NextResponse {
   const hasSession = SESSION_COOKIES.some((name) => request.cookies.has(name));
   const preview = process.env.NODE_ENV !== "production" && process.env.USEAGENT_PREVIEW_OPEN === "1";
   if (!preview && !hasSession && !isPublicPage(request.nextUrl.pathname)) {
+    // An invitation link must survive the sign-in it triggers.
+    if (request.nextUrl.pathname.startsWith("/accept-invitation/")) {
+      const login = new URL("/login", request.url);
+      login.searchParams.set("redirect_url", request.nextUrl.pathname);
+      return NextResponse.redirect(login);
+    }
     return NextResponse.redirect(new URL("/login", request.url));
   }
 

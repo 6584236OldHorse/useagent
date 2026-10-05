@@ -98,6 +98,14 @@ describe("authentication proxy", () => {
     expect(response.headers.get("location")).toBe("https://useagent.example.com/login");
   });
 
+  test("sends an anonymous invitation link through sign-in and back", () => {
+    const response = proxy(new NextRequest("https://useagent.example.com/accept-invitation/inv1"));
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      "https://useagent.example.com/login?redirect_url=%2Faccept-invitation%2Finv1",
+    );
+  });
+
   test("keeps pages on their canonical no-slash path", () => {
     const response = proxy(
       new NextRequest("https://useagent.example.com/agent/new/?skill=fix", {
