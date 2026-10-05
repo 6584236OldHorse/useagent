@@ -6,11 +6,12 @@ describe("registry session", () => {
   test("mints a token scoped to the three release repositories only", async () => {
     let seen: URL | null = null;
     let auth = "";
-    const token = await mintPullToken("useagenthq", { user: "x", token: "gh-secret" }, (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const stub = async (input: string | URL | Request, init?: RequestInit) => {
       seen = new URL(String(input));
       auth = String((init?.headers as Record<string, string>).authorization);
       return new Response(JSON.stringify({ token: "pull-token" }), { status: 200 });
-    }) as typeof fetch);
+    };
+    const token = await mintPullToken("useagenthq", { user: "x", token: "gh-secret" }, stub as unknown as typeof fetch);
     expect(token).toBe("pull-token");
     expect(seen!.origin).toBe("https://ghcr.io");
     expect(seen!.searchParams.getAll("scope")).toEqual([
@@ -23,7 +24,7 @@ describe("registry session", () => {
 
   test("a refused exchange is an error, never an empty credential", async () => {
     await expect(
-      mintPullToken("useagenthq", { user: "x", token: "bad" }, (async () => new Response("", { status: 401 })) as typeof fetch),
+      mintPullToken("useagenthq", { user: "x", token: "bad" }, (async () => new Response("", { status: 401 })) as unknown as typeof fetch),
     ).rejects.toThrow("401");
   });
 
