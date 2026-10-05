@@ -483,7 +483,7 @@ function computeRows(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Chips (removable, above the composer) - mirrors the RunUploadChips row.
+// Chips (removable, above the composer).
 // ---------------------------------------------------------------------------
 
 function chipIcon(kind: MentionKind) {

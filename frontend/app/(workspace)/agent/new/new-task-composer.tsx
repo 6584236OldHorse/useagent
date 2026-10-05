@@ -1,14 +1,7 @@
 "use client";
 
 import { useMachineRunsWork } from "@/components/runners/local-login-availability";
-import {
-  RiAddLine,
-  RiArrowUpLine,
-  RiBookMarkedLine,
-  RiCloseLine,
-  RiFlashlightLine,
-  RiRefreshLine,
-} from "@remixicon/react";
+import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine, RiRefreshLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import {
   useCallback,
@@ -32,7 +25,7 @@ import {
   useEnabledEngineConfig,
 } from "@/components/chat/engine-picker";
 import { engineMarkFor, vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
-import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
+import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
   filterCommands,
@@ -52,6 +45,7 @@ import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
+import { ComposerAddButton, ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { backendFetch } from "@/lib/backend-fetch";
 import {
@@ -519,7 +513,8 @@ export function NewTaskComposer({
               event.target.value = "";
             }}
           />
-          <div className="relative" ref={composerRef}>
+          {/* Files dropped on the card or pasted into the field become attachments. */}
+          <div className="relative" ref={composerRef} {...attachmentIntake(runUploads.addFiles)}>
             {cmdActive && (
               <div className="absolute left-0 top-full z-30 mt-2 w-full">
                 <SlashCommandPopover
@@ -533,14 +528,11 @@ export function NewTaskComposer({
             )}
             {/* The "@" mention popover carries its own placement (below the composer). */}
             {mentions.popover}
-            {runUploads.uploads.length > 0 ? (
-              <div className="px-3 pt-3">
-                <RunUploadChips
-                  uploads={runUploads.uploads}
-                  onRemove={(upload) => void runUploads.remove(upload)}
-                />
-              </div>
-            ) : null}
+            <ComposerAttachmentRow
+              uploads={runUploads.uploads}
+              onRemove={(upload) => void runUploads.remove(upload)}
+              className="px-3 pt-3"
+            />
             {/* Structured "@" mentions render as removable chips above the input. */}
             {mentions.mentions.length > 0 ? <div className="px-3 pt-3">{mentions.chips}</div> : null}
             <PromptInputTextarea
@@ -561,23 +553,11 @@ export function NewTaskComposer({
                 repo chips live in the sub-bar below the card. */}
             <div className="flex items-center gap-2 px-3 pb-3 pt-1">
               <div className="relative shrink-0">
-                <button
-                  type="button"
+                <ComposerAddButton
                   aria-label="Add context"
-                  aria-haspopup="menu"
-                  aria-expanded={addMenuOpen}
-                  onClick={() => setAddMenuOpen((o) => !o)}
-                  className={cx(
-                    "grid size-9 cursor-pointer place-items-center rounded-full bg-background-secondary-default outline-none transition-colors hover:bg-background-secondary-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-focus-ring",
-                    addMenuOpen ? "text-text-primary" : "text-text-secondary",
-                  )}
-                >
-                  {addMenuOpen ? (
-                    <RiCloseLine className="size-[18px]" aria-hidden />
-                  ) : (
-                    <RiAddLine className="size-[18px]" aria-hidden />
-                  )}
-                </button>
+                  open={addMenuOpen}
+                  onToggle={() => setAddMenuOpen((o) => !o)}
+                />
 
                 {/* Floating add-context popover (upload, Create seeds, GitHub
                     status). It floats above the "+" instead of an attached shelf;
@@ -616,6 +596,8 @@ export function NewTaskComposer({
                 ) : null}
               </div>
 
+              {/* The footer slot between the add button and the engine chip is
+                  where the permission chip lands next. */}
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes

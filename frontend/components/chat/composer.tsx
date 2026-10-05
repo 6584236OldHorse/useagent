@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  RiAddLine,
   RiArrowDownSLine,
   RiArrowUpLine,
   RiCornerDownLeftLine,
@@ -20,7 +19,7 @@ import { ComposerAlert } from "@/components/chat/composer-alert";
 import { mentionedBotIds, unlinkedBotTokens } from "@/components/chat/composer-mentions";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
 import { ModelPicker } from "@/components/chat/engine-picker";
-import { RunUploadChips, useRunUploads } from "@/components/chat/run-uploads";
+import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
   commandOptionId,
@@ -36,6 +35,7 @@ import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { engineDisplayLabel, ProviderStatusBanner } from "@/components/session-ui/provider-status-banner";
 import { ThreadErrorBanner } from "@/components/session-ui/thread-error-banner";
+import { ComposerAddButton, ComposerAttachmentRow } from "@/components/pro/composer-attachments";
 import { composerPlaceholder, getComposerAction } from "@/components/chat/composer-model";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { cx as cn } from "@/utils/cx";
@@ -436,7 +436,12 @@ export function Composer({
     // The composer THEME-FOLLOWS: its card uses bg-background-primary-default (white in light mode,
     // #20201f in dark) so it reads as the reference's clean white pill in light and
     // a native dark pill in dark - never a white island clashing with the dark page.
-    <div ref={rootRef} className={cn("relative w-full", className)}>
+    <div
+      ref={rootRef}
+      className={cn("relative w-full", className)}
+      // Files dropped on the card or pasted into the field become attachments.
+      {...(enableUploads ? attachmentIntake(runUploads.addFiles) : {})}
+    >
       {showAgentPopover && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-full">
           <ChooseAgentPopover query={slashActive ? value : ""} onSelect={pickAgent} />
@@ -559,9 +564,10 @@ export function Composer({
                 event.target.value = "";
               }}
             />
-            <RunUploadChips
+            <ComposerAttachmentRow
               uploads={runUploads.uploads}
               onRemove={(upload) => void runUploads.remove(upload)}
+              className="px-3 pt-3"
             />
           </>
         ) : null}
@@ -590,27 +596,12 @@ export function Composer({
               travels + -> textarea -> send, matching the visual left-to-right
               order in the compact grid (col-start-1 pins it to the left cell). */}
           {enableUploads ? (
-            <button
-              type="button"
+            <ComposerAddButton
               aria-label="Add context"
-              aria-haspopup="menu"
-              aria-expanded={addMenuOpen}
-              onClick={() => setAddMenuOpen((o) => !o)}
-              className={cn(
-                "col-start-1 row-start-1 flex size-9 items-center justify-center rounded-full border transition-colors @max-[26rem]:row-start-2",
-                addMenuOpen
-                  ? "border-border-button-default bg-background-secondary-default text-text-primary"
-                  : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
-              )}
-            >
-              <RiAddLine
-                className={cn(
-                  "size-5 transition-transform duration-200",
-                  addMenuOpen && "rotate-45",
-                )}
-                aria-hidden
-              />
-            </button>
+              open={addMenuOpen}
+              onToggle={() => setAddMenuOpen((o) => !o)}
+              className="col-start-1 row-start-1 @max-[26rem]:row-start-2"
+            />
           ) : null}
           <div
             className={cn(
