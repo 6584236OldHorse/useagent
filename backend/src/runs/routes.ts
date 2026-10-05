@@ -2,12 +2,11 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
 import {
   ENGINE_IDS,
-  MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
-import { isMemoryScope } from "../memory/scope";
+import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
@@ -83,7 +82,7 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, type RunCreateBody } from "./run-create-policy";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
@@ -218,23 +217,16 @@ export async function handleRunCreate(
   }
 
   // Memory scope: an explicit choice from the authenticated user (validated) wins;
-  // otherwise a reply INHERITS its parent's scope and a root run defaults to "org".
-  // ONLY the scope enum is read from the body — never any identity (org/user is
-  // always server-resolved). An unknown value is a client error, not a fallback.
-  let memoryScope: MemoryScope;
-  let requestedMemoryScope: MemoryScope | null = null;
-  if (body.memory_scope !== undefined && body.memory_scope !== null) {
-    if (!isMemoryScope(body.memory_scope)) {
-      return c.json(
-        { error: `memory_scope must be one of: ${MEMORY_SCOPES.join(", ")}` },
-        400,
-      );
-    }
-    requestedMemoryScope = body.memory_scope;
-    memoryScope = requestedMemoryScope;
-  } else {
-    memoryScope = parentScope ?? "org";
-  }
+  // otherwise a reply INHERITS its parent's and a root run defaults to "org".
+  // Permission mode: only an explicit choice is taken here; an omitted mode is
+  // resolved at the insert, under the thread lock, so an older parent or a read
+  // made before a narrowing reply cannot widen the thread.
+  const scope = runMemoryScope(body.memory_scope, parentScope);
+  if (!scope.ok) return c.json({ error: scope.error }, 400);
+  const { memoryScope, requestedMemoryScope } = scope;
+  const permission = runPermissionMode(body.permission_mode);
+  if (!permission.ok) return c.json({ error: permission.error }, 400);
+  const { permissionMode } = permission;
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -306,6 +298,7 @@ export async function handleRunCreate(
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
+    permissionMode: permissionMode ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -441,7 +434,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId
@@ -453,6 +446,7 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
+    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
     if (error instanceof UploadClaimError) {
       return c.json({ error: "upload_unavailable" }, 409);
     }

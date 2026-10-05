@@ -18,6 +18,7 @@ import {
 import type { StoredCanonicalEvent } from "./canonical-timeline";
 import type { NativeFrame } from "./native-events";
 import { createNativeStore, type NativeSnapshot, type NativeStore } from "./native-store";
+import { compareThreadOrder } from "./thread-order";
 import { type ApiRun, type ApiStep, isLiveStatus, type RunStatus } from "./types";
 
 /** One run's view within the thread: its metadata + live/settled projection. */
@@ -230,22 +231,17 @@ export function createThreadStore(options: ThreadStoreOptions = {}): ThreadStore
     prev.duration_ms !== next.duration_ms ||
     (prev.uploads?.length ?? 0) !== (next.uploads?.length ?? 0);
 
-  /** Insert a NEW run id keeping `order` in canonical thread order (created_at,
-   *  then id - the backend's ordering; ISO timestamps compare lexicographically).
+  /** Insert a NEW run id keeping `order` in canonical thread order (the run's
+   *  place in its thread, then created_at, then id - see compareThreadOrder).
    *  Arrival order is no longer chronological: windowed initial loading seeds the
    *  root + tail first and merges older islands later, and `snapshot.runs` order
-   *  is load-bearing (the newest run anchors replies). Appends stay O(1). */
+   *  is load-bearing (the newest run anchors replies and the composer's mode).
+   *  Appends stay O(1). */
   const insertOrdered = (run: ApiRun): void => {
     let at = order.length;
     while (at > 0) {
       const prior = runs.get(order[at - 1]);
-      if (
-        !prior ||
-        prior.created_at < run.created_at ||
-        (prior.created_at === run.created_at && prior.id <= run.id)
-      ) {
-        break;
-      }
+      if (!prior || compareThreadOrder(prior, run) <= 0) break;
       at--;
     }
     order.splice(at, 0, run.id);

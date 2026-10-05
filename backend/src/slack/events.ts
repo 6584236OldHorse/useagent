@@ -699,6 +699,9 @@ export async function handleSlackEvent(
         // Staged inbound attachments — claimed atomically with run acceptance.
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         memoryScope,
+        // Slack has no permission chooser: a reply keeps its thread's current mode,
+        // read inside the acceptance transaction (insertCommandWithRun), and a new
+        // thread takes the operator's configured posture (createRun's default).
         // Slack turns don't pin a skill yet.
         skillId: null,
         skillVersion: null,

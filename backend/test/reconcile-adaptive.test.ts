@@ -4,6 +4,10 @@ import { db } from "../src/db/client";
 import { providerEvents, reconcileQueue } from "../src/db/schema";
 import type { EngineId } from "../src/db/schema";
 import type { HarnessInterimEvent } from "../src/engines/types";
+import type { PermissionMode } from "@useagent/agent-client/wire";
+import { approvalEventId, type RuntimeApprovalReplyDependencies } from "../src/engines/runtime-approval";
+import type { RuntimeThreadSnapshot } from "../src/engines/runtime-orchestration";
+import type { SandboxHandle } from "../src/sandboxes/provider";
 import { acceptRunCommand } from "../src/commands";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../src/commands/cancel";
 import {
@@ -17,7 +21,7 @@ import {
 import { bumpReconcile, claimDueReconciles, enqueueReconcile, getReconcile, reconcileClaimHeldForUpdate } from "../src/runs/reconcile-queue";
 import { finalizeRun } from "../src/runs/finalize";
 import { CaptureFenceError, recordProviderEvent } from "../src/runs/provider-events";
-import { getRun, insertStep, setRunProviderSession, setRunSandbox, setRunStatus, STALE_SUMMARY } from "../src/runs/repo";
+import { getRun, getStepsApi, insertStep, setRunProviderSession, setRunSandbox, setRunStatus, STALE_SUMMARY } from "../src/runs/repo";
 import { uid } from "./helpers";
 import { providerSessionBinding } from "@useagent/agent-harness/canonical";
 import { providerProtocolIdentity } from "@useagent/agent-harness/control";
@@ -36,6 +40,7 @@ const completedProbe: ReconcileProbe = async () => ({ status: "completed", summa
 /** Seed a running opencode run with a dispatched command + a step watermark. */
 async function seedRunning(
   engine: EngineId = "opencode",
+  permissionMode?: PermissionMode,
 ): Promise<{ runId: string; threadId: string }> {
   const id = uid("run");
   await acceptRunCommand({
@@ -49,6 +54,7 @@ async function seedRunning(
       engine,
       parentRunId: null,
       threadId: id,
+      ...(permissionMode ? { permissionMode } : {}),
     },
   });
   await setRunStatus(id, "running");
@@ -706,5 +712,116 @@ describe("overlapping ticks", () => {
     expect(guard.start(1_100)).toBeNull(); // B still owns the guard: no third tick over it
     guard.settle(b!.generation);
     expect(guard.start(1_200)).toEqual({ generation: 3, resurrected: false });
+  });
+});
+
+// A read-only run answers the runtime's own approval requests itself while its
+// worker lives (permission-mode-enforcement.test.ts). Across a restart the
+// parked run's re-probe surfaces the request as a recovered event instead, and
+// the reconcile loop must decline it the same way: through the reply path, once,
+// with the receipt and the refusal step durable, and the turn then goes on.
+describe("read-only refusal across a restart", () => {
+  const requestId = "approval-1";
+  const REFUSAL = "Refused to change files: this run is read-only";
+  const requestedEvent = (runId: string): HarnessInterimEvent => ({
+    id: approvalEventId(runId, requestId, "requested"),
+    runScopedId: true,
+    provider: "t3",
+    eventType: "approval.requested",
+    sessionId: "ses_x",
+    payload: { id: requestId, sessionID: "ses_x", requestKind: "file-change", detail: "write build/out" },
+  });
+  const resolvedEvent = (runId: string): HarnessInterimEvent => ({
+    id: approvalEventId(runId, requestId, "resolved"),
+    runScopedId: true,
+    provider: "t3",
+    eventType: "approval.resolved",
+    sessionId: "ses_x",
+    payload: { requestId, decision: "decline" },
+  });
+  /** The runtime as the reply path sees it: the request pending on the thread, and every dispatch it receives. */
+  function fakeRuntime() {
+    const dispatched: Record<string, unknown>[] = [];
+    const snapshot: RuntimeThreadSnapshot = {
+      snapshotSequence: 1,
+      thread: {
+        id: "ses_x",
+        latestTurn: { turnId: "turn-1", state: "running", assistantMessageId: null },
+        messages: [],
+        activities: [{
+          id: "activity-1",
+          tone: "approval",
+          kind: "approval.requested",
+          summary: "Approval requested",
+          payload: { requestId, requestKind: "file-change", detail: "write build/out" },
+          turnId: "turn-1",
+        }],
+        session: null,
+      },
+    };
+    const approvals: Partial<RuntimeApprovalReplyDependencies> = {
+      resolveSandbox: async () => ({} as SandboxHandle),
+      request: (async (_sandbox: SandboxHandle, req: { method: string; payload?: Record<string, unknown> }) => {
+        if (req.method === "GET") return snapshot;
+        dispatched.push({ ...req.payload });
+        return {};
+      }) as unknown as RuntimeApprovalReplyDependencies["request"],
+    };
+    return { approvals, dispatched };
+  }
+  const makeDue = (runId: string) =>
+    db.update(reconcileQueue).set({ nextAttemptAt: new Date(Date.now() - 1_000) }).where(eq(reconcileQueue.runId, runId));
+  const refusals = async (runId: string) =>
+    (await getStepsApi(runId)).filter((step) => step.label === REFUSAL && step.chip === "read-only");
+
+  test("a pending file change is declined after a restart, never approved, and the turn goes on", async () => {
+    const { runId, threadId } = await seedRunning("opencode", "read-only");
+    await park(runId, threadId);
+    const { approvals, dispatched } = fakeRuntime();
+    let probes = 0;
+    const probe: ReconcileProbe = async () => {
+      probes++;
+      return probes < 3
+        ? { status: "in_progress", events: [requestedEvent(runId)] }
+        : { status: "completed", summary: "Looked around.", events: [requestedEvent(runId), resolvedEvent(runId)] };
+    };
+
+    const first = await runDueReconciles(probe, async () => {}, approvals);
+    expect(first.retried).toBe(1);
+    expect(dispatched).toEqual([
+      expect.objectContaining({ type: "thread.approval.respond", threadId: "ses_x", requestId, decision: "decline" }),
+    ]);
+    const [receipt] = await db
+      .select()
+      .from(providerEvents)
+      .where(eq(providerEvents.id, approvalEventId(runId, requestId, "responded")));
+    expect(JSON.parse(receipt!.payload as string)).toEqual({ requestId, decision: "decline" });
+    expect(await refusals(runId)).toHaveLength(1);
+    expect((await getRun(runId))?.status).toBe("running");
+
+    // The runtime has not recorded the resolution yet, so the same request comes
+    // back; the durable receipt makes the second probe answer nothing again.
+    await makeDue(runId);
+    await runDueReconciles(probe, async () => {}, approvals);
+    expect(dispatched).toHaveLength(1);
+    expect(await refusals(runId)).toHaveLength(1);
+
+    // Declined, the runtime finished the turn: adopted, and nothing was ever approved.
+    await makeDue(runId);
+    const third = await runDueReconciles(probe, async () => {}, approvals);
+    expect(third.adopted).toBe(1);
+    expect((await getRun(runId))?.status).toBe("completed");
+    expect(dispatched.every((command) => command.decision === "decline")).toBe(true);
+  });
+
+  test("a Guard run's pending request is left to a person", async () => {
+    const { runId, threadId } = await seedRunning("opencode", "approval-required");
+    await park(runId, threadId);
+    const { approvals, dispatched } = fakeRuntime();
+    const probe: ReconcileProbe = async () => ({ status: "in_progress", events: [requestedEvent(runId)] });
+    await runDueReconciles(probe, async () => {}, approvals);
+    expect(dispatched).toHaveLength(0);
+    expect(await refusals(runId)).toHaveLength(0);
+    expect(await getReconcile(runId)).not.toBeNull();
   });
 });

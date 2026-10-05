@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { db, type DbTx, type Executor } from "../db/client";
 import { providerEvents } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
@@ -221,6 +221,28 @@ async function highestSeq(runId: string, exec: Executor = db): Promise<number> {
  * get the bounded retry, but a lost fence rejects immediately. A write that still
  * fails and was neither required nor fenced is counted as a lost frame.
  */
+/**
+ * Whether any turn of this thread answered a native approval with "always allow
+ * this session", or set out to: the runtime keeps such a grant on the provider
+ * session, so a later turn in a narrower mode could write without a new
+ * request. Read from our own durable records only: the intent written before
+ * the grant is dispatched (approval.responding) and the receipt written after
+ * (approval.responded). An intent without a receipt is a grant whose outcome is
+ * uncertain, and counts.
+ */
+export async function threadHasSessionGrant(threadId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: providerEvents.id })
+    .from(providerEvents)
+    .where(and(
+      eq(providerEvents.threadId, threadId),
+      inArray(providerEvents.eventType, ["approval.responding", "approval.responded"]),
+      like(providerEvents.payload, '%"decision":"acceptForSession"%'),
+    ))
+    .limit(1);
+  return row !== undefined;
+}
+
 export function recordProviderEvent(
   input: ProviderEventInput,
   opts: { critical?: boolean; required?: boolean; fence?: WriteFence } = {},

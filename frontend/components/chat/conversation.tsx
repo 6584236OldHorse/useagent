@@ -30,6 +30,7 @@ import {
 } from "@/components/chat/handoff-receipts";
 import { InboundAttachments } from "@/components/chat/inbound-attachments";
 import { NativeApprovalCard } from "@/components/chat/native-approval-card";
+import { PermissionModeTag } from "@/components/pro/permission-mode-chip";
 import type { NativeSnapshot } from "@/components/chat/native-store";
 import { QuestionCard } from "@/components/chat/question-card";
 import {
@@ -294,6 +295,7 @@ const TurnBlock = memo(function TurnBlock({
         <TurnSender connector={run.connector} />
         <UserBubble>{cleanPrompt(run.prompt)}</UserBubble>
         <InboundAttachments uploads={run.uploads} />
+        <PermissionModeTag mode={run.permission_mode} />
         <HandoffReceipts receipts={handoffs} />
       </div>
 

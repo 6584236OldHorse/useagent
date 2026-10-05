@@ -63,6 +63,7 @@ function serializeRunCommandPayload(
     resolvedResources: input.run.resolvedResources ?? [],
     attachmentIds: input.run.attachmentIds ?? [],
     memoryScope: input.run.memoryScope,
+    permissionMode: input.run.permissionMode ?? null,
     skillId: input.run.skillId,
     skillVersion: input.run.skillVersion,
     commandName: input.run.commandName,
@@ -143,7 +144,7 @@ async function assertExpectedSandboxMapping(
     eq(runs.orgId, input.orgId),
     eq(runs.threadId, input.run.threadId),
     isNotNull(runs.sandboxId),
-  )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+  )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
   if (
     !mapping ||
     mapping.sandboxId !== expected.sandboxId ||
@@ -334,7 +335,7 @@ async function acceptRunCommandWithOrigin(
           const [head] = await tx.select({ id: runs.id }).from(runs).where(and(
             eq(runs.orgId, input.orgId),
             eq(runs.threadId, input.run.threadId),
-          )).orderBy(desc(runs.createdAt), desc(runs.id)).limit(1);
+          )).orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id)).limit(1);
           if (head?.id !== input.expectedThreadHeadRunId) throw new StaleThreadHeadError();
         }
         if (expectedSandbox) await assertExpectedSandboxMapping(input, expectedSandbox, tx);

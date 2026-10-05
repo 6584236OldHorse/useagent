@@ -4,8 +4,14 @@ import type {
   ApiRunSummary,
   ApiStep,
   ApiThreadOutlineTurn,
+  PermissionMode,
   RunConnector,
 } from "@useagent/agent-client/wire";
+import {
+  configuredRuntimeMode,
+  PermissionModeUnsupportedError,
+  permissionModeSupported,
+} from "../engines/permission-mode";
 import {
   and,
   desc,
@@ -95,6 +101,7 @@ function toRun(
     parent_run_id: r.parentRunId,
     child_session: childSession,
     thread_id: r.threadId,
+    thread_seq: r.threadSeq,
     engine_session_id: r.engineSessionId,
     sandbox_id: r.sandboxId,
     repo: r.repo ? parseRepoRef(r.repo).repo : null,
@@ -102,6 +109,7 @@ function toRun(
     repo_specs: specs,
     resolved_resources: r.resolvedResources ?? [],
     memory_scope: r.memoryScope,
+    permission_mode: r.permissionMode,
     skill_id: r.skillId,
     skill_version: r.skillVersion,
     skill_content_hash: r.skillContentHash,
@@ -208,6 +216,9 @@ export async function createRun(
     /** Team-memory pool for the run. Resolved server-side at the run-creation
      *  boundary (explicit choice, parent inheritance, or the "org" default). */
     memoryScope: MemoryScope;
+    /** The run's permission policy. Product lanes resolve it (composer choice or
+     *  the parent's); a lane that omits it takes the operator's configured posture. */
+    permissionMode?: PermissionMode;
     skillId?: string | null;
     skillVersion?: number | null;
     skillContentHash?: string | null;
@@ -225,6 +236,13 @@ export async function createRun(
    *  commits the command + run atomically). Defaults to the shared pool. */
   exec: Executor = db,
 ): Promise<void> {
+  // The one place every lane inserts a run: a mode the engine cannot honour
+  // never reaches the row, whoever asked for it (a child of a read-only turn
+  // spawned on Pi, a bot handoff to a Pi bot).
+  const permissionMode = input.permissionMode ?? configuredRuntimeMode();
+  if (permissionMode !== "full-access" && !permissionModeSupported(input.engine)) {
+    throw new PermissionModeUnsupportedError(input.engine, permissionMode);
+  }
   const primaryRepo = input.repos?.[0] ? parseRepoRef(input.repos[0]).repo : null;
   const project =
     input.orgId && primaryRepo
@@ -241,6 +259,15 @@ export async function createRun(
     model: input.model,
     engine: input.engine,
     status: "queued",
+    // The insert's own clock time, not the transaction's start (`now()`): the
+    // acceptance transaction opens before it takes the thread lifecycle lock, so
+    // a run that waited for the lock must still sort after every run accepted
+    // while it waited. Thread order is the order runs were accepted in.
+    createdAt: sql`clock_timestamp()`,
+    // The run's place in its thread, assigned here under the same lock: the
+    // lossless acceptance order the wire carries (created_at loses its
+    // microseconds in transit).
+    threadSeq: sql`(select coalesce(max(${runs.threadSeq}), 0) + 1 from ${runs} where ${runs.threadId} = ${input.threadId})`,
     orgId: input.orgId,
     userId: input.userId,
     projectId: project?.id ?? null,
@@ -251,6 +278,7 @@ export async function createRun(
     // Legacy single-value mirror: clean "owner/name" (drop any branch suffix).
     repo: primaryRepo,
     memoryScope: input.memoryScope,
+    permissionMode,
     skillId: input.skillId ?? null,
     skillVersion: input.skillVersion ?? null,
     skillContentHash: input.skillContentHash ?? null,
@@ -265,6 +293,25 @@ export async function createRun(
 
 export async function getRun(id: string): Promise<RunRecord | null> {
   const [row] = await db.select().from(runs).where(eq(runs.id, id)).limit(1);
+  return row ?? null;
+}
+
+/** The thread's newest run: the turn whose mode a follow-up without a choice
+ *  keeps. Newest by acceptance order: `created_at` is the insert's clock time
+ *  taken under the thread lifecycle lock (see createRun), so a run that waited
+ *  for the lock sorts after the runs accepted meanwhile. Read it through the
+ *  acceptance transaction when the answer decides what the inserted run may do. */
+export async function getLatestThreadRun(
+  orgId: string,
+  threadId: string,
+  exec: Executor = db,
+): Promise<RunRecord | null> {
+  const [row] = await exec
+    .select()
+    .from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))
+    .orderBy(desc(runs.threadSeq), desc(runs.createdAt), desc(runs.id))
+    .limit(1);
   return row ?? null;
 }
 
@@ -611,7 +658,7 @@ export async function getThreadForRun(
     .select()
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
 }
 
@@ -640,7 +687,7 @@ export async function getThreadOutlineForRun(
     })
     .from(runs)
     .where(and(eq(runs.threadId, run.threadId), eq(runs.orgId, orgId)))
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return rows.map(
     (row) =>
       ({
@@ -676,7 +723,7 @@ export async function getThreadRunsByIds(
         inArray(runs.id, [...ids]),
       ),
     )
-    .orderBy(runs.createdAt, runs.id);
+    .orderBy(runs.threadSeq, runs.createdAt, runs.id);
   return withSteps(runRows);
 }
 
@@ -728,4 +775,17 @@ export async function insertStep(step: {
     })
     .returning();
   return toStep(row!);
+}
+
+/** Append a step after the run's last one, for a lane without the worker's
+ *  in-memory step counter (the restart recovery loop). */
+export async function appendStep(
+  runId: string,
+  step: { kind: StepKind; label: string; chip: string | null; code: unknown | null },
+): Promise<ApiStep> {
+  const [last] = await db
+    .select({ idx: sql<number>`coalesce(max(${steps.idx}), -1)` })
+    .from(steps)
+    .where(eq(steps.runId, runId));
+  return insertStep({ runId, idx: (last?.idx ?? -1) + 1, ...step });
 }

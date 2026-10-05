@@ -23,6 +23,22 @@ export const MEMORY_SCOPES = ["org", "personal"] as const;
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 
 /**
+ * The permission policy a run was started with: what its resident runtime may
+ * do without asking. The last four are the runtime's own modes (Guard is
+ * "approval-required"; Guard with edits auto-applied is "auto-accept-edits");
+ * "read-only" is Guard plus the control plane refusing every command and file
+ * change, so the run can look but never write.
+ */
+export const PERMISSION_MODES = [
+  "read-only",
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+] as const;
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/**
  * Which harness executes a run. `mock` is the scripted trace; `chat` is the
  * no-sandbox conversational path; the agent engines (opencode / claude / codex)
  * execute inside the per-thread sandbox. `daytona` / `claude-sdk` are legacy ids
@@ -209,6 +225,12 @@ export interface ApiRun {
    *  user turn. `parent_run_id` alone cannot tell them apart - replies set it too. */
   child_session: boolean;
   thread_id: string;
+  /** The run's place in its thread, assigned at acceptance under the thread's
+   *  lock: the lossless order clients sort a thread by (`created_at` loses its
+   *  microseconds on the wire). Absent only from a backend that predates it;
+   *  rows from before the column report 0 and sort by `created_at` among
+   *  themselves. */
+  thread_seq?: number;
   /** The engine's own native session id (opencode `ses_*`), when one was recorded.
    *  The thread's latest non-null value deep-links the Live tab into that session. */
   engine_session_id: string | null;
@@ -227,6 +249,9 @@ export interface ApiRun {
   resolved_resources: RunResource[];
   /** Which team-memory pool this run reads/writes (default "org"). */
   memory_scope: MemoryScope;
+  /** The permission policy this run was started with. Absent only on rows from
+   *  a backend that predates the field; the server always reports it. */
+  permission_mode?: PermissionMode;
   /** Pinned skill revision this run loaded (null when none). Immutable: links a
    *  historical run to the EXACT skill version/hash it used. */
   skill_id: string | null;
@@ -334,6 +359,7 @@ const RUN_STATUS_SET: ReadonlySet<string> = new Set(RUN_STATUSES);
 const STEP_KIND_SET: ReadonlySet<string> = new Set(STEP_KINDS);
 const ENGINE_ID_SET: ReadonlySet<string> = new Set(ENGINE_IDS);
 const MEMORY_SCOPE_SET: ReadonlySet<string> = new Set(MEMORY_SCOPES);
+const PERMISSION_MODE_SET: ReadonlySet<string> = new Set(PERMISSION_MODES);
 const RESOURCE_CAPABILITY_SET: ReadonlySet<string> = new Set([
   "content.read",
   "code.checkout",
@@ -675,6 +701,9 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     !record.resolved_resources.every(isRunResource) ||
     typeof record.memory_scope !== "string" ||
     !MEMORY_SCOPE_SET.has(record.memory_scope) ||
+    !(record.permission_mode === undefined ||
+      (typeof record.permission_mode === "string" && PERMISSION_MODE_SET.has(record.permission_mode))) ||
+    !(record.thread_seq === undefined || typeof record.thread_seq === "number") ||
     !isNullableString(record.skill_id) ||
     !(record.skill_version === null || typeof record.skill_version === "number") ||
     !isNullableString(record.skill_content_hash) ||
@@ -699,6 +728,11 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     sandbox_id: isNullableString(record.sandbox_id) ? record.sandbox_id : null,
     resolved_resources: record.resolved_resources,
     memory_scope: record.memory_scope as MemoryScope,
+    // Absent only from a backend that predates the field: the chip then shows nothing.
+    ...(typeof record.permission_mode === "string"
+      ? { permission_mode: record.permission_mode as PermissionMode }
+      : {}),
+    ...(typeof record.thread_seq === "number" ? { thread_seq: record.thread_seq } : {}),
     skill_id: record.skill_id,
     skill_version: record.skill_version,
     skill_content_hash: record.skill_content_hash,

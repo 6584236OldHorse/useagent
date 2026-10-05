@@ -89,6 +89,18 @@ describe("run/step wire boundary decoders", () => {
     expect(decodeApiStep(step)).toEqual(step);
   });
 
+  test("keeps a reported permission mode and rejects an unknown one", () => {
+    const guarded = { ...run, permission_mode: "read-only" as const };
+    expect(decodeApiRun(guarded)).toEqual(guarded);
+    expect(decodeApiRun({ ...run, permission_mode: "yolo" })).toBeNull();
+  });
+
+  test("keeps the run's thread sequence and rejects a non-numeric one", () => {
+    const sequenced = { ...run, thread_seq: 7 };
+    expect(decodeApiRun(sequenced)).toEqual(sequenced);
+    expect(decodeApiRun({ ...run, thread_seq: "7" })).toBeNull();
+  });
+
   test("decodes the exact durable lifecycle projection", () => {
     const lifecycle = {
       id: "run-1",

@@ -433,7 +433,7 @@ describe("T3 run adapter gate", () => {
     );
     expect(source).toContain("const prompt = composeTurnPrompt(");
     expect(source).toContain("await establishProviderSession({");
-    expect(source).toContain("const priorSnapshot = await readThreadSnapshot(ctx, sandbox);");
+    expect(source).toContain("snapshot: await readThreadSnapshot(ctx, sandbox),");
     expect(source).not.toContain("established.resumed\n          ? await readThreadSnapshot");
     expect(source).toContain("const steerResult = await driver.steer({");
     const reloadIdx = source.indexOf("await reloadRetainedOpenCodeSession({");
@@ -465,7 +465,13 @@ describe("T3 run adapter gate", () => {
     const projectorSource = readFileSync(new URL("./turn-projector.ts", import.meta.url), "utf8");
     expect(projectorSource).toContain("activityStep(activity, threadId, engine)");
     expect(projectorSource).toContain("ctx.publishDelta?.(projection.delta)");
-    expect(source).toContain("projector.apply(snapshot, (activity) => watchdog.observeActivity(activity))");
+    // The observer feeds the watchdog every activity and, for a read-only run, answers its write requests.
+    expect(source).toContain("projector.apply(snapshot, observe)");
+    expect(source).toContain("watchdog.observeActivity(activity);");
+    // The run's mode is applied to the runtime THREAD before the turn is steered.
+    expect(source).toContain("const priorSnapshot = await ensureRuntimeThreadMode({");
+    // A read-only turn never resumes a thread that may hold an "always allow" grant.
+    expect(source).toContain("await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
     expect(source).toContain('"turn aborted",');

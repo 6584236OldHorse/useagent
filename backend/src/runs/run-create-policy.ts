@@ -1,3 +1,4 @@
+import { MEMORY_SCOPES, PERMISSION_MODES, type MemoryScope, type PermissionMode } from "@useagent/agent-client/wire";
 import { bodyLimit } from "hono/body-limit";
 import {
   assertRunPromptLimit,
@@ -5,6 +6,8 @@ import {
   RUN_PROMPT_MAX_CHARS,
   RunPromptTooLargeError,
 } from "../commands/prompt-policy";
+import { isPermissionMode } from "../engines/permission-mode";
+import { isMemoryScope } from "../memory/scope";
 
 export const RUN_CREATE_MAX_BODY_BYTES = 256 * 1024;
 export { RUN_PROMPT_MAX_BYTES, RUN_PROMPT_MAX_CHARS };
@@ -18,6 +21,8 @@ export interface RunCreateBody {
   repos?: unknown;
   branches?: unknown;
   memory_scope?: unknown;
+  /** The permission policy for this run (PERMISSION_MODES); a reply inherits its parent's when absent. */
+  permission_mode?: unknown;
   skill?: unknown;
   command?: unknown;
   attachments?: unknown;
@@ -68,3 +73,32 @@ export const runCreateBodyLimit = bodyLimit({
   maxSize: RUN_CREATE_MAX_BODY_BYTES,
   onError: (c) => c.json({ error: "request_too_large" }, 413),
 });
+
+/** `memory_scope`: an explicit, validated choice wins; a reply inherits its
+ *  parent's; a root run defaults to "org". Only the enum is read from the body,
+ *  never an identity; an unknown value is a client error, not a fallback. */
+export function runMemoryScope(value: unknown, inherited: MemoryScope | null):
+  | { readonly ok: true; readonly memoryScope: MemoryScope; readonly requestedMemoryScope: MemoryScope | null }
+  | { readonly ok: false; readonly error: string } {
+  if (value === undefined || value === null) {
+    return { ok: true, memoryScope: inherited ?? "org", requestedMemoryScope: null };
+  }
+  if (!isMemoryScope(value)) {
+    return { ok: false, error: `memory_scope must be one of: ${MEMORY_SCOPES.join(", ")}` };
+  }
+  return { ok: true, memoryScope: value, requestedMemoryScope: value };
+}
+
+/** `permission_mode`: an explicit, validated choice; when absent the mode stays
+ *  unset here on purpose, so the insert resolves it under the thread lock (a
+ *  reply keeps the thread's mode as it stands at acceptance, a root run takes
+ *  the operator's configured posture) instead of a value read before it. */
+export function runPermissionMode(value: unknown):
+  | { readonly ok: true; readonly permissionMode: PermissionMode | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (value === undefined || value === null) return { ok: true, permissionMode: undefined };
+  if (!isPermissionMode(value)) {
+    return { ok: false, error: `permission_mode must be one of: ${PERMISSION_MODES.join(", ")}` };
+  }
+  return { ok: true, permissionMode: value };
+}

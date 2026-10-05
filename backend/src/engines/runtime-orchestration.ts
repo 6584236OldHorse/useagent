@@ -293,6 +293,7 @@ export interface RuntimeThreadSnapshot {
   readonly snapshotSequence: number;
   readonly thread: {
     readonly id: string;
+    readonly runtimeMode?: RuntimeMode; // stored on the thread; what the runtime applies to its turns
     readonly latestTurn: null | {
       readonly turnId: string;
       readonly state: "running" | "interrupted" | "completed" | "error";

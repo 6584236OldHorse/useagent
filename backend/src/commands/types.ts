@@ -1,3 +1,4 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import type { EngineId, MemoryScope } from "../db/schema";
 import type { ExplicitRunResource, RunResource } from "../resources/types";
 import type { ThreadRelationshipKind } from "../db/schema";
@@ -28,6 +29,9 @@ export interface RunCommandIntent {
    * for Slack), not provider-generated staging metadata. */
   readonly attachmentIds: readonly string[];
   readonly memoryScope: MemoryScope | null;
+  /** The caller's explicit permission mode; null (or absent, for legacy callers)
+   * means it delegated to the parent's mode or the operator's posture. */
+  readonly permissionMode?: PermissionMode | null;
   /** The requested skill pin. A null version means "current" was requested;
    * the resolved immutable version is persisted on the run separately. */
   readonly skillId: string | null;
@@ -110,6 +114,9 @@ export interface RunCommandInput {
     /** Team-memory pool for the run — resolved at the boundary (explicit choice,
      *  parent inheritance, or the "org" default). Never taken from the sandbox. */
     readonly memoryScope: MemoryScope;
+    /** The run's permission policy (engines/permission-mode.ts). Product lanes
+     *  resolve it; a lane that omits it takes the operator's configured posture. */
+    readonly permissionMode?: PermissionMode;
     /** Pinned skill revision reference for this run, or null. Part of the run's
      *  identity (the same prompt WITH a skill is a different turn). The content
      *  hash is stored for provenance but derives from (skillId, version). */

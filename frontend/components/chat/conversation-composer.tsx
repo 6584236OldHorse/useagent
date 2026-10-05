@@ -15,8 +15,10 @@ import {
 import { ReplyComposer } from "@/components/chat/reply-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
 import { compactAvailable } from "@/components/chat/composer-model";
-import { cleanPrompt, type EngineId, type MemoryScope, modelLabel } from "@/components/chat/types";
+import { cleanPrompt, type EngineId, type MemoryScope, modelLabel, type PermissionMode } from "@/components/chat/types";
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
+import { permissionModeFor } from "@/components/chat/permission-mode";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-messages";
 import { RunningFooter } from "@/components/pro/running-footer";
 import {
@@ -31,10 +33,12 @@ import { engineDisplayLabel } from "@/components/session-ui/provider-status-bann
  * The reply composer of a thread plus everything that frames it: the running
  * footer while a turn runs (phase, current step, elapsed, Stop), the messages
  * still waiting in the queue as numbered rows, the placeholder for the thread's
- * state, the status bar (branch, project, engine, context meter) and the
- * Compact now action, which is offered only while nothing is pending, queued or
- * running, and whose refusal shows in the same banner a failed turn uses.
- * Dismissing the banner clears only the error it is showing.
+ * state, the status bar (branch, project, permission chip, engine, context
+ * meter) and the Compact now action, which is offered only while nothing is
+ * pending, queued or running, and whose refusal shows in the same banner a
+ * failed turn uses. Dismissing the banner clears only the error it is showing.
+ * The permission chip follows the thread's newest turn until the person picks
+ * a mode; every reply then carries that choice.
  */
 export function ConversationComposer({
   turns,
@@ -111,6 +115,16 @@ export function ConversationComposer({
   repoRevisions?: Readonly<Record<string, string | null>>;
 }) {
   const context = useMemo(() => latestThreadContext(turns), [turns]);
+  // The chip follows the thread's newest turn until the person picks a mode; a
+  // legacy turn that reported none reads as full access, the posture it ran
+  // with. An engine that cannot honour the mode sends Full access instead.
+  const [chosenMode, setChosenMode] = useState<PermissionMode | null>(null);
+  const permissionMode = permissionModeFor(
+    defaultEngine,
+    chosenMode ?? turns.at(-1)?.run.permission_mode ?? "full-access",
+  );
+  const reply: ComposerSubmit = (text, engine, model, key, scope, command, attachments, resources, bots) =>
+    onReply(text, engine, model, key, scope, command, attachments, resources, bots, permissionMode);
   const [compactFailure, setCompactFailure] = useState<string | null>(null);
   // Turns the agent has not started: rows above the input, never transcript
   // bubbles. Positions count the WHOLE serial queue (a queued gateway child
@@ -169,7 +183,7 @@ export function ConversationComposer({
       onReply("/compact", defaultEngine, defaultModel, crypto.randomUUID(), defaultMemoryScope, {
         name: "compact",
         args: "",
-      }),
+      }, [], [], [], permissionMode),
     ).catch((error: unknown) => {
       setCompactFailure(
         error instanceof Error && error.message ? error.message : "Compaction could not be sent. Try again.",
@@ -207,7 +221,7 @@ export function ConversationComposer({
                   ? `Message ${assistantIdentity.name}`
                   : undefined
       }
-      onReply={onReply}
+      onReply={reply}
       running={running}
       stopError={stopError}
       threadError={shownError}
@@ -244,6 +258,15 @@ export function ConversationComposer({
         <ComposerStatusBar
           branch={first?.[1] ?? null}
           project={first?.[0]?.split("/").at(-1) ?? null}
+          permission={
+            <PermissionModeChip
+              mode={permissionMode}
+              onChange={setChosenMode}
+              engine={defaultEngine}
+              // Answering a native question resumes the running turn; no new run, no new mode.
+              disabled={Boolean(pendingQuestion && composerCanAnswerQuestion)}
+            />
+          }
           agent={engineDisplayLabel(defaultEngine)}
           context={context}
           onCompact={canCompact ? compact : undefined}

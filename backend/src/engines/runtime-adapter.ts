@@ -32,9 +32,11 @@ import {
   runtimeTurnError,
   runtimeTurnSettled,
   type RuntimeEngineId,
-  type RuntimeMode,
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
+import { configuredRuntimeMode, runtimeModeFor } from "./permission-mode";
+import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
+import { refuseReadOnlyRequest, replyToRuntimeApproval, runtimeApprovalRequest } from "./runtime-approval";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
 import { createSecretRedactor } from "../secrets/redact";
 import {
@@ -176,22 +178,7 @@ interface RuntimeShellSnapshot {
 
 export { runtimeRunSnapshot };
 
-export function configuredRuntimeMode(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): RuntimeMode {
-  const mode = operatorEnv(env, "RUNTIME_MODE", "T3_RUNTIME_MODE")?.trim() || "full-access";
-  if (
-    mode !== "approval-required" &&
-    mode !== "auto-accept-edits" &&
-    mode !== "auto" &&
-    mode !== "full-access"
-  ) {
-    throw new Error(
-      "RUNTIME_MODE (legacy T3_RUNTIME_MODE) must be approval-required, auto-accept-edits, auto, or full-access",
-    );
-  }
-  return mode;
-}
+export { configuredRuntimeMode } from "./permission-mode";
 
 async function readThreadSnapshot(
   ctx: EngineRunContext,
@@ -305,11 +292,14 @@ export async function readRuntimeTerminalSnapshot(
 interface RuntimeTurnWaitDependencies {
   readonly readThreadSnapshot: typeof readThreadSnapshot;
   readonly subscribeRuntimeThread: typeof subscribeRuntimeThread;
+  /** How a read-only run declines a request; the real reply path unless a test injects one. */
+  readonly replyToRuntimeApproval?: typeof replyToRuntimeApproval;
 }
 
 const runtimeTurnWaitDependencies: RuntimeTurnWaitDependencies = {
   readThreadSnapshot,
   subscribeRuntimeThread,
+  replyToRuntimeApproval,
 };
 
 export async function waitForRuntimeTurn(
@@ -358,8 +348,29 @@ export async function waitForRuntimeTurn(
     watchdog.signal,
     firstActivityDeadline.signal,
   ]);
+  // A read-only run answers the runtime's own approval requests itself: every
+  // command and file change is declined the moment it is recorded, through the
+  // same reply path a person uses, so the sandbox never writes and the record
+  // shows the refusal. Reads pass; a person may still answer those.
+  const refusedRequests = new Set<string>();
+  const observe = async (activity: RuntimeThreadSnapshot["thread"]["activities"][number]): Promise<void> => {
+    watchdog.observeActivity(activity);
+    if (ctx.permissionMode !== "read-only") return;
+    const request = runtimeApprovalRequest(activity, threadId);
+    if (!request || refusedRequests.has(request.id)) return;
+    refusedRequests.add(request.id);
+    const refused = await refuseReadOnlyRequest({
+      runId: ctx.runId,
+      threadId: ctx.threadId ?? ctx.runId,
+      sessionId: threadId,
+      request,
+      signal: ctx.signal,
+      expectedSandbox: ctx.expectedSandbox ?? null,
+    }, dependencies.replyToRuntimeApproval);
+    if (refused) await ctx.emit(refused.step);
+  };
   const applySnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
-    const applied = await projector.apply(snapshot, (activity) => watchdog.observeActivity(activity));
+    const applied = await projector.apply(snapshot, observe);
     toolInFlight = applied.toolInFlight;
     if (applied.delta) watchdog.observeProgress();
     if (applied.error) throw new RuntimeTurnFailedError(applied.error);
@@ -537,6 +548,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         endShell?.();
         const threadId = runtimeThreadId(ctx);
         const threadExists = shell.threads.some((thread) => thread.id === threadId);
+        // A read-only turn never resumes a thread that may hold a session grant.
+        await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });
         if (engine === "opencode") {
           await reloadRetainedOpenCodeSession({
             sandbox,
@@ -550,7 +563,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           await providerBridgeLease.ackModelLimitsReload();
         }
         const createdAt = new Date().toISOString();
-        const runtimeMode = configuredRuntimeMode();
+        // The run's own policy; the operator posture only covers runs created without one.
+        const runtimeMode = runtimeModeFor(ctx.permissionMode ?? configuredRuntimeMode());
         const negotiatedCapabilities = sessionCapabilities(engine, {
           desktop: false,
           knowledgeTools: true,
@@ -584,7 +598,16 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // the durable provider lifecycle is fresh. Always capture its current
         // turn before steering so an initialization greeting cannot be mistaken
         // for the response to this run.
-        const priorSnapshot = await readThreadSnapshot(ctx, sandbox);
+        // The runtime runs a turn with the mode stored on its THREAD, so a run
+        // whose mode differs from the thread's (a reply that changed it) sets the
+        // thread's mode and proceeds only once the runtime reports it.
+        const priorSnapshot = await ensureRuntimeThreadMode({
+          sandbox,
+          threadId,
+          runtimeMode,
+          snapshot: await readThreadSnapshot(ctx, sandbox),
+          signal: ctx.signal,
+        });
 
         // HTTP orchestration dispatch validates thread.turn.start against an
         // already-projected thread. ProviderDriver.start creates it explicitly instead of

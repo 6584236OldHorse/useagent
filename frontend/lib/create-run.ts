@@ -1,3 +1,4 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import { backendFetch } from "./backend-fetch";
 import { taskSounds } from "./task-sounds-player";
 
@@ -56,7 +57,12 @@ export async function createRun(body: unknown, idempotencyKey = crypto.randomUUI
 
 export async function createThreadMessage(
   threadId: string,
-  body: { readonly text: string; readonly attachments?: readonly string[] },
+  body: {
+    readonly text: string;
+    readonly attachments?: readonly string[];
+    /** The chip's choice; absent keeps the thread's current mode. */
+    readonly permission_mode?: PermissionMode;
+  },
   idempotencyKey = crypto.randomUUID(),
 ) {
   return sounded(

@@ -19,7 +19,8 @@ export interface AppliedSnapshot {
 }
 
 export interface TurnProjector {
-  apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void): Promise<AppliedSnapshot>;
+  /** `observe` sees each newly recorded activity revision before it is projected; it may answer it (awaited). */
+  apply(snapshot: RuntimeThreadSnapshot, observe?: (activity: RuntimeActivity) => void | Promise<void>): Promise<AppliedSnapshot>;
   /** Activity revisions applied so far, or handed in as already seen. */
   seen(): ReadonlyMap<string, string>;
   /** The step each activity key was recorded under, so a later revision updates it instead of adding another. */
@@ -73,7 +74,7 @@ export function createTurnProjector(input: {
         await recordProviderEvent(runtimeActivityProviderEvent(ctx, threadId, activity, redact), {
           critical: activity.kind === "user-input.requested" || activity.kind === "approval.requested",
         });
-        observe?.(activity);
+        await observe?.(activity);
         if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
         const step = redact.unknown(activityStep(activity, threadId, engine));
         const key = runtimeActivityStepKey(activity);

@@ -680,6 +680,13 @@
       "when": 1792800000012,
       "tag": "0102_runs_connector",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1792800000013,
+      "tag": "0103_runs_permission_mode",
+      "breakpoints": true
     }
   ]
 }

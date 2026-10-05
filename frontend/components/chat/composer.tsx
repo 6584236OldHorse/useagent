@@ -30,7 +30,7 @@ import {
   SlashCommandPopover,
   slashInsertText,
 } from "@/components/chat/slash-command";
-import type { EngineId, MemoryScope } from "@/components/chat/types";
+import type { EngineId, MemoryScope, PermissionMode } from "@/components/chat/types";
 import { Loader } from "@/components/prompt-kit/loader";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
@@ -63,6 +63,7 @@ export type ComposerSubmit = (
   resources?: readonly RunResourceSelection[],
   /** Bot ids behind @bot chips; each opens a delegated handoff thread on that bot's preset. */
   botMentions?: readonly string[],
+  permissionMode?: PermissionMode, // the run's permission policy, chosen in the status row chip
 ) => void | Promise<void>;
 
 export type ComposerProps = {

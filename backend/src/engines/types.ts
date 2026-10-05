@@ -1,3 +1,4 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
@@ -131,6 +132,11 @@ export interface EngineRunContext {
   providerSession?: ProviderSessionBinding;
   /** Durable operator-only fence for the exact sandbox binding this run may use. */
   expectedSandbox?: ExpectedSandboxBinding | null;
+  /** The permission policy the run was started with (see engines/permission-mode.ts):
+   *  the mode the resident runtime is steered with, and for "read-only" the
+   *  refusal of every command and file change. Absent only for legacy callers,
+   *  which take the operator's configured posture. */
+  permissionMode?: PermissionMode;
   /** Set ONLY when this run is a VALIDATED native provider command (its name was checked
    *  against the active session catalog at acceptance). When present, the run's `prompt` is
    *  already the exact `/name args` bytes and {@link composeTurnPrompt} delivers it verbatim

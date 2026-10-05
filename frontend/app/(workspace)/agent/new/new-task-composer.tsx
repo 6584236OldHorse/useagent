@@ -45,7 +45,10 @@ import {
   engineLabel,
   modelOptionsForEngine,
   partitionModelOptions,
+  type PermissionMode,
 } from "@/components/chat/types";
+import { permissionModeFor } from "@/components/chat/permission-mode";
+import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
@@ -90,10 +93,15 @@ export function NewTaskComposer({
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [repos, setRepos] = useState<RepoItem[]>([]);
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
+  // A new thread starts in Full access unless the person picks a mode before sending.
+  const [chosenMode, setChosenMode] = useState<PermissionMode>("full-access");
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
   const [engine, setEngine] = useState<string>("codex");
+  // What actually rides POST /api/runs: the pick, unless the selected engine
+  // cannot honour it (admission would refuse the run), then Full access.
+  const permissionMode = permissionModeFor(engine, chosenMode);
   // The "+" action shelf under the composer holds the add-context controls
   // (upload, repos, skills, GitHub, branches) so the toolbar row never overflows.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -438,6 +446,7 @@ export function NewTaskComposer({
       prompt: text,
       engine,
       memory_scope: "org",
+      permission_mode: permissionMode,
       ...(selectableModels.length > 0 ? { model } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
       ...(Object.keys(branchPayload).length ? { branches: branchPayload } : {}),
@@ -692,6 +701,15 @@ export function NewTaskComposer({
             value={playbook}
             onChange={setPlaybook}
             triggerClassName="max-w-[16rem] rounded-full text-text-secondary"
+          />
+
+          {/* Permission for the new thread: Read only, Guard (with or without
+              auto-applied edits) or Full access; rides POST /api/runs as permission_mode. */}
+          <PermissionModeChip
+            mode={permissionMode}
+            onChange={setChosenMode}
+            engine={engine}
+            className="rounded-full px-2 py-1"
           />
 
           {selectedRepoItems.length > 0 ? (
