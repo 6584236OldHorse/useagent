@@ -335,10 +335,11 @@ describe("unified shell contract", () => {
     expect(composer).toContain(
       '"grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
     );
-    expect(composer).toContain('"col-span-3 col-start-1 row-start-1 min-w-0 items-center"');
+    expect(composer).toContain('"col-span-3 col-start-1 row-start-1 min-w-0"');
     expect(composer).toContain('"col-start-3 row-start-2"');
+    // The field rests two lines tall (twice the line-height) and grows with the text.
     expect(composer).toContain(
-      'hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6"',
+      'hero ? "pt-1 text-headline-regular" : "min-h-12 text-body-2-regular leading-6"',
     );
     expect(promptInput).toContain('el.style.height = "0px"');
     expect(promptInput).not.toContain('el.style.height = "auto"');
