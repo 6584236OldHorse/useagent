@@ -45,25 +45,29 @@ test("skipping is remembered per person: in this browser when it stores, for thi
   expect(firstRunSkipped("u3")).toBe(true);
 });
 
-import { settleLanding, watchLanding } from "./first-run";
+import { watchFirstRun } from "./first-run";
 
-function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], userId = "landing-user") {
-  const outcomes: string[] = [];
+function check(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], userId = "landing-user") {
+  const reported: boolean[] = [];
+  let calls = 0;
   let answer: (() => void) | undefined;
   let fail: (() => void) | undefined;
-  const cleanup = watchLanding({
+  const cleanup = watchFirstRun({
     userId,
-    listWorkspaces: () =>
-      new Promise((resolve, reject) => {
+    listWorkspaces: () => {
+      calls += 1;
+      return new Promise((resolve, reject) => {
         answer = () => resolve(workspaces.filter((w): w is NonNullable<typeof w> => w !== undefined));
         fail = () => reject(new Error("workspaces 503"));
-      }),
-    settle: (outcome) => outcomes.push(outcome),
+      });
+    },
+    settle: (firstRun) => reported.push(firstRun),
   });
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
-    outcomes,
+    reported,
     cleanup,
+    calls: () => calls,
     answer: async () => {
       answer?.();
       await settle();
@@ -75,41 +79,32 @@ function landing(workspaces: Parameters<typeof firstRunApplies>[0][] = [fresh], 
   };
 }
 
-test("landing: nothing settles before the check answers, so no composer is enabled meanwhile", async () => {
-  const run = landing();
+test("the check reports a first run once the answer arrives, and nothing before it", async () => {
+  const run = check();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(run.outcomes).toEqual([]);
-  run.cleanup();
+  expect(run.reported).toEqual([]);
+  await run.answer();
+  expect(run.reported).toEqual([true]);
 });
 
-test("landing: a first run opens the page from the pending state; anything else stays, exactly once", async () => {
-  const open = landing();
-  await open.answer();
-  expect(open.outcomes).toEqual(["open"]);
+test("a workspace that is not on a first run, a failed check and an unmount report no first run", async () => {
+  const settled = check([{ ...fresh, members: 2 }]);
+  await settled.answer();
+  expect(settled.reported).toEqual([false]);
 
-  const stay = landing([{ ...fresh, members: 2 }]);
-  await stay.answer();
-  expect(stay.outcomes).toEqual(["stay"]);
-
-  const failed = landing();
+  const failed = check();
   await failed.fail();
-  expect(failed.outcomes).toEqual(["stay"]);
+  expect(failed.reported).toEqual([false]);
 
-  const unmounted = landing();
+  const unmounted = check();
   unmounted.cleanup();
   await unmounted.answer();
-  expect(unmounted.outcomes).toEqual([]);
+  expect(unmounted.reported).toEqual([]);
 });
 
-test("landing: a person who chose to continue before stays without a request", () => {
-  markFirstRunSkipped("skipped-user");
-  const run = landing([fresh], "skipped-user");
-  expect(run.outcomes).toEqual(["stay"]);
-});
-
-test("landing: once the composer is up, no later outcome navigates away from it", () => {
-  expect(settleLanding("pending", "open")).toBe("open");
-  expect(settleLanding("pending", "stay")).toBe("stay");
-  expect(settleLanding("stay", "open")).toBe("stay");
-  expect(settleLanding("open", "stay")).toBe("open");
+test("a person who chose to continue is reported no first run without a request, and that persists", () => {
+  markFirstRunSkipped("continued-user");
+  const run = check([fresh], "continued-user");
+  expect(run.reported).toEqual([false]);
+  expect(run.calls()).toBe(0);
 });
