@@ -1,9 +1,25 @@
 import { describe, expect, test } from "bun:test";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 
-import { proxy } from "./proxy";
+import { config, proxy } from "./proxy";
 
 describe("authentication proxy", () => {
+  test("excludes only the exact public download page from authentication", () => {
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        url: "https://useagent.example.com/download",
+      }),
+    ).toBe(false);
+    expect(
+      unstable_doesMiddlewareMatch({
+        config,
+        url: "https://useagent.example.com/download-private",
+      }),
+    ).toBe(true);
+  });
+
   test("opens only the development preview escape hatch", () => {
     const previousMode = process.env.NODE_ENV;
     const previousPreview = process.env.USEAGENT_PREVIEW_OPEN;
