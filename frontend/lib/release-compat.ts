@@ -15,7 +15,7 @@ export class FrontendReleaseMismatchError extends Error {
   ) {
     super(
       reloadedAlready
-        ? "This page is older than the server, and reloading once did not change that. Wait a minute, then reload and try again."
+        ? "This page and the server are still on different releases, and reloading once did not change that. Wait a minute, then reload and try again."
         : "Frontend was updated. Reload before retrying this action.",
     );
     this.name = "FrontendReleaseMismatchError";
