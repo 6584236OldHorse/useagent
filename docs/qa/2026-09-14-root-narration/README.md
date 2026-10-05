@@ -7,8 +7,7 @@ Live QA run: `27c571a3-22ad-4bcf-8629-498ef3d39fbc`, Codex Manual mode, syntheti
 3. Reload before approving. The command and same pending approval survive, but the explanation disappears.
 4. Decline. The final denial is saved, but the earlier explanation remains missing.
 
-![Before reload](before-reload.png)
-![After reload](after-reload.png)
+The before and after screenshots are attached to pull request #330 on useagent-pro.
 
 A read-only query scoped to this QA run found no root assistant text events in provider_events or canonical_events and no match for the visible phrase. Only the final denial exists in the run summary. The trusted runtime projector persisted activities but published assistant messages only through the volatile delta stream; reconciliation likewise restored only activities.
 
