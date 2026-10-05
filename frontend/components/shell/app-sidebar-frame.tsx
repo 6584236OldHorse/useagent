@@ -31,7 +31,6 @@ import {
   SidebarMenuItem,
   SidebarTrigger,
 } from "@/components/sidebar-kit/sidebar";
-import { useSession } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { SearchCommand } from "./search-command";
 import { NAV_ICON_TONE, type NavIconTone, SidebarNavItem } from "./sidebar-nav";
@@ -175,17 +174,13 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
 /** The footer card is the trigger of the account menu (identity header,
  * Settings, Apps, Log out), so it opens exactly as before. */
 export function UserFooter() {
-  const { session } = useSession();
   const isCollapsed = useRailFolded();
-  const name = session?.user.name?.trim() || session?.user.email || "Guest";
-  const email = session?.user.email ?? "Not signed in";
-  const image = session?.user.image ?? null;
 
   return (
     <SidebarMenu>
       <SidebarMenuItem>
         <UserMenu
-          trigger={
+          trigger={({ name, email, image }) => (
             <span
               className={cn(
                 "flex w-full items-center gap-2.5 rounded-2lg px-2.5 py-2 transition-colors hover:bg-background-secondary-hover",
@@ -214,7 +209,7 @@ export function UserFooter() {
                 </>
               )}
             </span>
-          }
+          )}
         />
       </SidebarMenuItem>
     </SidebarMenu>

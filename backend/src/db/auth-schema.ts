@@ -10,6 +10,7 @@ import {
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
+  clerkUserId: text("clerk_user_id").unique(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").default(false).notNull(),
@@ -86,6 +87,7 @@ export const organization = pgTable(
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    clerkOrgId: text("clerk_org_id").unique(),
     slug: text("slug").notNull().unique(),
     logo: text("logo"),
     createdAt: timestamp("created_at").notNull(),
@@ -110,6 +112,7 @@ export const member = pgTable(
   (table) => [
     index("member_organizationId_idx").on(table.organizationId),
     index("member_userId_idx").on(table.userId),
+    uniqueIndex("member_organization_user_unique").on(table.organizationId, table.userId),
   ],
 );
 

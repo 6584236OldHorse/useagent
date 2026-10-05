@@ -14,6 +14,7 @@ import { piProviderDriver } from "../src/engines/pi-provider-driver";
 import { enqueueReconcile } from "../src/runs/reconcile-queue";
 import { recoverStaleRuns, runDueReconciles } from "../src/runs/recovery";
 import type { ExpectedSandboxBinding } from "../src/sandboxes/expected-binding";
+import "./helpers";
 
 const ORG = "org-expected-sandbox-recovery-test";
 
@@ -98,15 +99,16 @@ test("boot recovery propagates the durable expected sandbox before remote work",
   });
   const seen: unknown[] = [];
 
-  const result = await recoverStaleRuns(
+  await recoverStaleRuns(
     async (_handle, checkpoint) => {
-      seen.push(checkpoint.metadata);
+      if (checkpoint.metadata?.threadId === ORG) seen.push(checkpoint.metadata);
       return { status: "failed", summary: "backend restarted" };
     },
-    async (input) => { seen.push(input); },
+    async (input) => { if (input.threadId === ORG) seen.push(input); },
   );
 
-  expect(result.failed).toBe(1);
+  expect((await db.select({ status: runs.status }).from(runs)
+    .where(eq(runs.id, runId)).limit(1))[0]?.status).toBe("failed");
   expect(seen).toEqual([
     { engine: "pi", sandboxId, threadId: ORG, expectedSandbox },
     { expectedSandbox, threadId: ORG },

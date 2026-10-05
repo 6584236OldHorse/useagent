@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import {
   RiDatabase2Line,
   RiGithubFill,
-  RiGoogleFill,
   RiKey2Line,
   RiPlugLine,
   RiSlackFill,
@@ -25,7 +24,6 @@ interface Capabilities {
 }
 
 interface ConfigResponse {
-  auth?: { google?: boolean };
   sandbox?: { provider?: "cube" | "daytona" | "box" };
   capabilities?: Capabilities;
 }
@@ -135,12 +133,6 @@ export function PluginsPanel() {
           name="Knowledge and memory tools"
           detail="Tool gateway that lets agents read knowledge and recall memory from inside a run"
           enabled={caps?.toolGateway ?? false}
-        />
-        <CapabilityRow
-          icon={RiGoogleFill}
-          name="Google sign-in"
-          detail="Social auth for the workspace"
-          enabled={config?.auth?.google ?? false}
         />
       </div>
 

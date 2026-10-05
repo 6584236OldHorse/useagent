@@ -1,14 +1,12 @@
 "use client";
 
-// Browser auth helpers — the ONE place the frontend talks to better-auth. The
-// backend mounts better-auth at `/api/auth/*` and the Next `/api/*` rewrite
-// proxies it same-origin, so the session cookie is first-party and rides on
-// `backendFetch`'s `credentials: "include"`. No better-auth client dependency:
-// these are thin typed wrappers over its REST endpoints, matching the existing
-// email form (app/login/auth-form.tsx).
+// Browser auth helpers. The backend owns the local user identity returned by
+// `/api/auth/get-session`; provider IDs stay inside the provider hook below.
 
+import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useState } from "react";
 import { invalidateCapabilityCatalog } from "@/hooks/use-capability-catalog";
+import { legacyAuthEnabled } from "./auth-mode";
 import { backendFetch } from "./backend-fetch";
 import { type CachedRequest, cachedRequest } from "./cached-request";
 
@@ -45,6 +43,27 @@ export function createSessionRequest(
 }
 
 const sessionRequest = createSessionRequest();
+const sessionListeners = new Set<() => void>();
+let currentIdentityScope: string | undefined;
+let currentProviderIdentity: ProviderIdentity | undefined;
+let endIdentitySession: (() => Promise<void>) | null = null;
+
+interface ProviderIdentity {
+  readonly userId: string | null;
+  readonly orgId: string | null;
+}
+
+export function shouldReloadForOrganizationChange(
+  previous: ProviderIdentity | undefined,
+  next: ProviderIdentity,
+): boolean {
+  return (
+    previous !== undefined &&
+    previous.userId !== null &&
+    previous.userId === next.userId &&
+    previous.orgId !== next.orgId
+  );
+}
 
 /** The authenticated session, or null when anonymous (incl. the dev-org path,
  *  where domain APIs still work but no better-auth session cookie exists) and
@@ -63,6 +82,7 @@ export async function getSession(): Promise<Session | null> {
 export function invalidateSession(): void {
   sessionRequest.invalidate();
   invalidateCapabilityCatalog();
+  for (const listener of sessionListeners) listener();
 }
 
 /** Begin the Google OAuth flow: better-auth returns the provider URL to visit,
@@ -81,6 +101,12 @@ export async function signInWithGoogle(callbackURL = "/"): Promise<void> {
 
 /** End the session (clears the cookie server-side). */
 export async function signOut(): Promise<void> {
+  if (!legacyAuthEnabled) {
+    if (!endIdentitySession) throw new Error("Identity session is not ready");
+    await endIdentitySession();
+    invalidateSession();
+    return;
+  }
   await backendFetch("/api/auth/sign-out", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -100,21 +126,20 @@ export interface AuthConfig {
 const FALLBACK_CONFIG: AuthConfig = {
   google: false,
   emailPassword: true,
-  allowDevOrg: true,
+  allowDevOrg: false,
 };
 
-/** Public client config from GET /api/config — never carries any secret. */
-export async function getAuthConfig(): Promise<AuthConfig> {
+/** Public legacy-provider config. It never carries any secret. */
+export async function getAuthConfig(
+  fetcher: typeof backendFetch = backendFetch,
+): Promise<AuthConfig> {
   try {
-    const res = await backendFetch("/api/config");
+    const res = await fetcher("/api/auth/provider-config");
     if (!res.ok) return FALLBACK_CONFIG;
-    const data = (await res.json()) as {
-      auth?: { google?: boolean; emailPassword?: boolean };
-      allowDevOrg?: boolean;
-    };
+    const data = (await res.json()) as Partial<AuthConfig>;
     return {
-      google: Boolean(data.auth?.google),
-      emailPassword: data.auth?.emailPassword ?? true,
+      google: Boolean(data.google),
+      emailPassword: data.emailPassword ?? true,
       allowDevOrg: Boolean(data.allowDevOrg),
     };
   } catch {
@@ -125,18 +150,25 @@ export async function getAuthConfig(): Promise<AuthConfig> {
 /** Subscribe to the current session; `refresh()` re-fetches (e.g. after sign-out).
  *  Every consumer on a page shares one request; a consumer mounting after it
  *  settled starts from the cached session instead of a loading state. */
-export function useSession(): {
+type SessionState = {
   session: Session | null;
   loading: boolean;
   refresh: () => void;
-} {
+};
+
+function useBackendSession(): SessionState {
   const cached = sessionRequest.peek();
   const [session, setSession] = useState<Session | null>(cached ?? null);
   const [loading, setLoading] = useState(cached === undefined);
   const [nonce, setNonce] = useState(0);
-  const refresh = useCallback(() => {
-    invalidateSession();
-    setNonce((n) => n + 1);
+  const refresh = useCallback(invalidateSession, []);
+
+  useEffect(() => {
+    const listener = () => setNonce((n) => n + 1);
+    sessionListeners.add(listener);
+    return () => {
+      sessionListeners.delete(listener);
+    };
   }, []);
 
   useEffect(() => {
@@ -153,6 +185,38 @@ export function useSession(): {
   }, [nonce]);
 
   return { session, loading, refresh };
+}
+
+/** Keeps backend caches aligned with the active provider identity. */
+export function IdentitySessionSync(): null {
+  const { isLoaded, orgId, sessionId, signOut: endSession, userId } = useAuth();
+  const scope = isLoaded ? `${userId ?? ""}:${sessionId ?? ""}:${orgId ?? ""}` : undefined;
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    const action = () => endSession();
+    endIdentitySession = action;
+    return () => {
+      if (endIdentitySession === action) endIdentitySession = null;
+    };
+  }, [endSession, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded || scope === undefined) return;
+    const nextIdentity = { userId, orgId };
+    const reload = shouldReloadForOrganizationChange(currentProviderIdentity, nextIdentity);
+    currentProviderIdentity = nextIdentity;
+    if (scope === currentIdentityScope) return;
+    currentIdentityScope = scope;
+    invalidateSession();
+    if (reload) window.location.replace("/");
+  }, [isLoaded, orgId, scope, userId]);
+  return null;
+}
+
+/** Backend-normalized local user session. Provider IDs are never returned. */
+export function useSession(): SessionState {
+  return useBackendSession();
 }
 
 /** The public auth config, fetched once on mount. Null until it resolves. */

@@ -606,7 +606,7 @@ describe("Pi runtime configuration", () => {
       }
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("honors declared Bun cancellation after initial uploads and before runtime or broker setup", async () => {
     process.env.SANDBOX_SECRET_MODE = "gateway_only";

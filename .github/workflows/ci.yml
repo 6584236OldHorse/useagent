@@ -36,10 +36,12 @@ env:
   # Pin the runtime so CI matches the machines that produced the lockfiles.
   BUN_VERSION: "1.3.14"
   NEXT_TELEMETRY_DISABLED: "1"
+  AUTH: better-auth
+  NEXT_PUBLIC_AUTH: better-auth
 
 jobs:
   compose-health:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -55,6 +57,16 @@ jobs:
       COMPOSE_BAKE: "true"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The backend image needs the native runtime archive, which is not in git;
+      # stage it the way the release image workflow does.
+      - name: Install Bun for runtime staging
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Stage native runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun run deploy/stage-native-runtime.ts
       - name: Start the local stack and wait for health
         run: docker compose -f compose.local.yaml up --build --wait --wait-timeout 300
       - name: Probe all service health routes
@@ -64,13 +76,16 @@ jobs:
           fetch('http://127.0.0.1:3202/health'),
           fetch('http://127.0.0.1:3400/healthz')
           ]).then(rs => { if (rs.some(r => !r.ok)) process.exit(1) })"
+      - name: Show service logs when the stack did not come up
+        if: failure()
+        run: docker compose -f compose.local.yaml logs --no-color --tail 200
       - name: Stop the local stack
         if: always()
         run: docker compose -f compose.local.yaml down --volumes --remove-orphans
 
   # ── Types across both apps (root `typecheck` = frontend tsc + backend tsc) ────
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -102,7 +117,7 @@ jobs:
 
   # ── Backend unit/integration tests against an isolated Postgres ──────────────
   backend-test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     services:
       postgres:
@@ -161,7 +176,7 @@ jobs:
   # projection, nor the sandbox contract's import-boundary (it must stay a pure
   # leaf, importing no backend/frontend/provider code).
   package-test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -193,7 +208,7 @@ jobs:
   # the immutable ops identity. Keep its hermetic canaries, rollback harnesses,
   # strict TypeScript project, and shell syntax in the same required CI graph.
   private-ops:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -229,7 +244,7 @@ jobs:
 
   # ── Frontend: chat logic tests + a real production build ─────────────────────
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -269,7 +284,7 @@ jobs:
   # biome.jsonc is the guardrail for real defects (a11y, unused code, floating
   # promises). Errors fail this job; warnings are reported but do not gate.
   frontend-lint:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
