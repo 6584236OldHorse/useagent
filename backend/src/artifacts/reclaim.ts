@@ -1,37 +1,50 @@
-import { db } from "../db/client";
-import { artifacts, userUploads } from "../db/schema";
+import { db, type Executor } from "../db/client";
+import { artifacts, githubChangeSets, userUploads } from "../db/schema";
 import {
   artifactStorage,
   type ArtifactReclaimResult,
   LocalArtifactStorage,
 } from "./storage";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import { withArtifactStorageKeyLock } from "./storage-key-lock";
 
 export async function listReferencedArtifactStorageKeys(): Promise<Set<string>> {
-  const [artifactRows, uploadRows] = await Promise.all([
-    db.select({ storageKey: artifacts.storageKey }).from(artifacts),
+  const [artifactRows, uploadRows, githubRows] = await Promise.all([
+    db.select({
+      storageKey: artifacts.storageKey,
+      previewStorageKey: artifacts.previewStorageKey,
+    }).from(artifacts),
     db.select({ storageKey: userUploads.storageKey }).from(userUploads),
+    db.select({ storageKey: githubChangeSets.payloadStorageKey }).from(githubChangeSets),
   ]);
   return new Set([
     ...artifactRows.map((row) => row.storageKey),
+    ...artifactRows.flatMap((row) => row.previewStorageKey ? [row.previewStorageKey] : []),
     ...uploadRows.map((row) => row.storageKey),
+    ...githubRows.map((row) => row.storageKey),
   ]);
 }
 
-export async function artifactStorageKeyIsReferenced(storageKey: string): Promise<boolean> {
-  const [artifactRows, uploadRows] = await Promise.all([
-    db
-      .select({ found: sql<number>`1` })
-      .from(artifacts)
-      .where(eq(artifacts.storageKey, storageKey))
-      .limit(1),
-    db
-      .select({ found: sql<number>`1` })
-      .from(userUploads)
-      .where(eq(userUploads.storageKey, storageKey))
-      .limit(1),
-  ]);
-  return artifactRows.length > 0 || uploadRows.length > 0;
+export async function artifactStorageKeyIsReferenced(
+  storageKey: string,
+  exec: Executor = db,
+): Promise<boolean> {
+  const [row] = await exec.execute(sql`
+    select 1 as found
+    where exists (
+      select 1 from ${artifacts}
+      where ${artifacts.storageKey} = ${storageKey}
+         or ${artifacts.previewStorageKey} = ${storageKey}
+    ) or exists (
+      select 1 from ${userUploads}
+      where ${userUploads.storageKey} = ${storageKey}
+    ) or exists (
+      select 1 from ${githubChangeSets}
+      where ${githubChangeSets.payloadStorageKey} = ${storageKey}
+    )
+    limit 1
+  `);
+  return Boolean(row);
 }
 
 export async function reclaimUnreferencedLocalArtifacts(input: {
@@ -48,5 +61,8 @@ export async function reclaimUnreferencedLocalArtifacts(input: {
     ...input,
     referencedKeys,
     isReferenced: artifactStorageKeyIsReferenced,
+    withStorageKeyLock: (storageKey, action) =>
+      withArtifactStorageKeyLock(storageKey, (tx) =>
+        action(() => artifactStorageKeyIsReferenced(storageKey, tx))),
   });
 }

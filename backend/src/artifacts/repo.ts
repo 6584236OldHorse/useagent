@@ -186,8 +186,9 @@ export async function applyArtifactPdfPageRevision(input: {
   readonly sha256: string;
   readonly storageKey: string;
   readonly sizeBytes: number;
+  readonly exec?: Executor;
 }): Promise<ArtifactRecord | null> {
-  const [updated] = await db
+  const [updated] = await (input.exec ?? db)
     .update(artifacts)
     .set({
       sha256: input.sha256,
@@ -269,8 +270,9 @@ export async function getArtifact(id: string): Promise<ArtifactRecord | null> {
 export async function findArtifactByOrgAndSha256(
   orgId: string,
   sha256: string,
+  exec: Executor = db,
 ): Promise<ArtifactRecord | null> {
-  const [row] = await db
+  const [row] = await exec
     .select()
     .from(artifacts)
     .where(and(eq(artifacts.orgId, orgId), eq(artifacts.sha256, sha256)))
