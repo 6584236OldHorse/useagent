@@ -19,6 +19,7 @@ import {
   buildNativeRuntimeInstallCommand,
   NATIVE_RUNTIME_ARTIFACT,
 } from "../engines/native-runtime-artifact";
+import { buildRuntimeEnvironmentBootScript, runtimeEnvironmentBootPath } from "../engines/runtime-environment-boot";
 import {
   buildPiRuntimeEnsureCommand,
   PI_RUNTIME_LOCK_SHA256,
@@ -123,9 +124,13 @@ export function desktopToolchainCommand(layout: SandboxRuntimeLayout): string {
 }
 
 /** The name every renderer produces for these inputs; stable across providers. */
-export function nativeImageName(inputs: Pick<NativeImageInputs, "claudeEnvironment">): string {
+export function nativeImageName(
+  inputs: Pick<NativeImageInputs, "claudeEnvironment">,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   const fingerprint = sha256(JSON.stringify({
     recipe: NATIVE_IMAGE_RECIPE_VERSION,
+    boot: sha256(buildRuntimeEnvironmentBootScript(env, { home: "/root", workdir: "/root/work", runsAsRoot: true })),
     runtime: NATIVE_RUNTIME_ARTIFACT.sourceCommit,
     runtimeArchive: NATIVE_RUNTIME_ARTIFACT.archiveSha256,
     runtimeDependencyLock: NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256,
@@ -151,7 +156,11 @@ export function isNativeImageName(name: string | null | undefined): boolean {
   return /^useagent-native-[0-9a-f]{7}-[0-9a-f]{10}$/.test(name ?? "");
 }
 
-export function nativeImageSteps(layout: SandboxRuntimeLayout, inputs: NativeImageInputs): NativeImageStep[] {
+export function nativeImageSteps(
+  layout: SandboxRuntimeLayout,
+  inputs: NativeImageInputs,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): NativeImageStep[] {
   const home = layout.home;
   const bunStage = `${home}/.local/share/useagent/bun/.stage-image`;
   const runtimeStage = `${home}/.local/share/useagent/native-runtime/.stage-image`;
@@ -192,6 +201,12 @@ export function nativeImageSteps(layout: SandboxRuntimeLayout, inputs: NativeIma
         timeoutSeconds: 600,
       }];
     }),
+    {
+      name: "boot",
+      files: [{ path: runtimeEnvironmentBootPath(layout), bytes: Buffer.from(buildRuntimeEnvironmentBootScript(env, layout), "utf8") }],
+      command: `chmod 0755 ${q(runtimeEnvironmentBootPath(layout))}`,
+      timeoutSeconds: 30,
+    },
     {
       name: "pi",
       files: [
@@ -280,6 +295,7 @@ export function renderNativeImageDockerfile(
   layout: SandboxRuntimeLayout,
   inputs: NativeImageInputs,
   baseImageArg = "USEAGENT_NATIVE_BASE_IMAGE",
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): NativeImageDockerfile {
   const files: { contextPath: string; bytes: Buffer }[] = [];
   const scripts = "/tmp/useagent-native-image";
@@ -291,7 +307,7 @@ export function renderNativeImageDockerfile(
     `ENV HOME=${layout.home} DEBIAN_FRONTEND=noninteractive`,
     `RUN mkdir -p ${layout.workdir}`,
   ];
-  nativeImageSteps(layout, inputs).forEach((step, index) => {
+  nativeImageSteps(layout, inputs, env).forEach((step, index) => {
     const context = `context/${index}-${step.name}`;
     const staged = `${scripts}/${index}-${step.name}`;
     // Files land in a staging area and the step copies them into place, so the
@@ -314,7 +330,12 @@ export function renderNativeImageDockerfile(
     });
     lines.push(`${copy} ${context}/step.sh ${script}`, `RUN sh ${script} && rm -rf ${script} ${staged}`);
   });
-  lines.push(`RUN rm -rf ${scripts}`, `LABEL org.useagent.native-image=${nativeImageName(inputs)}`);
+  lines.push(
+    `RUN rm -rf ${scripts}`,
+    `LABEL org.useagent.native-image=${nativeImageName(inputs, env)}`,
+    // A sandbox comes up with its runtime ready; providers that ignore the image entrypoint still work, the plane repairs.
+    `ENTRYPOINT [${JSON.stringify(runtimeEnvironmentBootPath(layout))}]`,
+  );
   return { dockerfile: `${lines.filter((line) => line !== "").join("\n")}\n`, files };
 }
 

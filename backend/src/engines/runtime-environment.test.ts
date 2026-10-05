@@ -12,6 +12,7 @@ import {
 import {
   buildRuntimeEnvironmentLaunchCommand,
   buildRuntimeEnvironmentReadinessCommand,
+  runtimeEnvironmentFlags,
   buildRuntimeIdentityPreflightCommand,
   ensureRuntimeEnvironment,
   restartRuntimeEnvironment,
@@ -401,5 +402,17 @@ describe("T3 Cube environment", () => {
 
     await prewarmRuntimeEnvironment(sandbox, new AbortController().signal, {});
     expect(calls).toBe(0);
+  });
+});
+
+describe("runtime flags marker", () => {
+  test("the launch records the flags it started with and readiness checks the plane still wants them", () => {
+    expect(runtimeEnvironmentFlags({})).toBe("child-forwarding=off");
+    expect(runtimeEnvironmentFlags({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toBe("child-forwarding=on");
+    expect(buildRuntimeEnvironmentLaunchCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain(
+      `printf '%s\\n' "child-forwarding=on" > "/root/.skynet/t3/.useagent-runtime-flags"`,
+    );
+    expect(buildRuntimeEnvironmentReadinessCommand({})).toContain('.useagent-runtime-flags" 2>/dev/null)" = "child-forwarding=off"');
+    expect(buildRuntimeEnvironmentReadinessCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain('= "child-forwarding=on"');
   });
 });

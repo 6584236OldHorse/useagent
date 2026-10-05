@@ -42,6 +42,12 @@ export const RUNTIME_ENVIRONMENT_HOME = "$HOME/.skynet/t3";
 export const RUNTIME_ENVIRONMENT_WORKDIR = "/root/work";
 export const RUNTIME_SANDBOX_HOME = "/root";
 const RUNTIME_MCP_SERVER_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-required-mcp`;
+/** What the running runtime was launched with; readiness compares it with what the plane wants now. */
+const RUNTIME_FLAGS_MARKER = `${RUNTIME_ENVIRONMENT_HOME}/.useagent-runtime-flags`;
+
+export function runtimeEnvironmentFlags(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  return `child-forwarding=${runtimeCodexChildForwardingEnabled(env) ? "on" : "off"}`;
+}
 const RUNTIME_READINESS_DEADLINE_MS = 60_000;
 const RUNTIME_READINESS_DELAY_MS = 100;
 const RUNTIME_STOP_DEADLINE_MS = 15_000;
@@ -65,7 +71,7 @@ export interface RuntimeEnvironment {
 
 const environmentOperations = new Map<string | RuntimeEnvironmentSandbox, Promise<RuntimeEnvironment>>();
 
-const ROOT_RUNTIME_LAYOUT: SandboxRuntimeLayout = {
+export const ROOT_RUNTIME_LAYOUT: SandboxRuntimeLayout = {
   home: RUNTIME_SANDBOX_HOME,
   workdir: RUNTIME_ENVIRONMENT_WORKDIR,
   runsAsRoot: true,
@@ -86,9 +92,12 @@ export function runtimeEnvironmentEnabled(
   return value === "1" || value === "true";
 }
 
-export function buildRuntimeEnvironmentReadinessCommand(): string {
+export function buildRuntimeEnvironmentReadinessCommand(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
   return [
     `test "$(cat \"${RUNTIME_MCP_SERVER_MARKER}\" 2>/dev/null)" = "${TOOL_GATEWAY_SERVER_NAME}"`,
+    `test "$(cat \"${RUNTIME_FLAGS_MARKER}\" 2>/dev/null)" = "${runtimeEnvironmentFlags(env)}"`,
     `test "$(cat \"${RUNTIME_ENVIRONMENT_HOME}/.useagent-native-runtime\" 2>/dev/null)" = "${NATIVE_RUNTIME_ARTIFACT.archiveSha256}:${NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256}"`,
     `curl -fsS -m 3 -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/auth/session`,
   ].join(" && ");
@@ -197,6 +206,7 @@ export function buildRuntimeEnvironmentLaunchCommand(
     `mkdir -p "${runtimeHome}" "${layout.workdir}"`,
     `test -x "${nativeRuntimeExecutable(layout)}"`,
     `printf '%s\\n' "${TOOL_GATEWAY_SERVER_NAME}" > "${runtimeHome}/.useagent-required-mcp"`,
+    `printf '%s\\n' "${runtimeEnvironmentFlags(env)}" > "${runtimeHome}/.useagent-runtime-flags"`,
     `printf '%s\\n' "${NATIVE_RUNTIME_ARTIFACT.archiveSha256}:${NATIVE_RUNTIME_ARTIFACT.dependencyLockSha256}" > "${runtimeHome}/.useagent-native-runtime"`,
     // Org secrets are deliberately NOT sourced into the T3 process environment:
     // the codex provider adapter composes child/session environments from the

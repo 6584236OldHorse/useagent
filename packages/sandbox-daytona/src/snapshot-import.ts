@@ -36,6 +36,8 @@ export interface ImportDaytonaSnapshotInput {
   /** Replace a snapshot of the same name even when it is active. */
   readonly force?: boolean;
   readonly resources?: { readonly cpu: number; readonly memory: number; readonly disk: number };
+  /** The image's entrypoint; without one the sandbox idles until the plane starts the runtime. */
+  readonly entrypoint?: readonly string[];
   readonly log?: (line: string) => void;
 }
 
@@ -265,7 +267,7 @@ async function importWithClient(
       name: input.name,
       image: input.image,
       resources,
-      entrypoint: ["sleep", "infinity"],
+      entrypoint: input.entrypoint ?? ["sleep", "infinity"],
     },
     { onLogs: (line) => log(line), timeout: IMPORT_DEADLINE_MS / 1000 },
   );
