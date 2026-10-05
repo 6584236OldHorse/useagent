@@ -11,16 +11,15 @@ const GHCR = "ghcr.io";
 const DEFAULT_LIFETIME_SECONDS = 300;
 const RENEW_MARGIN_SECONDS = 30;
 
-export interface RegistryPullEnv {
-  readonly USEAGENT_REGISTRY_TOKEN?: string;
-  readonly USEAGENT_REGISTRY_USER?: string;
-}
+export type RegistryPullEnv = Readonly<Record<string, string | undefined>>;
 
 /** Registry host and repository path of an OCI reference, or null when it is not one we can log into. */
 export function imageRepository(ref: string): { registry: string; repository: string } | null {
   const match = /^([a-z0-9.-]+\.[a-z0-9]+(?::\d+)?)\/([a-z0-9._\/-]+?)(?:[:@].*)?$/i.exec(ref.trim());
-  if (!match) return null;
-  return { registry: match[1].toLowerCase(), repository: match[2] };
+  const registry = match?.[1];
+  const repository = match?.[2];
+  if (!registry || !repository) return null;
+  return { registry: registry.toLowerCase(), repository };
 }
 
 export interface PullCredentialSource {
