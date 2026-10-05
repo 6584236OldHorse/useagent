@@ -2,7 +2,7 @@
 
 Live QA thread `54f9f77f-4c00-4bf6-8301-84e21a46918b` advertised `/compact`. Submitting it created run `5214992b-db93-43e4-9bfe-f9b8ab1d3dee`, which failed after45 seconds with "The provider produced no first activity". A normal follow-up still found the original files in the same sandbox.
 
-![Compact failure and retained-workspace follow-up](live-timeout.png)
+The screenshot of the failure and the retained-workspace follow-up is attached to pull request #335.
 
 The pinned native runtime handles Compact as a non-turn operation. Its completion is a context-compaction activity with the accepted message requestId, not a new latestTurn. The old waiter ignored these unchanged-turn snapshots. The screenshot proves the observed timeout; source and regression tests establish the wrong completion contract, not that every timed-out provider operation necessarily succeeded.
 
