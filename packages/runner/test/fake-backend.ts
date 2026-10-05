@@ -69,14 +69,21 @@ export class FakeBackend implements LocalBackend {
   async available() {
     return null;
   }
-  async pullImage(ref: string, _onProgress?: (line: string) => void, login?: RegistryLogin) {
+  async pullImage(ref: string, _onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal) {
     if (this.pullFails) throw new Error(this.pullFails);
+    if (this.pullBlocks) {
+      await new Promise<void>((resolve) => { this.releasePull = resolve; signal?.addEventListener("abort", () => resolve(), { once: true }); });
+      if (signal?.aborted) { this.calls.push(`pull ${ref} stopped`); throw new Error(`pull ${ref} stopped`); }
+    }
     this.calls.push(`pull ${ref}${login ? ` as ${login.username}@${login.registry}` : ""}`);
     if (login) this.passwords.push(login.password);
     const digest = this.pullYields.get(ref);
     if (digest) this.images.set(ref, digest);
   }
   pullFails: string | null = null;
+  /** A pull that waits until released or aborted, to test stops during a pull. */
+  pullBlocks = false;
+  releasePull: (() => void) | null = null;
   /** What a pull of each reference leaves on disk. */
   readonly pullYields = new Map<string, string>();
   /** Passwords presented with pulls, kept out of `calls` so a test can check nothing leaks. */

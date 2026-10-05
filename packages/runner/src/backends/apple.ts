@@ -75,7 +75,7 @@ export class AppleContainerBackend implements LocalBackend {
     return null;
   }
 
-  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void> {
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void> {
     // The container tool keeps logins in the keychain: log in for this pull and out again after.
     if (login) {
       const result = await runCli(["container", "registry", "login", login.registry, "--username", login.username, "--password-stdin"], {
@@ -85,7 +85,10 @@ export class AppleContainerBackend implements LocalBackend {
       if (result.exitCode !== 0) throw new BackendError("internal", `container registry login ${login.registry} failed: ${result.stderr.trim()}`);
     }
     try {
+      if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
       const proc = Bun.spawn(["container", "image", "pull", ref], { stdout: "pipe", stderr: "pipe" });
+      const abort = () => proc.kill();
+      signal?.addEventListener("abort", abort, { once: true });
       let last = "";
       const relay = async (stream: ReadableStream<Uint8Array>) => {
         const decoder = new TextDecoder();
@@ -99,7 +102,10 @@ export class AppleContainerBackend implements LocalBackend {
         }
       };
       await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-      if ((await proc.exited) !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
+      const code = await proc.exited;
+      signal?.removeEventListener("abort", abort);
+      if (signal?.aborted) throw new BackendError("internal", `container image pull ${ref} stopped`);
+      if (code !== 0) throw new BackendError("internal", `container image pull ${ref} failed${last ? `: ${last}` : ""}`);
     } finally {
       if (login) await runCli(["container", "registry", "logout", login.registry], { timeoutMs: 30_000 }).catch(() => undefined);
     }

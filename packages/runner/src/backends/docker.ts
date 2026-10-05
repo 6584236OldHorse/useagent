@@ -54,19 +54,23 @@ export class DockerBackend implements LocalBackend {
     return null;
   }
 
-  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void> {
+  async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void> {
     // A login lives in a private config directory for this one pull, so nothing
     // touches the machine's own docker login state.
     const config = login ? await mkdtemp(join(tmpdir(), "useagent-pull-")) : null;
+    let env: NodeJS.ProcessEnv = process.env;
     if (config && login) {
       await writeFile(join(config, "config.json"), JSON.stringify({ auths: { [login.registry]: { auth: btoa(`${login.username}:${login.password}`) } } }));
+      // The machine's own config also selects the daemon (its current context);
+      // the private one must keep talking to that same daemon.
+      const host = process.env.DOCKER_HOST?.trim() || (await runCli(["docker", "context", "inspect", "--format", "{{(index .Endpoints \"docker\").Host}}"], { timeoutMs: 10_000 })).stdout.trim();
+      env = { ...process.env, DOCKER_CONFIG: config, ...(host ? { DOCKER_HOST: host } : {}) };
     }
     try {
-      const proc = Bun.spawn(["docker", "pull", ref], {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: config ? { ...process.env, DOCKER_CONFIG: config } : process.env,
-      });
+      if (signal?.aborted) throw new BackendError("internal", `docker pull ${ref} stopped`);
+      const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe", env });
+      const abort = () => proc.kill();
+      signal?.addEventListener("abort", abort, { once: true });
       let last = "";
       const relay = async (stream: ReadableStream<Uint8Array>) => {
         const decoder = new TextDecoder();
@@ -80,7 +84,10 @@ export class DockerBackend implements LocalBackend {
         }
       };
       await Promise.all([relay(proc.stdout), relay(proc.stderr)]);
-      if ((await proc.exited) !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
+      const code = await proc.exited;
+      signal?.removeEventListener("abort", abort);
+      if (signal?.aborted) throw new BackendError("internal", `docker pull ${ref} stopped`);
+      if (code !== 0) throw new BackendError("internal", `docker pull ${ref} failed${last ? `: ${last}` : ""}`);
     } finally {
       if (config) await rm(config, { recursive: true, force: true });
     }

@@ -108,3 +108,21 @@ test("without a plane credential the proxy says so instead of pulling anonymousl
   expect(response.status).toBe(502);
   expect(calls).toEqual([]);
 });
+
+test("the probe answers with and without its trailing slash", async () => {
+  const { request } = harness(() => new Response(null, { status: 500 }));
+  expect((await request("/", { headers: { authorization: "Bearer good-token" } })).status).toBe(200);
+  expect((await request("", { headers: { authorization: "Bearer good-token" } })).status).toBe(200);
+  expect((await request("/")).headers.get("www-authenticate")).toContain("Bearer realm=");
+});
+
+test("a reference that is not a tag or a digest never reaches the upstream", async () => {
+  const { request, calls } = harness(() => new Response(null, { status: 200 }));
+  for (const bad of ["..%2f..%2fbackend%2fmanifests%2flatest", "..", "a%2fb", "sha256:short"]) {
+    const response = await request(`/useagenthq/sandbox/manifests/${bad}`, { headers: { authorization: "Bearer good-token" } });
+    expect(response.status).toBe(404);
+  }
+  expect(calls).toEqual([]);
+  const ok = await request(`/useagenthq/sandbox/manifests/sha256:${"a".repeat(64)}`, { headers: { authorization: "Bearer good-token" } });
+  expect(ok.status).toBe(200);
+});

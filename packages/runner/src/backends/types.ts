@@ -85,7 +85,7 @@ export interface LocalBackend {
   /** Null when the engine is usable, else why not. */
   available(): Promise<string | null>;
   /** Pull `ref`; with a login, the engine authenticates to that registry for this pull only. */
-  pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin): Promise<void>;
+  pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void>;
   /** The digest of a local image reference, or null when it is not present. */
   imageDigest(ref: string): Promise<string | null>;
   removeImage(ref: string): Promise<void>;

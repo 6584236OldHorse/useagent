@@ -9,7 +9,7 @@ export interface ImageProgress {
 }
 
 /** Make `image` present at its digest. Resolves with the digest now on disk. */
-export async function ensureImage(backend: LocalBackend, image: ImageRef, onProgress?: ImageProgress): Promise<string> {
+export async function ensureImage(backend: LocalBackend, image: ImageRef, onProgress?: ImageProgress, signal?: AbortSignal): Promise<string> {
   const present = await backend.imageDigest(image.ref);
   if (present === image.digest) return present;
   let lines = 0;
@@ -26,6 +26,7 @@ export async function ensureImage(backend: LocalBackend, image: ImageRef, onProg
       onProgress?.(Math.min(0.95, 1 - 1 / (1 + lines / 25)), line);
     },
     login,
+    signal,
   );
   const pulled = await backend.imageDigest(image.ref);
   if (pulled !== image.digest) {
