@@ -20,7 +20,7 @@ import {
 import { createHash, createHmac } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { artifacts, commands, runs, slackOutbox, slackRunResponses, slackThreads, userUploads } from "../src/db/schema";
+import { artifacts, commands, member, runs, slackOutbox, slackRunResponses, slackThreads, user, userUploads } from "../src/db/schema";
 import { artifactStorage } from "../src/artifacts/storage";
 import { finalizeRun } from "../src/runs/finalize";
 import { createRun, insertStep, updateStepCode } from "../src/runs/repo";
@@ -45,7 +45,7 @@ import { markdownChunksFor, openingStreamChunks, taskUpdateChunk } from "../src/
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { setSlackClientForTest, type SlackClient } from "../src/slack";
-import { requestSlackAccess } from "../src/slack/access-requests";
+import { bindInvitedSlackSender, requestSlackAccess } from "../src/slack/access-requests";
 import { handleSlackEvent, resetSlackDeduperForTest, type SlackEnvelope } from "../src/slack/events";
 import { setInboundFileDownloaderForTest } from "../src/slack/inbound-files";
 import {
@@ -2809,6 +2809,81 @@ describe("slack workspace identity (fail closed)", () => {
     expect((await listed()).body.requests.some((r) => r.id === id)).toBe(false);
     const decide = await json(`/api/team/access-requests/${id}/deny`, { method: "POST", body: {} });
     expect(decide.status).toBe(404);
+  });
+
+  test("a lapsed invitation leaves nothing behind: the typed address is no evidence", async () => {
+    const slackUserId = `U-${uid("lapsed")}`;
+    const channel = `D${uid("dm")}`;
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("x")}`, ts: `${uid("ts")}.1` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("asked this workspace's admins")) ?? null);
+    const listed = () => json<{ requests: Array<{ id: string; name: string; email: string | null }> }>("/api/team/access-requests");
+    const request = (await listed()).body.requests.find((r) => r.name === slackUserId)!;
+    const victim = await createOrgSession("victim");
+    const invited = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: victim.email } });
+    expect(invited.body.status).toBe("invited");
+    const [inv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${request.id}`);
+    // The admin cancels it (what the library's cancel-invitation writes).
+    await db.execute(sql`update invitation set status = 'canceled' where id = ${(inv as { invitation_id: string }).invitation_id}`);
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("y")}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => (await listed()).body.requests.find((r) => r.id === request.id) ?? null);
+    const reopened = (await listed()).body.requests.find((r) => r.id === request.id)!;
+    expect(reopened.email).toBeNull();
+    const again = await json<{ message?: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: {} });
+    expect(again.status).toBe(400); // nothing to bind to without an address
+    const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
+    expect(binding).toBeUndefined();
+  });
+
+  test("a member invited on a Slack sender's behalf accepts with the membership they have", async () => {
+    const slackUserId = `U-${uid("insider")}`;
+    const insider = await createOrgSession("insider");
+    const [insiderUser] = await db.select({ id: user.id }).from(user).where(eq(user.email, insider.email));
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: insiderUser!.id, role: "member", createdAt: new Date() });
+    const client = { userInfo: async () => null } as unknown as SlackClient;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client })).toBe("asked");
+    const request = (await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests")).body.requests.find((r) => r.name === slackUserId)!;
+    const invited = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: insider.email } });
+    expect(invited.body.status).toBe("invited");
+    const [inv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${request.id}`);
+    const accepted = await json("/api/auth/organization/accept-invitation", { method: "POST", cookies: insider.cookies, body: { invitationId: (inv as { invitation_id: string }).invitation_id } });
+    expect(accepted.status).toBe(200);
+    const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
+    expect((binding as { user_id: string }).user_id).toBe(insiderUser!.id);
+    const memberships = await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, DEV_ORG_ID), eq(member.userId, insiderUser!.id)));
+    expect(memberships).toHaveLength(1);
+  });
+
+  test("an invitation accepted before the bind still binds on the next message, and a rebound workspace refuses an old one", async () => {
+    const slackUserId = `U-${uid("early")}`;
+    const channel = `D${uid("dm")}`;
+    const client = { userInfo: async () => null } as unknown as SlackClient;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client })).toBe("asked");
+    const request = (await json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests")).body.requests.find((r) => r.name === slackUserId)!;
+    const email = `${uid("early")}@example.test`;
+    await json(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email } });
+    const [inv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${request.id}`);
+    const invitationId = (inv as { invitation_id: string }).invitation_id;
+    // The library accepted (status, membership) but our binding never ran.
+    const [account] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Early Bird', ${email}, true) returning id`);
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (account as { id: string }).id, role: "member", createdAt: new Date() });
+    await db.execute(sql`update invitation set status = 'accepted' where id = ${invitationId}`);
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("z")}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("You are in now")) ?? null);
+    const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
+    expect((binding as { user_id: string }).user_id).toBe((account as { id: string }).id);
+
+    // A workspace rebound elsewhere: an old invitation for it binds nothing.
+    const teamId = `T-${uid("moved")}`;
+    await upsertSlackWorkspace({ teamId, orgId: DEV_ORG_ID, userId: DEV_USER_ID });
+    const other = `U-${uid("moved")}`;
+    const requestId = crypto.randomUUID();
+    const oldInvitation = crypto.randomUUID();
+    await db.execute(sql`insert into invitation (id, organization_id, email, role, status, expires_at, inviter_id) values (${oldInvitation}, ${DEV_ORG_ID}, ${`${uid("moved")}@example.test`}, 'member', 'pending', now() + interval '1 day', ${DEV_USER_ID})`);
+    await db.execute(sql`insert into slack_access_requests (id, team_id, slack_user_id, org_id, name, status, invitation_id) values (${requestId}, ${teamId}, ${other}, ${DEV_ORG_ID}, 'Moved', 'invited', ${oldInvitation})`);
+    await upsertSlackWorkspace({ teamId, orgId: `org-${uid("elsewhere")}`, userId: DEV_USER_ID });
+    expect(await bindInvitedSlackSender(oldInvitation, DEV_USER_ID)).toBe(false);
+    const [none] = await db.execute(sql`select user_id from slack_users where team_id = ${teamId} and slack_user_id = ${other}`);
+    expect(none).toBeUndefined();
   });
 
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {

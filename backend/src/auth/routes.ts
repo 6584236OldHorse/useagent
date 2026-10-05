@@ -2,7 +2,7 @@ import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
-import { bindInvitedSlackSender } from "../slack/access-requests";
+import { acceptLinkedInvitationAsMember, bindInvitedSlackSender } from "../slack/access-requests";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
@@ -398,6 +398,13 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
   const request = c.req.raw;
   const body = await jsonBody(request);
   const session = await auth.api.getSession({ headers: request.headers });
+  if (session && body && typeof body.invitationId === "string") {
+    // Already a member here, invited on a Slack sender's behalf: the library
+    // would add a second membership, so the invitation is consumed directly.
+    if (await acceptLinkedInvitationAsMember(body.invitationId, { id: session.user.id, email: session.user.email })) {
+      return c.json({ status: "accepted" });
+    }
+  }
   const response = await auth.handler(request);
   if (response.ok && session && body && typeof body.invitationId === "string") {
     await bindInvitedSlackSender(body.invitationId, session.user.id);

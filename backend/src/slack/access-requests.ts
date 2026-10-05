@@ -36,14 +36,29 @@ export function validEmail(value: string | null | undefined): value is string {
   );
 }
 
-async function invitationOpen(id: string | null, exec: Executor): Promise<boolean> {
-  if (!id) return false;
+type InvitationState = "open" | "accepted" | "gone";
+
+async function invitationState(id: string | null, exec: Executor): Promise<InvitationState> {
+  if (!id) return "gone";
   const [row] = await exec
-    .select({ id: invitation.id })
+    .select({ status: invitation.status, expiresAt: invitation.expiresAt })
     .from(invitation)
-    .where(and(eq(invitation.id, id), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+    .where(eq(invitation.id, id))
     .limit(1);
-  return row !== undefined;
+  if (row?.status === "accepted") return "accepted";
+  return row?.status === "pending" && row.expiresAt > new Date() ? "open" : "gone";
+}
+
+/** The account that accepted the invitation: the library admits only the
+ *  person whose address it names, so that address's user is the acceptor. */
+async function acceptorOf(invitationId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: user.id })
+    .from(invitation)
+    .innerJoin(user, eq(user.email, invitation.email))
+    .where(eq(invitation.id, invitationId))
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /** Record the request once and tell the admins who are reachable on Slack. The
@@ -71,7 +86,11 @@ export async function requestSlackAccess(input: {
   // A pending request that already carries Slack's word about the address needs
   // nothing more; one without it gets another look, in case the lookup failed.
   if (existing?.status === "pending" && existing.email) return "waiting";
-  if (existing?.status === "invited" && (await invitationOpen(existing.invitationId, db))) return "invited";
+  if (existing?.status === "invited") {
+    const state = await invitationState(existing.invitationId, db);
+    if (state === "open") return "invited";
+    if (state === "accepted") return settleAccepted(existing.invitationId!);
+  }
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
   const name = profile?.name ?? input.slackUserId;
@@ -83,7 +102,7 @@ export async function requestSlackAccess(input: {
     .where(and(eq(slackUsers.teamId, input.teamId), eq(slackUsers.orgId, input.orgId)));
   const who = email ? `${name} (${email})` : name;
   const id = existing?.id ?? crypto.randomUUID();
-  const verdict = await db.transaction(async (tx): Promise<AccessRequestVerdict> => {
+  const verdict = await db.transaction(async (tx): Promise<AccessRequestVerdict | "accepted_unbound"> => {
     const [locked] = existing
       ? await tx.select({ status: slackAccessRequests.status, invitationId: slackAccessRequests.invitationId }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
       : [];
@@ -97,7 +116,11 @@ export async function requestSlackAccess(input: {
       }
       return "waiting";
     }
-    if (locked?.status === "invited" && (await invitationOpen(locked.invitationId, tx))) return "invited";
+    if (locked?.status === "invited") {
+      const state = await invitationState(locked.invitationId, tx);
+      if (state === "open") return "invited";
+      if (state === "accepted") return "accepted_unbound";
+    }
     if (locked?.status === "allowed") {
       // A stale event from before the decision must not reopen a live
       // membership; only a membership that is gone asks again.
@@ -126,8 +149,17 @@ export async function requestSlackAccess(input: {
     }
     return "asked";
   });
+  if (verdict === "accepted_unbound") return settleAccepted(existing!.invitationId!);
   if (verdict === "asked") kickSlackOutbox();
   return verdict;
+}
+
+/** An invitation accepted while the request still says invited (a message
+ *  landed between the library's acceptance and our binding): finish the binding now. */
+async function settleAccepted(invitationId: string): Promise<AccessRequestVerdict> {
+  const acceptor = await acceptorOf(invitationId);
+  if (acceptor) await bindInvitedSlackSender(invitationId, acceptor);
+  return "already_in";
 }
 
 export interface AccessRequestRow {
@@ -207,7 +239,9 @@ export async function decideAccessRequest(input: {
       if (!(await canSignIn(typed))) return "no_way_in";
       invited = { id: crypto.randomUUID(), email: typed, expiresAt: new Date(Date.now() + INVITATION_EXPIRES_IN_SECONDS * 1000) };
       await tx.insert(invitation).values({ ...invited, organizationId: input.orgId, role: "member", status: "pending", inviterId: input.decidedBy.id });
-      await tx.update(slackAccessRequests).set({ status: "invited", email: typed, invitationId: invited.id, ...decided }).where(eq(slackAccessRequests.id, row.id));
+      // The typed address stays on the invitation; the request keeps only what
+      // Slack said, so a lapsed invitation never turns typing into evidence.
+      await tx.update(slackAccessRequests).set({ status: "invited", invitationId: invited.id, ...decided }).where(eq(slackAccessRequests.id, row.id));
       return "invited";
     }
     await admit(tx, { orgId: input.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
@@ -241,6 +275,20 @@ export async function decideAccessRequest(input: {
  *  behalf now owns that sender: bind them and tell them on Slack. */
 export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<boolean> {
   const bound = await db.transaction(async (tx) => {
+    const [linked] = await tx
+      .select({ teamId: slackAccessRequests.teamId, orgId: slackAccessRequests.orgId })
+      .from(slackAccessRequests)
+      .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
+      .limit(1);
+    if (!linked) return false;
+    // Workspace first, then the request, as in decideAccessRequest: an old
+    // invitation must not overwrite the binding a rebound workspace made.
+    const [workspace] = await tx
+      .select({ orgId: slackWorkspaces.orgId })
+      .from(slackWorkspaces)
+      .where(eq(slackWorkspaces.teamId, linked.teamId))
+      .for("update");
+    if (workspace?.orgId !== linked.orgId) return false;
     const [row] = await tx
       .select()
       .from(slackAccessRequests)
@@ -253,6 +301,34 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
   });
   if (bound) kickSlackOutbox();
   return bound;
+}
+
+/** An invitation sent for a Slack sender to someone who is already a member
+ *  here cannot go through the library, which would insert a second membership.
+ *  The matching, signed-in recipient consumes it directly and keeps their
+ *  membership; anyone else is left to the library's own checks. */
+export async function acceptLinkedInvitationAsMember(invitationId: string, who: { id: string; email: string }): Promise<boolean> {
+  const consumed = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: invitation.id, email: invitation.email, organizationId: invitation.organizationId })
+      .from(invitation)
+      .innerJoin(slackAccessRequests, and(eq(slackAccessRequests.invitationId, invitation.id), eq(slackAccessRequests.status, "invited")))
+      .where(and(eq(invitation.id, invitationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+      .for("update", { of: invitation })
+      .limit(1);
+    if (!row || row.email.toLowerCase() !== who.email.toLowerCase()) return false;
+    const [membership] = await tx
+      .select({ id: member.id })
+      .from(member)
+      .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, who.id)))
+      .limit(1);
+    if (!membership) return false;
+    await tx.update(invitation).set({ status: "accepted" }).where(eq(invitation.id, row.id));
+    return true;
+  });
+  if (!consumed) return false;
+  await bindInvitedSlackSender(invitationId, who.id);
+  return true;
 }
 
 /** Member row if missing, the binding, and the Slack reply, in the caller's transaction. */
