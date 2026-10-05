@@ -5,8 +5,8 @@ import type { NativeFrame } from "@/components/chat/native-events";
 import type { ApiStep, StepKind } from "@/components/chat/types";
 import {
   advanceLiveGrowth,
-  deriveRunningChildren,
   deriveRunningStatus,
+  deriveRunningWork,
   type LiveChannel,
   NEXT_STEP,
   NO_GROWTH,
@@ -65,7 +65,7 @@ function status(
   sessions: GatewayChildSession[] = [],
   product: ThreadRelationship[] = [],
 ) {
-  return deriveRunningStatus(t, deriveRunningChildren(t, sessions, product), latest);
+  return deriveRunningStatus(t, deriveRunningWork(t, sessions, product), latest);
 }
 
 describe("runtime adapters (claude, codex, opencode): t3 activity frames + text deltas", () => {
@@ -85,6 +85,27 @@ describe("runtime adapters (claude, codex, opencode): t3 activity frames + text 
   test("a stale answer never hides a tool that opened after it", () => {
     const t = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-2" })], liveText: "Let me check" });
     expect(status(t, "text").sentence).toBe("git status");
+  });
+
+  test("completing one call closes only that call: an earlier call still running keeps naming the work", () => {
+    const t = turn({
+      steps,
+      frames: [
+        frame(1, "t3.activity.tool.started", { callId: "call-1" }),
+        frame(2, "t3.activity.tool.started", { callId: "call-2" }),
+        frame(3, "t3.activity.tool.completed", { callId: "call-2" }),
+      ],
+    });
+    expect(status(t, "text")).toMatchObject({ phase: "working", sentence: "bun run typecheck" });
+    const both = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-1" }), frame(2, "t3.activity.tool.completed", { callId: "call-1" })] });
+    expect(status(both).phase).toBe("thinking");
+  });
+
+  test("an updated call stays open; an error tone closes it", () => {
+    const updated = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-1" }), frame(2, "t3.activity.tool.updated", { callId: "call-1" })] });
+    expect(status(updated).sentence).toBe("bun run typecheck");
+    const errored = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-1" }), frame(2, "t3.activity.tool.updated", { callId: "call-1" }, { tone: "error" })] });
+    expect(status(errored).phase).toBe("thinking");
   });
 
   test("a subagent task in flight delegates under its title and counts as running", () => {
@@ -125,6 +146,14 @@ describe("pi bridge: part frames for text, reasoning and tools", () => {
       }),
     );
     expect(s).toMatchObject({ phase: "working", sentence: "Writing the reply" });
+  });
+
+  test("a plan update is never an open call: the answer keeps streaming after a completed tool", () => {
+    const steps = [bash(0, "ls", "call-1"), step(1, "command", "todos", { tool: "todowrite", input: { todos: [] } }, "plan")];
+    const plan = frame(2, "part.tool", { callId: "pi-plan" }, { tool: "todowrite", input: { todos: [] } });
+    const t = turn({ steps, frames: [frame(1, "part.tool.completed", { callId: "call-1" }), plan], liveText: "Here is the plan" });
+    expect(status(t, "text")).toMatchObject({ phase: "working", sentence: "Writing the reply" });
+    expect(status(t).phase).toBe("thinking");
   });
 
   test("two announced calls: the open call's frame picks its own row by call id", () => {

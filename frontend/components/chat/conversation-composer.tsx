@@ -20,8 +20,8 @@ import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-mess
 import { RunningFooter } from "@/components/pro/running-footer";
 import {
   advanceLiveGrowth,
-  deriveRunningChildren,
   deriveRunningStatus,
+  deriveRunningWork,
   NO_GROWTH,
 } from "@/components/pro/running-phase";
 import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
@@ -141,8 +141,8 @@ export function ConversationComposer({
   const frames = runningTurn?.native?.nativeFrames;
   const canonical = runningTurn?.canonical;
   const executionSummary = runningTurn?.executionSummary;
-  const children = useMemo(
-    () => (runningTurn ? deriveRunningChildren(runningTurn, childSessions, ownChildren) : null),
+  const work = useMemo(
+    () => (runningTurn ? deriveRunningWork(runningTurn, childSessions, ownChildren) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runId, steps, frames, canonical, executionSummary, childSessions, ownChildren],
   );
@@ -150,7 +150,7 @@ export function ConversationComposer({
   const growth = useRef(NO_GROWTH);
   if (runningTurn) growth.current = advanceLiveGrowth(growth.current, runningTurn.run.id, runningTurn);
   const runningStatus =
-    runningTurn && children ? deriveRunningStatus(runningTurn, children, growth.current.latest) : null;
+    runningTurn && work ? deriveRunningStatus(runningTurn, work, growth.current.latest) : null;
   const canCompact =
     !running &&
     pendingReply === null &&

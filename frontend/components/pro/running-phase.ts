@@ -31,7 +31,7 @@ import type { ChildStatus, NativeFrame } from "@/components/chat/native-events";
 import { nativeOf } from "@/components/chat/native-ids";
 import { isNarration } from "@/components/chat/timeline";
 import { clip, summarizeToolStep } from "@/components/chat/tool-summary";
-import { type ApiStep, deriveTrace, isRenderableTimelineStep } from "@/components/chat/types";
+import { type ApiStep, asRecord, deriveTrace, isRenderableTimelineStep } from "@/components/chat/types";
 
 export type RunningPhase = "thinking" | "working" | "delegating";
 
@@ -91,14 +91,14 @@ export function advanceLiveGrowth(prev: LiveGrowth, runId: string, turn: Running
   return { runId, text, reasoning, cursor, latest };
 }
 
-// ── Structural part: children, tool calls, child sessions ───────────────────
+// ── Structural part: children, tool calls, child sessions, open tools ───────
 
 interface Delegate {
   readonly name: string;
   readonly sentence: string;
 }
 
-export interface RunningChildren {
+export interface RunningWork {
   readonly running: number;
   readonly done: number;
   /** The first child still running, when any is. */
@@ -106,6 +106,8 @@ export interface RunningChildren {
   /** Native sessions owned by children: their frames never speak for the parent. */
   readonly childSessionIds: ReadonlySet<string>;
   readonly toolCalls: number;
+  /** The newest root tool call still in flight, by its latest frame; null when every call closed. */
+  readonly openTool: NativeFrame | null;
 }
 
 const RUNNING = new Set<ChildStatus>(["running", "waiting"]);
@@ -127,11 +129,26 @@ function isToolCall(step: ApiStep): boolean {
   return glyph !== "boot" && glyph !== "reasoning";
 }
 
-export function deriveRunningChildren(
+/** A tool frame whose call is in flight: `t3.activity.tool.started`, `.updated`
+ *  and `.progress` from the runtime adapters (an error tone closes it, as the
+ *  backend's own in-flight check reads it), a bare `part.tool` from the pi
+ *  bridge. A plan update rides the same shapes and is never a call. */
+function toolFrameState(frame: NativeFrame): "open" | "closed" | null {
+  const t = frame.eventType;
+  if (t.startsWith("t3.activity.tool.")) {
+    if (t === "t3.activity.tool.completed" || t === "t3.activity.tool.denied") return "closed";
+    return asRecord(frame.payload)?.tone === "error" ? "closed" : "open";
+  }
+  if (!t.startsWith("part.tool")) return null;
+  if (asRecord(frame.payload)?.tool === "todowrite") return null;
+  return t === "part.tool" ? "open" : "closed";
+}
+
+export function deriveRunningWork(
   turn: RunningTurn,
   childSessions: readonly GatewayChildSession[] = [],
   productChildren: readonly ThreadRelationship[] = [],
-): RunningChildren {
+): RunningWork {
   const frames = turn.native?.nativeFrames ?? [];
   const view = deriveChildrenViewFromExecutionSummary(
     turn.steps,
@@ -177,7 +194,20 @@ export function deriveRunningChildren(
     const { sessionId, parentSessionId } = f.native;
     if (sessionId && parentSessionId && parentSessionId !== sessionId) childSessionIds.add(sessionId);
   }
-  return { running, done, active, childSessionIds, toolCalls: turn.steps.filter(isToolCall).length };
+  // Open calls are tracked per call id: completing one call closes only that
+  // call, so an earlier call still running keeps naming the work.
+  const openByCall = new Map<string, NativeFrame>();
+  for (const f of frames) {
+    if (f.native.sessionId && childSessionIds.has(f.native.sessionId)) continue;
+    const state = toolFrameState(f);
+    if (!state) continue;
+    const key = f.native.callId ?? f.eventId;
+    if (state === "open") openByCall.set(key, f);
+    else openByCall.delete(key);
+  }
+  let openTool: NativeFrame | null = null;
+  for (const f of openByCall.values()) if (!openTool || f.seq > openTool.seq) openTool = f;
+  return { running, done, active, childSessionIds, toolCalls: turn.steps.filter(isToolCall).length, openTool };
 }
 
 // ── Status part: the newest root activity ───────────────────────────────────
@@ -199,33 +229,21 @@ function stepSentence(step: ApiStep): string {
   return summarizeToolStep(step).label;
 }
 
-/** A tool frame whose call has not finished: `t3.activity.tool.started` and
- *  `.progress` from the runtime adapters, a bare `part.tool` from the pi bridge. */
-function isOpenTool(eventType: string): boolean {
-  return (
-    eventType === "t3.activity.tool.started" ||
-    eventType === "t3.activity.tool.progress" ||
-    eventType === "part.tool"
-  );
-}
-
 /** The newest root-session frame that says something about the current
- *  activity: a tool (open or closed), reasoning or text. Null without one. */
+ *  activity once every call closed: reasoning, text or a closed tool. Null without one. */
 function newestRootActivity(
   turn: RunningTurn,
   childSessionIds: ReadonlySet<string>,
-): { readonly frame: NativeFrame; readonly kind: "open-tool" | "closed" | "reasoning" | "text" } | null {
+): "closed" | "reasoning" | "text" | null {
   const frames = turn.native?.nativeFrames ?? [];
   for (let i = frames.length - 1; i >= 0; i--) {
     const f = frames[i]!;
     const t = f.eventType;
-    if (!t.startsWith("part.") && !t.startsWith("t3.activity.")) continue;
     if (f.native.sessionId && childSessionIds.has(f.native.sessionId)) continue;
-    if (isOpenTool(t)) return { frame: f, kind: "open-tool" };
-    if (t.startsWith("part.reasoning") && !t.endsWith(".completed")) return { frame: f, kind: "reasoning" };
-    if (t.startsWith("part.text")) return { frame: f, kind: "text" };
-    if (t.startsWith("part.tool") || t.startsWith("t3.activity.tool.")) return { frame: f, kind: "closed" };
-    // step start/finish, task lifecycle, approvals, questions: no activity of their own.
+    if (t.startsWith("part.reasoning") && !t.endsWith(".completed")) return "reasoning";
+    if (t.startsWith("part.text")) return "text";
+    if (toolFrameState(f) === "closed") return "closed";
+    // step start/finish, plans, task lifecycle, approvals, questions: no activity of their own.
   }
   return null;
 }
@@ -244,28 +262,30 @@ function stepActivity(turn: RunningTurn): Activity {
 
 export function deriveRunningStatus(
   turn: RunningTurn,
-  children: RunningChildren,
+  work: RunningWork,
   latest: LiveChannel = null,
 ): RunningStatus {
-  const counts = { toolCalls: children.toolCalls, agentsRunning: children.running, agentsDone: children.done };
-  if (children.active) {
+  const counts = { toolCalls: work.toolCalls, agentsRunning: work.running, agentsDone: work.done };
+  if (work.active) {
     return {
       phase: "delegating",
-      label: `Delegating ${clip(firstLine(children.active.name), NAME_MAX)}`,
-      sentence: clip(children.active.sentence, STEP_MAX),
+      label: `Delegating ${clip(firstLine(work.active.name), NAME_MAX)}`,
+      sentence: clip(work.active.sentence, STEP_MAX),
       ...counts,
     };
   }
-  const newest = newestRootActivity(turn, children.childSessionIds);
   let activity: Activity;
-  if (newest?.kind === "open-tool") {
-    const step = toolStepFor(newest.frame, turn.steps);
+  if (work.openTool) {
+    const step = toolStepFor(work.openTool, turn.steps);
     activity = step ? { phase: "working", sentence: stepSentence(step) } : THINKING;
-  } else if (latest === "text") activity = WRITING_REPLY;
-  else if (latest === "reasoning") activity = THINKING;
-  else if (newest?.kind === "reasoning") activity = THINKING;
-  else if (newest?.kind === "text") activity = WRITING_REPLY;
-  else if (newest) activity = THINKING; // a closed tool and nothing newer: the model has its result
-  else activity = stepActivity(turn);
+  } else {
+    const newest = newestRootActivity(turn, work.childSessionIds);
+    if (latest === "text") activity = WRITING_REPLY;
+    else if (latest === "reasoning") activity = THINKING;
+    else if (newest === "reasoning") activity = THINKING;
+    else if (newest === "text") activity = WRITING_REPLY;
+    else if (newest === "closed") activity = THINKING; // the model has its result and nothing newer
+    else activity = stepActivity(turn);
+  }
   return { ...activity, label: activity.phase === "thinking" ? "Thinking" : "Working", ...counts };
 }
