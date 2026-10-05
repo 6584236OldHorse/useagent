@@ -284,9 +284,15 @@ export async function getRun(id: string): Promise<RunRecord | null> {
   return row ?? null;
 }
 
-/** The thread's newest run: the turn whose mode a follow-up without a choice keeps. */
-export async function getLatestThreadRun(orgId: string, threadId: string): Promise<RunRecord | null> {
-  const [row] = await db
+/** The thread's newest run: the turn whose mode a follow-up without a choice
+ *  keeps. Read it through the acceptance transaction (under the thread's
+ *  lifecycle lock) when the answer decides what the inserted run may do. */
+export async function getLatestThreadRun(
+  orgId: string,
+  threadId: string,
+  exec: Executor = db,
+): Promise<RunRecord | null> {
+  const [row] = await exec
     .select()
     .from(runs)
     .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))

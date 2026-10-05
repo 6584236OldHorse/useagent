@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createOrgSession, json, uid } from "./helpers";
+import { acceptRunCommand } from "../src/commands";
 import { createChildSession } from "../src/runs/child-sessions";
 import { acceptThreadFollowup } from "../src/runs/thread-followups";
 import { createRun, getRun, getRunForOrg } from "../src/runs/repo";
@@ -153,5 +154,45 @@ describe("permission mode across the lanes that continue a turn", () => {
     });
     if (handoff.status !== "created") throw new Error(`handoff not created: ${handoff.status}`);
     expect((await getRun(handoff.runId))?.permissionMode).toBe("read-only");
+  });
+
+  test("a reply accepted without a choice takes the thread's mode as it stands inside the acceptance transaction", async () => {
+    const owner = await createOrgSession("perm-late-owner");
+    const root = await getRunForOrg(owner.orgId, await rootRun(owner.cookies, "full-access"));
+    if (!root) throw new Error("root run missing");
+    // A narrowing reply lands first (a person on the web); the choice-less lane
+    // (Slack, a connector) still parents its reply to the root and passes no mode.
+    const narrowed = await json<{ id: string }>("/api/runs", {
+      method: "POST",
+      cookies: owner.cookies,
+      headers: { "Idempotency-Key": uid("narrow") },
+      body: { prompt: "look only", parent_run_id: root.id, permission_mode: "read-only" },
+    });
+    expect(narrowed.status).toBe(201);
+    const id = crypto.randomUUID();
+    const accepted = await acceptRunCommand({
+      idempotencyKey: uid("late"),
+      orgId: owner.orgId,
+      actorId: root.userId,
+      run: {
+        id,
+        prompt: "and this?",
+        model: root.model,
+        engine: root.engine,
+        parentRunId: root.id,
+        threadId: root.threadId,
+        repos: [],
+        memoryScope: "org",
+        skillId: null,
+        skillVersion: null,
+        skillContentHash: null,
+        commandName: null,
+        commandProvider: null,
+        commandSessionId: null,
+        commandCatalogRevision: null,
+      },
+    });
+    expect(accepted.status).toBe("created");
+    expect((await getRun(id))?.permissionMode).toBe("read-only");
   });
 });

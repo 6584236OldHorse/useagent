@@ -35,6 +35,7 @@ import {
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
 import { configuredRuntimeMode, readOnlyRefusal, runtimeModeFor } from "./permission-mode";
+import { ensureRuntimeThreadMode } from "./runtime-thread-mode";
 import { replyToRuntimeApproval, runtimeApprovalRequest } from "./runtime-approval";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
 import { createSecretRedactor } from "../secrets/redact";
@@ -598,7 +599,16 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // the durable provider lifecycle is fresh. Always capture its current
         // turn before steering so an initialization greeting cannot be mistaken
         // for the response to this run.
-        const priorSnapshot = await readThreadSnapshot(ctx, sandbox);
+        // The runtime runs a turn with the mode stored on its THREAD, so a run
+        // whose mode differs from the thread's (a reply that changed it) sets the
+        // thread's mode and proceeds only once the runtime reports it.
+        const priorSnapshot = await ensureRuntimeThreadMode({
+          sandbox,
+          threadId,
+          runtimeMode,
+          snapshot: await readThreadSnapshot(ctx, sandbox),
+          signal: ctx.signal,
+        });
 
         // HTTP orchestration dispatch validates thread.turn.start against an
         // already-projected thread. ProviderDriver.start creates it explicitly instead of

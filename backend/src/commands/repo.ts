@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { DelegationStoppedError, hasRunCancelIntent } from "./cancel";
 import { db, type Executor } from "../db/client";
 import { bots, commands, runs, type CommandState } from "../db/schema";
-import { createRun } from "../runs/repo";
+import { createRun, getLatestThreadRun } from "../runs/repo";
 import type { RunCommandInput } from "./types";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { claimUploadsForRun, UploadClaimError } from "../uploads/repo";
@@ -85,6 +85,11 @@ export async function insertCommandWithRun(
   exec: Executor = db,
 ): Promise<void> {
   const insert = async (tx: Executor): Promise<void> => {
+    // A reply that carries no choice keeps the thread's current mode, read here
+    // under the thread lifecycle lock this acceptance holds, so a narrowing reply
+    // that committed meanwhile is never undone by an earlier, stale read.
+    const permissionMode = cmd.run.permissionMode
+      ?? (cmd.run.parentRunId ? (await getLatestThreadRun(cmd.orgId, cmd.run.threadId, tx))?.permissionMode : undefined);
     await createRun(
       {
         id: cmd.run.id,
@@ -98,7 +103,7 @@ export async function insertCommandWithRun(
         repos: cmd.run.repos,
         resolvedResources: cmd.run.resolvedResources,
         memoryScope: cmd.run.memoryScope,
-        permissionMode: cmd.run.permissionMode,
+        permissionMode,
         skillId: cmd.run.skillId,
         skillVersion: cmd.run.skillVersion,
         skillContentHash: cmd.run.skillContentHash,

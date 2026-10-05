@@ -433,7 +433,7 @@ describe("T3 run adapter gate", () => {
     );
     expect(source).toContain("const prompt = composeTurnPrompt(");
     expect(source).toContain("await establishProviderSession({");
-    expect(source).toContain("const priorSnapshot = await readThreadSnapshot(ctx, sandbox);");
+    expect(source).toContain("snapshot: await readThreadSnapshot(ctx, sandbox),");
     expect(source).not.toContain("established.resumed\n          ? await readThreadSnapshot");
     expect(source).toContain("const steerResult = await driver.steer({");
     const reloadIdx = source.indexOf("await reloadRetainedOpenCodeSession({");
@@ -468,6 +468,8 @@ describe("T3 run adapter gate", () => {
     // The observer feeds the watchdog every activity and, for a read-only run, answers its write requests.
     expect(source).toContain("projector.apply(snapshot, observe)");
     expect(source).toContain("watchdog.observeActivity(activity);");
+    // The run's mode is applied to the runtime THREAD before the turn is steered.
+    expect(source).toContain("const priorSnapshot = await ensureRuntimeThreadMode({");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
     expect(source).toContain('"turn aborted",');
