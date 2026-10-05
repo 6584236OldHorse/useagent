@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DEV_ORG_ID } from "../src/seed";
+import { DiscoveryError } from "../src/github/discovery";
 import type { GithubRepositoryAccess } from "../src/github/auth";
 import {
   clearResyncStateForTest,
@@ -36,6 +37,8 @@ interface FakeRepo {
   /** Make this repo's scan / head resolution throw. */
   failScan?: boolean;
   failHead?: boolean;
+  /** The repo has no commits yet. */
+  empty?: boolean;
 }
 
 interface Calls {
@@ -77,6 +80,7 @@ function fakeDeps(
       calls.headChecks.push(repo);
       const r = byName.get(repo)!;
       if (r.failHead) throw new Error(`ls-remote failed for ${repo}`);
+      if (r.empty) throw new DiscoveryError(`${repo} has no commits yet`, "empty_repository");
       return r.head;
     },
     scan: async (_orgId, repo, access) => {
@@ -228,6 +232,16 @@ describe("runSkillsResyncSweep", () => {
     expect(summary.reposFailed).toBe(1);
     expect(calls.scans).toEqual(["o/ok"]);
     expect(summary.created).toBe(1);
+  });
+
+  test("a repo with no commits is skipped quietly, not counted as failed", async () => {
+    const { deps, calls } = fakeDeps([
+      { name: "o/empty", head: "", empty: true },
+      { name: "o/ok", head: "s2", candidates: ["z/SKILL.md"] },
+    ]);
+    const summary = await runSkillsResyncSweep(ORG, deps);
+    expect(summary.reposFailed).toBe(0);
+    expect(calls.scans).toEqual(["o/ok"]);
   });
 
   test("unchanged HEAD short-circuits the second sweep before any scan", async () => {

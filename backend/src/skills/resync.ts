@@ -1,4 +1,4 @@
-import { resolveRepoHeadSha } from "../github/discovery";
+import { DiscoveryError, resolveRepoHeadSha } from "../github/discovery";
 import {
   resolveGithubRepositoryAccess,
   type GithubRepositoryAccess,
@@ -224,6 +224,8 @@ export async function runSkillsResyncSweep(
       }
       lastSyncedSha.set(shaKey, scan.sha);
     } catch (err) {
+      // A repo with no commits has nothing to read until its first push.
+      if (err instanceof DiscoveryError && err.kind === "empty_repository") continue;
       summary.reposFailed++;
       console.error(
         `[skills-resync] repo ${repo} failed:`,

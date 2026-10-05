@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveRepoHeadSha } from "../../github/discovery";
+import { DiscoveryError, resolveRepoHeadSha } from "../../github/discovery";
 import {
   resolveGithubRepositoryAccess,
   type GithubRepositoryAccess,
@@ -265,6 +265,8 @@ export async function runCodeIndexSweep(
       // head, so a race that advanced HEAD mid-clone re-indexes next sweep.
       lastIndexedSha.set(shaKey, snap.commitSha);
     } catch (err) {
+      // A repo with no commits has nothing to read until its first push.
+      if (err instanceof DiscoveryError && err.kind === "empty_repository") continue;
       summary.reposFailed++;
       console.error(
         `[code-index] repo ${repo} failed:`,

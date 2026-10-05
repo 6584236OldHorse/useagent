@@ -77,6 +77,14 @@ function gitAuthEnv(token: string | null): NodeJS.ProcessEnv {
   return env;
 }
 
+/** The repo exists but has no commits yet, so there is no HEAD to read. */
+export class EmptyRepositoryError extends Error {
+  constructor(repo: string) {
+    super(`${repo} has no commits yet`);
+    this.name = "EmptyRepositoryError";
+  }
+}
+
 /**
  * Resolve a repo's remote HEAD commit sha over the git smart-HTTP protocol
  * (`ls-remote`), the same transport the clone uses. This exists because the
@@ -89,17 +97,13 @@ export async function resolveRemoteHeadSha(
 ): Promise<string> {
   if (!isValidRepoRef(repo)) throw new Error(`invalid repo ref: ${repo}`);
   const url = `https://github.com/${repo}.git`;
+  let stdout: string;
   try {
-    const { stdout } = await exec("git", ["ls-remote", url, "HEAD"], {
+    ({ stdout } = await exec("git", ["ls-remote", url, "HEAD"], {
       env: gitAuthEnv(access.token),
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
-    });
-    const sha = stdout.trim().split(/\s+/)[0];
-    if (!sha || !/^[0-9a-f]{40}$/.test(sha)) {
-      throw new Error(`no HEAD ref returned for ${repo}`);
-    }
-    return sha;
+    }));
   } catch (e) {
     const msg =
       e instanceof Error
@@ -107,6 +111,13 @@ export async function resolveRemoteHeadSha(
         : String(e);
     throw new Error(`failed to resolve HEAD of ${repo}: ${msg.slice(0, 200)}`);
   }
+  // ls-remote succeeds with no output on a repo that has no commits.
+  if (stdout.trim() === "") throw new EmptyRepositoryError(repo);
+  const sha = stdout.trim().split(/\s+/)[0];
+  if (!sha || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error(`failed to resolve HEAD of ${repo}: no HEAD ref returned`);
+  }
+  return sha;
 }
 
 /**
