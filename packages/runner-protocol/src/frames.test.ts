@@ -61,6 +61,9 @@ describe("control frames", () => {
     expect(parseControlFrame(JSON.stringify(hello))).toEqual(hello as never);
     expect(parseControlFrame(JSON.stringify({ ...hello, capacity: {} }))).toBeNull();
     expect(parseControlFrame(JSON.stringify({ ...hello, logins: "codex" }))).toBeNull();
+    // The backend is one of the kinds the type names, so a caller can trust the union.
+    expect(parseControlFrame(JSON.stringify({ ...hello, backend: "apple" }))).toEqual({ ...hello, backend: "apple" } as never);
+    expect(parseControlFrame(JSON.stringify({ ...hello, backend: "bogus" }))).toBeNull();
     const welcome = { t: "welcome", protocol: 1, minProtocol: 1, image: { ref: "r", digest: "sha256:0" }, heartbeatSeconds: 15, release: "abc" };
     expect(parseControlFrame(JSON.stringify(welcome))).toEqual(welcome as never);
     expect(parseControlFrame(JSON.stringify({ ...welcome, image: { ref: "r" } }))).toBeNull();

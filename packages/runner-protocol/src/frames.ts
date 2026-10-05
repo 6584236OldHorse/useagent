@@ -23,6 +23,7 @@ export interface ImageRef {
 }
 
 export type RunnerBackendKind = "docker" | "apple";
+const BACKEND_KINDS: ReadonlySet<string> = new Set<RunnerBackendKind>(["docker", "apple"]);
 
 /** First frame from the runner after the socket opens. */
 export interface HelloFrame {
@@ -249,6 +250,7 @@ export function parseControlFrame(text: string): ControlFrame | null {
         typeof value.version === "string" &&
         typeof value.protocol === "number" &&
         typeof value.backend === "string" &&
+        BACKEND_KINDS.has(value.backend) &&
         typeof value.platform === "string" &&
         isCapacity(value.capacity) &&
         isStringArray(value.logins) &&
