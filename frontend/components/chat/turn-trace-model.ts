@@ -435,7 +435,9 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
  *  for 3m 12s" (the run's own duration, else the steps' timestamps) with the
  *  call counts as the detail when the turn reasoned; otherwise the counts
  *  themselves ("4 tool calls, 2 messages") with the duration as the detail.
- *  ", N failed" when steps failed. */
+ *  ", N failed" counts the steps that failed along the way; only a turn the run
+ *  itself lost is tinted as a failure, since a step the agent recovered from is
+ *  ordinary work. */
 export function traceHeader({
   live,
   rows,
@@ -484,11 +486,11 @@ export function traceHeader({
   const failedSuffix = failures > 0 ? `, ${failures} failed` : "";
   if (thoughts > 0) {
     const thought = duration ? `Thought for ${duration}` : "Thought";
-    return { label: `${thought}${failedSuffix}`, detail: counts || null, failed: failures > 0 };
+    return { label: `${thought}${failedSuffix}`, detail: counts || null, failed: false };
   }
   return {
     label: `${counts || (changedFileCount > 0 ? `Changed ${plural(changedFileCount, "file")}` : "Context")}${failedSuffix}`,
     detail: duration,
-    failed: failures > 0,
+    failed: false,
   };
 }
