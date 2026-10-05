@@ -76,6 +76,7 @@ describe("managed control-plane identity", () => {
   const memberships = new Map<string, IdentityMembership[]>();
   const remoteOrganizations = new Map<string, IdentityOrganization>();
   const actualUserProjection = identityDirectory.user;
+  const actualOrganizationProjection = identityDirectory.organization;
   const envNames = ["AUTH", "ALLOW_DEV_ORG", "USEAGENT_DEV_MODE", "FRONTEND_ORIGIN", "GATEWAY_PUBLIC_URL", "CLERK_JWT_KEY", "CLERK_WEBHOOK_SECRET"] as const;
   let priorEnv: Record<string, string | undefined>;
   let prefix: string;
@@ -338,6 +339,47 @@ describe("managed control-plane identity", () => {
     expect((await webhook("organizationMembership.deleted", data)).status).toBe(200);
     const [recreated] = await db.select().from(member).where(eq(member.userId, local.id));
     expect(recreated?.role).toBe("owner");
+  });
+
+  test("profile email conflicts cannot retain an owner role after a membership downgrade", async () => {
+    const local = await localUser();
+    const other = await localUser(false, `occupied@${prefix}.test`);
+    const org = await localOrganization();
+    await join(local.id, org.local.id);
+    profile.email = other.email;
+    memberships.set(subject, [{ userId: subject, organization: org.remote, role: "org:member" }]);
+    expect((await webhook("organizationMembership.updated", { id: "orgmem_fixture",
+      organization: { id: org.remote.id }, public_user_data: { user_id: subject } })).status).toBe(200);
+    expect((await db.select().from(member).where(eq(member.userId, local.id)))[0]?.role).toBe("member");
+    expect((await db.select().from(user).where(eq(user.id, local.id)))[0]?.email).toBe(local.email);
+    expect((await db.select().from(user).where(eq(user.id, other.id)))[0]?.clerkUserId).toBeNull();
+  });
+
+  test("the auth rollback switch pauses webhook writes without acknowledging them", async () => {
+    const local = await localUser();
+    const org = await localOrganization();
+    await join(local.id, org.local.id);
+    process.env.AUTH = "better-auth";
+    profiles.delete(subject);
+    expect((await webhook("user.deleted", { id: subject })).status).toBe(503);
+    expect(profileReads).toBe(0);
+    expect(await db.select().from(member).where(eq(member.userId, local.id))).toHaveLength(1);
+  });
+
+  test("slugless managed organizations retain a stable local slug", async () => {
+    await localUser();
+    const remoteId = `org_${crypto.randomUUID()}`;
+    const client = spyOn(identityClientModule, "identityClient").mockReturnValue({ organizations: {
+      getOrganization: async () => ({ id: remoteId, name: prefix, slug: null, hasImage: false,
+        createdAt: Date.now(), createdBy: subject }),
+    } } as unknown as ReturnType<typeof identityClientModule.identityClient>);
+    try {
+      const projected = await actualOrganizationProjection(remoteId);
+      expect(projected.slug).toBe(remoteId);
+      remoteOrganizations.set(remoteId, projected);
+      expect((await webhook("organization.created", { id: remoteId })).status).toBe(200);
+      expect((await db.select().from(organization).where(eq(organization.clerkOrgId, remoteId)))[0]?.slug).toBe(remoteId);
+    } finally { client.mockRestore(); }
   });
 
   test("user and organization deletion revoke access while preserving durable local identities", async () => {

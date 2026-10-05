@@ -501,31 +501,67 @@ async function s9_auth(): Promise<Result> {
   const checks: Result["checks"] = [];
   const { page } = await newPage(browser);
   try {
-    await page.goto(`${FE}/login`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    const g = page.locator('[aria-label="Continue with Google"]').first();
-    checks.push({ name: "login: 'Continue with Google' present + DISABLED (unconfigured)", ok: (await g.count()) > 0 && (await g.isDisabled()) });
-    checks.push({ name: "login: honest 'not configured' hint shown", ok: (await page.getByText(/Google sign-in isn't configured/i).count()) > 0 });
-    checks.push({ name: "login: email + password fields present", ok: (await page.locator('input[type="email"]').count()) > 0 && (await page.locator('input[type="password"]').count()) > 0 });
-    checks.push({ name: "login: 'Sign in' submit present", ok: (await page.getByRole("button", { name: /^Sign in$/ }).count()) > 0 });
-
-    // /api/config honesty + ALLOW_DEV_ORG keeps the API working unauthenticated.
     const cfg = await fetch(`${FE}/api/config`, { headers: { Origin: "http://localhost:3200" } }).then((r) => r.json()).catch(() => null);
-    checks.push({ name: "config: reports google:false + allowDevOrg true", ok: cfg?.auth?.google === false && cfg?.allowDevOrg === true, note: JSON.stringify(cfg) });
-    const unauth = await fetch(`${FE}/api/runs`, { headers: { Origin: "http://localhost:3200" } });
-    checks.push({ name: "auth: ALLOW_DEV_ORG default keeps API working unauthenticated (GET /api/runs 200)", ok: unauth.status === 200, note: `HTTP ${unauth.status}` });
+    const authMode = cfg?.auth;
+    checks.push({
+      name: "config: reports a supported auth provider and allowDevOrg boolean",
+      ok: (authMode === "clerk" || authMode === "better-auth") && typeof cfg?.allowDevOrg === "boolean",
+      note: `auth=${String(authMode)} allowDevOrg=${String(cfg?.allowDevOrg)}`,
+    });
 
-    // User menu anonymous state. The Next dev-tools badge sits on top of the
-    // account button, so drop it before clicking.
+    await page.goto(`${FE}/login`, { waitUntil: "domcontentloaded" });
+    if (authMode === "better-auth") {
+      const providerCfg = await fetch(`${FE}/api/auth/provider-config`, { headers: { Origin: "http://localhost:3200" } }).then((r) => r.json()).catch(() => null);
+      const googleConfigured = providerCfg?.google === true;
+      const google = page.locator('[aria-label="Continue with Google"]').first();
+      await google.waitFor({ state: "visible" });
+      checks.push({ name: "legacy login: Google control matches provider configuration", ok: (await google.isDisabled()) === !googleConfigured, note: `configured=${googleConfigured}` });
+      checks.push({ name: "legacy login: Google configuration hint is honest", ok: ((await page.getByText(/Google sign-in isn't configured/i).count()) > 0) === !googleConfigured });
+      checks.push({
+        name: "legacy login: email and password controls match provider configuration",
+        ok: providerCfg?.emailPassword === true &&
+          (await page.locator('input[type="email"]').count()) > 0 &&
+          (await page.locator('input[type="password"]').count()) > 0 &&
+          (await page.getByRole("button", { name: /^Sign in$/ }).count()) > 0,
+      });
+    } else if (authMode === "clerk") {
+      const identifier = page.locator('input[name="identifier"]').first();
+      await identifier.waitFor({ state: "visible", timeout: 15_000 });
+      checks.push({
+        name: "managed login: identifier entry and Continue action render",
+        ok: await identifier.isVisible() &&
+          (await page.getByRole("button", { name: /^Continue$/ }).count()) > 0,
+      });
+    }
+
+    // Anonymous API behavior follows the public deployment config.
+    const unauth = await fetch(`${FE}/api/runs`, { headers: { Origin: "http://localhost:3200" } });
+    const expectedUnauthStatus = cfg?.allowDevOrg === true ? 200 : 401;
+    checks.push({
+      name: `auth: anonymous GET /api/runs follows allowDevOrg=${String(cfg?.allowDevOrg)}`,
+      ok: unauth.status === expectedUnauthStatus,
+      note: `HTTP ${unauth.status}, expected ${expectedUnauthStatus}`,
+    });
+
+    // The open dev-org path renders the anonymous menu. A closed path must
+    // redirect protected navigation to login instead.
     await page.goto(`${FE}/agent/new`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    await removeDevOverlay(page);
-    await page.locator('[aria-label="Open account menu"]').first().click();
-    await page.waitForTimeout(500);
-    const menuTxt = (await page.locator("body").innerText());
-    checks.push({ name: "user-menu (anon): shows 'Sign in', not 'Log out'", ok: /Sign in/.test(menuTxt) && !/Log out/.test(menuTxt), note: /Guest|Not signed in/.test(menuTxt) ? "shows Guest/Not signed in" : "" });
+    if (cfg?.allowDevOrg === true) {
+      await page.waitForTimeout(800);
+      await removeDevOverlay(page);
+      await page.locator('[aria-label="Open account menu"]').first().click();
+      await page.waitForTimeout(500);
+      const menuTxt = await page.locator("body").innerText();
+      checks.push({ name: "user-menu (anon): shows 'Sign in', not 'Log out'", ok: /Sign in/.test(menuTxt) && !/Log out/.test(menuTxt), note: /Guest|Not signed in/.test(menuTxt) ? "shows Guest/Not signed in" : "" });
+    } else {
+      checks.push({
+        name: "auth: protected navigation redirects anonymous users to login",
+        ok: new URL(page.url()).pathname.startsWith("/login"),
+        note: page.url(),
+      });
+    }
     await shot(page, "s9-auth");
-    return verdictOf("9. Auth surfaces (login form / Google disabled / anon menu / dev-org API)", checks);
+    return verdictOf("9. Auth surfaces (configured provider / login / anonymous API)", checks);
   } catch (e) {
     await shot(page, "s9-auth-fail");
     checks.push({ name: "scenario threw", ok: false, note: String(e).slice(0, 160) });

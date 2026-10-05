@@ -71,6 +71,18 @@ export async function syncIdentityUser(
     ...(profile.email ? { email: profile.email, emailVerified: true } : {}),
   };
   if (existing) {
+    if (changes.email) {
+      const [conflict] = await tx
+        .select({ id: user.id })
+        .from(user)
+        .where(sql`lower(${user.email}) = lower(${changes.email}) AND ${user.id} <> ${existing.id}`)
+        .limit(1);
+      // Profile metadata must not prevent authoritative role downgrades or removals.
+      if (conflict) {
+        delete changes.email;
+        delete changes.emailVerified;
+      }
+    }
     const [updated] = await tx
       .update(user)
       .set(changes)

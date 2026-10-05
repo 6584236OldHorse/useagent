@@ -32,9 +32,11 @@ export function UserMenu({
   const { session } = useSession();
   const [open, setOpen] = useState(false);
 
-  const signedIn = session !== null;
-  const name = session?.user.name?.trim() || session?.user.email || "Guest";
-  const email = session?.user.email ?? "Not signed in";
+  // Managed pages are protected by the identity middleware. Keep recovery controls
+  // available when the provider session exists but local workspace access is denied.
+  const signedIn = session !== null || !legacyAuthEnabled;
+  const name = session?.user.name?.trim() || session?.user.email || (signedIn ? "Account" : "Guest");
+  const email = session?.user.email ?? (signedIn ? "Workspace session unavailable" : "Not signed in");
   const image = session?.user.image ?? null;
   const initial = (name.charAt(0) || "?").toUpperCase();
 

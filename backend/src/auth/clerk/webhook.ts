@@ -107,6 +107,8 @@ export async function synchronizeIdentityEvent(
 }
 
 export async function handleIdentityWebhook(request: Request): Promise<Response> {
+  if (process.env.AUTH === "better-auth")
+    return Response.json({ error: "identity_sync_paused" }, { status: 503 });
   const signingSecret = process.env.CLERK_WEBHOOK_SECRET;
   if (!signingSecret)
     return Response.json({ error: "identity_webhook_not_configured" }, { status: 503 });

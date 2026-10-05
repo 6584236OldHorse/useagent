@@ -29,7 +29,7 @@ function organization(value: Organization): IdentityOrganization {
   return {
     id: value.id,
     name: value.name,
-    slug: value.slug,
+    slug: value.slug || value.id,
     image: value.hasImage ? value.imageUrl : null,
     createdAt: value.createdAt,
     createdBy: value.createdBy ?? null,
