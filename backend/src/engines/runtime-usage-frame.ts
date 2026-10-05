@@ -53,3 +53,19 @@ export function runtimeUsageProviderEvent(
     },
   };
 }
+
+/** The figures a usage activity reports, as one comparable value (null for any
+ * other activity). On thread resume Codex re-reports the last call's usage under
+ * a new activity id; equal figures mean no model call happened in between, since
+ * every call adds input. */
+export function runtimeUsageSignature(activity: RuntimeActivity): string | null {
+  if (activity.kind !== "context-window.updated") return null;
+  const usage = activity.payload && typeof activity.payload === "object" && !Array.isArray(activity.payload)
+    ? (activity.payload as Readonly<Record<string, unknown>>)
+    : null;
+  if (!usage) return null;
+  return JSON.stringify([
+    usage.usedTokens, usage.totalProcessedTokens, usage.inputTokens,
+    usage.cachedInputTokens, usage.outputTokens, usage.reasoningOutputTokens,
+  ]);
+}

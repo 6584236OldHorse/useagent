@@ -13,7 +13,7 @@ import {
   type RuntimeActivity,
   type RuntimeThreadSnapshot,
 } from "../src/engines/runtime-orchestration";
-import { createTurnProjector } from "../src/engines/turn-projector";
+import { activityRevisions, createTurnProjector } from "../src/engines/turn-projector";
 import type { EngineRunContext } from "../src/engines/types";
 
 // A recorded Codex app-server transcript: the three thread/tokenUsage/updated
@@ -215,5 +215,31 @@ describe("runtime usage frames", () => {
     expect(canonical.events.filter((event) => event.kind === "message.completed")).toHaveLength(0);
     expect(canonical.accounting).toHaveLength(3);
     expect(canonical.accounting.every((entry) => typeof entry.suppressed === "string")).toBe(true);
+  });
+  test("a resumed session's re-report of the last turn's usage is not a model call of the new run", async () => {
+    const runId = `run-resume-usage-${crypto.randomUUID()}`;
+    await db.insert(runs).values({
+      id: runId, orgId: `org-${runId}`, userId: "user-1", prompt: "okay", model: "gpt-5.6-luna",
+      engine: "codex", status: "running", threadId: runId,
+    });
+    const ctx = { runId, threadId: runId, emit: async () => "step-1" } as unknown as EngineRunContext;
+    // The previous turn's last frame, then what Codex sends on thread/resume: the
+    // same figures under a new runtime activity id and no turn.
+    const previous = contextWindowActivity(0);
+    const replay = { ...previous, id: "evt-resume-usage", turnId: null, sequence: 7 };
+    const call = contextWindowActivity(1, 8);
+    const projector = createTurnProjector({
+      ctx, redact, engine: "codex", seen: activityRevisions(snapshot([previous], 1)),
+    });
+
+    await projector.apply(snapshot([previous, replay], 2));
+    await projector.apply(snapshot([previous, replay, call], 3));
+
+    await drainProviderEvents(runId);
+    const rows = await db
+      .select()
+      .from(providerEvents)
+      .where(and(eq(providerEvents.runId, runId), eq(providerEvents.eventType, "part.step-finish")));
+    expect(rows.map((row) => row.id)).toEqual([`pe_${runId}_t3_evt-usage-2`]);
   });
 });

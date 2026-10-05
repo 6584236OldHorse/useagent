@@ -9,6 +9,7 @@ import { activityStep, assistantText, hasOpenRuntimeToolCall, runtimeActivityPro
 import { type EngineRunContext } from "./types";
 import { appendOnlyMessageCapture, runtimeRootMessageBatches } from "./runtime-root-messages";
 import { turnRunIds } from "./turn-recovery";
+import { runtimeUsageSignature } from "./runtime-usage-frame";
 
 type RuntimeActivity = RuntimeThreadSnapshot["thread"]["activities"][number];
 
@@ -58,6 +59,9 @@ export function createTurnProjector(input: {
 }): TurnProjector {
   const { ctx, redact, engine } = input;
   const revisions = new Map(input.seen);
+  // Usage the thread reported before this turn. A resumed session re-reports its
+  // last figures under a new activity id; that is not a model call of this run.
+  const priorUsage = new Set<string>();
   const steps = new Map(input.steps ?? []);
   const threadId = runtimeThreadId(ctx);
   const capturedMessages = new Map<string, ProviderEventInput[]>();
@@ -89,10 +93,15 @@ export function createTurnProjector(input: {
         }
       }
       for (const activity of snapshot.thread.activities) {
+        const usage = input.seen.has(activity.id) ? runtimeUsageSignature(activity) : null;
+        if (usage) priorUsage.add(usage);
+      }
+      for (const activity of snapshot.thread.activities) {
         if (sealed) break;
         const revision = runtimeActivityRevision(activity);
         if (revisions.get(activity.id) === revision) continue;
         revisions.set(activity.id, revision);
+        if (!input.seen.has(activity.id) && priorUsage.has(runtimeUsageSignature(activity) ?? "")) continue;
         try {
           // Fenced by the settlement seal: once the run is settled (whichever
           // path settled it), a capture still in flight writes nothing, so the
