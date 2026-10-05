@@ -28,6 +28,18 @@ export interface ProviderCredentialResolvers {
   readonly devModeEnabled?: (env?: Record<string, string | undefined>) => boolean;
 }
 
+/** How long a run waits for its credential reads before failing the turn. */
+export const PROVIDER_CREDENTIAL_WAIT_MS = 10_000;
+
+/** The run's own clock for credential reads. Callers wrap the whole resolution
+ *  in awaitWithSignal with this signal: Stop aborts it, and a blocked read (a
+ *  lock on the secrets or connections tables) cannot hold the run past the
+ *  deadline. */
+export function credentialWaitSignal(signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(PROVIDER_CREDENTIAL_WAIT_MS);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
+
 async function defaultOrgSecret(orgId: string, name: string): Promise<string | null> {
   return (await decryptOrgSecretByName(orgId, name))?.value ?? null;
 }
@@ -100,20 +112,18 @@ export async function resolveProviderCredentialForRun(
 }
 
 /**
- * Resolve the OpenRouter credential for the lightweight Chat surface (#122) and
- * the `chat` engine. A customer's connected BYO key wins so their own quota is
- * spent; otherwise the shared house key serves. Unlike a sandboxed run, chat is
- * the instant house-provided tier, so falling back to the house key is an
- * EXPLICIT, documented contract - not a silent substitution. Once a customer key
- * is chosen it is the only key used: an invalid customer key surfaces the real
- * OpenRouter error to the caller instead of quietly re-billing the house.
+ * Resolve the OpenRouter credential for the Chat surface and the `chat` engine.
+ * Same order as a run: the member's connected key, then the organisation's
+ * stored secret, and in production nothing else. The deployment's own key never
+ * serves a member's turn. Once a key is chosen it is the only key used: an
+ * invalid member key surfaces the real OpenRouter error instead of quietly
+ * billing another account.
  */
 export async function resolveChatProviderCredential(
   input: { orgId: string; userId?: string | null },
   deps: ProviderCredentialResolvers = {},
 ): Promise<ResolvedProviderCredential | null> {
   const resolveUserConnection = deps.resolveUserConnection ?? resolveGatewayProviderApiKeyCredential;
-  const env = deps.env ?? process.env;
   if (input.userId) {
     const userCredential = await resolveUserConnection({
       orgId: input.orgId,
@@ -122,6 +132,5 @@ export async function resolveChatProviderCredential(
     });
     if (userCredential) return { value: userCredential, source: "user_connection" };
   }
-  const houseKey = env.OPENROUTER_API_KEY?.trim();
-  return houseKey ? { value: houseKey, source: "backend_env" } : null;
+  return resolveProviderCredential(input.orgId, "openrouter", deps);
 }

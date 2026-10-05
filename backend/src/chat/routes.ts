@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
 import { isMemoryScope, type MemoryScope } from "../memory/scope";
-import { resolveChatProviderCredential } from "../provider-gateway/credentials";
+import { providerCredentialMissingMessage } from "../engines/provider-credential-gate";
+import { credentialWaitSignal, resolveChatProviderCredential } from "../provider-gateway/credentials";
+import { awaitWithSignal } from "../util/abortable-operation";
 import {
   buildResourceAccessSnapshot,
   formatResourceAccessContext,
@@ -11,7 +13,7 @@ import { captureChatExchange } from "./capture";
 import { chatModelCatalog } from "./models";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
-import { chatModel, streamChat, type ChatMessage } from "./stream";
+import { chatLlmEnabled, chatModel, streamChat, type ChatMessage } from "./stream";
 import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 
 /**
@@ -60,6 +62,7 @@ chatRoutes.get("/models", (c) => c.json(chatModelCatalog()));
 // `no-transform` + `X-Accel-Buffering: no` stop proxies buffering the stream
 // (the same SSE-hygiene the runs `/events` route relies on).
 chatRoutes.post("/", async (c) => {
+  if (!chatLlmEnabled()) return c.json({ error: "chat is turned off" }, 503);
   let body: { messages?: unknown; model?: unknown; memoryScope?: unknown };
   try {
     body = (await c.req.json()) as typeof body;
@@ -91,12 +94,15 @@ chatRoutes.post("/", async (c) => {
   }
   const userId = identitySource === "session" ? c.get("userId") : null;
 
-  // Resolve the OpenRouter credential BYOK-first: a customer's connected key
-  // wins over the house key, so their own quota is spent (and an invalid
-  // customer key surfaces its real error rather than re-billing the house).
-  const resolved = await resolveChatProviderCredential({ orgId, userId });
+  // The member's connected OpenRouter key, else the organisation's secret;
+  // the deployment's own key never serves a member. Without either the turn
+  // is refused with the remedy before any model call.
+  const resolved = await awaitWithSignal(
+    () => resolveChatProviderCredential({ orgId, userId }),
+    credentialWaitSignal(c.req.raw.signal),
+  );
   if (!resolved) {
-    return c.json({ error: "chat is not configured (no OpenRouter credential)" }, 503);
+    return c.json({ error: providerCredentialMissingMessage("chat", "openrouter") }, 403);
   }
   // The same allowance every run ingress enforces, before any model call: a
   // member at the cap is refused here too. The turn itself is not metered yet.

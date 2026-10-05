@@ -44,8 +44,7 @@ import { frameTurnContexts } from "./engines/turn-contexts";
 import { formatInputContext, runInputFiles } from "./uploads/materialize";
 import { CHAT_SYSTEM_PROMPT } from "./chat/prompt";
 import { retrieveChatContext } from "./chat/retrieve";
-import { chatFailure, chatTurnStream, type ChatMessage } from "./chat/turn";
-import { resolveChatProviderCredential } from "./provider-gateway/credentials";
+import { chatFailure, chatTurnCredential, chatTurnStream, type ChatMessage } from "./chat/turn";
 import { subscribeNative } from "./runs/native-events";
 import { createSlidingInactivityWatchdog } from "./runs/inactivity-watchdog";
 import {
@@ -486,6 +485,10 @@ async function runChat(
   let answer = "";
   turnStream.begin(run.id);
   try {
+    // The key comes first, before retrieval or any other upstream work.
+    const resolvedChat = await chatTurnCredential({ orgId: run.orgId, userId: run.userId }, signal);
+    console.info(`[chat] run ${run.id} served by ${resolvedChat.source}`);
+
     const [context, priorThread, resourceSnapshot] = await Promise.all([
       retrieveChatContext({
         orgId: run.orgId,
@@ -525,13 +528,6 @@ async function runChat(
       { role: "system", content: systemParts.join("\n\n") },
       { role: "user", content: run.prompt },
     ];
-
-    const resolvedChat = await resolveChatProviderCredential({
-      orgId: run.orgId,
-      userId: run.userId,
-    });
-    if (!resolvedChat) throw new Error("chat is not configured (no OpenRouter credential)");
-    console.info(`[chat] run ${run.id} served by ${resolvedChat.source}`);
 
     for await (const delta of chatTurnStream(run, messages, resolvedChat, signal)) {
       const reason = wasCancelled();

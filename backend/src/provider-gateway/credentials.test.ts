@@ -208,18 +208,33 @@ describe("resolveProviderCredentialForRun precedence", () => {
 });
 
 describe("resolveChatProviderCredential", () => {
-  test("a customer connection key wins over the house key", async () => {
+  test("the member's connection key wins over the org secret and the house env", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
       deps({
         resolveUserConnection: async () => "sk-customer",
+        resolveOrgSecret: async () => "sk-org",
         env: { OPENROUTER_API_KEY: "sk-house" },
       }),
     );
     expect(resolved).toEqual({ value: "sk-customer", source: "user_connection" });
   });
 
-  test("falls back to the house key (explicit free-tier contract, even in production)", async () => {
+  test("without a member key the organisation's secret serves", async () => {
+    const resolved = await resolveChatProviderCredential(
+      { orgId: "org-a", userId: "user-a" },
+      deps({
+        resolveUserConnection: async () => null,
+        resolveOrgSecret: async (orgId, name) =>
+          orgId === "org-a" && name === "OPENROUTER_API_KEY" ? "sk-org" : null,
+        env: { OPENROUTER_API_KEY: "sk-house" },
+        devModeEnabled: () => false,
+      }),
+    );
+    expect(resolved).toEqual({ value: "sk-org", source: "org_secret" });
+  });
+
+  test("production fails closed: the house env never serves a member's chat turn", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
       deps({
@@ -228,14 +243,18 @@ describe("resolveChatProviderCredential", () => {
         devModeEnabled: () => false,
       }),
     );
-    expect(resolved).toEqual({ value: "sk-house", source: "backend_env" });
+    expect(resolved).toBeNull();
   });
 
-  test("returns null when neither a customer key nor a house key exists", async () => {
+  test("development mode may still use the house env when nothing else is stored", async () => {
     const resolved = await resolveChatProviderCredential(
       { orgId: "org-a", userId: "user-a" },
-      deps({ resolveUserConnection: async () => null, env: {} }),
+      deps({
+        resolveUserConnection: async () => null,
+        env: { OPENROUTER_API_KEY: "sk-house" },
+        devModeEnabled: () => true,
+      }),
     );
-    expect(resolved).toBeNull();
+    expect(resolved).toEqual({ value: "sk-house", source: "backend_env" });
   });
 });

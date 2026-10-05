@@ -38,7 +38,8 @@ describe("engine readiness advertisement", () => {
     const readiness = engineReadiness("opencode", unwired);
     expect(readiness).toMatchObject({ ready: false, reason: "gateway_unconfigured" });
     expect(readiness.message).toContain("GATEWAY_PUBLIC_URL");
-    expect(readyUserFacingEngines(unwired)).toEqual([]);
+    // Chat needs no gateway, so it is the only engine left standing.
+    expect(readyUserFacingEngines(unwired)).toEqual(["chat"]);
     expect(resolveAcceptedEngine("codex", unwired)).toMatchObject({
       ok: false,
       status: 403,
@@ -53,18 +54,16 @@ describe("engine readiness advertisement", () => {
       reason: "gateway_unconfigured",
     });
     // Chat never touches a sandbox, so it does not need the gateway.
-    expect(engineReadiness("chat", { ...unwired, OPENROUTER_API_KEY: "k" })).toMatchObject({ ready: true });
+    expect(engineReadiness("chat", unwired)).toMatchObject({ ready: true });
   });
 
-  test("advertises no-sandbox chat only when its direct provider is configured", () => {
-    expect(readyUserFacingEngines(PROD)).not.toContain("chat");
+  test("advertises no-sandbox chat without any deployment key, unless it is turned off", () => {
+    expect(readyUserFacingEngines(PROD)).toEqual(["chat"]);
+    expect(engineReadiness("chat", PROD)).toMatchObject({ ready: true, reason: "enabled" });
+    expect(readyUserFacingEngines({ ...PROD, CHAT: "off" })).not.toContain("chat");
+    expect(engineReadiness("chat", { ...PROD, CHAT: "off" })).toMatchObject({ ready: false });
 
-    const configured = { ...PROD, OPENROUTER_API_KEY: "test-openrouter-key" };
-    expect(readyUserFacingEngines(configured)).toEqual(["chat"]);
-    expect(engineReadiness("chat", configured)).toMatchObject({
-      ready: true,
-      reason: "enabled",
-    });
+    const configured = PROD;
     expect(engineModelsForReadyEngines(configured).chat).toContain(
       "anthropic/claude-sonnet-5",
     );
@@ -79,7 +78,7 @@ describe("engine readiness advertisement", () => {
       T3_RUN_ADAPTER_ENGINES: "codex,opencode",
     };
 
-    expect(readyUserFacingEngines(env)).toEqual([]);
+    expect(readyUserFacingEngines(env)).toEqual(["chat"]);
     expect(engineReadiness("claude", env)).toMatchObject({
       ready: false,
       reason: "not_proven",
@@ -181,7 +180,7 @@ describe("engine readiness advertisement", () => {
       ready: false,
       reason: "provider_unhealthy",
     });
-    expect(readyUserFacingEngines(env)).toEqual([]);
+    expect(readyUserFacingEngines(env)).toEqual(["chat"]);
     expect(configuredUserFacingEngines(env)).toContain("claude");
     expect(configuredEngineReadiness(env).claude).toMatchObject({
       ready: false,
@@ -212,7 +211,7 @@ describe("engine readiness advertisement", () => {
       PROVIDER_HEALTH_OPENROUTER: "verified",
     });
 
-    expect(Object.keys(models)).toEqual(["opencode"]);
+    expect(Object.keys(models).sort()).toEqual(["chat", "opencode"]);
     expect(models.opencode).toEqual([
       "openai/gpt-5.6-sol",
       "openai/gpt-5.6-luna",
