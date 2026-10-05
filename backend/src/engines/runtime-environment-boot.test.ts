@@ -15,6 +15,10 @@ describe("sandbox boot entrypoint", () => {
     expect(script).toContain(`sh -c ${single(buildRuntimeEnvironmentAuthenticationCommand())} >>"/root/.skynet/t3/boot.log" 2>&1 || true`);
     expect(script).toContain("http://127.0.0.1:37733/api/orchestration/shell || true");
     expect(script.trimEnd().endsWith('[ "$#" -gt 0 ] && exec "$@"\nexec sleep infinity')).toBe(true);
+    // The whole boot runs in a background subshell; the main process is the sandbox's own command from the start.
+    expect(script.indexOf(') >>"/root/.skynet/t3/boot.log" 2>&1 &')).toBeLessThan(script.indexOf('[ "$#" -gt 0 ] && exec "$@"'));
+    expect(script.indexOf("nohup sh -c")).toBeGreaterThan(script.indexOf("\n(\n"));
+    expect(Bun.spawnSync(["sh", "-n"], { stdin: Buffer.from(script) }).exitCode).toBe(0);
     // The plane sees the boot in progress from the moment before the launch until readiness passed or the wait gave up.
     expect(script.indexOf('touch "$HOME/.skynet/t3/.useagent-runtime-booting"')).toBeLessThan(script.indexOf("nohup sh -c"));
     expect(script.indexOf('rm -f "$HOME/.skynet/t3/.useagent-runtime-booting"')).toBeGreaterThan(script.indexOf("done\n"));
