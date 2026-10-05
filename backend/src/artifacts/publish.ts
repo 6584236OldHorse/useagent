@@ -164,7 +164,7 @@ async function attachOfficePreview(
     readonly orgId: string;
     readonly record: ArtifactRecord;
     readonly sandboxId: string;
-    readonly sourcePath: string;
+    readonly sourceBytes: Uint8Array;
   },
   opts: { readonly regenerate: boolean },
 ): Promise<ArtifactRecord> {
@@ -175,7 +175,8 @@ async function attachOfficePreview(
 
   const pdf = await convertOfficeToPdf({
     sandboxId: input.sandboxId,
-    sourcePath: input.sourcePath,
+    sourceName: input.record.name,
+    sourceBytes: input.sourceBytes,
     timeoutSeconds: OFFICE_PREVIEW_TIMEOUT_SECONDS,
     maxBytes: OFFICE_PREVIEW_MAX_BYTES,
   });
@@ -447,7 +448,7 @@ export async function publishSandboxArtifact(input: {
     // The new bytes invalidate any prior preview: regenerate (or clear) it so the
     // embedded PDF preview reflects the revised content, never the old version.
     const revisedWithPreview = await attachOfficePreview(
-      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, sourcePath },
+      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, sourceBytes: file.bytes },
       { regenerate: true },
     );
     const descriptor = toArtifactDescriptor(revisedWithPreview);
@@ -516,7 +517,7 @@ export async function publishSandboxArtifact(input: {
   // Best-effort Office->PDF preview for a fresh Office binary (skips a re-publish
   // that already carries one). Non-fatal: a missing preview stays download-only.
   const record = await attachOfficePreview(
-    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, sourcePath },
+    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, sourceBytes: file.bytes },
     { regenerate: false },
   );
   const descriptor = toArtifactDescriptor(record);

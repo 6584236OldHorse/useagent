@@ -4,13 +4,13 @@ import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 import * as artifactFormats from "@useagent/artifact-formats";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import {
   csvToWorkbook,
   migrateHtmlToDocument,
   migrateSlidesToDeck,
 } from "@useagent/artifact-workspace";
-import { createArtifactRecord, getArtifact, type ArtifactDescriptor } from "../src/artifacts/repo";
+import { createArtifactRecord, getArtifact, reviseArtifactPublication, type ArtifactDescriptor } from "../src/artifacts/repo";
 import {
   publishSandboxArtifact,
   publishTrustedArtifact,
@@ -36,7 +36,7 @@ import {
 import { deleteSecret, upsertSecret } from "../src/secrets/store";
 import { createOrgSession, fetchApi, json, type OrgSession, waitFor } from "./helpers";
 import { InMemoryArtifactStorage } from "./in-memory-artifact-storage";
-import { db } from "../src/db/client";
+import { db, type Executor } from "../src/db/client";
 import { artifacts, providerEvents } from "../src/db/schema";
 
 let sandboxBytes = new TextEncoder().encode("sandbox-to-browser\nexact bytes\n");
@@ -1111,6 +1111,95 @@ describe("durable artifacts", () => {
     }
   });
 
+  test("an editable companion cannot seed or return a concurrently replaced source generation", async () => {
+    const runId = await createSandboxRun(owner);
+    const source = {
+      orgId: owner.orgId,
+      userId: owner.email,
+      runId,
+      threadId: runId,
+      sourcePath: "/root/work/seed-race.docx",
+      name: "seed-race.docx",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: SOURCE_BYTES.byteLength,
+      sha256: SHA256,
+      storageKey: SHA256,
+      workpieceKind: "document" as const,
+      workpieceState: null,
+    };
+    const initial = await createArtifactRecord(source);
+    const document = migrateHtmlToDocument("<p>Source A companion</p>");
+    if (!document) throw new Error("invalid source A companion fixture");
+    const companion = { document };
+    let seedStarted!: () => void;
+    const started = new Promise<void>((resolve) => { seedStarted = resolve; });
+    let releaseSeed!: () => void;
+    const released = new Promise<void>((resolve) => { releaseSeed = resolve; });
+    // Execute real repository queries; pause only the seed's final SQL write so
+    // another committed source revision can land after its initial tuple read.
+    const paused = {
+      insert: db.insert.bind(db),
+      select: db.select.bind(db),
+      update: (table: typeof artifacts) => ({
+        set: (values: Partial<typeof artifacts.$inferInsert>) => ({
+          where: (predicate: SQL) => ({
+            returning: async () => {
+              seedStarted();
+              await released;
+              return db.update(table).set(values).where(predicate).returning();
+            },
+          }),
+        }),
+      }),
+    } as unknown as Executor;
+    const seeding = createArtifactRecord({ ...source, workpieceState: companion }, paused);
+    await started;
+    const nextBytes = new TextEncoder().encode("different source B");
+    const nextDigest = createHash("sha256").update(nextBytes).digest("hex");
+    try {
+      await reviseArtifactPublication({
+        ...source,
+        id: initial.row.id,
+        name: "new-generation.docx",
+        sha256: nextDigest,
+        storageKey: nextDigest,
+        sizeBytes: nextBytes.byteLength,
+      });
+    } finally {
+      releaseSeed();
+    }
+    await expect(seeding).rejects.toThrow("artifact changed while its editable companion was being attached");
+    const current = await getArtifact(initial.row.id);
+    expect(current?.sha256).toBe(nextDigest);
+    expect(current?.workpieceRevision).toBe(1);
+    expect(current?.workpieceState).toBeNull();
+    expect(current?.previewStorageKey).toBeNull();
+
+    // Equal companions for the same current generation still converge.
+    const nextDocument = migrateHtmlToDocument("<p>Source B companion</p>");
+    if (!nextDocument) throw new Error("invalid source B companion fixture");
+    const nextCompanion = { document: nextDocument };
+    const nextSource = {
+      ...source,
+      name: "new-generation.docx",
+      sha256: nextDigest,
+      storageKey: nextDigest,
+      sizeBytes: nextBytes.byteLength,
+      workpieceState: nextCompanion,
+    };
+    const peers = await Promise.all([
+      createArtifactRecord(nextSource),
+      createArtifactRecord(nextSource),
+    ]);
+    for (const peer of peers) {
+      expect(peer.created).toBe(false);
+      expect(peer.row.id).toBe(initial.row.id);
+      expect(peer.row.sha256).toBe(nextDigest);
+      expect(peer.row.workpieceRevision).toBe(1);
+      expect(peer.row.workpieceState).toEqual(nextCompanion);
+    }
+  });
+
   test("accepts an editable companion under the Box workspace root", async () => {
     const runId = await createSandboxRun(owner, "box");
     const source = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
@@ -1275,14 +1364,20 @@ describe("durable artifacts", () => {
   test("attaches and serves a rendered PDF preview for a published Office binary", async () => {
     const runId = await createSandboxRun(owner);
     const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]); // %PDF-1.7
+    let convertedSource: { name?: string; bytes?: Uint8Array } = {};
     const previous = sandboxBytes;
     try {
       sandboxBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x66, 0x61, 0x6b, 0x65]); // PK.. (office-ish)
 
       // Success: the converter yields a PDF, so the artifact carries a preview URL
       // and the preview route serves those exact bytes as application/pdf.
-      setOfficePreviewConverterForTest(async () => pdf);
+      setOfficePreviewConverterForTest(async (input) => {
+        convertedSource = { name: input.sourceName, bytes: input.sourceBytes };
+        return pdf;
+      });
       const deck = await publish(owner, runId, "/root/work/slides.pptx");
+      expect(convertedSource.name).toBe("slides.pptx");
+      expect(convertedSource.bytes).toEqual(sandboxBytes);
       const previewDigest = createHash("sha256").update(pdf).digest("hex");
       const previewUrl = `/api/artifacts/${deck.artifact.id}/preview?v=${previewDigest}`;
       expect(deck.artifact.preview_pdf_url).toBe(previewUrl);
@@ -1359,6 +1454,7 @@ describe("durable artifacts", () => {
     const started = new Promise<void>((resolve) => { conversionStarted = resolve; });
     let finishConversion!: (value: Uint8Array | null) => void;
     const conversion = new Promise<Uint8Array | null>((resolve) => { finishConversion = resolve; });
+    let convertedSource: { name?: string; bytes?: Uint8Array } = {};
     let pending: ReturnType<typeof publish> | undefined;
     try {
       sandboxBytes = new TextEncoder().encode("office source v1");
@@ -1367,11 +1463,17 @@ describe("durable artifacts", () => {
       const firstPreviewUrl = first.artifact.preview_pdf_url;
       if (!firstPreviewUrl) throw new Error("initial preview was not attached");
       sandboxBytes = new TextEncoder().encode("office source v2");
-      setOfficePreviewConverterForTest(async () => { conversionStarted(); return conversion; });
+      setOfficePreviewConverterForTest(async (input) => {
+        convertedSource = { name: input.sourceName, bytes: input.sourceBytes };
+        conversionStarted();
+        return conversion;
+      });
       pending = publish(owner, runId, "/root/work/preview-v2.docx", {
         updates_artifact_id: first.artifact.id,
       });
       await started;
+      expect(convertedSource.name).toBe("preview-v2.docx");
+      expect(convertedSource.bytes).toEqual(sandboxBytes);
       const during = await getArtifact(first.artifact.id);
       expect(during?.workpieceRevision).toBe(1);
       expect(during?.previewStorageKey).toBeNull();
