@@ -353,7 +353,8 @@ test("settled turn renders its work as one trace block", () => {
   expect(html).not.toContain('data-testid="trace-row"');
   // The context marker is a receipt, not a tool call. Pre-tool prose is one
   // narration message inside the trace; the durable summary owns the reply.
-  expect(html).toContain("3 tool calls, 1 message, 1 failed");
+  expect(html).toContain(">Worked<");
+  expect(html).toContain("ran 2 commands · read 1 file · 1 failed");
   // While the turn works the same events are its open step lines: the skill
   // receipt and the 3 tools, one short line each, in the Thinking grammar; the
   // pre-tool prose is a narration line between them, with no verb and no chip.
@@ -476,7 +477,7 @@ test("live turn heads the trace with Thinking and the loader, and runs its last 
   expect(html).toContain('data-live="true"');
   expect(html).toContain("agent-progress-loading-text");
   expect(html).toContain(">Thinking<");
-  expect(html).toContain(">Run bun run typecheck<");
+  expect(html).toContain(">· Run bun run typecheck<");
   expect(html).not.toContain("Run - bun run typecheck");
   // The in-flight step is a row with the loader in place of the check.
   expect(html).toContain('data-status="running"');

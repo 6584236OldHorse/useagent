@@ -132,7 +132,7 @@ export function PlanChecklist({
         />
       </button>
       {open && (
-        <ol className="mt-1.5 ml-[18px] border-l border-border-button-default/60 pl-3 motion-safe:animate-ai-fade-up">
+        <ol className="mt-1.5 ml-[18px] trace-guide pl-3 motion-safe:animate-ai-fade-up">
           {entries.map((entry) => {
             const Icon = ITEM_ICON[entry.status];
             const struck = entry.status === "completed" || entry.status === "cancelled";
