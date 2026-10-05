@@ -28,6 +28,7 @@ const DELIVERABLE_EXTENSIONS = [
  *  caches, the plane's own state and the staged user uploads. */
 const PRUNED_DIRECTORIES = [
   "node_modules", ".git", ".cache", ".venv", "venv", "__pycache__", "dist", "build", ".next",
+  ".claude", ".codex", ".opencode", ".pi", ".config", "coverage",
   ".useagent", ".skynet", ".skynet-inputs", ".useagent-inputs",
 ] as const;
 /** Clock skew allowance between the plane and the sandbox, in seconds. */

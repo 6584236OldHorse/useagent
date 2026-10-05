@@ -337,7 +337,7 @@ const TurnBlock = memo(function TurnBlock({
             <Timeline
               nodes={timeline}
               live={live}
-              settledReply={timelineReply ? summary : null}
+              settledReply={status === "completed" && timelineReply ? summary : null}
               workingSince={run.created_at}
               showFollowups={isLatestTurn}
               trace={trace}

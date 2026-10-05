@@ -97,9 +97,11 @@ export async function completeRunOutputs(
       const { row: obligation } = await db.transaction(async (tx) => {
         await guard(tx);
         const [prior] = await tx.select().from(finishedWorkObligations).where(and(
+          eq(finishedWorkObligations.orgId, run.orgId!), eq(finishedWorkObligations.threadId, run.threadId),
           eq(finishedWorkObligations.runId, run.id), eq(finishedWorkObligations.sourceKey, sourceKey),
         )).limit(1);
-        const targetArtifactId = prior ? prior.targetArtifactId : known?.id;
+        if (prior) return { row: prior, created: false };
+        const targetArtifactId = known?.id;
         return openFinishedWorkObligation({
           orgId: run.orgId!, runId: run.id, sourceKind: "sandbox_output",
           authority: "integration_gateway", sourceKey, sourceProvider: run.engine,

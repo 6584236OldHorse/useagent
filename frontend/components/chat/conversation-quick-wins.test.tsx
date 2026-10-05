@@ -208,6 +208,27 @@ test("a tool-only native timeline renders the finalized summary once with its ci
   expect(html).toContain("Retry policy");
 });
 
+test("a stopped failed turn keeps its partial native reply instead of replacing it with the stop reason", () => {
+  const turn = makeTurn("run-stopped", "failed", [
+    ev("message.started", {
+      messageId: "message-1",
+      identity: { nativeSessionId: "session-1", nativeSeq: 1 },
+    }),
+    ev("message.delta", {
+      messageId: "message-1",
+      text: "I updated the parser before the run stopped.",
+      identity: { nativeSessionId: "session-1", nativePartId: "part-1", nativeSeq: 2 },
+    }),
+  ]);
+  turn.summary = "Stopped by user.";
+  turn.run.summary = turn.summary;
+
+  const html = render([turn]);
+
+  expect(html).toContain("I updated the parser before the run stopped.");
+  expect(html.match(/data-testid="agent-answer"/g)).toHaveLength(1);
+});
+
 test("image artifacts get the click-to-expand affordance; other artifacts do not", () => {
   const html = render([
     makeTurn("run-settled", "completed", [

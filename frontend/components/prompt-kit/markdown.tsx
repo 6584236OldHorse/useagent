@@ -167,7 +167,7 @@ function ArtifactMarkdownChip({
 
 /** Absolute roots a sandbox workspace or local host path can live under. */
 const SANDBOX_ROOTS =
-  /^\/(?:root|home|tmp|private|Users|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
+  /^\/(?:root|home|tmp|private|Users|workspace|mnt|opt|srv|app|var|work|etc|usr)(?:\/|$)/;
 
 function isExplicitLocalPath(url: string): boolean {
   if (/^(?:file|sandbox):/i.test(url)) return true;
@@ -182,6 +182,17 @@ export function isSandboxPath(url: string): boolean {
   if (url.startsWith("//") || url.startsWith("#") || url.startsWith("?")) return false;
   if (url.startsWith("/")) return false;
   return true; // a bare relative path such as output/report.pdf
+}
+
+function isArtifactRoute(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, "https://useagent.invalid");
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  return /^\/(?:api\/artifacts\/[^/]+\/content|agent\/artifacts\/[^/]+)$/.test(parsed.pathname);
 }
 
 const INITIAL_COMPONENTS: Partial<Components> = {
@@ -250,8 +261,9 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   },
   img: function ImageComponent({ src, alt, node: _node, ...props }) {
     const workspaceImages = useOpenWorkpiece() !== null;
-    if (!src || (workspaceImages && isSandboxPath(src))) return <span>{alt}</span>;
-    return <img src={src} alt={alt ?? ""} {...props} />;
+    const url = typeof src === "string" ? src : "";
+    if (!url || (workspaceImages && isSandboxPath(url))) return <span>{alt}</span>;
+    return <img src={url} alt={alt ?? ""} {...props} />;
   },
   a: function AnchorComponent({ href, children }) {
     const url = typeof href === "string" ? href : "";
@@ -261,7 +273,6 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     if (!url) return <span>{children}</span>;
     // Artifact/media links render as dense source chips (type badge + label +
     // arrow), matching the retrieval-chip grammar; ordinary links stay links.
-    const isArtifact = /\/(?:api|agent)\/artifacts\//.test(url);
     const workspaceLinks = openWorkpiece !== null;
     const label =
       typeof children === "string"
@@ -272,7 +283,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     // A local filesystem path cannot be opened from the browser, whatever its
     // file type, so name it without pretending it was published or is a link.
     // Artifact routes, web URLs, protocol-relative links and anchors stay links.
-    if (!isArtifact && (isExplicitLocalPath(url) || (workspaceLinks && isSandboxPath(url)))) {
+    if (isExplicitLocalPath(url) || (workspaceLinks && isSandboxPath(url))) {
       return (
         <span
           data-chip
@@ -289,6 +300,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
         </span>
       );
     }
+    const isArtifact = isArtifactRoute(url);
     const ext = (
       url.match(/\.(mp4|webm|pdf|docx|xlsx|pptx|csv|png|jpg|zip)(?:\?|$)/i)?.[1] ?? ""
     ).toUpperCase();

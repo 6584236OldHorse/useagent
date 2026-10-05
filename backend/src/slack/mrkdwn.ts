@@ -19,6 +19,14 @@ const BOLD_SENTINEL = String.fromCharCode(1);
 const STASH_OPEN = String.fromCharCode(0);
 
 const MASS_MENTION = /<!(here|channel|everyone)(?:\|[^>]*)?>/gi;
+const COMMONMARK_ESCAPE = /\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g;
+const SLACK_FORMATTING = "*_~`<>&";
+const ZERO_WIDTH_SPACE = "\u200b";
+
+function decodeCommonMarkText(text: string): string {
+  return text.replace(COMMONMARK_ESCAPE, (_match, punctuation: string) =>
+    SLACK_FORMATTING.includes(punctuation) ? `${punctuation}${ZERO_WIDTH_SPACE}` : punctuation);
+}
 
 /** Defuse Slack's encoded broadcast forms (<!here>/<!channel>/<!everyone>) so an
  *  agent reply that quotes one cannot ping a whole channel. */
@@ -61,8 +69,8 @@ export function toSlackMrkdwn(md: string): string {
 
   let text = md.replace(/\r\n/g, "\n");
 
-  text = text.replace(/```[\s\S]*?```/g, keep);
-  text = text.replace(/`[^`\n]+`/g, keep);
+  text = text.replace(/(?<!\\)```[\s\S]*?(?<!\\)```/g, keep);
+  text = text.replace(/(?<!\\)`[^`\n]+(?<!\\)`/g, keep);
   text = neutralizeMassMentions(text);
 
   text = reformatTables(text, keep);
@@ -71,8 +79,8 @@ export function toSlackMrkdwn(md: string): string {
     // A sandbox path is not a link anyone can open; the file itself reaches the
     // thread as an upload, so only the label survives.
     /^(?:https?:\/\/|mailto:)/i.test(url)
-      ? keep(label ? `<${url}|${label}>` : `<${url}>`)
-      : keep(label || url),
+      ? keep(label ? `<${url}|${decodeCommonMarkText(label)}>` : `<${url}>`)
+      : keep(decodeCommonMarkText(label || url)),
   );
 
   text = text.replace(/<(?:https?:\/\/|mailto:|[@#!])[^<>\n\x00]*>/g, keep);
@@ -98,6 +106,8 @@ export function toSlackMrkdwn(md: string): string {
   text = text.replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])/g, "$1_$2_");
 
   text = text.replaceAll(BOLD_SENTINEL, "*");
+  text = decodeCommonMarkText(text);
+  text = neutralizeMassMentions(text);
   text = text.replace(new RegExp(`${STASH_OPEN}(\\d+)${STASH_OPEN}`, "g"), (_m, i) => stash[Number(i)] ?? "");
 
   return text;

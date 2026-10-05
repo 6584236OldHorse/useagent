@@ -232,12 +232,16 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
         sizeBytes: artifacts.sizeBytes,
         sha256: artifacts.sha256,
         storageKey: artifacts.storageKey,
+        sourcePath: artifacts.sourcePath,
         workpieceRevision: artifacts.workpieceRevision,
       })
       .from(artifacts)
       .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), artifactScope))
       .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt));
     for (const artifact of runArtifacts) {
+      // Extracted slide pictures belong to their parent deck, not a separate
+      // unsolicited Slack upload. Explicitly selected pictures still deliver.
+      if (/::media\/[1-9]\d*$/.test(artifact.sourcePath) && !selectedIds.includes(artifact.id)) continue;
       // Publication already enforces the artifact byte limit. Never silently
       // drop the sixth file or a valid larger file at the delivery boundary.
       const created = await enqueueUploadFileTx(tx, {

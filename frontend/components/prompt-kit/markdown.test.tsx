@@ -11,10 +11,10 @@ import {
 describe("Markdown links", () => {
   test("renders downloadable artifacts as compact typed chips", () => {
     const html = renderToStaticMarkup(
-      <Markdown>{"[Download report](/api/artifacts/report.pdf)"}</Markdown>,
+      <Markdown>{"[Download report](/api/artifacts/report/content)"}</Markdown>,
     );
 
-    expect(html).toContain('href="/api/artifacts/report.pdf"');
+    expect(html).toContain('href="/api/artifacts/report/content"');
     expect(html).toContain("Download report");
     expect(html).toContain(">D<"); // round badge shows the label initial
     expect(html).toContain("rounded-full");
@@ -41,6 +41,8 @@ describe("Markdown links", () => {
       "C:/Users/me/report.pdf",
       "/root/work/notes.md",
       "/home/user/work/page.html",
+      "/etc/agent/config.toml",
+      "/usr/local/share/report.md",
       "out/chart.svg",
     ]) {
       const html = renderToStaticMarkup(
@@ -73,6 +75,8 @@ describe("Markdown links", () => {
       "file:///Users/me/secret.png",
       "sandbox:/root/work/secret.png",
       "C:/Users/me/secret.png",
+      "/etc/agent/secret.png",
+      "/usr/local/share/secret.png",
     ]) {
       const html = renderToStaticMarkup(
         <WorkspaceOpenProvider value={() => {}}>
@@ -103,15 +107,37 @@ describe("Markdown links", () => {
   });
 
   test("blocks explicit filesystem links and images outside a session", () => {
-    const link = renderToStaticMarkup(<Markdown>{"[Secret](file:///Users/me/secret.txt)"}</Markdown>);
+    const links = [
+      "file:///Users/me/secret.txt",
+      "/root/api/artifacts/secret.pdf",
+      "/home/u/agent/artifacts/file.zip",
+      "/etc/agent/secret.txt",
+      "/usr/local/share/secret.txt",
+    ];
+    for (const href of links) {
+      const html = renderToStaticMarkup(<Markdown>{`[Secret](${href})`}</Markdown>);
+      expect(html).toContain("Secret");
+      expect(html).not.toContain("href=");
+    }
     const image = renderToStaticMarkup(
       <Markdown>{"![Secret](sandbox:/root/work/secret.png)"}</Markdown>,
     );
-    expect(link).toContain("Secret");
-    expect(link).not.toContain("href=");
     expect(image).toContain("Secret");
     expect(image).not.toContain("<img");
     expect(image).not.toContain('rel="preload"');
+  });
+
+  test("keeps only canonical artifact routes on the artifact link path", () => {
+    for (const href of [
+      "/api/artifacts/artifact-1/content?download=1",
+      "/agent/artifacts/artifact-1",
+      "https://app.useagent.org/api/artifacts/artifact-1/content",
+      "https://app.useagent.org/api/artifacts/artifact-1/content?download=1",
+    ]) {
+      const html = renderToStaticMarkup(<Markdown>{`[Artifact](${href})`}</Markdown>);
+      expect(html).toContain(`href="${href.replace("&", "&amp;")}"`);
+      expect(html).toContain("rounded-full");
+    }
   });
 
   test("keeps sanitizer-rejected schemes as inert text", () => {

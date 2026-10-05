@@ -5,6 +5,7 @@ import { renderArtifactExport } from "@useagent/artifact-formats";
 import { csvToWorkbook, migrateSlidesToDeck } from "@useagent/artifact-workspace";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
 import { setOfficePreviewConverterForTest } from "../src/artifacts/office-preview";
+import { materializePptxImages } from "../src/artifacts/publish";
 import * as artifactRepo from "../src/artifacts/repo";
 import { setArtifactStorageForTest, type ArtifactStorage } from "../src/artifacts/storage";
 import { recordOutputBaseline } from "../src/artifacts/harvest";
@@ -544,6 +545,70 @@ describe("artifact completion", () => {
     expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(0);
   });
 
+  test.each([
+    { scenario: "initial publication", revised: false },
+    { scenario: "changed-byte revision", revised: true },
+  ])("reuses a satisfied $scenario after publication commits but terminal claim is lost", async ({ revised }) => {
+    const path = "/root/work/restart-replay.webm";
+    const initialBytes = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x01]);
+    const publishedBytes = revised
+      ? Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x02])
+      : initialBytes;
+    const threadId = await createSandboxRun(owner);
+    let runId = threadId;
+    let priorId: string | null = null;
+    if (revised) {
+      sandboxFiles.set(path, initialBytes);
+      await finalizeRun(threadId, "completed", `Ready: [Video](${path})`, 100);
+      const [prior] = await db.select().from(artifacts).where(and(
+        eq(artifacts.threadId, threadId),
+        eq(artifacts.sourcePath, path),
+      ));
+      if (!prior) throw new Error("prior artifact was not published");
+      priorId = prior.id;
+      runId = await createContinuationRun(owner, threadId);
+    }
+    sandboxFiles.set(path, publishedBytes);
+
+    const interrupted = await finalizeRun(
+      runId,
+      "completed",
+      `Ready: [Video](${path})`,
+      100,
+      { publicationClaim: async () => true, claim: async () => false },
+    );
+
+    expect(interrupted).toEqual({ applied: false });
+    expect((await getRun(runId))?.status).toBe("queued");
+    const [published] = await db.select().from(artifacts).where(and(
+      eq(artifacts.threadId, threadId),
+      eq(artifacts.sourcePath, path),
+    ));
+    if (!published) throw new Error("interrupted publication did not persist its artifact");
+    expect(published).toMatchObject({
+      ...(priorId ? { id: priorId } : {}),
+      workpieceRevision: revised ? 1 : 0,
+      sha256: createHash("sha256").update(publishedBytes).digest("hex"),
+    });
+    const receiptsBefore = await db.select().from(finishedWorkReceipts)
+      .where(eq(finishedWorkReceipts.runId, runId));
+    expect(receiptsBefore).toHaveLength(1);
+
+    const retried = await finalizeRun(runId, "completed", `Ready: [Video](${path})`, 100);
+
+    expect(retried).toMatchObject({ applied: true, status: "completed" });
+    const [afterRetry] = await db.select().from(artifacts).where(eq(artifacts.id, published.id));
+    expect(afterRetry).toMatchObject({
+      id: published.id,
+      workpieceRevision: published.workpieceRevision,
+      sha256: published.sha256,
+    });
+    const receiptsAfter = await db.select().from(finishedWorkReceipts)
+      .where(eq(finishedWorkReceipts.runId, runId));
+    expect(receiptsAfter).toHaveLength(1);
+    expect(receiptsAfter[0]?.id).toBe(receiptsBefore[0]?.id);
+  });
+
   test("a cancel accepted before publication prevents completed artifact delivery", async () => {
     const runId = await createSandboxRun(owner);
     sandboxFiles.set("/root/work/cancelled.pdf", pdfBytes);
@@ -667,6 +732,64 @@ describe("artifact completion", () => {
       eq(providerEvents.eventType, "artifact.delivered"),
     ));
     expect(after).toHaveLength(6);
+  });
+
+  test("uploads a finalized presentation without separately uploading its derived pictures", async () => {
+    const runId = await createSandboxRun(owner);
+    const channel = `C${runId.slice(0, 8)}`;
+    const threadTs = `${runId.slice(0, 8)}.1`;
+    await linkSlackThread({ teamId: "T0TESTTEAM", channel, threadTs, rootRunId: runId, orgId: owner.orgId });
+    await createSlackRunResponse({ runId, teamId: "T0TESTTEAM", channel, threadTs });
+    const deckName = `presentation-${runId.slice(0, 8)}.pptx`;
+    const deckPath = `/root/work/${deckName}`;
+    const deck = migrateSlidesToDeck([{ title: "Results", body: "Ready" }]);
+    const deckBytes = Buffer.from((await renderArtifactExport({ deck }, "pptx")).bytes);
+    const deckDigest = createHash("sha256").update(deckBytes).digest("hex");
+    await storage.put(deckDigest, deckBytes);
+    const parent = await artifactRepo.createArtifactRecord({
+      orgId: owner.orgId,
+      userId: owner.email,
+      runId,
+      threadId: runId,
+      sourcePath: deckPath,
+      name: deckName,
+      contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      sizeBytes: deckBytes.byteLength,
+      sha256: deckDigest,
+      storageKey: deckDigest,
+      workpieceKind: "presentation",
+      workpieceState: null,
+    });
+    const imageSeed = Buffer.from(crypto.randomUUID());
+    await materializePptxImages({
+      deck,
+      images: [
+        { slideIndex: 0, role: "background", x: 0, y: 0, w: 100, h: 100, bytes: imageSeed, contentType: "image/png" },
+        { slideIndex: 0, role: "block", x: 10, y: 10, w: 20, h: 20, bytes: Buffer.concat([imageSeed, Buffer.from("-2")]), contentType: "image/png" },
+      ],
+    }, {
+      orgId: owner.orgId,
+      userId: owner.email,
+      run: { id: runId, threadId: runId },
+      sourcePath: deckPath,
+      deckName,
+    });
+    expect(await db.select().from(artifacts).where(eq(artifacts.runId, runId))).toHaveLength(3);
+
+    const finalized = await finalizeRun(runId, "completed", "Done", 100);
+    expect(finalized).toMatchObject({ applied: true, status: "completed" });
+    const uploads: Array<{ filename: string; bytes: Uint8Array }> = [];
+    await processDue(recordingSlack(uploads));
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]?.filename).toBe(deckName);
+    expect(Buffer.from(uploads[0]!.bytes)).toEqual(deckBytes);
+    const delivered = await db.select({ payload: providerEvents.payload }).from(providerEvents).where(and(
+      eq(providerEvents.runId, runId),
+      eq(providerEvents.eventType, "artifact.delivered"),
+    ));
+    expect(delivered).toHaveLength(1);
+    expect(JSON.parse(delivered[0]!.payload ?? "{}")).toMatchObject({ id: parent.row.id });
   });
 
   test("does not harvest remote links or local links shown in code samples", async () => {
