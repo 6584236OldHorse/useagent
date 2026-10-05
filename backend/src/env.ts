@@ -3,7 +3,7 @@
  * `process.env` with dev-friendly defaults so the server boots with zero setup.
  */
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { ENGINE_IDS, type EngineId } from "./db/schema";
 import {
   authSecretMaterial,
@@ -84,23 +84,27 @@ export function openSignupConfig(
 
 export const SIGNUP_DISABLED_MESSAGE = "Account creation is disabled";
 
+/** Equal secrets, in time that depends neither on where they differ nor on
+ *  their lengths: both sides are hashed first. */
 export function sameSecret(given: string, expected: string): boolean {
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return timingSafeEqual(createHash("sha256").update(given).digest(), createHash("sha256").update(expected).digest());
 }
 
 /** Why this address may not open an account by itself, or null when it may.
- *  The open rules narrow by domain and invite code; without the switch the
+ *  The open rules narrow by domain and invite code, except for an address a
+ *  pending invitation names: an invitation is an explicit admission, and the
+ *  mailed confirmation still proves the mailbox. Without the switch the
  *  development rule stands. The answer never depends on whether an account
  *  exists, so it can be given before anything is looked up. */
 export function signupRefusal(
   email: string,
   inviteCode: unknown,
   source: Record<string, string | undefined> = process.env,
+  invited = false,
 ): string | null {
   const open = openSignupConfig(source);
   if (!open) return selfSignupEnabled(source) ? null : SIGNUP_DISABLED_MESSAGE;
+  if (invited) return null;
   const domain = email.trim().toLowerCase().split("@")[1] ?? "";
   if (open.domains.length && !open.domains.includes(domain)) {
     return `Sign-up is limited to ${open.domains.map((name) => `@${name}`).join(", ")} addresses`;

@@ -4,7 +4,7 @@ import { RiKeyLine, RiLockLine, RiMailLine, RiUserLine } from "@remixicon/react"
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useState } from "react";
 import { AuthScreen } from "@/components/auth/auth-screen";
-import { CheckYourEmail } from "@/components/auth/check-your-email";
+import { CheckYourEmail, type MailStatus } from "@/components/auth/check-your-email";
 import { DesktopSignIn } from "@/components/auth/desktop-sign-in";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 import type { VerificationNotice } from "@/components/auth/verification-notice";
@@ -16,6 +16,13 @@ import { backendFetch } from "@/lib/backend-fetch";
 import { desktopBridge, type DesktopBridge } from "@/lib/desktop-bridge";
 
 export type AuthMode = "signin" | "signup";
+
+/** The server's word on the mail a refused sign-in asked for. */
+function signInMailStatus(mail: { sent?: boolean; reason?: string; retryAfterSeconds?: number } | undefined): MailStatus {
+  if (mail?.reason === "held") return { kind: "held", retryAfterSeconds: mail.retryAfterSeconds ?? 3600 };
+  if (mail?.reason === "closed") return { kind: "closed" };
+  return { kind: "sent" };
+}
 
 const COPY = {
   signin: {
@@ -65,8 +72,9 @@ export function AuthForm({
   const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  /** An account waiting for its mail, and the request that makes the mail go out again. */
-  const [awaiting, setAwaiting] = useState<{ email: string; kind: AuthMode } | null>(null);
+  /** An account whose address is unconfirmed, what the server said about the
+   *  mail, and the request that asks for it again. */
+  const [awaiting, setAwaiting] = useState<{ email: string; kind: AuthMode; mail: MailStatus } | null>(null);
 
   useEffect(() => {
     if (initialDesktopBridge === undefined) setDesktop(desktopBridge());
@@ -77,8 +85,9 @@ export function AuthForm({
   const kind: AuthMode = signup && mode === "signup" ? "signup" : "signin";
   const copy = COPY[kind];
 
-  /** One attempt of either kind; the problem to show, or null when the card has moved on. */
-  async function attempt(which: AuthMode): Promise<string | null> {
+  /** One attempt of either kind: the card is now waiting for mail (and what
+   *  the server said about it), or a problem to show, or null once signed in. */
+  async function attempt(which: AuthMode): Promise<{ mail: MailStatus } | { problem: string } | null> {
     try {
       const res = await backendFetch(COPY[which].endpoint, {
         method: "POST",
@@ -89,26 +98,22 @@ export function AuthForm({
         message?: string;
         code?: string;
         token?: string | null;
+        mail?: { sent?: boolean; reason?: string; retryAfterSeconds?: number };
       } | null;
-      // The right password for an address that has not confirmed its mail: the
-      // server has just sent the link again.
-      if (res.status === 403 && data?.code === "EMAIL_NOT_VERIFIED") {
-        setAwaiting({ email, kind: which });
-        return null;
-      }
-      if (!res.ok) return data?.message ?? "Something went wrong. Please try again.";
-      // An open sign-up has no session until the address is confirmed.
-      if (which === "signup" && !data?.token) {
-        setAwaiting({ email, kind: which });
-        return null;
-      }
+      // The right password for an address that has not confirmed its mail; the
+      // server says whether it sent the link again.
+      if (res.status === 403 && data?.code === "EMAIL_NOT_VERIFIED") return { mail: signInMailStatus(data.mail) };
+      if (!res.ok) return { problem: data?.message ?? "Something went wrong. Please try again." };
+      // An open sign-up has no session until the address is confirmed. The
+      // answer is the same for a new address and for one that has an account.
+      if (which === "signup" && !data?.token) return { mail: { kind: "if_new" } };
       invalidateSession();
       router.push(callbackURL);
       router.refresh();
       return null;
     } catch {
       // Network failure / backend down — keep the page usable, surface inline.
-      return "Couldn't reach the server. Please try again in a moment.";
+      return { problem: "Couldn't reach the server. Please try again in a moment." };
     }
   }
 
@@ -118,7 +123,9 @@ export function AuthForm({
     setError(null);
     setPending(true);
     try {
-      setError(await attempt(kind));
+      const outcome = await attempt(kind);
+      if (outcome && "mail" in outcome) setAwaiting({ email, kind, mail: outcome.mail });
+      else if (outcome) setError(outcome.problem);
     } finally {
       setPending(false);
     }
@@ -131,7 +138,8 @@ export function AuthForm({
       <AuthScreen>
         <CheckYourEmail
           email={awaiting.email}
-          onResend={() => attempt(awaiting.kind)}
+          mail={awaiting.mail}
+          onResend={async () => (await attempt(awaiting.kind)) ?? { mail: awaiting.mail }}
           onBack={() => {
             setAwaiting(null);
             setMode("signin");

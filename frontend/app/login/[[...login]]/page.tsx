@@ -15,15 +15,16 @@ export default async function LoginPage({
     redirect_url?: string | string[];
     mode?: string | string[];
     verified?: string | string[];
+    declined?: string | string[];
     error?: string | string[];
   }>;
 }) {
-  const { redirect_url, mode, verified, error } = await searchParams;
+  const { redirect_url, mode, verified, declined, error } = await searchParams;
   return (
     <AuthForm
       callbackURL={safeAuthRedirect(typeof redirect_url === "string" ? redirect_url : null)}
       initialMode={mode === "signup" ? "signup" : "signin"}
-      notice={verificationNotice({ verified, error })}
+      notice={verificationNotice({ verified, declined, error })}
     />
   );
 }

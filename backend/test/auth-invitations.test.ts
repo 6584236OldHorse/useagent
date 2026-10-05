@@ -7,7 +7,7 @@ const { env, invitationMailConfig } = await import("../src/env");
 const { invitation, organization, user } = await import("../src/db/auth-schema");
 const {
   CONFIRMATION_TTL_MS,
-  confirmationLink,
+  confirmationLinks,
   confirmationToken,
   deliverInvitation,
   deliverVerification,
@@ -117,25 +117,28 @@ describe("sign-up verification mail", () => {
     const other = Buffer.from(JSON.stringify({ id: "user 2", email: "new@example.test", until: 9e15 })).toString("base64url");
     expect(readConfirmationToken(`${other}.${signature}`, "secret", 2_000)).toBe("invalid");
     expect(readConfirmationToken(`${payload}.`, "secret", 2_000)).toBe("invalid");
-    expect(confirmationLink(token, "https://app.example.test")).toBe(
-      `https://app.example.test/api/auth/confirm-signup?token=${encodeURIComponent(token)}`,
-    );
+    expect(confirmationLinks(token, "https://app.example.test")).toEqual({
+      confirm: `https://app.example.test/api/auth/confirm-signup?token=${encodeURIComponent(token)}`,
+      decline: `https://app.example.test/api/auth/decline-signup?token=${encodeURIComponent(token)}`,
+    });
   });
 
-  test("the mail says what to do when it was not you, and needs a transport", async () => {
-    const link = confirmationLink("t.s", "https://app.example.test");
-    const message = verificationMessage(link);
+  test("the mail says who chose the password and how to cancel, and needs a transport", async () => {
+    const links = confirmationLinks("t.s", "https://app.example.test");
+    const message = verificationMessage(links);
     expect(message.subject).toBe("Confirm your useAgent sign-up");
-    expect(message.text).toContain(link);
-    expect(message.text).toContain("If you did not sign up just now, ignore this");
-    await expect(deliverVerification("new@example.test", link, null)).rejects.toThrow("no mail transport");
+    expect(message.text).toContain(links.confirm);
+    expect(message.text).toContain(links.decline);
+    expect(message.text).toContain("chosen by whoever filled in the form");
+    expect(message.text).toContain("cancel the sign-up here instead");
+    await expect(deliverVerification("new@example.test", links, null)).rejects.toThrow("no mail transport");
     const sent: Array<{ to: string[]; subject: string; from: string }> = [];
     const config = { host: "smtp.example.test", port: 465, secure: true, from: "hello@example.test" };
     const send = async (cfg: { timeoutMs?: number }, msg: { to: string[]; subject: string; from: string }) => {
       expect(cfg.timeoutMs).toBe(20_000);
       sent.push({ to: msg.to, subject: msg.subject, from: msg.from });
     };
-    await deliverVerification("new@example.test", link, config, send as never);
+    await deliverVerification("new@example.test", links, config, send as never);
     expect(sent).toEqual([{ to: ["new@example.test"], subject: "Confirm your useAgent sign-up", from: "hello@example.test" }]);
   });
 });

@@ -28,20 +28,32 @@ invited.
 A deployment opens sign-up with `SIGNUP_OPEN=1`. Anyone can then create an
 account with an email address and a password; `SIGNUP_ALLOWED_DOMAINS` (a comma
 list) limits it to those domains, and `SIGNUP_INVITE_CODE` asks for a shared
-code on the sign-up card. The switch needs the account mail transport
+code on the sign-up card. An address a pending invitation names passes both:
+an invitation is an explicit admission, and the mailed confirmation still
+proves the mailbox. The switch needs the account mail transport
 (`CONNECTOR_EMAIL_HOST` and `CONNECTOR_EMAIL_FROM`, the settings invitations
 use): a new account is confirmed through a mailed link before its first
 sign-in, and without mail the switch stays inert with a warning at boot,
-because an invite code proves possession of the code, not of the address. An
-address that was claimed but never confirmed is released to the next sign-up
-for it, and the earlier link stops working. Sign-up attempts are limited per
-address and per client; every accepted attempt mails a fresh link, and the
-newest link is the one that works. While the switch is on, an existing account
-whose address was never confirmed is asked to confirm it at its next password
-sign-in (the link is mailed then, at most five times per address per hour), and
-a Google identity never links to an unconfirmed claim on an address. Every newly created user, however provisioned, receives a personal
-organization, an open sign-up once its address is confirmed, so they land in
-their own tenant.
+because an invite code proves possession of the code, not of the address.
+
+An account that never confirmed its address, belongs to no organisation and
+never signed in is a claim on the address, not a person. The next accepted
+sign-up for that address replaces it and mails a fresh link; the newest link
+is the one that works, and an earlier one is refused. The mail says that the
+password was chosen by whoever filled in the form and carries a link that
+cancels the sign-up. A sign-up for an address that already has a confirmed
+account gets the same answer as a new one, without mail, so nothing about the
+account is revealed; the card says so. A Google identity that verifies the
+address takes over a claim on it: the claim's password is dropped and the
+identity links, invited or not. A sign-in with the right password for an
+unconfirmed address mails the link again, at most five times per address per
+hour, and the answer says when no mail was sent and why. Sign-up attempts are
+limited to ten per address and thirty per client per hour. All of these counts
+live in the backend's memory and start over when it restarts; the deployment
+runs one backend. Every account has a personal organization: a provisioned or
+invited one from creation, an open sign-up once its address is confirmed, a
+taken-over claim once the identity links, whether or not another organisation
+(a Slack workspace, say) admitted it first.
 
 ## Organization scoping
 

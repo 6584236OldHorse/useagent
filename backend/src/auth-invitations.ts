@@ -161,35 +161,50 @@ export function readConfirmationToken(
   }
 }
 
-/** The link in the mail: the backend confirms and sends the person to the login card. */
-export function confirmationLink(token: string, origin: string = env.BETTER_AUTH_URL): string {
-  return new URL(`/api/auth/confirm-signup?token=${encodeURIComponent(token)}`, origin).toString();
+export interface ConfirmationLinks {
+  /** Confirms the registration and sends the person to the login card. */
+  readonly confirm: string;
+  /** "This was not me": cancels the registration while it is still a claim. */
+  readonly decline: string;
 }
 
-export function verificationMessage(link: string): { subject: string; text: string } {
+/** The links in the mail, both carrying the same token; the route decides what happens. */
+export function confirmationLinks(token: string, origin: string = env.BETTER_AUTH_URL): ConfirmationLinks {
+  const query = `?token=${encodeURIComponent(token)}`;
+  return {
+    confirm: new URL(`/api/auth/confirm-signup${query}`, origin).toString(),
+    decline: new URL(`/api/auth/decline-signup${query}`, origin).toString(),
+  };
+}
+
+export function verificationMessage(links: ConfirmationLinks): { subject: string; text: string } {
   return {
     subject: "Confirm your useAgent sign-up",
     text: [
-      "You signed up for useAgent with this address. Confirm it to sign in:",
+      "Someone signed up for useAgent with this address. If that was you, confirm it to sign in:",
       "",
-      link,
+      links.confirm,
       "",
-      "The link works for one hour. If you did not sign up just now, ignore this",
-      "mail: without your confirmation the address opens no account.",
+      "The password for this sign-up was chosen by whoever filled in the form. If that",
+      "was not you, do not confirm; cancel the sign-up here instead, and nothing is created:",
+      "",
+      links.decline,
+      "",
+      "Both links work for one hour.",
     ].join("\n"),
   };
 }
 
 export async function deliverVerification(
   email: string,
-  link: string,
+  links: ConfirmationLinks,
   config: InvitationMailConfig | null = invitationMailConfig(),
   send: typeof sendSmtp = sendSmtp,
 ): Promise<void> {
   // Open sign-up is refused without a transport (env.ts), so this only guards a
   // transport removed after boot; the person can ask again from the card.
   if (!config) throw new Error("no mail transport for sign-up verification");
-  const message = verificationMessage(link);
+  const message = verificationMessage(links);
   await send(
     {
       host: config.host,

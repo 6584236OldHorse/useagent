@@ -268,7 +268,7 @@ async function renew(manager: Manager, email: string): Promise<Renewal | Refusal
   }
   // Answered outside the library, so its request limiter does not apply; one
   // resend per address and organisation per minute bounds the mail it can cause.
-  if (live.length && !resendAllowed(`${organizationId}:${email.trim().toLowerCase()}`)) {
+  if (live.length && resendAllowed(`${organizationId}:${email.trim().toLowerCase()}`) > 0) {
     return { status: 429, message: "That invitation was resent less than a minute ago. Try again shortly." };
   }
   const [renewed] = live.length

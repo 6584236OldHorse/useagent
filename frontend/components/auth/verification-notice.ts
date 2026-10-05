@@ -10,6 +10,7 @@ export interface VerificationNotice {
 
 export function verificationNotice(params: {
   verified?: string | string[];
+  declined?: string | string[];
   error?: string | string[];
 }): VerificationNotice | null {
   const error = typeof params.error === "string" ? params.error : null;
@@ -32,5 +33,6 @@ export function verificationNotice(params: {
     };
   }
   if (params.verified === "1") return { tone: "ok", text: "Your email address is confirmed. Sign in to continue." };
+  if (params.declined === "1") return { tone: "ok", text: "That sign-up was cancelled. Nothing was created for your address." };
   return null;
 }

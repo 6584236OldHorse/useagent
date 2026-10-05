@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { betterAuthTrustedOrigins, openSignupConfig, selfSignupEnabled, signupRefusal } from "../src/env";
+import { betterAuthTrustedOrigins, openSignupConfig, sameSecret, selfSignupEnabled, signupRefusal } from "../src/env";
 
 describe("self-service signup policy", () => {
   test("is disabled in production even when no signup-specific flag exists", () => {
@@ -45,6 +45,19 @@ describe("open sign-up policy", () => {
     expect(signupRefusal("a@b.test", "", source)).toBe("That invite code is not valid");
     expect(signupRefusal("a@b.test", undefined, source)).toBe("That invite code is not valid");
     expect(signupRefusal("a@b.test", ["feedback-2026"], source)).toBe("That invite code is not valid");
+  });
+
+  test("an invited address passes the domain rule and the code; the closed rule still stands", () => {
+    const source = { SIGNUP_OPEN: "1", ...MAIL, SIGNUP_ALLOWED_DOMAINS: "acme.com", SIGNUP_INVITE_CODE: "feedback-2026" };
+    expect(signupRefusal("guest@other.test", undefined, source, true)).toBeNull();
+    expect(signupRefusal("guest@other.test", undefined, source, false)).toBe("Sign-up is limited to @acme.com addresses");
+    expect(signupRefusal("guest@other.test", undefined, { NODE_ENV: "production" }, true)).toBe("Account creation is disabled");
+  });
+
+  test("secrets compare in constant time whatever their lengths", () => {
+    expect(sameSecret("feedback-2026", "feedback-2026")).toBe(true);
+    expect(sameSecret("feedback-202", "feedback-2026")).toBe(false);
+    expect(sameSecret("", "feedback-2026")).toBe(false);
   });
 
   test("without the switch the closed rule stands", () => {

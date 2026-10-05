@@ -3,7 +3,6 @@ import { session, user } from "./db/auth-schema";
 import { db, type Executor } from "./db/client";
 import { member, organization } from "./db/schema";
 import { withOrgLock } from "./org-lock";
-import { firstOrgForUser } from "./seed";
 
 /**
  * Signup side-effects for better-auth. One job: give every newly-created user
@@ -49,13 +48,17 @@ export async function createPersonalOrgForUser(user: {
   }
 }
 
-/** The personal organisation for a sign-up that verified its address, once:
- *  two clicks on the same link report the verification twice, and a person
- *  who already belongs somewhere (a provisioned account verifying late) keeps
- *  what they have. */
-export async function ensurePersonalOrgForUser(user: { id: string; name?: string | null; email: string }): Promise<void> {
+/** The personal organisation, once, whichever path reports the person: a
+ *  confirmed sign-up, a provider identity linking, a second click on the same
+ *  link. A person who already belongs somewhere keeps what they have. Given a
+ *  transaction, the check and the creation ride in it. */
+export async function ensurePersonalOrgForUser(
+  user: { id: string; name?: string | null; email: string },
+  exec: Executor = db,
+): Promise<void> {
   await withOrgLock(`user:${user.id}`, async () => {
-    if (!(await firstOrgForUser(user.id))) await createPersonalOrgForUser(user);
+    const [membership] = await exec.select({ id: member.id }).from(member).where(eq(member.userId, user.id)).limit(1);
+    if (!membership) await createPersonalOrgForUser(user, exec);
   });
 }
 

@@ -3,16 +3,16 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { organization } from "better-auth/plugins";
-import { createPersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
+import { and, eq } from "drizzle-orm";
+import { ensurePersonalOrgForUser, unverifiedClaim } from "./auth-hooks";
 import {
   INVITATION_EXPIRES_IN_SECONDS,
-  confirmationLink,
+  confirmationLinks,
   confirmationToken,
   deliverInvitation,
   deliverVerification,
   invitedSignupAllowed,
 } from "./auth-invitations";
-import { fixedWindow } from "./auth/signup-routes";
 import { db } from "./db/client";
 import * as schema from "./db/auth-schema";
 import {
@@ -30,11 +30,6 @@ import {
  *  limiter and the sign-up limiter then both see the address the edge saw. */
 const TRUSTED_PROXIES = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"];
 
-/** Confirmation mails a sign-in with the right password may trigger per
- *  address per hour. A sign-up attempt always mails; the sign-up route bounds
- *  those attempts per address, so this is the only other way to make mail. */
-export const SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS = 5;
-
 /**
  * Better Auth server with Google, existing-account password sign-in, and
  * organizations. A closed deployment creates no accounts on its own: a verified
@@ -46,7 +41,6 @@ export function createAuthServer() {
   const google = googleAuthConfig();
   const allowSignup = selfSignupEnabled();
   const open = openSignupConfig();
-  const signInMailAllowed = fixedWindow(SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS, 60 * 60 * 1000);
   if (signupSwitchOn() && !open) {
     console.warn(
       "[auth] SIGNUP_OPEN is set but no account mail transport is configured (CONNECTOR_EMAIL_HOST and CONNECTOR_EMAIL_FROM): sign-up stays closed, an address cannot be verified without mail.",
@@ -66,17 +60,14 @@ export function createAuthServer() {
     },
     emailVerification: open
       ? {
-          sendOnSignIn: true,
-          // The library's own link (keyed by address alone) is not mailed; the
-          // signed one names the registration (auth/signup-routes.ts confirms it).
-          sendVerificationEmail: async ({ user }, request) => {
-            const signIn = request !== undefined && new URL(request.url).pathname.endsWith("/sign-in/email");
-            if (signIn && !signInMailAllowed(user.email)) {
-              console.warn(`[auth] confirmation mail for ${user.email} held: ${SIGN_IN_CONFIRMATION_MAILS_PER_ADDRESS} sign-in mails already this hour`);
-              return;
-            }
+          // Mailed when a sign-up creates the registration. The library's own
+          // link (keyed by address alone) is not mailed; the signed one names
+          // the registration (auth/signup-routes.ts confirms it). A sign-in for
+          // an unconfirmed address is answered and mailed by the sign-in route,
+          // so the answer can say what happened to the mail.
+          sendVerificationEmail: async ({ user }) => {
             // The account exists whatever the mail does; the card can ask again.
-            void deliverVerification(user.email, confirmationLink(confirmationToken(user))).catch((error: unknown) => {
+            void deliverVerification(user.email, confirmationLinks(confirmationToken(user))).catch((error: unknown) => {
               console.error(`[auth] verification mail for ${user.email} could not be sent:`, (error as Error).message);
             });
           },
@@ -94,6 +85,10 @@ export function createAuthServer() {
         }
       : {},
     account: { accountLinking: { requireLocalEmailVerified: false } },
+    // The library's own limiter runs in production, as its default says; read
+    // when the server is built rather than when the library was loaded, so a
+    // server built for production behaves as one.
+    rateLimit: { enabled: (process.env.NODE_ENV ?? "development") === "production" },
     advanced: { ipAddress: { trustedProxies: TRUSTED_PROXIES } },
     plugins: [
       organization({
@@ -118,18 +113,21 @@ export function createAuthServer() {
             // claim (a mailbox that changed hands) can still create an account, but
             // never joins the organisation: the invitation id travels only in the mail
             // and the by-email listing is closed in auth/routes.ts.
-            const invited = user.emailVerified === true && (await invitedSignupAllowed(user.email));
+            const pending = await invitedSignupAllowed(user.email);
+            const invited = user.emailVerified === true && pending;
             if (invited) return;
             // Every other creation, whatever the provider, answers to the sign-up
-            // policy: closed, or open and narrowed by domain and invite code. The
-            // code travels in the sign-up body; a Google identity presents none.
-            const refusal = signupRefusal(user.email, context?.body?.inviteCode);
+            // policy: closed, or open and narrowed by domain and invite code (an
+            // invited address passes both). The code travels in the sign-up
+            // body; a Google identity presents none.
+            const refusal = signupRefusal(user.email, context?.body?.inviteCode, process.env, pending);
             if (refusal) throw APIError.from("FORBIDDEN", { code: "SIGNUP_DISABLED", message: refusal });
           },
           after: async (user) => {
-            // An open sign-up gets its organisation once the address is verified
-            // (afterEmailVerification above); everyone else on creation.
-            if (user.emailVerified || !open) await createPersonalOrgForUser(user);
+            // An open sign-up gets its organisation once the address is confirmed
+            // (auth/signup-routes.ts); everyone else on creation. Ensured, not
+            // created blindly: a provider link reported first may have done it.
+            if (user.emailVerified || !open) await ensurePersonalOrgForUser(user);
           },
         },
       },
@@ -152,15 +150,26 @@ export function createAuthServer() {
       account: {
         create: {
           before: async (account) => {
-            // A provider identity must not link to a claim (an account that never
-            // confirmed its address and belongs nowhere): the link would confirm
-            // the address and keep a stranger's password. The address's owner
-            // signs up, which replaces the claim, and confirms; then the provider
-            // links. Provisioned and Slack-created accounts have an organisation
-            // and keep linking as before.
+            // A provider identity that verified the address (the library links no
+            // other) outranks a password nobody confirmed: linking to a claim (an
+            // account that never confirmed its address and belongs nowhere) drops
+            // the claim's password, and the account is that person's; the library
+            // marks the address confirmed right after the link. Invited or not,
+            // open or closed: the account already exists, no door is opened.
             if (account.providerId !== "credential" && (await unverifiedClaim(account.userId))) {
-              throw APIError.from("FORBIDDEN", { code: "UNCONFIRMED_CLAIM", message: "Sign up with this address and confirm it first" });
+              await db.delete(schema.account).where(and(eq(schema.account.userId, account.userId), eq(schema.account.providerId, "credential")));
             }
+          },
+          after: async (account) => {
+            // A person a provider vouched for lands in a workspace of their own,
+            // whichever way the account came to be (a taken-over claim has none).
+            if (account.providerId === "credential") return;
+            const [owner] = await db
+              .select({ id: schema.user.id, name: schema.user.name, email: schema.user.email })
+              .from(schema.user)
+              .where(eq(schema.user.id, account.userId))
+              .limit(1);
+            if (owner) await ensurePersonalOrgForUser(owner);
           },
         },
       },
