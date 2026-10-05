@@ -29,17 +29,21 @@ test("GET /api/config reports the deployment-provided providers and follows the 
   // What a runner must speak and boot; no image is configured in the test environment.
   expect(served.body.runner).toEqual({ enabled: true, minProtocol: 2, image: null });
   expect(JSON.stringify(served.body)).not.toContain("sk-test-deployment");
-  // The sandbox block names the provider a person reads, following where the
-  // deployment points: the test environment runs the default provider, and the
-  // E2B-protocol plugin reads as E2B on e2b.app and Cube elsewhere.
-  expect(served.body.sandbox).toMatchObject({ provider: "daytona", label: "Daytona" });
+  // The config never says where sandboxes come from; a member reads "Cloud".
+  expect(served.body.sandbox).toEqual({ userComputers: false });
+  expect(JSON.stringify(served.body.sandbox)).not.toMatch(/daytona|cube|e2b|box/i);
+  // The operator's own route names the provider a person reads, following where
+  // the deployment points: the test environment (development, so open) runs the
+  // default provider, and the E2B-protocol plugin reads as E2B on e2b.app and
+  // Cube elsewhere.
+  expect((await json<unknown>("/api/operator/sandbox")).body).toMatchObject({ provider: "daytona", label: "Daytona" });
   const previous = { provider: process.env.SANDBOX_PROVIDER, url: process.env.CUBE_API_URL };
   try {
     process.env.SANDBOX_PROVIDER = "cube";
     process.env.CUBE_API_URL = "https://api.e2b.app";
-    expect((await json<{ sandbox: unknown }>("/api/config")).body.sandbox).toMatchObject({ provider: "cube", label: "E2B" });
+    expect((await json<unknown>("/api/operator/sandbox")).body).toMatchObject({ provider: "cube", label: "E2B" });
     process.env.CUBE_API_URL = "https://cube.internal.example";
-    expect((await json<{ sandbox: unknown }>("/api/config")).body.sandbox).toMatchObject({ provider: "cube", label: "Cube" });
+    expect((await json<unknown>("/api/operator/sandbox")).body).toMatchObject({ provider: "cube", label: "Cube" });
   } finally {
     if (previous.provider === undefined) delete process.env.SANDBOX_PROVIDER;
     else process.env.SANDBOX_PROVIDER = previous.provider;

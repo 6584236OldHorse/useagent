@@ -36,17 +36,17 @@ export interface SandboxConfig {
   readonly userComputers: boolean;
 }
 
+/** Where the deployment's sandboxes come from. Operator-only: the Infrastructure
+ *  section is the one caller, and it renders for operator accounts alone. */
 export async function fetchSandboxConfig(): Promise<SandboxConfig> {
-  const res = await backendFetch("/api/config", { cache: "no-store" });
+  const res = await backendFetch("/api/operator/sandbox", { cache: "no-store" });
   if (!res.ok) throw new Error(`sandbox-config ${res.status}`);
-  const data = (await res.json()) as {
-    sandbox?: { provider?: unknown; label?: unknown; host?: unknown; userComputers?: unknown };
-  };
+  const data = (await res.json()) as { provider?: unknown; label?: unknown; host?: unknown; userComputers?: unknown };
   return {
-    provider: typeof data.sandbox?.provider === "string" ? data.sandbox.provider : null,
-    label: typeof data.sandbox?.label === "string" && data.sandbox.label ? data.sandbox.label : null,
-    host: typeof data.sandbox?.host === "string" && data.sandbox.host ? data.sandbox.host : null,
-    userComputers: data.sandbox?.userComputers === true,
+    provider: typeof data.provider === "string" ? data.provider : null,
+    label: typeof data.label === "string" && data.label ? data.label : null,
+    host: typeof data.host === "string" && data.host ? data.host : null,
+    userComputers: data.userComputers === true,
   };
 }
 

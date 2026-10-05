@@ -126,8 +126,8 @@ describe("fetchSandboxProviderName", () => {
     let calls = 0;
     const fetcher = async (path: string) => {
       calls += 1;
-      expect(path).toBe("/api/config");
-      return config({ sandbox: { provider: "cube", label: "E2B" } })();
+      expect(path).toBe("/api/operator/sandbox");
+      return config({ provider: "cube", label: "E2B" })();
     };
     const first = await fetchSandboxProviderName(fetcher);
     const second = await fetchSandboxProviderName(fetcher);

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Chip } from "@/components/base/badges/chip";
 import { LocalLoginAvailability } from "@/components/runners/local-login-availability";
 import { MachinesCard } from "@/components/runners/machines-card";
+import { OperatorOnly } from "@/components/shared/operator-only";
 import { ApiKeysCard } from "./api-keys-card";
 import { SubscriptionLimitsCard } from "./subscription-limits-card";
 import { ComputerConnectionsCard } from "./computer-connections-card";
@@ -147,17 +148,20 @@ export default function SettingsPage() {
                 <UsageMeters />
               </Section>
 
-              {/* Infrastructure */}
-              <Section
-                id="infrastructure"
-                title="Infrastructure"
-                description="View the managed runtime and connect optional sandbox accounts."
-              >
-                <div className="flex flex-col gap-4">
-                  <SandboxProviderRow />
-                  <ComputerConnectionsCard />
-                </div>
-              </Section>
+              {/* Infrastructure: where sandboxes come from is the operator's
+                  business (OPERATOR_ACCOUNTS); nobody else sees the section. */}
+              <OperatorOnly>
+                <Section
+                  id="infrastructure"
+                  title="Infrastructure"
+                  description="View the managed runtime and connect optional sandbox accounts."
+                >
+                  <div className="flex flex-col gap-4">
+                    <SandboxProviderRow />
+                    <ComputerConnectionsCard />
+                  </div>
+                </Section>
+              </OperatorOnly>
 
               <Section
                 id="machines"

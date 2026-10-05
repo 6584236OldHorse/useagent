@@ -73,10 +73,10 @@ const tabOf = (html: string) => {
 test("an empty thread shows only where its run executes, never a repository placeholder", () => {
   const html = render([turn("run-1", { sandbox_id: "sbx-1", sandbox_provider: "daytona" })]);
   const tab = tabOf(html);
-  // The vendor is a title-only detail; the tab itself reads Cloud.
-  expect(tab).toContain('title="Runs on Daytona"');
+  // The tab reads Cloud, and a member is never told the vendor.
+  expect(tab).toContain('title="Runs in the cloud"');
   expect(tab).toContain(">Cloud<");
-  expect(tab).not.toContain(">Daytona<");
+  expect(tab).not.toContain("Daytona");
   expect(tab).not.toContain("No repository");
   expect(tab).not.toContain("Default branch");
   expect(tab).toContain(">OpenCode<");

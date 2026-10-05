@@ -1,15 +1,17 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
+import { operatorOnly } from "../operator/access";
 import { isSandboxProviderKind } from "./plugins";
 import { sandboxProviderKind, sandboxProviderLabel } from "./provider";
 import { enabledSandboxProviders, readSandboxPreference, writeSandboxPreference } from "./preference";
 
-// /api/sandbox-preference - the signed-in member's preferred sandbox provider
-// for new sandboxes, among the providers this deployment can run.
+// /api/sandbox-preference - the preferred sandbox provider for new sandboxes,
+// among the providers this deployment can run. It names vendors, so only an
+// operator account reaches it; a stored preference keeps applying to runs.
 export const sandboxPreferenceRoutes = new Hono<AppEnv>();
 
-sandboxPreferenceRoutes.use("*", orgScope);
+sandboxPreferenceRoutes.use("*", orgScope, operatorOnly);
 
 async function view(scope: { readonly orgId: string; readonly userId: string }) {
   const enabled = enabledSandboxProviders();
