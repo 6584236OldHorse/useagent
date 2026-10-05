@@ -1,6 +1,7 @@
 import type { EngineId } from "../db/schema";
 import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
+import { executeSandboxCommandOnce, prefetchSandboxCommand } from "../sandboxes/command-prefetch";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -19,21 +20,26 @@ import type { SandboxBinding } from "../sandboxes/binding";
 import { type ModelCredentialSource, claudeLoginEnvironment, installSandboxLogin, sandboxLogin } from "./sandbox-login";
 import {
   RUNTIME_ENVIRONMENT_HOME,
-  RUNTIME_ENVIRONMENT_WORKDIR,
   runtimeEnvironmentEnabled,
 } from "./runtime-environment";
-import { prepareCodexSubscription, type CodexSubscriptionLease } from "./codex-subscription-runtime";
+import { prefetchCodexServicesProbe, prepareCodexSubscription, type CodexSubscriptionLease } from "./codex-subscription-runtime";
+import { ensureSandboxBun, sandboxBunExecutable } from "./sandbox-bun";
 import {
-  buildSandboxBunProbeCommand,
-  ensureSandboxBun,
-  sandboxBunExecutable,
-} from "./sandbox-bun";
+  buildClaudeInstallIdentityProbeCommand,
+  buildCodexInstallIdentityProbeCommand,
+  buildOpenCodeInstallIdentityProbeCommand,
+  buildRuntimeProviderValidationCommand,
+  CLAUDE_CODE_VERSION,
+  CODEX_VERSION,
+  OPENCODE_VERSION,
+  ROOT_RUNTIME_LAYOUT,
+} from "./runtime-native-install";
 import { prepareOpenCodeGateway } from "./opencode-model-limit-refresh";
 import {
   buildAttachmentTreeAccessCommand,
   buildRootTraversalAccessCommand,
 } from "./runtime-user-permissions";
-import { buildCodexProviderConfigUpdateScript, codexProviderConfig, codexProviderConfigurationRevision, buildPendingCodexProviderConfigurationProbeCommand, codexProviderConfigPendingPath, INSTALL_VALIDATED, parsePendingCodexProviderConfigurationResponse, readPendingCodexProviderConfigurationRevision } from "./runtime-codex-plan-config";
+import { buildCodexProviderConfigUpdateScript, codexProviderConfig, codexProviderConfigurationRevision, codexProviderConfigPendingPath, INSTALL_VALIDATED, parsePendingCodexProviderConfigurationResponse, readPendingCodexProviderConfigurationRevision } from "./runtime-codex-plan-config";
 export { openCodeModelLimitsChanged } from "./opencode-model-limit-refresh";
 
 const RUNTIME_SETTINGS_PATH = `${RUNTIME_ENVIRONMENT_HOME}/userdata/settings.json`;
@@ -47,66 +53,9 @@ const CLAUDE_READY_POLL_MS = 150;
 const NATIVE_VERSION_PROBE_ATTEMPTS = 3;
 const NATIVE_VERSION_PROBE_DELAYS_MS = [250, 500] as const;
 const NATIVE_VERSION_PROBE_DIAGNOSTIC_PREFIX = "useagent-native-version-probe:";
-const CODEX_VERSION = "0.159.3";
-const CLAUDE_CODE_VERSION = "2.1.285";
-const OPENCODE_VERSION = "2.0.18";
-const OPENCODE_PACKAGE = "@opencode/cli";
-/** The pinned driver versions the bootstrap installs; the native image name is derived from them. */
-export const RUNTIME_ENGINE_VERSIONS = {
-  codex: CODEX_VERSION,
-  claude: CLAUDE_CODE_VERSION,
-  opencode: OPENCODE_VERSION,
-} as const;
 const CLAUDE_RUNTIME_UID = 1000;
 const CLAUDE_RUNTIME_GID = CLAUDE_CAPABILITY_GID;
 const CLAUDE_RUNTIME_HOME = "/home/user";
-const ROOT_RUNTIME_LAYOUT: SandboxRuntimeLayout = {
-  home: "/root",
-  workdir: RUNTIME_ENVIRONMENT_WORKDIR,
-  runsAsRoot: true,
-};
-
-const CODEX_INSTALL_IDENTITY_SCRIPT = [
-  'const fs=require("node:fs"),path=require("node:path")',
-  'const binary=process.argv[1],packageDirectory=process.argv[2],expectedVersion=process.argv[3],diagnostic=process.argv[4]==="diagnostic"',
-  'try{const packageRoot=fs.realpathSync(packageDirectory);const manifest=JSON.parse(fs.readFileSync(path.join(packageRoot,"package.json"),"utf8"));const binEntry=typeof manifest.bin==="string"?manifest.bin:manifest.bin?.codex;const binaryReal=fs.realpathSync(binary);const entryReal=fs.realpathSync(path.join(packageRoot,"bin/codex.js"));const target=process.arch==="x64"?{alias:"@openai/codex-linux-x64",suffix:"linux-x64",triple:"x86_64-unknown-linux-musl"}:process.arch==="arm64"?{alias:"@openai/codex-linux-arm64",suffix:"linux-arm64",triple:"aarch64-unknown-linux-musl"}:null;if(!target)throw new Error("unsupported_arch");const nodeModulesRoot=path.resolve(packageRoot,"../..");const platformRoot=fs.realpathSync(path.join(nodeModulesRoot,target.alias));const platformManifest=JSON.parse(fs.readFileSync(path.join(platformRoot,"package.json"),"utf8"));const nativeReal=fs.realpathSync(path.join(platformRoot,"vendor",target.triple,"bin/codex"));const nativeRelative=path.relative(platformRoot,nativeReal);fs.accessSync(binary,fs.constants.X_OK);fs.accessSync(nativeReal,fs.constants.X_OK);if(manifest.name!=="@openai/codex"||manifest.version!==expectedVersion||binEntry!=="bin/codex.js"||binaryReal!==entryReal||!fs.statSync(entryReal).isFile()||platformManifest.name!=="@openai/codex"||platformManifest.version!==expectedVersion+"-"+target.suffix||nativeRelative===""||nativeRelative.startsWith(".."+path.sep)||path.isAbsolute(nativeRelative)||!fs.statSync(nativeReal).isFile())throw new Error("identity_mismatch");process.exit(0)}catch{if(diagnostic)console.error("useagent-native-version-probe: install_identity_mismatch expected="+expectedVersion);process.exit(1)}',
-].join(";");
-
-const CLAUDE_INSTALL_IDENTITY_SCRIPT = [
-  'const fs=require("node:fs"),path=require("node:path")',
-  'const binary=process.argv[1],packageDirectory=process.argv[2],expectedVersion=process.argv[3],diagnostic=process.argv[4]==="diagnostic"',
-  'try{const packageRoot=fs.realpathSync(packageDirectory);const manifest=JSON.parse(fs.readFileSync(path.join(packageRoot,"package.json"),"utf8"));const binEntry=typeof manifest.bin==="string"?manifest.bin:manifest.bin?.claude;const binaryReal=fs.realpathSync(binary);const nodeModulesRoot=path.resolve(packageRoot,"../..");const isPlatformPackage=name=>name.startsWith("@anthropic-ai/claude-code-darwin-")||name.startsWith("@anthropic-ai/claude-code-linux-")||name.startsWith("@anthropic-ai/claude-code-win32-");const allowedRoots=[packageRoot,...Object.entries(manifest.optionalDependencies??{}).filter(([name,version])=>isPlatformPackage(name)&&version===expectedVersion).flatMap(([name])=>{try{const root=fs.realpathSync(path.join(nodeModulesRoot,name));const dependency=JSON.parse(fs.readFileSync(path.join(root,"package.json"),"utf8"));return dependency.name===name&&dependency.version===expectedVersion?[root]:[]}catch{return []}})];const contained=allowedRoots.some(root=>{const relative=path.relative(root,binaryReal);return relative!==""&&!relative.startsWith(".."+path.sep)&&!path.isAbsolute(relative)});fs.accessSync(binary,fs.constants.X_OK);if(manifest.name!=="@anthropic-ai/claude-code"||manifest.version!==expectedVersion||binEntry!=="bin/claude.exe"||!contained)throw new Error("identity_mismatch");process.exit(0)}catch{if(diagnostic)console.error("useagent-native-version-probe: install_identity_mismatch expected="+expectedVersion);process.exit(1)}',
-].join(";");
-
-const OPENCODE_INSTALL_IDENTITY_SCRIPT = [
-  'const fs=require("node:fs"),path=require("node:path")',
-  'const binary=process.argv[1],packageDirectory=process.argv[2],expectedVersion=process.argv[3],diagnostic=process.argv[4]==="diagnostic"',
-  'try{const packageRoot=fs.realpathSync(packageDirectory);const manifest=JSON.parse(fs.readFileSync(path.join(packageRoot,"package.json"),"utf8"));const binEntry=typeof manifest.bin==="string"?manifest.bin:manifest.bin?.opencode;const binaryReal=fs.realpathSync(binary);const relative=path.relative(packageRoot,binaryReal);const contained=relative!==""&&!relative.startsWith(".."+path.sep)&&!path.isAbsolute(relative);fs.accessSync(binary,fs.constants.X_OK);if(manifest.name!=="@opencode/cli"||manifest.version!==expectedVersion||binEntry!=="./bin/opencode.exe"||!contained||binaryReal!==fs.realpathSync(path.resolve(packageRoot,binEntry))||!fs.statSync(binaryReal).isFile())throw new Error("identity_mismatch");const fd=fs.openSync(binaryReal,"r"),magic=Buffer.alloc(4);try{if(fs.readSync(fd,magic,0,4,0)!==4||!magic.equals(Buffer.from([127,69,76,70])))throw new Error("not_native_elf")}finally{fs.closeSync(fd)}process.exit(0)}catch{if(diagnostic)console.error("useagent-native-version-probe: install_identity_mismatch expected="+expectedVersion);process.exit(1)}',
-].join(";");
-
-export function buildClaudeInstallIdentityProbeCommand(
-  layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
-  diagnostic = false,
-): string {
-  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
-  return `node -e ${JSON.stringify(CLAUDE_INSTALL_IDENTITY_SCRIPT)} ${JSON.stringify(`${prefix}/bin/claude`)} ${JSON.stringify(`${prefix}/share/useagent/native-engines/node_modules/@anthropic-ai/claude-code`)} ${JSON.stringify(CLAUDE_CODE_VERSION)} ${diagnostic ? "diagnostic" : "quiet"}`;
-}
-
-export function buildCodexInstallIdentityProbeCommand(
-  layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
-  diagnostic = false,
-): string {
-  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
-  return `node -e ${JSON.stringify(CODEX_INSTALL_IDENTITY_SCRIPT)} ${JSON.stringify(`${prefix}/bin/codex`)} ${JSON.stringify(`${prefix}/share/useagent/native-engines/node_modules/@openai/codex`)} ${JSON.stringify(CODEX_VERSION)} ${diagnostic ? "diagnostic" : "quiet"}`;
-}
-
-export function buildOpenCodeInstallIdentityProbeCommand(
-  layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
-  diagnostic = false,
-): string {
-  const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
-  return `node -e ${JSON.stringify(OPENCODE_INSTALL_IDENTITY_SCRIPT)} ${JSON.stringify(`${prefix}/bin/opencode`)} ${JSON.stringify(`${prefix}/share/useagent/native-engines/node_modules/${OPENCODE_PACKAGE}`)} ${JSON.stringify(OPENCODE_VERSION)} ${diagnostic ? "diagnostic" : "quiet"}`;
-}
 
 function runtimeBridgeLayout(sandbox: Pick<SandboxHandle, "providerKind">): SandboxRuntimeLayout {
   if (!sandbox.providerKind) return ROOT_RUNTIME_LAYOUT;
@@ -216,7 +165,7 @@ export function buildRuntimeProviderBootstrapCommand(
     ? `@openai/codex@${CODEX_VERSION}`
     : engine === "claude"
       ? `@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}`
-      : `${OPENCODE_PACKAGE}@${OPENCODE_VERSION}`;
+      : `opencode-ai@${OPENCODE_VERSION}`;
   const nativeBinaryName = engine === "claude" ? "claude" : engine;
   const nativeBinary = `${prefix}/bin/${nativeBinaryName}`;
   const nativeGlobalDirectory = `${prefix}/share/useagent/native-engines`;
@@ -284,8 +233,7 @@ export function buildRuntimeProviderBootstrapCommand(
     `  BUN_CACHE="$(mktemp -d "\${TMPDIR:-/tmp}/useagent-${engine}-bun.XXXXXX")"`,
     '  cleanup_native_bun() { rm -rf -- "$BUN_CACHE"; }',
     "  trap cleanup_native_bun EXIT HUP INT TERM",
-    // --trust runs the postinstall that swaps the placeholder for the native binary; the probe checks it.
-    '  BUN_INSTALL_CACHE_DIR="$BUN_CACHE" BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR" BUN_INSTALL_BIN="$NATIVE_PREFIX/bin" "$BUN_EXECUTABLE" add --global --exact --trust --no-progress "$NATIVE_PACKAGE"',
+    '  BUN_INSTALL_CACHE_DIR="$BUN_CACHE" BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR" BUN_INSTALL_BIN="$NATIVE_PREFIX/bin" "$BUN_EXECUTABLE" add --global --exact --no-progress "$NATIVE_PACKAGE"',
     "  cleanup_native_bun",
     "  trap - EXIT HUP INT TERM",
     "fi",
@@ -506,6 +454,21 @@ export async function awaitRuntimeProviderReady(
   }
 }
 
+/** A warm turn's read-only provider checks, issued alongside sandbox
+ * acquisition: the install validation for a sandbox this process already
+ * bootstrapped, and subscription Codex's services probe. Claude is left out:
+ * its bootstrap carries the run's gateway environment. */
+export function prefetchRuntimeProviderBridge(sandbox: SandboxHandle, engine: RuntimeEngineId): void {
+  if (engine === "claude") return;
+  const layout = runtimeBridgeLayout(sandbox);
+  const bootstrap = buildRuntimeProviderBootstrapCommand(engine, {}, layout, "plane");
+  if (bootstrapStates.get(sandbox.id || sandbox)?.has(bootstrap)) {
+    const pendingRevision = engine === "codex" ? codexProviderConfigurationRevision(layout) : null;
+    prefetchSandboxCommand(sandbox, buildRuntimeProviderValidationCommand(engine, layout, pendingRevision), 10);
+  }
+  if (engine === "codex" && engineAuthMode("codex") !== "provider_gateway") prefetchCodexServicesProbe(sandbox);
+}
+
 async function ensureRuntimeProviderBootstrap(
   sandbox: SandboxHandle,
   engine: RuntimeEngineId,
@@ -526,21 +489,11 @@ async function ensureRuntimeProviderBootstrap(
     signal.throwIfAborted();
     // One round trip: install probes, then (Codex) the pending revision. No sentinel means the
     // install failed or the call did: evict and fully re-bootstrap. Sentinel plus failure: fail closed.
-    const validationCommand = [
-      "set -eu",
-      buildSandboxBunProbeCommand(layout),
-      engine === "codex"
-        ? buildCodexInstallIdentityProbeCommand(layout)
-        : engine === "claude"
-          ? buildClaudeInstallIdentityProbeCommand(layout)
-          : buildOpenCodeInstallIdentityProbeCommand(layout),
-      ...(pendingRevision
-        ? [`echo ${INSTALL_VALIDATED}`, buildPendingCodexProviderConfigurationProbeCommand(pendingRevision)]
-        : []),
-    ].join("\n");
-    const validation = await sandbox.process
-      .executeCommand(validationCommand, undefined, undefined, 10)
-      .catch(() => null);
+    const validation = await executeSandboxCommandOnce(
+      sandbox,
+      buildRuntimeProviderValidationCommand(engine, layout, pendingRevision),
+      10,
+    ).catch(() => null);
     signal.throwIfAborted();
     const output = validation?.result ?? "";
     const sentinel = output.indexOf(INSTALL_VALIDATED);

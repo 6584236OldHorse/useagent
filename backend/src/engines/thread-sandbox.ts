@@ -40,6 +40,9 @@ export interface ThreadSandboxOptions {
   readonly requiredLabels?: Readonly<Record<string, string>>;
   /** Filled by acquisition from deployment policy before retained reuse. */
   readonly minimumResources?: ReturnType<typeof resolveSandboxResourceTarget>;
+  /** A retained sandbox is up: the turn may issue its read-only checks now,
+   * alongside the credential check that still decides whether it is used. */
+  readonly onRetainedStarted?: (sandbox: SandboxHandle, binding: SandboxBinding) => void;
 }
 
 /**
@@ -75,7 +78,11 @@ export function sandboxHasRequiredLabels(
 export async function reviveRetainedSandbox(
   ctx: EngineRunContext,
   sandboxId: string,
-  options: { readonly chip: string; readonly onResume?: () => void },
+  options: {
+    readonly chip: string;
+    readonly onResume?: () => void;
+    readonly onStarted?: (sandbox: SandboxHandle, binding: SandboxBinding) => void;
+  },
   dependencies = {
     threadBinding: resolveSandboxBindingForThread,
     sandboxBinding: resolveSandboxBindingForSandbox,
@@ -105,6 +112,8 @@ export async function reviveRetainedSandbox(
     options.onResume?.();
   } else if (state !== "started") {
     throw new Error(`unusable state: ${state}`);
+  } else {
+    options.onStarted?.(sandbox, binding);
   }
   if (!(await dependencies.credentialsCurrent(sandbox))) {
     throw new RetainedSandboxRuntimeMismatchError("credential-isolation");
@@ -134,7 +143,10 @@ export async function resolveRetainedSandbox(
   if (ctx.expectedSandbox && sandboxId !== ctx.expectedSandbox.sandboxId) throw new ExpectedSandboxMismatchError();
   if (!sandboxId) return null;
   try {
-    const { sandbox, binding } = await dependencies.revive(ctx, sandboxId, { chip: options.chip });
+    const { sandbox, binding } = await dependencies.revive(ctx, sandboxId, {
+      chip: options.chip,
+      onStarted: options.onRetainedStarted,
+    });
     if (!sandboxHasRequiredLabels(sandbox, options.requiredLabels)) {
       throw new RetainedSandboxRuntimeMismatchError();
     }

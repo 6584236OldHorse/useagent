@@ -21,6 +21,7 @@ import {
   buildCodexProviderInstanceCommand,
   buildCodexProviderReadyProbeCommand,
   codexExecServerOwner,
+  prefetchCodexServicesProbe,
   prepareCodexSubscription,
   previewWebSocketUrl,
 } from "./codex-subscription-runtime";
@@ -218,6 +219,32 @@ describe("T3 Codex subscription lease", () => {
     await second.close();
     expect(relays.opened[0]!.serving).toBeNull();
     expect(liveCodexThreadSessions()).toBe(1);
+  });
+
+  test("a warm turn takes the services probe issued during acquisition, bearer and all", async () => {
+    const bearers: string[] = [];
+    const dependencies = {
+      loadThreadBinding: async () => "provider-thread-1",
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close() {} }),
+      openCodeModeBridge: codeModeBridges([], bearers),
+      openRelaySession: relaySessions().open,
+    };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    await first.close();
+
+    const warm = fakeSandbox({ execServerListening: true, codeModeListening: true });
+    prefetchCodexServicesProbe(warm.sandbox);
+    expect(warm.commands).toHaveLength(1);
+    const second = await prepareCodexSubscription({
+      sandbox: warm.sandbox, ctx: { ...context(), runId: "run-2" }, workdir: "/root/work", runtime: runtime(), dependencies,
+    });
+    expect(second.sessionReused).toBe(true);
+    // No second probe: the prefetched one admitted the bearer the bridge now uses.
+    expect(warm.commands).toHaveLength(1);
+    expect(warm.commands[0]?.command).toContain(createHash("sha256").update(bearers[1]!).digest("hex"));
+    await second.close();
   });
 
   test("a kept session serves only runs given its gateway bearer; a re-minted bearer starts a fresh one", async () => {

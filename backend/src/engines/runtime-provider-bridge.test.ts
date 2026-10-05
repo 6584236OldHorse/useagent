@@ -10,19 +10,22 @@ import {
 } from "./runtime-codex-plan-config";
 import {
   awaitRuntimeProviderReady,
-  buildCodexInstallIdentityProbeCommand,
-  buildClaudeInstallIdentityProbeCommand,
-  buildOpenCodeInstallIdentityProbeCommand,
   buildRuntimeProviderReadyProbeCommand,
   buildRuntimeProviderBootstrapCommand,
   claudeProviderReadiness,
   codexBridgeAuthPath,
   openCodeModelLimitsChanged,
   prepareRuntimeProviderBridge,
+  prefetchRuntimeProviderBridge,
   prepareStableRuntimeProvider,
   prewarmRuntimeProviderBridge,
   resetRuntimeProviderBridgeCacheForTest,
 } from "./runtime-provider-bridge";
+import {
+  buildClaudeInstallIdentityProbeCommand,
+  buildCodexInstallIdentityProbeCommand,
+  buildOpenCodeInstallIdentityProbeCommand,
+} from "./runtime-native-install";
 
 const claudeEnvironment = {
   ANTHROPIC_BASE_URL: "https://gateway.example.test/provider/anthropic",
@@ -1188,6 +1191,58 @@ exit 17
     identityValid = false;
     await prepareStableRuntimeProvider(sandbox, context, "codex");
     expect(bootstraps).toBe(2);
+  });
+
+  test("a bootstrapped sandbox's install validation is issued during acquisition and taken by the stable check", async () => {
+    const commands: string[] = [];
+    const layout = {
+      home: "/home/user",
+      workdir: "/home/user/work",
+      runsAsRoot: false,
+      bunExecutable: "/usr/local/bin/bun",
+    } as const;
+    const identityCommand = buildCodexInstallIdentityProbeCommand(layout);
+    const sandbox = {
+      id: "box-prefetched-codex-validation",
+      providerKind: "box",
+      process: {
+        executeCommand: async (command: string) => {
+          commands.push(command);
+          if (command.includes(identityCommand) && !command.includes("NATIVE_PACKAGE=")) {
+            return { exitCode: 0, result: "useagent-native-install-validated\nabsent\n" };
+          }
+          if (isCodexConfigProbe(command)) return { exitCode: 0, result: "absent\n" };
+          return { exitCode: 0, result: "" };
+        },
+      },
+    } as unknown as SandboxHandle;
+    const context = {
+      runId: "run-prefetched-validation",
+      threadId: "thread-prefetched-validation",
+      prompt: "work",
+      bootstrapContext: "",
+      turnContext: "",
+      workdir: "/home/user/work",
+      orgId: "org-a",
+      userId: "user-a",
+      model: "gpt-5.6-luna",
+      signal: new AbortController().signal,
+      emit: async () => undefined,
+      setSummary: () => undefined,
+    } as const;
+    const validations = () =>
+      commands.filter((command) => command.includes(identityCommand) && !command.includes("NATIVE_PACKAGE=")).length;
+
+    // Nothing this process bootstrapped yet: no validation to prefetch.
+    prefetchRuntimeProviderBridge(sandbox, "codex");
+    expect(validations()).toBe(0);
+    await prepareStableRuntimeProvider(sandbox, context, "codex");
+
+    prefetchRuntimeProviderBridge(sandbox, "codex");
+    expect(validations()).toBe(1);
+    await expect(prepareStableRuntimeProvider(sandbox, context, "codex")).resolves.toBeNull();
+    // The stable check took the prefetched validation instead of running its own.
+    expect(validations()).toBe(1);
   });
 
   test("a valid install with an unreadable pending revision fails closed instead of re-bootstrapping", async () => {

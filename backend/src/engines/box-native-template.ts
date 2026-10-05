@@ -14,7 +14,7 @@ import {
   type NativeImageInputs,
 } from "../sandboxes/native-image";
 import { sandboxRuntimeLayout } from "../sandboxes/provider";
-import { RUNTIME_ENGINE_VERSIONS } from "./runtime-provider-bridge";
+import { RUNTIME_ENGINE_VERSIONS } from "./runtime-native-install";
 
 /** The earlier opencode-only Box template; still recognised so those boxes skip the npx bootstrap. */
 export const OPENCODE_TEMPLATE_NAME = `useagent-opencode-${RUNTIME_ENGINE_VERSIONS.opencode.replaceAll(".", "-")}`;

@@ -3,9 +3,11 @@ import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxBinding } from "../sandboxes/binding";
-import type { SandboxHandle } from "../sandboxes/provider";
+import { sandboxRuntimeLayout, type SandboxHandle } from "../sandboxes/provider";
 import type { EngineRunContext } from "./types";
 import { prepareSandboxTurn } from "./sandbox-turn-preparation";
+import { prefetchSandboxCommand, takePrefetchedSandboxResult } from "../sandboxes/command-prefetch";
+import { buildRuntimeIdentityPreflightCommand } from "./runtime-environment";
 
 const binding = { kind: "cube" } as SandboxBinding;
 
@@ -279,6 +281,73 @@ describe("sandbox turn provider cleanup", () => {
       "activation",
     ]);
     expect(stableProviderPrepared).toBe(true);
+  });
+
+  test("a retained sandbox's warm checks run during acquisition, are taken once, and never outlive the turn", async () => {
+    let identityChecks = 0;
+    const retained = sandboxFixture({
+      onCommand(command) {
+        if (command.includes("printf '%s\\n' \"/root/work\"")) identityChecks += 1;
+      },
+    });
+    const acquired: string[] = [];
+    await prepareSandboxTurn(
+      context(),
+      {
+        snapshot: "runtime",
+        chip: "runtime:codex",
+        timingPrefix: "runtime",
+        prefetchProvider: (sandbox) => prefetchSandboxCommand(sandbox, "echo provider-check", 5),
+        async prepareProvider(_sandbox, workdir) {
+          expect(workdir).toBe("/root/work");
+          return {};
+        },
+      },
+      {
+        acquireThreadSandbox: async (_ctx, options) => {
+          options.onRetainedStarted?.(retained.sandbox, binding);
+          // The identity check is already on its way while acquisition finishes.
+          acquired.push(`identity issued: ${identityChecks}`);
+          return retainedLease(retained.sandbox);
+        },
+      },
+    );
+    expect(acquired).toEqual(["identity issued: 1"]);
+    expect(identityChecks).toBe(1);
+    // The provider's untaken check is dropped with the turn.
+    expect(takePrefetchedSandboxResult(retained.sandbox, "echo provider-check")).toBeNull();
+  });
+
+  test("a failed credential check discards the warm checks, and no later turn uses them", async () => {
+    let identityChecks = 0;
+    const failed = sandboxFixture({
+      onCommand(command) {
+        if (command.includes("printf '%s\\n' \"/root/work\"")) identityChecks += 1;
+      },
+    });
+    const options = {
+      snapshot: "runtime",
+      chip: "runtime:codex",
+      timingPrefix: "runtime",
+      prefetchProvider: (sandbox: SandboxHandle) => prefetchSandboxCommand(sandbox, "echo provider-check", 5),
+      prepareProvider: async () => ({}),
+    };
+    await expect(prepareSandboxTurn(context(), options, {
+      acquireThreadSandbox: async (_ctx, acquisition) => {
+        acquisition.onRetainedStarted?.(failed.sandbox, binding);
+        throw new Error("The retained workspace requires a compatible credential-isolation upgrade.");
+      },
+    })).rejects.toThrow("credential-isolation");
+    expect(identityChecks).toBe(1);
+    const identity = buildRuntimeIdentityPreflightCommand(sandboxRuntimeLayout("cube"));
+    expect(takePrefetchedSandboxResult(failed.sandbox, identity)).toBeNull();
+    expect(takePrefetchedSandboxResult(failed.sandbox, "echo provider-check")).toBeNull();
+
+    // The next turn on the same sandbox (resumed, so nothing is prefetched) runs its own check.
+    await prepareSandboxTurn(context(), options, {
+      acquireThreadSandbox: async () => retainedLease(failed.sandbox),
+    });
+    expect(identityChecks).toBe(2);
   });
 
   test("retained repository validation keeps its existing overlap with provider setup", async () => {

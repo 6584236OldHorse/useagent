@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import type { SandboxExecuteResult, SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import { prefetchSandboxResult, takePrefetchedSandboxResult } from "../sandboxes/command-prefetch";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import {
   previewLinkBase,
@@ -157,15 +158,10 @@ export async function prepareCodexSubscription(input: {
   // ask who holds each service port. A retained sandbox keeps the services an
   // earlier turn started (the detached processes outlive their sessions), so
   // only a missing one is launched.
-  const owners = [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
-  const codeModeBearer = randomBytes(32).toString("hex");
-  const probe = await sandbox.process.executeCommand(
-    `${buildCodexCodeModeTokenCommand(createHash("sha256").update(codeModeBearer).digest("hex"), layout)} && ` +
-      buildSandboxListenerProbeCommand(owners, 0),
-    undefined,
-    undefined,
-    10,
-  ).catch(() => null);
+  const owners = codexServiceOwners(layout);
+  const { codeModeBearer, probe } = await (
+    takePrefetchedSandboxResult<CodexServicesProbe>(sandbox, CODEX_SERVICES_PROBE) ?? probeCodexServices(sandbox)
+  );
   const verdicts = assertNoForeignListener(readListenerVerdicts(probe?.result ?? "", owners));
   const servicesUp = owners.every(({ port }) => verdicts[port] === LISTENER_OURS);
 
@@ -330,6 +326,38 @@ export async function prepareCodexSubscription(input: {
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
   };
+}
+
+const CODEX_SERVICES_PROBE = "codex-services-probe";
+
+interface CodexServicesProbe {
+  readonly codeModeBearer: string;
+  readonly probe: SandboxExecuteResult | null;
+}
+
+function codexServiceOwners(layout: SandboxRuntimeLayout) {
+  return [codexExecServerOwner(layout), ...codexCodeModeOwners(layout)];
+}
+
+/** One round trip with a fresh code-mode bearer: admit only it from now on, and
+ * report who holds each service port. */
+async function probeCodexServices(sandbox: SandboxHandle): Promise<CodexServicesProbe> {
+  const layout = codexRuntimeLayout(sandbox);
+  const codeModeBearer = randomBytes(32).toString("hex");
+  const probe = await sandbox.process.executeCommand(
+    `${buildCodexCodeModeTokenCommand(createHash("sha256").update(codeModeBearer).digest("hex"), layout)} && ` +
+      buildSandboxListenerProbeCommand(codexServiceOwners(layout), 0),
+    undefined,
+    undefined,
+    10,
+  ).catch(() => null);
+  return { codeModeBearer, probe };
+}
+
+/** Start a warm turn's services probe alongside sandbox acquisition; the
+ * turn's subscription preparation takes it, bearer and all. */
+export function prefetchCodexServicesProbe(sandbox: SandboxHandle): void {
+  prefetchSandboxResult(sandbox, CODEX_SERVICES_PROBE, () => probeCodexServices(sandbox));
 }
 
 /** The run is done: its kept session serves no run, so the relay refuses

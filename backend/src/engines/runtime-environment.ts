@@ -1,4 +1,5 @@
 import type { SandboxHandle, SandboxRuntimeLayout } from "../sandboxes/provider";
+import { executeSandboxCommandOnce } from "../sandboxes/command-prefetch";
 import { sandboxPlugin } from "../sandboxes/plugins";
 import { operatorEnv } from "./runtime-env";
 import { TOOL_GATEWAY_SERVER_NAME } from "../knowledge/gateway/descriptor";
@@ -145,12 +146,7 @@ export async function resolveRuntimeWorkspaceRoot(
     runsAsRoot: true,
   },
 ): Promise<string> {
-  const result = await sandbox.process.executeCommand(
-    buildRuntimeIdentityPreflightCommand(layout),
-    undefined,
-    undefined,
-    10,
-  );
+  const result = await executeSandboxCommandOnce(sandbox, buildRuntimeIdentityPreflightCommand(layout), 10);
   const workdir = result.result?.trim();
   if ((result.exitCode ?? 1) !== 0 || workdir !== layout.workdir) {
     throw new Error(
