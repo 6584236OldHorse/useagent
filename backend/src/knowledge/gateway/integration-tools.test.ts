@@ -162,3 +162,45 @@ describe("integration gateway tools", () => {
     expect(JSON.stringify(result)).not.toContain("xxxxxxxx");
   });
 });
+
+describe("integration action search ranking", () => {
+  const gmail = (actionId: string, publicName: string, description: string) => ({
+    connectionId: "connection-gmail",
+    entry: entry({ provider: "gmail", actionId, publicName, description }),
+  });
+  const catalogue = [
+    { connectionId: "connection-a", entry: entry() },
+    gmail("gmail.send_email", "send_email", "Send a Gmail message."),
+    gmail("gmail.list_messages", "list_messages", "List messages in the mailbox, newest first."),
+    gmail("gmail.get_message", "get_message", "Read one message by id."),
+  ];
+  const fake = { async list() { return catalogue; }, async execute(): Promise<never> { throw new Error("not used"); } };
+
+  afterEach(() => setIntegrationToolServiceForTest(null));
+
+  test("a sentence finds the actions that mention any of its words, best first", async () => {
+    setIntegrationToolServiceForTest(fake);
+    const result = await executeIntegrationTool(CLAIMS, "integration_actions_search", {
+      provider: "gmail",
+      query: "list or read the five most recent emails",
+    });
+    const ids = (result.structuredContent?.actions as Array<{ actionId: string }>).map((a) => a.actionId);
+    expect(ids.toSorted()).toEqual(["gmail.get_message", "gmail.list_messages", "gmail.send_email"]);
+    expect(ids).not.toContain("linear.get_issue");
+    expect(JSON.stringify(result.content)).toContain("Found");
+  });
+
+  test("words that match nothing still list the named provider's actions", async () => {
+    setIntegrationToolServiceForTest(fake);
+    const result = await executeIntegrationTool(CLAIMS, "integration_actions_search", { provider: "gmail", query: "zzzz qqqq" });
+    expect((result.structuredContent?.actions as unknown[]).length).toBe(3);
+    expect(JSON.stringify(result.content)).toContain("listing 3 available gmail actions");
+  });
+
+  test("a provider with no connection says so and names what is connected", async () => {
+    setIntegrationToolServiceForTest(fake);
+    const result = await executeIntegrationTool(CLAIMS, "integration_actions_search", { provider: "slack", query: "post a message" });
+    expect(result.structuredContent?.actions).toEqual([]);
+    expect(JSON.stringify(result.content)).toContain("No slack integration is connected for this user. Connected: gmail, linear.");
+  });
+});
