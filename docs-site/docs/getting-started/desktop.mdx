@@ -40,8 +40,10 @@ is still being built and has not completed release certification.
     return to the desktop app through the one-use handoff.
   </Step>
   <Step title="Connect this Mac">
-    Select **Connect this Mac**. The plane enrols the runner and the app stores
-    its runner credential in the macOS keychain before starting the sidecar.
+    Select **Connect this Mac**. The plane enrols the runner. The app protects
+    the credential with macOS Keychain-backed encryption and stores only
+    ciphertext in its local `userData/runner-token` file before starting the
+    sidecar.
   </Step>
   <Step title="Wait for the runner">
     Keep the app open while the runner checks its container backend and pulls
@@ -80,15 +82,15 @@ move through the local runner path.
 
 ## Connect to a self-hosted plane
 
-Set `USEAGENT_PLANE_URL` for the desktop shell process:
+Quit UseAgent first, then start a new app process with the plane URL:
 
 ```bash
-USEAGENT_PLANE_URL=https://agents.example.com
+open --env USEAGENT_PLANE_URL=https://agents.example.com /Applications/UseAgent.app
 ```
 
-The same desktop client and local runner core connect to that URL. Self-hosting
-does not require a fork of the desktop app, and it does not add a local database
-or backend to the Mac.
+The environment applies only to a new launch. The same desktop client and local
+runner core connect to that URL. Self-hosting does not require a fork of the
+desktop app, and it does not add a local database or backend to the Mac.
 
 :::note
 Your plane must support the desktop release and runner protocol before the app
