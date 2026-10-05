@@ -28,7 +28,9 @@ export function toArtifactDescriptor(row: ArtifactRecord): ArtifactDescriptor {
     created_at: row.createdAt.toISOString(),
     preview_url: content,
     download_url: `${content}?download=1`,
-    preview_pdf_url: row.previewStorageKey ? `/api/artifacts/${row.id}/preview` : null,
+    preview_pdf_url: row.previewStorageKey
+      ? `/api/artifacts/${row.id}/preview?v=${row.previewStorageKey}`
+      : null,
     workpiece: row.workpieceKind
       ? {
           kind: row.workpieceKind,
@@ -194,6 +196,7 @@ export async function applyArtifactPdfPageRevision(input: {
       sha256: input.sha256,
       storageKey: input.storageKey,
       sizeBytes: input.sizeBytes,
+      previewStorageKey: null,
       workpieceRevision: sql`${artifacts.workpieceRevision} + 1`,
     })
     .where(
@@ -236,6 +239,7 @@ export async function reviseArtifactPublication(input: {
       sizeBytes: input.sizeBytes,
       workpieceKind: input.workpieceKind,
       workpieceState: input.workpieceState,
+      previewStorageKey: null,
       workpieceRevision: sql`${artifacts.workpieceRevision} + 1`,
     })
     .where(and(eq(artifacts.orgId, input.orgId), eq(artifacts.id, input.id)))
@@ -248,13 +252,20 @@ export async function reviseArtifactPublication(input: {
 export async function updateArtifactPreview(input: {
   readonly orgId: string;
   readonly id: string;
+  readonly expectedSha256: string;
+  readonly expectedWorkpieceRevision: number;
   readonly previewStorageKey: string | null;
   readonly exec?: Executor;
 }): Promise<ArtifactRecord | null> {
   const [updated] = await (input.exec ?? db)
     .update(artifacts)
     .set({ previewStorageKey: input.previewStorageKey })
-    .where(and(eq(artifacts.orgId, input.orgId), eq(artifacts.id, input.id)))
+    .where(and(
+      eq(artifacts.orgId, input.orgId),
+      eq(artifacts.id, input.id),
+      eq(artifacts.sha256, input.expectedSha256),
+      eq(artifacts.workpieceRevision, input.expectedWorkpieceRevision),
+    ))
     .returning();
   return updated ?? null;
 }
