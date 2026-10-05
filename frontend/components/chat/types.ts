@@ -332,15 +332,20 @@ export function parseFileEntries(step: ApiStep): FileEntry[] {
   return entries;
 }
 
+/** A tool step whose provider reported failure (`code.error === true`). A failed
+ * write, edit or patch touched nothing, so every file surface (Editor, Diff,
+ * the chooser gate) leaves it out through this one test. */
+export function stepFailed(step: ApiStep): boolean {
+  const code = parseStepCode(step);
+  return !!code && typeof code === "object" && (code as Record<string, unknown>).error === true;
+}
+
 /** Collapse a run's file steps into a de-duplicated list of touched files,
- * latest change kind winning, ordered by first appearance. A step whose tool
- * failed touched nothing, so it is left out. */
+ * latest change kind winning, ordered by first appearance. */
 export function filesFromSteps(steps: readonly ApiStep[]): FileEntry[] {
   const byPath = new Map<string, FileEntry>();
   for (const step of steps) {
-    if (step.kind !== "file") continue;
-    const code = parseStepCode(step);
-    if (code && typeof code === "object" && (code as Record<string, unknown>).error === true) continue;
+    if (step.kind !== "file" || stepFailed(step)) continue;
     for (const entry of parseFileEntries(step)) {
       const existing = byPath.get(entry.path);
       // Keep original insertion order; refresh the change kind + latest content.

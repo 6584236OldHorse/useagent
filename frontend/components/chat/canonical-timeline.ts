@@ -313,6 +313,13 @@ export function buildTimelineFromCanonical(
 ): TimelineNode[] {
   const ordered = events.toSorted((a, b) => a.seq - b.seq);
   const toolLifecycles = collectToolLifecycles(ordered);
+  // Durable sidecar steps keyed by the provider call id they carry, for the
+  // runtime engines whose lifecycle events do not name the step's event ids.
+  const stepsByCallId = new Map<string, ApiStep>();
+  for (const step of stepsById.values()) {
+    const callId = nativeOfStep(step).callID;
+    if (callId && !stepsByCallId.has(callId)) stepsByCallId.set(callId, step);
+  }
   const latestPlanSeq = ordered.reduce(
     (latest, event) => (event.kind === "plan.updated" ? Math.max(latest, event.seq) : latest),
     -1,
@@ -547,6 +554,7 @@ export function buildTimelineFromCanonical(
           .toReversed()
           .map((id) => stepsById.get(id))
           .find((candidate): candidate is ApiStep => candidate !== undefined) ??
+        stepsByCallId.get(lifecycle.toolCallId) ??
         projectToolLifecycle(lifecycle, e);
       if (step.kind === "done") continue;
       if (!isRenderableTimelineStep(step)) continue;
@@ -598,13 +606,23 @@ export {
 } from "./canonical-session";
 
 /** Parse a step's native ids from code_json (mirrors native-ids.nativeOf). */
-function nativeOfStep(step: ApiStep): { partID: string | null; messageID: string | null } {
+function nativeOfStep(step: ApiStep): {
+  partID: string | null;
+  messageID: string | null;
+  callID: string | null;
+} {
   const cj = (step as { code_json?: string | null }).code_json;
-  if (!cj) return { partID: null, messageID: null };
+  if (!cj) return { partID: null, messageID: null, callID: null };
   try {
-    const n = (JSON.parse(cj) as { native?: { partID?: string; messageID?: string } }).native;
-    return { partID: n?.partID ?? null, messageID: n?.messageID ?? null };
+    const n = (JSON.parse(cj) as {
+      native?: { partID?: string; messageID?: string; callID?: string };
+    }).native;
+    return {
+      partID: n?.partID ?? null,
+      messageID: n?.messageID ?? null,
+      callID: n?.callID ?? null,
+    };
   } catch {
-    return { partID: null, messageID: null };
+    return { partID: null, messageID: null, callID: null };
   }
 }

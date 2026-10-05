@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type ApiStep, filesFromSteps, parseFileEntries } from "./types";
+import { changedFilesFromTimeline } from "@/components/session-ui/adapter";
+import { type ApiStep, filesFromSteps, parseFileEntries, stepFailed } from "./types";
 
 // The runtime projection hands the UI file changes as `files:[{path, kind?}]`
 // under the tool input (codex apply_patch, opencode edit) or, once the backend
@@ -55,5 +56,15 @@ describe("filesFromSteps", () => {
       fileStep("command", { input: { file_path: "cmd.ts" } }, "command"),
     ]);
     expect(files.map((f) => [f.path, f.kind])).toEqual([["a.ts", "edit"]]);
+  });
+
+  test("the Diff adapter and the Editor agree on a failed write", () => {
+    const failed = fileStep("failed", { input: { file_path: "never.ts" }, error: true });
+    const applied = fileStep("ok", { input: { file_path: "done.ts" } });
+    expect(stepFailed(failed)).toBe(true);
+    expect(stepFailed(applied)).toBe(false);
+    const nodes = [failed, applied].map((step) => ({ kind: "tool" as const, key: step.id, step }));
+    expect(changedFilesFromTimeline(nodes).map((f) => f.path)).toEqual(["done.ts"]);
+    expect(filesFromSteps([failed, applied]).map((f) => f.path)).toEqual(["done.ts"]);
   });
 });

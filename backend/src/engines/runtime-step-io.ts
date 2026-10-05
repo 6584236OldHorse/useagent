@@ -59,6 +59,18 @@ function fileChangeInput(input: unknown, detail: string | undefined): unknown {
   return { ...data, file_path: paths[0], files };
 }
 
+/** Command input with the command line where the UI reads it. The runtime keeps
+ * Codex's command under `data.item.command` (or `item.input.command`), which the
+ * UI never walks; an input that already names its command is left alone. */
+function commandInput(input: unknown, item: Rec | null): unknown {
+  const data = asRecord(input);
+  if (stringField(data, "command")) return input;
+  const command = stringField(item, "command")
+    ?? stringField(asRecord(item?.input), "command")
+    ?? stringField(asRecord(item?.result), "command");
+  return command ? { ...(data ?? {}), command } : input;
+}
+
 /** The captured output of a command item. The runtime nests Codex's command
  * result under `data.item` (`aggregatedOutput`, or `result.content`), while the
  * payload's `detail` is the command line itself; the UI wants the former. */
@@ -72,10 +84,14 @@ export function runtimeStepIo(
   projection: { readonly input: unknown; readonly item: Rec | null },
   detail: string | undefined,
 ): { readonly input: unknown; readonly output: string | undefined } {
-  return {
-    input: itemType === "file_change" ? fileChangeInput(projection.input, detail) : projection.input,
-    output: itemType === "command_execution"
-      ? commandOutput(projection.item) ?? detail
-      : detail,
-  };
+  if (itemType === "file_change") {
+    return { input: fileChangeInput(projection.input, detail), output: detail };
+  }
+  if (itemType === "command_execution") {
+    return {
+      input: commandInput(projection.input, projection.item),
+      output: commandOutput(projection.item) ?? detail,
+    };
+  }
+  return { input: projection.input, output: detail };
 }

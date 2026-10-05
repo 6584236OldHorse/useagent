@@ -1419,17 +1419,33 @@ describe("activityStep file and command payloads", () => {
     expect((step.code_json as { input: Record<string, unknown> }).input.files).toBeUndefined();
   });
 
-  test("a codex command reports its captured output, not the command line", () => {
+  test("a codex command reports its captured output and keeps the command line visible", () => {
+    // The runtime keeps the command only under data.item; the UI reads input.command.
     const step = activityStep(completed("cmd-codex", "Command run", {
+      itemType: "command_execution",
+      detail: "printf hello",
+      data: {
+        toolCallId: "call-4",
+        item: { command: "printf hello", aggregatedOutput: "hello" },
+      },
+    }));
+    expect(step.code_json).toMatchObject({
+      input: { toolCallId: "call-4", command: "printf hello" },
+      output: "hello",
+    });
+  });
+
+  test("a command input that names its command is left alone", () => {
+    const step = activityStep(completed("cmd-named", "Command run", {
       itemType: "command_execution",
       detail: "bun test",
       data: {
-        toolCallId: "call-4",
-        command: "bun test",
-        item: { command: "bun test", aggregatedOutput: "54 pass, 0 fail" },
+        toolCallId: "call-6",
+        command: "bun test --filter x",
+        item: { command: "bun test", result: { content: "1 pass" } },
       },
     }));
-    expect(step.code_json).toMatchObject({ input: { command: "bun test" }, output: "54 pass, 0 fail" });
+    expect(step.code_json).toMatchObject({ input: { command: "bun test --filter x" }, output: "1 pass" });
   });
 
   test("a command without captured output keeps the detail as before", () => {
