@@ -10,6 +10,9 @@ function stableId(prefix: string, value: string): string {
   return `${prefix}-${value}`.replace(/[^a-zA-Z0-9._~-]/g, "-");
 }
 
+/** A plain stop. The plane runs one turn per thread and stops a session only
+ *  while preparing that turn, after reading it idle, so no turn can start on the
+ *  thread between the read and the stop. */
 export function buildRuntimeSessionStopCommand(
   threadId: string,
   createdAt = new Date().toISOString(),
@@ -19,16 +22,14 @@ export function buildRuntimeSessionStopCommand(
     type: "thread.session.stop",
     commandId: stableId("skynet-session-stop", `${revision}-${threadId}`),
     threadId,
-    onlyIfSettled: true,
     createdAt,
   };
 }
 
-/** The runtime declined a conditional stop: the thread was not settled when the
- *  command arrived (a turn queued since the command's time, a session coming
- *  alive, an earlier turn that never settled), or that command id was declined
- *  before. Either way no stop happened, and neither is the current turn's
- *  failure. The HTTP dispatch route answers every refused command with one
+/** The runtime declined the stop. A conditional stop (`onlyIfSettled`, still
+ *  sent by an older plane) is declined unless the thread was settled, and a
+ *  declined command id stays declined. Either way no stop happened, and neither
+ *  is the current turn's failure. The HTTP dispatch route answers every refused command with one
  *  body and no cause, `{_tag: "EnvironmentInternalError", reason:
  *  "orchestration_dispatch_failed"}`, so for this command it reads as declined;
  *  a body that names its cause (`{reason, cause: {_tag, commandType, commandId}}`)
@@ -149,11 +150,11 @@ function reloadThreadState(
 
 /** Stops an idle retained OpenCode session so it restarts with the changed model
  *  limits. Resolves true when the limits are applied (the session is stopped or
- *  there was none), false when the runtime declined the conditional stop: the
+ *  there was none), false when the runtime declined the stop: the
  *  turn then runs on the retained session as it is, the refresh stays
  *  unacknowledged, and a later turn tries again. Every attempt is its own
- *  command, stamped with its own time: the runtime refuses a stop older than a
- *  turn it has queued since, and remembers a declined command id for good. */
+ *  command with its own id and time: the runtime remembers a declined command
+ *  id for good. */
 export async function reloadRetainedOpenCodeSession(input: {
   readonly sandbox: SandboxHandle;
   readonly signal: AbortSignal;
@@ -213,14 +214,14 @@ export async function reloadRetainedOpenCodeSession(input: {
       deadline.throwIfAborted();
       if (runtimeDeclinedSessionStop(error)) {
         console.warn(
-          `[opencode] the runtime declined the conditional session stop for ${input.threadId}; ` +
+          `[opencode] the runtime declined the session stop for ${input.threadId}; ` +
             `the retained session keeps its model limits until a later turn: ${(error as Error).message}`,
         );
         return false;
       }
       state = await readThread();
       if (state.latestTurnRunning || state.sessionStatus === "running" || state.sessionStatus === "starting") {
-        throw new Error("OpenCode retained session reactivated before the conditional stop");
+        throw new Error("OpenCode retained session reactivated before the stop");
       }
       if (state.sessionStatus !== "stopped") throw error;
     }

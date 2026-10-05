@@ -38,9 +38,9 @@ describe("T3 orchestration projection", () => {
         type: "thread.session.stop",
         commandId: "skynet-session-stop-revision-1-thread-1",
         threadId: "thread-1",
-        onlyIfSettled: true,
         createdAt: "2026-09-05T00:00:00.000Z",
       });
+    expect(buildRuntimeSessionStopCommand("thread-1")).not.toHaveProperty("onlyIfSettled");
   });
 
   test("derives stable transport-safe project and thread ids", () => {

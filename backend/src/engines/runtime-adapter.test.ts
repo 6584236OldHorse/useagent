@@ -321,8 +321,8 @@ describe("T3 run adapter gate", () => {
   });
 
   test("proceeds without acknowledgement on the runtime's real HTTP refusal, which carries no cause", async () => {
-    // Captured from the v0.0.45 runtime (fork 762f4b14b328): an onlyIfSettled stop on a
-    // thread that was never settled answers HTTP 500 with this exact body.
+    // Captured from the v0.0.45 runtime (fork 762f4b14b328): an onlyIfSettled stop (an
+    // older plane's) on a thread that was never settled answers HTTP 500 with this exact body.
     const captured = JSON.parse(
       '{"_tag":"EnvironmentInternalError","code":"internal_error","reason":"orchestration_dispatch_failed","traceId":"01338d3b1ba68072b1b71eb01c162f0c"}',
     ) as Readonly<Record<string, unknown>>;
@@ -382,7 +382,44 @@ describe("T3 run adapter gate", () => {
     expect(reads).toBe(2);
   });
 
-  test("fails without acknowledgement when the conditional stop observes re-engagement", async () => {
+  test("stops a ready idle retained session with a plain stop and applies the limits", async () => {
+    const calls: string[] = [];
+    let stopCommand: Readonly<Record<string, unknown>> | undefined;
+    let stopped = false;
+    const applied = await reloadRetainedOpenCodeSession({
+      sandbox: {} as never,
+      signal: new AbortController().signal,
+      threadId: "thread-1",
+      threadExists: true,
+      ...reloadCommandState,
+      dependencies: {
+        requestEnvironment: async <T>(
+          _sandbox: SandboxHandle,
+          request: RuntimeEnvironmentRequest,
+        ) => {
+          calls.push(`${request.method} ${request.path}`);
+          if (request.method === "POST") {
+            stopCommand = request.payload;
+            stopped = true;
+            return {} as T;
+          }
+          return reloadSnapshot(stopped ? "stopped" : "ready", "completed") as T;
+        },
+        wait: async () => {},
+      } satisfies OpenCodeSessionReloadDependencies,
+    });
+    expect(applied).toBe(true);
+    expect(calls).toEqual([
+      "GET /api/orchestration/threads/thread-1?turnLimit=2",
+      "POST /api/orchestration/dispatch",
+      "GET /api/orchestration/threads/thread-1?turnLimit=2",
+    ]);
+    // A conditional stop is declined unless the thread was settled, which the plane never does.
+    expect(stopCommand).toMatchObject({ type: "thread.session.stop", threadId: "thread-1" });
+    expect(stopCommand).not.toHaveProperty("onlyIfSettled");
+  });
+
+  test("fails without acknowledgement when the stop observes re-engagement", async () => {
     let reads = 0;
     let stopCommand: Readonly<Record<string, unknown>> | undefined;
     await expect(reloadRetainedOpenCodeSession({
@@ -398,18 +435,15 @@ describe("T3 run adapter gate", () => {
         ) => {
           if (request.method === "POST") {
             stopCommand = request.payload;
-            throw new Error("conditional stop rejected");
+            throw new Error("stop rejected");
           }
           reads += 1;
           return reloadSnapshot(reads === 1 ? "ready" : "running", "completed") as T;
         },
         wait: async () => {},
       } satisfies OpenCodeSessionReloadDependencies,
-    })).rejects.toThrow("reactivated before the conditional stop");
-    expect(stopCommand).toMatchObject({
-      type: "thread.session.stop",
-      onlyIfSettled: true,
-    });
+    })).rejects.toThrow("reactivated before the stop");
+    expect(stopCommand).toMatchObject({ type: "thread.session.stop" });
   });
 
   test("fails closed on cancellation and stop timeout", async () => {
