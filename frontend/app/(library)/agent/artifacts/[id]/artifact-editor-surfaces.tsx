@@ -1059,7 +1059,7 @@ export function WorkpieceSurfaces({
   }
   if (editor.isSheetGrid) {
     return (
-      <SheetGridSurface workbook={editor.workbook} loading={editor.loading} onChange={editor.setWorkbook} />
+      <SheetGridSurface workbook={editor.workbook} loading={editor.loading} onChange={editor.setWorkbook} storageKey={editor.artifactId} />
     );
   }
   if (editor.isSlidesEditor) {

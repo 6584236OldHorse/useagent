@@ -1,53 +1,72 @@
 "use client";
 
-// The spreadsheet editor over the canonical v2 workbook. The active sheet renders
-// through the AI kit's records table (components/ai/records-table.tsx): row 1
-// names the columns, every later row is a record, headers sort, the footer counts.
-// Around it: a value bar that shows the RAW formula while the cell shows the
-// computed value (single-click a cell to select it, double-click to edit it in
-// the bar), a number-format + styling toolbar, and multi-sheet tabs (add / rename
-// / reorder). Cell fill/text colors are DOCUMENT data, so they apply as raw inline
-// styles; the surrounding chrome uses semantic tokens. The visible grid is capped
-// (windowed) so a 10000-row sheet never renders raw.
+// The spreadsheet artifact as a records grid, drawn with the AI kit's records
+// table (components/ai/records-table.tsx): row 1 names the columns, every later
+// row is a record, and each column's type (read off its cells in
+// sheet-records.ts) decides how it draws: tag chips, relative dates, a tone dot
+// with its label, links, right-aligned numbers, or text. Headers sort, the
+// footer runs a calculation per column, the bottom bar filters and switches
+// sheets as views. Editing is inline: double-click a cell, type, Enter. No
+// formula bar and no format toolbar; a cell that holds a formula shows its
+// value and an edit replaces it with the typed value. Cell fill and text
+// colours are document data and apply as inline styles. The visible grid is
+// capped (windowed) so a 10000-row sheet never renders raw.
 
-import {
-  RiAddLine,
-  RiArrowLeftSLine,
-  RiArrowRightSLine,
-  RiBold,
-  RiItalic,
-} from "@remixicon/react";
+import { RiAddLine, RiCloseLine, RiFilter3Line, RiHashtag, RiLinksLine, RiPriceTag3Line, RiPulseLine, RiTimeLine } from "@remixicon/react";
 import {
   activeWorksheet,
-  columnLabel,
   evaluateWorkbook,
   formatA1,
   parseA1,
   SHEET_MAX_COLS,
   SHEET_MAX_ROWS,
   WORKBOOK_MAX_SHEETS,
-  type SheetCell,
-  type SheetCellFormat,
-  type SheetNumberFormat,
   type Workbook,
   type Worksheet,
 } from "@useagent/artifact-workspace";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   RECORDS_CELL,
   RECORDS_HEADER_CELL,
+  RECORDS_HEADER_STICKY,
   RECORDS_ROW,
   RECORDS_SORT_BUTTON,
   RECORDS_STICKY,
+  RecordsHeaderIcon,
+  RecordsLink,
   RecordsNameCell,
   RecordsSortMark,
+  RecordsStatus,
   RecordsTableFrame,
+  RecordsTag,
 } from "@/components/ai/records-table";
 import { cx } from "@/utils/cx";
-
-/** Visible grid caps so a large sheet windows honestly instead of rendering raw. */
-const VISIBLE_ROW_CAP = 200;
-const VISIBLE_COL_CAP = 40;
+import { relativeTimeShort } from "@/utils/format";
+import {
+  CALCULATION_LABELS,
+  calculate,
+  calculationsFor,
+  columnTypes,
+  filledRecordCount,
+  filterOps,
+  filterRecords,
+  linkHref,
+  parseDate,
+  sheetRecords,
+  sortedRecords,
+  splitTags,
+  statusTone,
+  statusTones,
+  tagColor,
+  VISIBLE_COL_CAP,
+  VISIBLE_ROW_CAP,
+  type SheetCalculation,
+  type SheetColumnType,
+  type SheetFilter,
+  type SheetFilterOp,
+  type SheetRecordCell,
+  type SheetSort,
+} from "./sheet-records";
 
 const NUMERIC = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
@@ -103,35 +122,6 @@ export function commitCell(workbook: Workbook, sheetId: string, ref: string, raw
   return workbookNext;
 }
 
-/** Apply a format patch to a cell (creating an empty cell to hold it if needed);
- * clearing a key (undefined/false/"") drops it, matching the block inspector. */
-export function applyCellFormat(
-  workbook: Workbook,
-  sheetId: string,
-  ref: string,
-  patch: Partial<SheetCellFormat>,
-): Workbook {
-  const position = parseA1(ref);
-  const sheet = workbook.sheets.find((item) => item.id === sheetId);
-  if (!position || !sheet) return workbook;
-  const existing = sheet.cells[ref];
-  const fmt: Record<string, unknown> = { ...existing?.fmt };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined || value === false || value === "") delete fmt[key];
-    else fmt[key] = value;
-  }
-  const nextFmt = Object.keys(fmt).length > 0 ? (fmt as SheetCellFormat) : undefined;
-  const cell: SheetCell = existing
-    ? { ...existing, ...(nextFmt ? { fmt: nextFmt } : {}) }
-    : { v: "", ...(nextFmt ? { fmt: nextFmt } : {}) };
-  if (!nextFmt && "fmt" in cell) delete (cell as { fmt?: unknown }).fmt;
-  // Drop a now-empty, unformatted cell entirely.
-  const cells = { ...sheet.cells };
-  if (cell.v === "" && cell.f === undefined && !nextFmt) delete cells[ref];
-  else cells[ref] = cell;
-  return replaceSheet(workbook, grownDimensions({ ...sheet, cells }, position.row, position.col));
-}
-
 function uniqueSheetId(workbook: Workbook): string {
   const ids = new Set(workbook.sheets.map((sheet) => sheet.id));
   let n = workbook.sheets.length + 1;
@@ -157,159 +147,203 @@ function renameSheet(workbook: Workbook, sheetId: string, name: string): Workboo
   };
 }
 
-function moveSheet(workbook: Workbook, sheetId: string, delta: number): Workbook {
-  const index = workbook.sheets.findIndex((sheet) => sheet.id === sheetId);
-  const target = index + delta;
-  if (index < 0 || target < 0 || target >= workbook.sheets.length) return workbook;
-  const sheets = [...workbook.sheets];
-  const moved = sheets[index]!;
-  sheets[index] = sheets[target]!;
-  sheets[target] = moved;
-  return { ...workbook, sheets };
+// --- Viewer preferences ------------------------------------------------------
+
+type CalculationChoices = Readonly<Record<string, Readonly<Record<string, SheetCalculation>>>>;
+
+function calculationStorageKey(storageKey: string): string {
+  return `useagent.sheet-calculations.${storageKey}`;
 }
 
-// --- UI --------------------------------------------------------------------
-
-const NUMBER_FORMATS: readonly (readonly [SheetNumberFormat, string, string])[] = [
-  ["auto", "Auto", "123"],
-  ["currency", "Currency", "$"],
-  ["percent", "Percent", "%"],
-  ["0", "Integer", ".0"],
-  ["0.00", "Two decimals", ".00"],
-];
-
-function toColorInput(hex: string | undefined, fallback: string): string {
-  if (!hex) return fallback;
-  const raw = hex.replace(/^#/, "");
-  const six = raw.length === 3 ? [...raw].map((c) => c + c).join("") : raw.slice(0, 6);
-  return /^[0-9a-fA-F]{6}$/.test(six) ? `#${six}` : fallback;
+/** The viewer's footer calculations for one artifact; empty when none or when
+ *  storage is unavailable (a private window, blocked site data). */
+function loadCalculations(storageKey: string | undefined): CalculationChoices {
+  if (!storageKey) return {};
+  try {
+    const raw = localStorage.getItem(calculationStorageKey(storageKey));
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as CalculationChoices) : {};
+  } catch {
+    return {};
+  }
 }
 
-function cellStyle(cell: SheetCell | undefined, numeric: boolean): CSSProperties {
-  const fmt = cell?.fmt;
-  return {
-    fontWeight: fmt?.bold ? 600 : undefined,
-    fontStyle: fmt?.italic ? "italic" : undefined,
-    textAlign: fmt?.align ?? (numeric ? "right" : "left"),
-    ...(fmt?.color ? { color: fmt.color } : {}),
-    ...(fmt?.fill ? { background: fmt.fill } : {}),
-  };
+function saveCalculations(storageKey: string | undefined, choices: CalculationChoices): void {
+  if (!storageKey) return;
+  try {
+    localStorage.setItem(calculationStorageKey(storageKey), JSON.stringify(choices));
+  } catch {
+    // A viewer convenience only; nothing to recover.
+  }
 }
 
-// --- The records table's view of a sheet ------------------------------------
+// --- Cells by type ------------------------------------------------------------
 
-type WorkbookEvaluation = ReturnType<typeof evaluateWorkbook>;
+const HEADER_ICON: Partial<Record<SheetColumnType, typeof RiTimeLine>> = {
+  tags: RiPriceTag3Line,
+  date: RiTimeLine,
+  status: RiPulseLine,
+  url: RiLinksLine,
+  number: RiHashtag,
+};
 
-export interface SheetRecordCell {
-  readonly ref: string;
-  readonly display: string;
-  readonly numeric: boolean;
-  /** The computed scalar, for numeric-aware sorting; null when empty or an error. */
-  readonly value: string | number | boolean | null;
-  readonly error: string | null;
-  readonly style: CSSProperties;
+const FILTER_OP_LABELS: Record<SheetFilterOp, string> = {
+  contains: "contains",
+  equals: "is",
+  before: "before",
+  after: "after",
+};
+
+/** How long ago, in the rail's short form for the first weeks, then months and
+ *  years so an old date never reads as "95w". A date still ahead reads as itself. */
+function dateLabel(display: string, now = Date.now()): string {
+  const ms = parseDate(display);
+  if (ms === null) return display;
+  if (ms > now) return display.trim().slice(0, 10);
+  const days = Math.floor((now - ms) / 86_400_000);
+  if (days < 56) return relativeTimeShort(ms, now);
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
 }
 
-export interface SheetRecord {
-  /** The sheet row (zero-based), so a click still selects the real cell. */
-  readonly row: number;
-  readonly cells: readonly SheetRecordCell[];
+function TypedCell({
+  cell,
+  type,
+  tones,
+}: {
+  readonly cell: SheetRecordCell;
+  readonly type: SheetColumnType;
+  readonly tones: ReadonlyMap<string, "critical" | "weak" | "neutral" | "strong">;
+}) {
+  const display = cell.display.trim();
+  if (cell.error) return <span className="text-caption-1-regular text-text-error-primary">{cell.display}</span>;
+  if (display === "") return <span className="text-text-tertiary">{" "}</span>;
+  switch (type) {
+    case "tags":
+      return (
+        <span className="flex flex-nowrap gap-1">
+          {splitTags(display).map((tag, index) => (
+            <RecordsTag key={`${tag}-${index}`} tag={{ label: tag, color: tagColor(tag) }} />
+          ))}
+        </span>
+      );
+    case "status":
+      return <RecordsStatus label={display} tone={statusTone(display, tones)} />;
+    case "url":
+      return <RecordsLink label={display.replace(/^https?:\/\//i, "")} href={linkHref(display)} />;
+    case "date":
+      return (
+        <span title={display} className="whitespace-nowrap text-caption-1-regular text-text-secondary">
+          {dateLabel(display)}
+        </span>
+      );
+    case "number":
+      return (
+        <span style={{ ...cell.style, background: undefined }} className="block text-right text-caption-1-regular tabular-nums text-text-secondary">
+          {cell.display}
+        </span>
+      );
+    default:
+      return (
+        <span
+          style={{ ...cell.style, background: undefined }}
+          className="block max-w-[28rem] truncate text-caption-1-regular text-text-secondary"
+        >
+          {cell.display}
+        </span>
+      );
+  }
 }
 
-export interface SheetRecordColumn {
-  readonly col: number;
-  /** Row 1's value, or the column letter when row 1 leaves it blank. */
-  readonly label: string;
-  readonly ref: string;
+function CellEditor({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  readonly initial: string;
+  readonly onCommit: (value: string) => void;
+  readonly onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  return (
+    <input
+      // biome-ignore lint/a11y/noAutofocus: the field opens on the cell the person just double-clicked.
+      autoFocus
+      value={draft}
+      aria-label="Cell value"
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={() => onCommit(draft)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onCommit(draft);
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+      className="w-full min-w-24 rounded-md bg-background-primary-default px-1.5 py-0.5 text-body-2-regular text-text-primary outline-none ring-2 ring-inset ring-border-focus-ring"
+    />
+  );
 }
 
-/** Row 1 names the columns and every later row is a record, the way the records
- *  table reads a sheet. Windowed to the visible caps. */
-export function sheetRecords(
-  sheet: Worksheet,
-  evaluation: WorkbookEvaluation,
-): { readonly columns: readonly SheetRecordColumn[]; readonly records: readonly SheetRecord[] } {
-  const colCount = Math.min(VISIBLE_COL_CAP, Math.max(1, sheet.colCount));
-  const rowCount = Math.min(VISIBLE_ROW_CAP, sheet.rowCount);
-  const columns = Array.from({ length: colCount }, (_, col) => {
-    const ref = formatA1(0, col);
-    const display = evaluation.cell(sheet.id, ref).display.trim();
-    return { col, label: display || columnLabel(col), ref };
-  });
-  const records = Array.from({ length: Math.max(0, rowCount - 1) }, (_, index) => {
-    const row = index + 1;
-    return {
-      row,
-      cells: columns.map(({ col }) => {
-        const ref = formatA1(row, col);
-        const evaluated = evaluation.cell(sheet.id, ref);
-        return {
-          ref,
-          display: evaluated.display,
-          numeric: evaluated.numeric,
-          value: evaluated.error ? null : evaluated.value,
-          error: evaluated.error,
-          style: cellStyle(sheet.cells[ref], evaluated.numeric),
-        };
-      }),
-    };
-  });
-  return { columns, records };
-}
-
-export interface SheetSort {
-  readonly col: number;
-  readonly dir: 1 | -1;
-}
-
-/** Records in column order: numbers before text, blanks last, ties by row. */
-export function sortedRecords(records: readonly SheetRecord[], sort: SheetSort | null): readonly SheetRecord[] {
-  if (!sort) return records;
-  const rank = (cell: SheetRecordCell | undefined): [number, number | string] => {
-    if (!cell || cell.value === null || cell.display === "") return [2, ""];
-    if (typeof cell.value === "number") return [0, cell.value];
-    return [1, cell.display];
-  };
-  return records.toSorted((a, b) => {
-    const [ka, va] = rank(a.cells[sort.col]);
-    const [kb, vb] = rank(b.cells[sort.col]);
-    if (ka !== kb) return ka - kb;
-    const order = typeof va === "number" && typeof vb === "number"
-      ? va - vb
-      : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" });
-    return (order || a.row - b.row) * (ka === 2 ? 1 : sort.dir);
-  });
-}
+// --- The surface ----------------------------------------------------------------
 
 export function SheetGridSurface({
   workbook,
   loading,
   onChange,
+  storageKey,
 }: {
   readonly workbook: Workbook | null;
   readonly loading: boolean;
   readonly onChange: (workbook: Workbook) => void;
+  /** Keys the viewer's footer calculations (the artifact id); absent keeps none. */
+  readonly storageKey?: string;
 }) {
-  const [selected, setSelected] = useState<{ row: number; col: number }>({ row: 0, col: 0 });
-  const [draft, setDraft] = useState("");
-  const [editingBar, setEditingBar] = useState(false);
+  const [editing, setEditing] = useState<{ row: number; col: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [sort, setSort] = useState<SheetSort | null>(null);
-  const barRef = useRef<HTMLInputElement>(null);
+  const [filters, setFilters] = useState<readonly SheetFilter[]>([]);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [calculations, setCalculations] = useState<CalculationChoices>(() => loadCalculations(storageKey));
 
   const sheet = workbook ? activeWorksheet(workbook) : null;
   const evaluation = useMemo(() => (workbook ? evaluateWorkbook(workbook) : null), [workbook]);
   const table = useMemo(() => (sheet && evaluation ? sheetRecords(sheet, evaluation) : null), [sheet, evaluation]);
-  const records = useMemo(() => (table ? sortedRecords(table.records, sort) : []), [table, sort]);
+  const types = useMemo(() => (table ? columnTypes(table.columns, table.records) : []), [table]);
+  const tones = useMemo(
+    () =>
+      table
+        ? types.map((type, index) =>
+            type === "status"
+              ? statusTones(table.records.map((record) => record.cells[index]!.display))
+              : new Map<string, "critical" | "weak" | "neutral" | "strong">(),
+          )
+        : [],
+    [table, types],
+  );
+  const visible = useMemo(
+    () => (table ? sortedRecords(filterRecords(table.records, filters), sort) : []),
+    [table, filters, sort],
+  );
+  const viewCounts = useMemo(
+    () =>
+      workbook && evaluation
+        ? new Map(workbook.sheets.map((item) => [item.id, filledRecordCount(sheetRecords(item, evaluation).records)]))
+        : new Map<string, number>(),
+    [workbook, evaluation],
+  );
 
-  const selectedRef = sheet ? formatA1(selected.row, selected.col) : "A1";
-  const selectedCell = sheet?.cells[selectedRef];
-  const rawOfSelected = selectedCell?.f ?? (selectedCell ? String(selectedCell.v) : "");
-
-  // Keep the value bar in sync with the selected cell unless it is being edited.
+  // Filters and sort belong to the sheet they were built on.
+  const sheetId = sheet?.id;
   useEffect(() => {
-    if (!editingBar) setDraft(rawOfSelected);
-  }, [rawOfSelected, editingBar]);
+    setFilters([]);
+    setSort(null);
+    setEditing(null);
+    setFiltersOpen(false);
+  }, [sheetId]);
 
   if (!workbook || !sheet || !evaluation || !table) {
     return (
@@ -320,336 +354,337 @@ export function SheetGridSurface({
   }
 
   const capped = sheet.rowCount > VISIBLE_ROW_CAP || sheet.colCount > VISIBLE_COL_CAP;
+  const sheetCalculations = calculations[sheet.id] ?? {};
 
-  const commitBar = () => {
-    onChange(commitCell(workbook, sheet.id, selectedRef, draft));
-    setEditingBar(false);
+  const rawOf = (row: number, col: number): string => {
+    const cell = sheet.cells[formatA1(row, col)];
+    return cell ? String(cell.v) : "";
   };
-  const patchFmt = (patch: Partial<SheetCellFormat>) =>
-    onChange(applyCellFormat(workbook, sheet.id, selectedRef, patch));
-
-  const select = (row: number, col: number) => setSelected({ row, col });
-  const edit = (row: number, col: number) => {
-    setSelected({ row, col });
-    barRef.current?.focus();
+  const commit = (row: number, col: number, value: string) => {
+    if (value !== rawOf(row, col)) onChange(commitCell(workbook, sheet.id, formatA1(row, col), value));
+    setEditing(null);
   };
   const toggleSort = (col: number) =>
     setSort((current) => (current?.col === col ? { col, dir: current.dir === 1 ? -1 : 1 } : { col, dir: 1 }));
-
-  const fmt = selectedCell?.fmt;
+  const chooseCalculation = (col: number, calculation: SheetCalculation | "") => {
+    const next: Record<string, SheetCalculation> = { ...sheetCalculations };
+    if (calculation === "") delete next[col];
+    else next[col] = calculation;
+    const choices = { ...calculations, [sheet.id]: next };
+    setCalculations(choices);
+    saveCalculations(storageKey, choices);
+  };
+  const addRow = () => {
+    if (loading || sheet.rowCount >= SHEET_MAX_ROWS) return;
+    const row = sheet.rowCount;
+    onChange(replaceSheet(workbook, grownDimensions(sheet, row, sheet.colCount - 1)));
+    setFilters([]);
+    setSort(null);
+    setEditing({ row, col: 0 });
+  };
+  const addColumn = () => {
+    if (loading || sheet.colCount >= SHEET_MAX_COLS) return;
+    const col = sheet.colCount;
+    onChange(replaceSheet(workbook, grownDimensions(sheet, sheet.rowCount - 1, col)));
+    setEditing({ row: 0, col });
+  };
+  const addFilter = () => {
+    const col = table.columns.length > 1 ? 1 : 0;
+    setFilters((current) => [...current, { col, op: filterOps(types[col] ?? "text")[0]!, value: "" }]);
+    setFiltersOpen(true);
+  };
+  const activeFilters = filters.filter((filter) => filter.value.trim() !== "").length;
 
   return (
-    <section className="mt-4 flex h-full min-h-0 flex-1 flex-col gap-3">
-      {/* Value bar: active cell ref + its RAW value/formula (the cell shows the
-          computed value). */}
-      <div className="flex items-center gap-2">
-        <span className="inline-flex h-8 min-w-14 items-center justify-center rounded-lg border border-border-button-default bg-background-secondary-default px-2 font-mono text-caption-1-medium text-text-secondary">
-          {selectedRef}
-        </span>
-        <span className="font-mono text-caption-1-medium text-text-tertiary" aria-hidden>
-          fx
-        </span>
-        <input
-          ref={barRef}
-          value={draft}
-          disabled={loading}
-          onChange={(event) => {
-            setDraft(event.currentTarget.value);
-            setEditingBar(true);
-          }}
-          onFocus={() => setEditingBar(true)}
-          onBlur={commitBar}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commitBar();
-              setSelected((current) => ({
-                row: Math.min(SHEET_MAX_ROWS - 1, current.row + 1),
-                col: current.col,
-              }));
-            }
-            if (event.key === "Escape") {
-              setEditingBar(false);
-              setDraft(rawOfSelected);
-            }
-          }}
-          aria-label={`Value of cell ${selectedRef}`}
-          placeholder="Value or =formula"
-          className="h-8 min-w-0 flex-1 rounded-lg border border-border-button-default bg-background-primary-default px-3 font-mono text-body-2-regular text-text-primary outline-none focus:border-foreground-icon-primary"
-        />
-      </div>
-
-      {/* Format toolbar: number formats, bold/italic, alignment, fill + text color. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <div className="inline-flex items-center rounded-lg border border-border-button-default p-0.5">
-          {NUMBER_FORMATS.map(([value, title, glyph]) => (
-            <button
-              key={value}
-              type="button"
-              title={title}
-              aria-label={title}
-              aria-pressed={(fmt?.numFmt ?? "auto") === value}
-              disabled={loading}
-              onClick={() => patchFmt({ numFmt: value === "auto" ? undefined : value })}
-              className="grid h-7 min-w-8 place-items-center rounded-md px-1.5 font-mono text-caption-1-medium text-text-secondary hover:bg-background-secondary-default aria-pressed:bg-foreground-icon-primary aria-pressed:text-background-full disabled:opacity-40"
-            >
-              {glyph}
-            </button>
-          ))}
-        </div>
-        <div className="mx-0.5 h-5 w-px bg-border-button-default" aria-hidden />
-        <button
-          type="button"
-          title="Bold"
-          aria-label="Bold"
-          aria-pressed={fmt?.bold ?? false}
-          disabled={loading}
-          onClick={() => patchFmt({ bold: !(fmt?.bold ?? false) })}
-          className="grid size-8 place-items-center rounded-lg border border-border-button-default text-text-secondary hover:bg-background-secondary-default aria-pressed:bg-foreground-icon-primary aria-pressed:text-background-full disabled:opacity-40"
-        >
-          <RiBold aria-hidden className="size-4" />
-        </button>
-        <button
-          type="button"
-          title="Italic"
-          aria-label="Italic"
-          aria-pressed={fmt?.italic ?? false}
-          disabled={loading}
-          onClick={() => patchFmt({ italic: !(fmt?.italic ?? false) })}
-          className="grid size-8 place-items-center rounded-lg border border-border-button-default text-text-secondary hover:bg-background-secondary-default aria-pressed:bg-foreground-icon-primary aria-pressed:text-background-full disabled:opacity-40"
-        >
-          <RiItalic aria-hidden className="size-4" />
-        </button>
-        <div className="inline-flex items-center rounded-lg border border-border-button-default p-0.5">
-          {(["left", "center", "right"] as const).map((align) => (
-            <button
-              key={align}
-              type="button"
-              title={`Align ${align}`}
-              aria-label={`Align ${align}`}
-              aria-pressed={fmt?.align === align}
-              disabled={loading}
-              onClick={() => patchFmt({ align: fmt?.align === align ? undefined : align })}
-              className="grid h-7 min-w-7 place-items-center rounded-md text-caption-1-medium text-text-secondary hover:bg-background-secondary-default aria-pressed:bg-foreground-icon-primary aria-pressed:text-background-full disabled:opacity-40"
-            >
-              {align === "left" ? "L" : align === "center" ? "C" : "R"}
-            </button>
-          ))}
-        </div>
-        <label className="inline-flex items-center gap-1 text-caption-1-medium text-text-secondary">
-          Fill
-          <input
-            type="color"
-            aria-label="Cell fill color"
-            value={toColorInput(fmt?.fill, "#ffffff")}
-            disabled={loading}
-            onChange={(event) => patchFmt({ fill: event.currentTarget.value })}
-            className="h-7 w-8 cursor-pointer rounded border border-border-button-default bg-background-primary-default"
-          />
-        </label>
-        <label className="inline-flex items-center gap-1 text-caption-1-medium text-text-secondary">
-          Text
-          <input
-            type="color"
-            aria-label="Cell text color"
-            value={toColorInput(fmt?.color, "#000000")}
-            disabled={loading}
-            onChange={(event) => patchFmt({ color: event.currentTarget.value })}
-            className="h-7 w-8 cursor-pointer rounded border border-border-button-default bg-background-primary-default"
-          />
-        </label>
-      </div>
-
-      {/* The sheet through the records table: row 1 as the header (click sorts,
-          double-click edits it in the bar), later rows as records, the count in
-          the footer. Cell fill/text colors are the document's own. */}
-      <RecordsTableFrame count={records.length} columns={Math.max(0, table.columns.length - 1)} fill>
+    // Bounded to the viewport where nothing else bounds it (the artifact page), so
+    // the frame scrolls its rows and keeps the footer in view; a pane bounds it first.
+    <section className="mt-3 flex h-full max-h-[calc(100dvh-7rem)] min-h-0 flex-1 flex-col gap-2">
+      <RecordsTableFrame
+        count={visible.length}
+        columns={table.columns.length}
+        fill
+        footerCells={[
+          ...table.columns.slice(1).map((column, offset) => {
+            const index = offset + 1;
+            const type = types[index] ?? "text";
+            const chosen = sheetCalculations[column.col];
+            const cells = visible.map((record) => record.cells[index]!);
+            return (
+              <select
+                key={column.col}
+                aria-label={`Calculation for ${column.label}`}
+                value={chosen ?? ""}
+                onChange={(event) => chooseCalculation(column.col, event.currentTarget.value as SheetCalculation | "")}
+                className={cx(
+                  "max-w-full cursor-pointer appearance-none bg-transparent text-caption-1-regular outline-none focus-visible:underline",
+                  chosen ? "text-text-secondary tabular-nums" : "text-text-tertiary",
+                )}
+              >
+                <option value="">{chosen ? "None" : "+ Add calculation"}</option>
+                {calculationsFor(type).map((calculation) => (
+                  <option key={calculation} value={calculation}>
+                    {calculate(calculation, cells, type)} {CALCULATION_LABELS[calculation].toLowerCase()}
+                  </option>
+                ))}
+              </select>
+            );
+          }),
+          "",
+        ]}
+      >
         <thead>
           <tr className="border-border-button-default border-b">
             {table.columns.map((column, index) => {
-              const active = selected.row === 0 && selected.col === column.col;
+              const type = types[index] ?? "text";
+              const Icon = HEADER_ICON[type];
+              const editingHeader = editing?.row === 0 && editing.col === column.col;
               return (
                 <th
                   key={column.col}
                   aria-sort={sort?.col === column.col ? (sort.dir === 1 ? "ascending" : "descending") : undefined}
                   className={cx(
-                    index === 0 && cx(RECORDS_STICKY, "bg-background-primary-default"),
+                    RECORDS_HEADER_STICKY,
+                    index === 0 && cx(RECORDS_STICKY, "left-0 z-30"),
                     RECORDS_HEADER_CELL,
-                    active && "ring-2 ring-inset ring-border-focus-ring",
+                    "whitespace-nowrap",
                   )}
                 >
-                  <button
-                    type="button"
-                    onClick={() => toggleSort(column.col)}
-                    onDoubleClick={() => edit(0, column.col)}
-                    title={`Sort by ${column.label}. Double-click to edit ${column.ref}`}
-                    className={cx(RECORDS_SORT_BUTTON, "w-full")}
-                  >
-                    <span className="truncate">{column.label}</span>
-                    <RecordsSortMark direction={sort?.col === column.col ? sort.dir : null} />
-                  </button>
+                  {editingHeader ? (
+                    <CellEditor
+                      initial={rawOf(0, column.col)}
+                      onCommit={(value) => commit(0, column.col, value)}
+                      onCancel={() => setEditing(null)}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        if (event.detail > 1) return;
+                        toggleSort(column.col);
+                      }}
+                      onDoubleClick={() => !loading && setEditing({ row: 0, col: column.col })}
+                      title={`Sort by ${column.label}. Double-click to rename`}
+                      className={cx(RECORDS_SORT_BUTTON, "w-full gap-1.5")}
+                    >
+                      {Icon && <RecordsHeaderIcon as={Icon} />}
+                      <span className="truncate">{column.label}</span>
+                      <RecordsSortMark direction={sort?.col === column.col ? sort.dir : null} />
+                    </button>
+                  )}
                 </th>
               );
             })}
+            <th className={cx(RECORDS_HEADER_STICKY, RECORDS_HEADER_CELL, "w-10")}>
+              <button
+                type="button"
+                onClick={addColumn}
+                disabled={loading || sheet.colCount >= SHEET_MAX_COLS}
+                aria-label="Add column"
+                title="Add column"
+                className="grid size-6 place-items-center rounded-md text-text-tertiary transition-colors hover:bg-background-secondary-default hover:text-text-primary disabled:opacity-40"
+              >
+                <RiAddLine aria-hidden className="size-4" />
+              </button>
+            </th>
           </tr>
         </thead>
         <tbody>
-          {records.map((record) => (
+          {visible.map((record) => (
             <tr key={record.row} className={RECORDS_ROW}>
               {record.cells.map((cell, index) => {
                 const column = table.columns[index]!;
-                const active = selected.row === record.row && selected.col === column.col;
-                const numeric = cell.numeric && index > 0;
+                const type = types[index] ?? "text";
+                const isEditing = editing?.row === record.row && editing.col === column.col;
                 return (
                   <td
                     key={cell.ref}
+                    onDoubleClick={() => !loading && setEditing({ row: record.row, col: column.col })}
+                    title={cell.error ?? undefined}
                     className={cx(
                       index === 0 && RECORDS_STICKY,
                       RECORDS_CELL,
-                      active && "ring-2 ring-inset ring-border-focus-ring",
+                      "whitespace-nowrap",
+                      type === "number" && "text-right",
                     )}
                     style={cell.style.background ? { background: cell.style.background } : undefined}
                   >
-                    <button
-                      type="button"
-                      onClick={() => select(record.row, column.col)}
-                      onDoubleClick={() => edit(record.row, column.col)}
-                      title={cell.error ?? `${cell.ref}. Double-click to edit`}
-                      style={{ ...cell.style, background: undefined }}
-                      className={cx(
-                        "block w-full min-w-0 truncate outline-none",
-                        index === 0
-                          ? "text-left"
-                          : cx(
-                              "text-caption-1-regular text-text-secondary",
-                              numeric ? "text-right tabular-nums" : "text-left",
-                            ),
-                        cell.error && "text-text-error-primary",
-                      )}
-                    >
-                      {index === 0 ? <RecordsNameCell name={cell.display} /> : cell.display || "\u00a0"}
-                    </button>
+                    {isEditing ? (
+                      <CellEditor
+                        initial={rawOf(record.row, column.col)}
+                        onCommit={(value) => commit(record.row, column.col, value)}
+                        onCancel={() => setEditing(null)}
+                      />
+                    ) : index === 0 ? (
+                      cell.display.trim() ? (
+                        <RecordsNameCell name={cell.display} />
+                      ) : (
+                        <span className="text-text-tertiary">{" "}</span>
+                      )
+                    ) : (
+                      <TypedCell cell={cell} type={type} tones={tones[index] ?? new Map()} />
+                    )}
                   </td>
                 );
               })}
+              <td className={RECORDS_CELL} />
             </tr>
           ))}
+          <tr>
+            <td colSpan={table.columns.length + 1} className={cx(RECORDS_STICKY, "px-3 py-1.5")}>
+              <button
+                type="button"
+                onClick={addRow}
+                disabled={loading || sheet.rowCount >= SHEET_MAX_ROWS}
+                className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-caption-1-regular text-text-tertiary transition-colors hover:text-text-primary disabled:opacity-40"
+              >
+                <RiAddLine aria-hidden className="size-3.5" /> New row
+              </button>
+            </td>
+          </tr>
         </tbody>
       </RecordsTableFrame>
 
-      <div className="flex flex-wrap items-center gap-2">
+      {/* The bottom bar: sort and filter, the sheets as views with their counts, a new view. */}
+      <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
-          onClick={() =>
-            onChange(
-              replaceSheet(
-                workbook,
-                grownDimensions(sheet, Math.min(SHEET_MAX_ROWS - 1, sheet.rowCount), sheet.colCount - 1),
-              ),
-            )}
-          disabled={loading || sheet.rowCount >= SHEET_MAX_ROWS}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border-button-default px-3 text-body-2-medium hover:bg-background-secondary-default disabled:opacity-40"
+          onClick={() => (filters.length === 0 ? addFilter() : setFiltersOpen((open) => !open))}
+          aria-expanded={filtersOpen}
+          className={cx(
+            "inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption-1-medium transition-colors hover:bg-background-secondary-default",
+            activeFilters > 0 ? "text-text-primary" : "text-text-secondary",
+          )}
         >
-          <RiAddLine aria-hidden className="size-4" /> Row
+          <RiFilter3Line aria-hidden className="size-3.5" />
+          Sort & filter
+          {activeFilters > 0 && <span className="tabular-nums text-text-tertiary">{activeFilters}</span>}
         </button>
-        <button
-          type="button"
-          onClick={() =>
-            onChange(
-              replaceSheet(
-                workbook,
-                grownDimensions(sheet, sheet.rowCount - 1, Math.min(SHEET_MAX_COLS - 1, sheet.colCount)),
-              ),
-            )}
-          disabled={loading || sheet.colCount >= SHEET_MAX_COLS}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border-button-default px-3 text-body-2-medium hover:bg-background-secondary-default disabled:opacity-40"
-        >
-          <RiAddLine aria-hidden className="size-4" /> Column
-        </button>
-        {capped && (
-          <span className="text-caption-1-regular text-text-tertiary">
-            Large sheet - showing the first {VISIBLE_ROW_CAP} rows and {VISIBLE_COL_CAP} columns.
-          </span>
-        )}
-      </div>
-
-      {/* Sheet tabs: add / rename (double-click) / reorder / switch. */}
-      <div className="flex items-center gap-1 overflow-x-auto pb-1">
+        <span className="mx-1 h-4 w-px bg-border-button-default" aria-hidden />
         {workbook.sheets.map((item) => {
           const active = item.id === workbook.activeSheetId;
-          return (
-            <div key={item.id} className="flex shrink-0 items-center">
-              {renaming === item.id ? (
-                <input
-                  // biome-ignore lint/a11y/noAutofocus: focus the rename field the moment it opens.
-                  autoFocus
-                  defaultValue={item.name}
-                  aria-label={`Rename ${item.name}`}
-                  onBlur={(event) => {
-                    onChange(renameSheet(workbook, item.id, event.currentTarget.value));
-                    setRenaming(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      onChange(renameSheet(workbook, item.id, event.currentTarget.value));
-                      setRenaming(null);
-                    }
-                    if (event.key === "Escape") setRenaming(null);
-                  }}
-                  className="h-7 w-28 rounded-lg border border-foreground-icon-primary bg-background-primary-default px-2 text-caption-1-medium text-text-primary outline-none"
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => onChange({ ...workbook, activeSheetId: item.id })}
-                  onDoubleClick={() => setRenaming(item.id)}
-                  aria-current={active}
-                  title={`${item.name} (double-click to rename)`}
-                  className={
-                    active
-                      ? "inline-flex h-7 items-center rounded-lg border border-border-button-default bg-foreground-icon-primary px-3 text-caption-1-medium text-background-full"
-                      : "inline-flex h-7 items-center rounded-lg border border-border-button-default bg-background-secondary-default px-3 text-caption-1-medium text-text-secondary hover:text-text-primary"
-                  }
-                >
-                  {item.name}
-                </button>
+          return renaming === item.id ? (
+            <input
+              key={item.id}
+              // biome-ignore lint/a11y/noAutofocus: focus the rename field the moment it opens.
+              autoFocus
+              defaultValue={item.name}
+              aria-label={`Rename ${item.name}`}
+              onBlur={(event) => {
+                onChange(renameSheet(workbook, item.id, event.currentTarget.value));
+                setRenaming(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  onChange(renameSheet(workbook, item.id, event.currentTarget.value));
+                  setRenaming(null);
+                }
+                if (event.key === "Escape") setRenaming(null);
+              }}
+              className="h-7 w-28 rounded-lg border border-foreground-icon-primary bg-background-primary-default px-2 text-caption-1-medium text-text-primary outline-none"
+            />
+          ) : (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onChange({ ...workbook, activeSheetId: item.id })}
+              onDoubleClick={() => setRenaming(item.id)}
+              aria-current={active ? "true" : undefined}
+              title={`${item.name}. Double-click to rename`}
+              className={cx(
+                "inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption-1-medium transition-colors",
+                active
+                  ? "bg-background-secondary-default text-text-primary"
+                  : "text-text-secondary hover:bg-background-secondary-default hover:text-text-primary",
               )}
-              {active && workbook.sheets.length > 1 && (
-                <span className="ml-0.5 flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => onChange(moveSheet(workbook, item.id, -1))}
-                    aria-label={`Move ${item.name} left`}
-                    title="Move left"
-                    className="grid size-6 place-items-center rounded text-text-tertiary hover:bg-background-secondary-default hover:text-text-primary"
-                  >
-                    <RiArrowLeftSLine aria-hidden className="size-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChange(moveSheet(workbook, item.id, 1))}
-                    aria-label={`Move ${item.name} right`}
-                    title="Move right"
-                    className="grid size-6 place-items-center rounded text-text-tertiary hover:bg-background-secondary-default hover:text-text-primary"
-                  >
-                    <RiArrowRightSLine aria-hidden className="size-4" />
-                  </button>
-                </span>
-              )}
-            </div>
+            >
+              {item.name}
+              <span className="tabular-nums text-text-tertiary">{viewCounts.get(item.id) ?? 0}</span>
+            </button>
           );
         })}
         <button
           type="button"
           onClick={() => onChange(addSheet(workbook))}
           disabled={loading || workbook.sheets.length >= WORKBOOK_MAX_SHEETS}
-          aria-label="Add sheet"
-          title="Add sheet"
-          className="grid size-7 shrink-0 place-items-center rounded-lg border border-border-button-default text-text-secondary hover:bg-background-secondary-default disabled:opacity-40"
+          className="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-caption-1-medium text-text-secondary transition-colors hover:bg-background-secondary-default hover:text-text-primary disabled:opacity-40"
         >
-          <RiAddLine aria-hidden className="size-4" />
+          <RiAddLine aria-hidden className="size-3.5" /> New view
         </button>
+        {capped && (
+          <span className="ml-auto text-caption-1-regular text-text-tertiary">
+            Large sheet: showing the first {VISIBLE_ROW_CAP} rows and {VISIBLE_COL_CAP} columns.
+          </span>
+        )}
       </div>
+
+      {filtersOpen && (
+        <div className="flex flex-col gap-1.5 rounded-xl border border-border-button-default bg-background-primary-default p-2">
+          {filters.map((filter, index) => {
+            const type = types[filter.col] ?? "text";
+            const ops = filterOps(type);
+            const field =
+              "h-7 rounded-md border border-border-button-default bg-background-primary-default px-2 text-caption-1-regular text-text-primary outline-none focus:border-foreground-icon-primary";
+            const update = (patch: Partial<SheetFilter>) =>
+              setFilters((current) => current.map((item, at) => (at === index ? { ...item, ...patch } : item)));
+            return (
+              <div key={index} className="flex flex-wrap items-center gap-1.5">
+                <select
+                  aria-label="Filter column"
+                  value={filter.col}
+                  onChange={(event) => {
+                    const col = Number(event.currentTarget.value);
+                    update({ col, op: filterOps(types[col] ?? "text")[0]!, value: "" });
+                  }}
+                  className={field}
+                >
+                  {table.columns.map((column) => (
+                    <option key={column.col} value={column.col}>
+                      {column.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Filter condition"
+                  value={filter.op}
+                  onChange={(event) => update({ op: event.currentTarget.value as SheetFilterOp })}
+                  className={field}
+                >
+                  {ops.map((op) => (
+                    <option key={op} value={op}>
+                      {FILTER_OP_LABELS[op]}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type={type === "date" ? "date" : "text"}
+                  aria-label="Filter value"
+                  value={filter.value}
+                  placeholder={type === "date" ? "" : "Value"}
+                  onChange={(event) => update({ value: event.currentTarget.value })}
+                  className={cx(field, "min-w-32 flex-1")}
+                />
+                <button
+                  type="button"
+                  onClick={() => setFilters((current) => current.filter((_, at) => at !== index))}
+                  aria-label="Remove filter"
+                  className="grid size-7 place-items-center rounded-md text-text-tertiary hover:bg-background-secondary-default hover:text-text-primary"
+                >
+                  <RiCloseLine aria-hidden className="size-4" />
+                </button>
+              </div>
+            );
+          })}
+          <div>
+            <button
+              type="button"
+              onClick={addFilter}
+              className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-caption-1-medium text-text-secondary hover:text-text-primary"
+            >
+              <RiAddLine aria-hidden className="size-3.5" /> Add filter
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -4,6 +4,7 @@ import { RiArrowLeftLine, RiCodeSSlashLine, RiDownloadLine, RiEyeLine, RiSaveLin
 import type { ArtifactDescriptor } from "@useagent/agent-client";
 import Link from "next/link";
 import { useState } from "react";
+import { cx } from "@/utils/cx";
 import { WorkpieceProposalReview } from "@/components/artifacts/workpiece-proposal-review";
 import { useWorkpieceEditor } from "./artifact-editor-state";
 import { ArtifactFidelityNote, WorkpieceSurfaces } from "./artifact-editor-surfaces";
@@ -50,7 +51,13 @@ export function ArtifactEditor({ artifact }: { readonly artifact: ArtifactDescri
   const { actionContract } = editor;
 
   return (
-    <main className="mx-auto flex min-h-0 w-full max-w-[1120px] flex-1 flex-col px-6 py-8 sm:px-10 sm:py-10">
+    <main
+      className={cx(
+        "mx-auto flex min-h-0 w-full flex-1 flex-col px-6 py-8 sm:px-10 sm:py-10",
+        // A records grid wants the whole page; prose-shaped editors keep a reading width.
+        editor.isSheetGrid ? "max-w-none" : "max-w-[1120px]",
+      )}
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <Link
