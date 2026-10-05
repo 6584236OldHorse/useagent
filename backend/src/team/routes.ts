@@ -86,7 +86,12 @@ teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
     });
   });
   if (!decision) return c.json({ error: "forbidden" }, 403);
-  await decision.deliver?.();
+  // The decision is committed; mail is best effort and never turns it into a failure.
+  try {
+    await decision.deliver?.();
+  } catch (error) {
+    console.error(`[slack] access request ${c.req.param("id")}: mail after the decision failed:`, (error as Error).message);
+  }
   const { outcome } = decision;
   if (outcome === "not_found") return c.json({ message: "That request is no longer open" }, 404);
   if (outcome === "email_required") return c.json({ message: "Enter the email address they will sign in with" }, 400);

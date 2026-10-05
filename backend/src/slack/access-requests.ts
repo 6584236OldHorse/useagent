@@ -90,7 +90,7 @@ export async function requestSlackAccess(input: {
   if (existing?.status === "invited") {
     const state = await invitationState(existing.invitationId, db);
     if (state === "open") return "invited";
-    if (state === "accepted") return settleAccepted(input.orgId, existing.invitationId!);
+    if (state === "accepted") return settleAccepted(input, existing.invitationId!);
   }
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
@@ -103,7 +103,10 @@ export async function requestSlackAccess(input: {
     .where(and(eq(slackUsers.teamId, input.teamId), eq(slackUsers.orgId, input.orgId)));
   const who = email ? `${name} (${email})` : name;
   const id = existing?.id ?? crypto.randomUUID();
-  const verdict = await db.transaction(async (tx): Promise<AccessRequestVerdict | "accepted_unbound"> => {
+  // The organisation's turn, then the transaction: an acceptance holds the same
+  // turn from the library's write to the Slack binding, so nothing here can
+  // reopen a request whose acceptance is half done.
+  const verdict = await withOrgLock(input.orgId, () => db.transaction(async (tx): Promise<AccessRequestVerdict | "accepted_unbound"> => {
     const [locked] = existing
       ? await tx.select({ status: slackAccessRequests.status, invitationId: slackAccessRequests.invitationId }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
       : [];
@@ -149,18 +152,21 @@ export async function requestSlackAccess(input: {
       });
     }
     return "asked";
-  });
-  if (verdict === "accepted_unbound") return settleAccepted(input.orgId, existing!.invitationId!);
+  }));
+  if (verdict === "accepted_unbound") return settleAccepted(input, existing!.invitationId!);
   if (verdict === "asked") kickSlackOutbox();
   return verdict;
 }
 
 /** An invitation accepted while the request still says invited (a message
  *  landed between the library's acceptance and our binding): finish the binding now. */
-async function settleAccepted(orgId: string, invitationId: string): Promise<AccessRequestVerdict> {
+async function settleAccepted(
+  input: { teamId: string; slackUserId: string; orgId: string },
+  invitationId: string,
+): Promise<AccessRequestVerdict> {
   // The organisation's turn: acceptance holds it from the library's write to
   // the binding, so by the time this runs the membership is there or truly gone.
-  return withOrgLock(orgId, async () => {
+  return withOrgLock(input.orgId, async () => {
     // Read again under the turn: the library restores pending when its own
     // membership write fails, and that invitation is still live.
     const state = await invitationState(invitationId, db);
@@ -172,6 +178,11 @@ async function settleAccepted(orgId: string, invitationId: string): Promise<Acce
     const acceptor = await acceptorOf(invitationId);
     const bound = acceptor ? await bindInvitedSlackSender(invitationId, acceptor) : "no_membership";
     if (bound === "bound") return "already_in";
+    if (bound === "none") {
+      // The acceptance finished its own binding while this waited for the turn.
+      const active = await findActiveSlackUser(input.teamId, input.slackUserId);
+      if (active?.orgId === input.orgId) return "already_in";
+    }
     // Accepted, but nobody to bind: the membership was removed again, or the
     // account is gone. Never created here; the admins decide again.
     if (bound === "no_membership") await reopenInvitedRequest(invitationId);
