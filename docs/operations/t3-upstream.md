@@ -34,6 +34,12 @@ move the code they touch.
 7. Version string reports the pinned nightly.
 8. Telemetry: `T3CODE_TELEMETRY_ENABLED=false` is set by our launch env, not a fork change.
 
+Known gap in `dd2b1389590f`: `packages/effect-codex-app-server/src/client.ts` encodes `turn/start`
+with a schema that has no `environments` field, so item 5's turn environments never reach the wire.
+The relay fills in the run's environment when a turn arrives without one
+(`codex-subscription-protocol.ts`). Fix the client schema on the next fork build and keep the relay
+fallback.
+
 ## What our backend depends on (the wire)
 
 The driver translates V2 at one edge (`backend/src/engines/runtime-v2-view.ts`) into the shapes the

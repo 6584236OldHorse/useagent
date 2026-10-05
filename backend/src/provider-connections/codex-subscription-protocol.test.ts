@@ -59,6 +59,31 @@ describe("CodexSubscriptionProtocol", () => {
     ).rejects.toThrow("workspace binding mismatch");
   });
 
+  test("names the bound remote environment on a turn the runtime sent without one", async () => {
+    const protocol = makeProtocol();
+    await protocol.acceptClientFrame(JSON.stringify({
+      id: 3,
+      method: "thread/start",
+      params: { cwd: "/root/work", model: "gpt-5.5" },
+    }));
+    await observe(protocol, JSON.stringify({ id: 3, result: { thread: { id: "provider-thread-1" } } }));
+
+    const turn = await protocol.acceptClientFrame(JSON.stringify({
+      id: 4,
+      method: "turn/start",
+      params: { threadId: "provider-thread-1", model: "gpt-5.5", cwd: "/root/work" },
+    }));
+    expect(JSON.parse(turn).params.environments).toEqual([remoteEnvironment()]);
+
+    await expect(
+      protocol.acceptClientFrame(JSON.stringify({
+        id: 5,
+        method: "turn/start",
+        params: { threadId: "provider-thread-1", model: "gpt-5.5", environments: [] },
+      })),
+    ).rejects.toThrow("exactly one remote execution environment is required");
+  });
+
   test("rejects duplicate and excessive outstanding request ids", async () => {
     const duplicate = makeProtocol();
     const request = JSON.stringify({ id: 1, method: "initialize", params: {} });

@@ -138,6 +138,17 @@ export class CodexSubscriptionProtocol {
         delete startParams.excludeTurns;
         outbound = envelopeWith(method, startParams);
       }
+    } else if (method === "turn/start" && frame.params?.environments === undefined) {
+      // The pinned runtime's Codex client encodes turn/start without the
+      // `environments` field, so the host names the run's own environment. One
+      // the runtime does send is still checked against the binding below.
+      const binding = this.#binding();
+      const values = {
+        ...frame.params,
+        environments: [{ environmentId: binding.environmentId, cwd: binding.cwd, runtimeWorkspaceRoots: [binding.cwd] }],
+      };
+      await this.#assertBoundRequest(method, values);
+      outbound = envelopeWith(method, values);
     } else {
       await this.#assertBoundRequest(method, frame.params);
     }
