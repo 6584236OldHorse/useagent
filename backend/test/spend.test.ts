@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { and, eq, like } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { and, eq, inArray, isNull, like } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
+import { learningOutbox, member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
 import { acceptRunCommand } from "../src/commands";
 import { runIntentFingerprint, runIntentFromAcceptedRun } from "../src/commands/fingerprint";
 import { replayCommittedWinner } from "../src/commands/service";
@@ -17,7 +17,7 @@ import {
   spendSnapshot,
 } from "../src/runs/spend";
 import { providerKeyLimitReason } from "../src/provider-gateway/key-limit";
-import { createOrgSession, fetchApi, json, uid, type OrgSession } from "./helpers";
+import { createOrgSession, fetchApi, json, uid, waitFor, type OrgSession } from "./helpers";
 
 // Spend allowance: accrual from the usage events production drivers emit, the
 // per-charge double-count guard (including two finalizations racing), the hard
@@ -27,6 +27,10 @@ import { createOrgSession, fetchApi, json, uid, type OrgSession } from "./helper
 
 let session: OrgSession;
 let userId: string;
+/** Every org this file creates runs in, so its learning intents can be removed:
+ *  a completed run enqueues one, and a neighbouring test that counts what the
+ *  learning worker drains must never see this file's leftovers. */
+const ownedOrgs = new Set<string>();
 
 async function memberOf(orgId: string): Promise<string> {
   const [row] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, orgId));
@@ -35,11 +39,30 @@ async function memberOf(orgId: string): Promise<string> {
 
 beforeAll(async () => {
   session = await createOrgSession("spend");
+  ownedOrgs.add(session.orgId);
   userId = await memberOf(session.orgId);
 });
 
 afterEach(() => {
   delete process.env.SPEND_ALLOWANCE_USD;
+});
+
+afterAll(async () => {
+  for (const orgId of ownedOrgs) {
+    // The mock worker settles this file's product runs a moment after their
+    // tests end; wait for that, so no intent is enqueued after the cleanup.
+    // Fixture runs (internal origin, priced in place) never settle and never
+    // enqueue, so they are not waited on.
+    await waitFor(async () => {
+      const open = await db.select({ id: runs.id }).from(runs)
+        .where(and(eq(runs.orgId, orgId), isNull(runs.origin), inArray(runs.status, ["queued", "running"])));
+      return open.length === 0 ? true : null;
+    });
+    await db.delete(learningOutbox).where(inArray(
+      learningOutbox.runId,
+      db.select({ id: runs.id }).from(runs).where(eq(runs.orgId, orgId)),
+    ));
+  }
 });
 
 async function account(orgId = session.orgId, user = userId) {
@@ -60,10 +83,12 @@ async function entry(chargeKey: string) {
   return row ?? null;
 }
 
+/** A fixture run settled directly by finalizeRun. Internal origin: it must not
+ *  enqueue memory capture or a learning intent for other tests to trip over. */
 async function runRow(id: string, engine: "opencode" | "claude" = "opencode") {
   await db.insert(runs).values({
     id, orgId: session.orgId, userId, prompt: "price me", model: "claude-opus-5",
-    engine, status: "running", threadId: id,
+    engine, status: "running", threadId: id, origin: "internal:e2e",
   });
   return { id, orgId: session.orgId, userId };
 }
@@ -287,6 +312,7 @@ describe("spend allowance", () => {
     expect(setActive.status).toBe(200);
     session.jar.absorb(setActive);
     session = { ...session, cookies: session.jar.header() };
+    ownedOrgs.add(otherOrgId);
     expect((await post({ prompt: "fresh ledger", engine: "mock" })).status).toBe(201);
     const other = await json<{ spent: number }>("/api/spend", { cookies: session.cookies });
     expect(other.body.spent).toBe(0);
@@ -294,6 +320,7 @@ describe("spend allowance", () => {
 
   test("fleet batches and delegated child batches refuse a capped member inside their own acceptance", async () => {
     const batchSession = await createOrgSession("spend-batches");
+    ownedOrgs.add(batchSession.orgId);
     const batchUser = await memberOf(batchSession.orgId);
     const parent = await post({ prompt: "parent before the cap", engine: "mock" }, {}, batchSession.cookies);
     expect(parent.status).toBe(201);

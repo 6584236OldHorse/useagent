@@ -69,9 +69,10 @@ afterEach(() => {
 
 async function chatRun() {
   const id = `chat_${crypto.randomUUID()}`;
+  // Internal origin: settled directly, it must leave no learning intent behind.
   await db.insert(runs).values({
     id, orgId: session.orgId, userId, prompt: "hi", model: "anthropic/claude-sonnet-5",
-    engine: "chat", status: "running", threadId: id,
+    engine: "chat", status: "running", threadId: id, origin: "internal:e2e",
   });
   return { id, threadId: id, model: "anthropic/claude-sonnet-5" };
 }
