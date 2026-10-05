@@ -120,3 +120,14 @@ process.env.SLACK_OUTBOX_TICK_MS = process.env.SLACK_OUTBOX_TICK_MS ?? "3600000"
 // process-global fetch fixtures and attribute another run's writes to this test.
 process.env.MEMORY_OUTBOX_TICK_MS = process.env.MEMORY_OUTBOX_TICK_MS ?? "3600000";
 process.env.SLACK_OUTBOX_BASE_MS = process.env.SLACK_OUTBOX_BASE_MS ?? "20";
+
+// Build the schema once per process, before the first test file. helpers.ts
+// (via src/index) runs the same migrator at boot, but a database-backed file
+// that never imports it (a repo test with its own fixtures) otherwise depends
+// on running AFTER one that does: alone, or first in CI's file order, it dies
+// with `relation "runs" does not exist`. The migrator skips applied entries,
+// so the boot call that follows is a cheap no-op and the suite pays for the
+// schema exactly once, as before.
+const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+const { db } = await import("../src/db/client");
+await migrate(db, { migrationsFolder: `${import.meta.dir}/../drizzle` });
