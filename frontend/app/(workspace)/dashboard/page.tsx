@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { AnalyticsBand } from "@/components/dashboard/analytics-band";
 import {
   computeStats,
   extractDashboardSummary,
@@ -8,13 +7,13 @@ import {
   recentRuns,
 } from "@/components/dashboard/dashboard-data";
 import { DashboardLiveRefresh } from "@/components/dashboard/dashboard-live-refresh";
-import { RecentRunsTable } from "@/components/dashboard/recent-runs-table";
 import {
   StatCard,
   StatCards,
   StatCardSkeleton,
   type StatItem,
 } from "@/components/dashboard/stat-cards";
+import { DeferredAnalyticsBand as AnalyticsBand, DeferredRecentRunsTable as RecentRunsTable } from "@/components/dashboard/deferred";
 import { WelcomeHeader } from "@/components/dashboard/welcome-header";
 import { Fleet } from "@/components/fleet/fleet-lanes";
 import {

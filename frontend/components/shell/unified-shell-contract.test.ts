@@ -323,7 +323,7 @@ describe("unified shell contract", () => {
 
     expect(composer).toContain("maxHeight={180}");
     expect(composer).toContain(
-      '"grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
+      '"@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
     );
     expect(composer).toContain(
       'hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6"',

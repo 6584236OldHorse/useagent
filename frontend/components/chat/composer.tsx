@@ -583,7 +583,7 @@ export function Composer({
             "cursor-text rounded-none border-0 bg-transparent shadow-none",
             hero
               ? "p-3 md:p-4"
-              : "grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
+              : "@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
           )}
         >
           {/* The "+" add-context button sits FIRST in the DOM so keyboard focus
@@ -597,7 +597,7 @@ export function Composer({
               aria-expanded={addMenuOpen}
               onClick={() => setAddMenuOpen((o) => !o)}
               className={cn(
-                "col-start-1 row-start-1 flex size-9 items-center justify-center rounded-full border transition-colors",
+                "col-start-1 row-start-1 flex size-9 items-center justify-center rounded-full border transition-colors @max-[26rem]:row-start-2",
                 addMenuOpen
                   ? "border-border-button-default bg-background-secondary-default text-text-primary"
                   : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
@@ -615,7 +615,8 @@ export function Composer({
           <div
             className={cn(
               "flex items-start gap-1.5 px-1",
-              !hero && "col-start-2 row-start-1 min-w-0 items-center",
+              // A narrow composer (the split pane) stacks: the input takes the whole first row, the controls the second.
+              !hero && "col-start-2 row-start-1 min-w-0 items-center @max-[26rem]:col-span-3 @max-[26rem]:col-start-1",
             )}
           >
             {command && (
@@ -721,7 +722,7 @@ export function Composer({
             <div
               className={cn(
                 "ml-auto flex items-center gap-1.5",
-                !hero && "col-start-3 row-start-1",
+                !hero && "col-start-3 row-start-1 @max-[26rem]:row-start-2",
               )}
             >
               {/* One engine now — the meaningful per-message choice is the MODEL. */}

@@ -16,7 +16,7 @@ const router = {
   prefetch() {},
 } as unknown as AppRouterInstance;
 
-test("the 404 page renders inside the app shell with a way forward", () => {
+test("the 404 page renders without the shell and with a way forward", () => {
   const html = renderToStaticMarkup(
     <AppRouterContext.Provider value={router}>
       <PathnameContext.Provider value="/this-route-does-not-exist">
@@ -27,7 +27,8 @@ test("the 404 page renders inside the app shell with a way forward", () => {
   expect(html).toContain("Page not found");
   expect(html).toContain('href="/agent/new"');
   expect(html).toContain("Go to new thread");
-  expect(html).toContain('data-slot="sidebar-wrapper"');
+  // No shell: the sidebar kit and its libraries must not ride along on every route.
+  expect(html).not.toContain('data-slot="sidebar-wrapper"');
   expect(html).toContain('id="main-content"');
   expect(html.match(/<main(?:\s|>)/g)).toHaveLength(1);
 });
