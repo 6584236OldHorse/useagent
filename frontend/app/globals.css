@@ -2309,7 +2309,7 @@ html {
   --color-pill-tab-blue-hover-background: hsl(var(--neutral-700));
 
   /* Borders and separators (error border keeps theme.css red) */
-  --color-border-button-default:   hsl(var(--neutral-400));
+  --color-border-button-default:   hsl(var(--neutral-600)); /* one step above the raised surface; neutral-400 reads as a light line in this lifted palette */
   --color-border-button-hover:     hsl(var(--neutral-200));
   --color-border-button-active:    hsl(var(--neutral-300));
   --color-border-button-white:     hsl(228.75 24.24% 25.88%); /* #323852 */
