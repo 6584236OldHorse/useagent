@@ -6,6 +6,10 @@ import { MODEL_QUALIFICATION_RUN_ORIGIN } from "./origin";
 export const FREE_MODEL_QUALIFICATION_ORIGIN = MODEL_QUALIFICATION_RUN_ORIGIN;
 export const FREE_MODEL_QUALIFICATION_PRIORITY = -100;
 export const FREE_MODEL_QUALIFICATION_MARKER = "USEAGENT_MODEL_QUALIFICATION_OK";
+/** A probe is a real sandboxed run: a cold sandbox, the engine's boot and a
+ * free model's first answer took over three minutes in production, so the
+ * deadline leaves room for that and for a slow model. */
+export const FREE_MODEL_QUALIFICATION_TIMEOUT_MS = 10 * 60_000;
 
 export interface FreeModelQualificationRequest {
   readonly modelId: string;
@@ -190,7 +194,7 @@ export function createInternalOpenCodeQualificationDriver(
   services: InternalQualificationRunServices,
 ): FreeModelQualificationDriver {
   if (!options.orgId.trim()) throw new Error("free_model_qualifier_org_missing");
-  const timeoutMs = options.timeoutMs ?? 180_000;
+  const timeoutMs = options.timeoutMs ?? FREE_MODEL_QUALIFICATION_TIMEOUT_MS;
   const pollMs = options.pollMs ?? 1_000;
   const sleep = services.sleep ?? ((ms: number) => Bun.sleep(ms));
   const nowMs = services.nowMs ?? Date.now;
