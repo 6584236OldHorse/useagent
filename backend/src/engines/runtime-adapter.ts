@@ -640,6 +640,10 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             const createdAt = turnRequestedAt;
             ctx.timing?.mark("dispatch");
             const endDispatch = ctx.timing?.begin("t3.dispatch_request");
+            // Dispatched from the moment the prompt is sent: a reply lost on
+            // the way back (or cut by Stop) leaves a turn the provider may be
+            // running, and the cleanup below must cancel it.
+            turnDispatched = true;
             const steerResult = await driver.steer({
               runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),
               threadId: ctx.threadId ?? ctx.runId,
@@ -654,7 +658,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             if (steerResult.status !== "ok") {
               throw new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
             }
-            turnDispatched = true;
             // Delivery evidence, separate from session authority: only an accepted
             // steer proves this prompt, and the history it carried, reached the engine.
             await ctx.markPromptDelivered?.();

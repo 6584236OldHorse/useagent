@@ -51,5 +51,9 @@ describe("landing an unsettled runtime turn", () => {
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     expect(source).toContain("await landUnsettledTurn({");
     expect(source).not.toContain("if (ctx.signal.aborted && !skipQueuedCancel)");
+    // A turn is dispatched from the moment the prompt is sent, before the
+    // reply is awaited: a reply lost on the way back leaves a running turn the
+    // cleanup must cancel.
+    expect(source.indexOf("turnDispatched = true;")).toBeLessThan(source.indexOf("const steerResult = await driver.steer("));
   });
 });
