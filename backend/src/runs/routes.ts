@@ -1,10 +1,12 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
 import {
+  ENGINE_IDS,
   type EngineId,
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
@@ -69,6 +71,7 @@ import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
   modelProviderReadyForEngine,
+  USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
 import { registerRunCancelRoute } from "./cancel-route";
@@ -80,10 +83,9 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runModelAndEngine, runPermissionMode, type RunCreateBody } from "./run-create-policy";
-import { reasoningEffortSupportForRun, resolveReasoningEffort } from "./reasoning-effort";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
-import { SpendAllowanceExceededError } from "./spend";
+import { runLocationChoice } from "./run-location";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
 runsRoutes.use("*", orgScope);
@@ -123,13 +125,19 @@ export async function handleRunCreate(
   const botMentions = runBotMentions(c.get("orgId"), body.bot_mentions);
   if ("status" in botMentions) return c.json(botMentions.body, botMentions.status);
   const requestedResources = decodeRunResourceSelections(body.resources ?? []);
-  if (!requestedResources) {
-    return c.json({ error: "resources must be an array of valid resource selections" }, 400);
-  }
+  if (!requestedResources) return c.json({ error: "resources must be an array of valid resource selections" }, 400);
 
-  const selection = runModelAndEngine(body);
-  if (!selection.ok) return c.json({ error: selection.error }, 400);
-  const { model: requestedModel, engine: requestedEngine } = selection;
+  const requestedModel =
+    typeof body.model === "string" && body.model.trim()
+      ? body.model.trim()
+      : null;
+  let requestedEngine: EngineId | null = null;
+  if (body.engine !== undefined && body.engine !== null && body.engine !== "") {
+    if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) {
+      return c.json({ error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` }, 400);
+    }
+    requestedEngine = body.engine as EngineId;
+  }
 
   const id = crypto.randomUUID();
 
@@ -143,9 +151,9 @@ export async function handleRunCreate(
   let inheritedResources: readonly RunResource[] = [];
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
-  let parentReasoningEffort: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
+  let parentRunLocation: RunLocation | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
   // reply resumes the thread's live session). A native-command intent's client-supplied session
   // id is validated against THIS, never trusted on its own.
@@ -153,9 +161,7 @@ export async function handleRunCreate(
   if (body.parent_run_id !== undefined && body.parent_run_id !== null) {
     const rawParent =
       typeof body.parent_run_id === "string" ? body.parent_run_id.trim() : "";
-    if (!rawParent) {
-      return c.json({ error: "parent_run_id must be a run id string" }, 400);
-    }
+    if (!rawParent) return c.json({ error: "parent_run_id must be a run id string" }, 400);
     const parent = await getRunForOrg(c.get("orgId"), rawParent);
     if (!parent) return c.json({ error: "parent run not found" }, 404);
     parentRunId = parent.id;
@@ -167,9 +173,9 @@ export async function handleRunCreate(
         : legacyParentResources(parent.repos, "web");
     parentScope = parent.memoryScope;
     parentModel = parent.model;
-    parentReasoningEffort = parent.reasoningEffort;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
+    parentRunLocation = parent.runLocation;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
       parent.engineSessionId ?? null;
   }
@@ -221,6 +227,9 @@ export async function handleRunCreate(
   const permission = runPermissionMode(body.permission_mode);
   if (!permission.ok) return c.json({ error: permission.error }, 400);
   const { permissionMode } = permission;
+  // Run location: a root run's cloud-or-machine choice, refused now when the machine cannot take it; a reply inherits.
+  const location = await runLocationChoice(body.run_location, { orgId: c.get("orgId"), userId: c.get("userId"), reply: parentRunId !== null });
+  if (!location.ok) return c.json(location.body, location.status);
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -232,9 +241,7 @@ export async function handleRunCreate(
   if (body.skill !== undefined && body.skill !== null) {
     const sel = body.skill as { id?: unknown; version?: unknown };
     const rawId = typeof sel.id === "string" ? sel.id.trim() : "";
-    if (!rawId) {
-      return c.json({ error: "skill.id must be a skill id string" }, 400);
-    }
+    if (!rawId) return c.json({ error: "skill.id must be a skill id string" }, 400);
     const version =
       typeof sel.version === "number" &&
       Number.isInteger(sel.version) &&
@@ -286,14 +293,13 @@ export async function handleRunCreate(
   const intent: RunCommandIntent = {
     prompt: finalPrompt,
     model: requestedModel,
-    reasoningEffort: body.reasoning_effort == null ? null : String(body.reasoning_effort),
     engine: requestedEngine,
     parentRunId,
     requestedRepos,
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
-    permissionMode: permissionMode ?? null,
+    permissionMode: permissionMode ?? null, runLocation: location.runLocation ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -339,7 +345,8 @@ export async function handleRunCreate(
   if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
     return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
   }
-  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId") }, parentEngine ?? requestedEngine);
+  const runLocation = location.runLocation ?? parentRunLocation;
+  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, parentEngine ?? requestedEngine);
   if (!resolvedEngine.ok) {
     return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   }
@@ -352,10 +359,7 @@ export async function handleRunCreate(
   if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
-  const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;
-  const effort = resolveReasoningEffort(body.reasoning_effort, await reasoningEffortSupportForRun(engine, model, actor), parentReasoningEffort);
-  if (!effort.ok) return c.json({ error: effort.error, engine, efforts: effort.efforts }, 400);
-  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
+  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
 
@@ -364,9 +368,7 @@ export async function handleRunCreate(
       id: requestedSkillId,
       version: requestedSkillVersion ?? undefined,
     });
-    if (!pinned) {
-      return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
-    }
+    if (!pinned) return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
     skillId = pinned.skillId;
     skillVersion = pinned.version;
     skillContentHash = pinned.contentHash;
@@ -432,7 +434,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, runLocation: location.runLocation, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId
@@ -445,7 +447,9 @@ export async function handleRunCreate(
       return c.json({ error: error.code }, 413);
     }
     if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
-    if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
+    if (error instanceof UploadClaimError) {
+      return c.json({ error: "upload_unavailable" }, 409);
+    }
     if (error instanceof ThreadFollowupTargetError) return c.json({ error: error.code }, error.status);
     if (error instanceof ExpectedSandboxMismatchError) return c.json({ error: error.code }, 409);
     if (error instanceof BotHomeThreadTakenError) {
@@ -455,7 +459,7 @@ export async function handleRunCreate(
       );
     }
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
-    if (error instanceof SpendAllowanceExceededError || error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);

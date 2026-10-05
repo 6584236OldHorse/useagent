@@ -87,9 +87,14 @@ export async function insertCommandWithRun(
   const insert = async (tx: Executor): Promise<void> => {
     // A reply that carries no choice keeps the thread's current mode, read here
     // under the thread lifecycle lock this acceptance holds, so a narrowing reply
-    // that committed meanwhile is never undone by an earlier, stale read.
-    const permissionMode = cmd.run.permissionMode
-      ?? (cmd.run.parentRunId ? (await getLatestThreadRun(cmd.orgId, cmd.run.threadId, tx))?.permissionMode : undefined);
+    // that committed meanwhile is never undone by an earlier, stale read. The
+    // same read copies the thread's run location onto the reply: the root's
+    // choice rides every turn, so a turn whose retained sandbox is gone still
+    // asks for the place the thread was started on.
+    const latest = cmd.run.parentRunId && (cmd.run.permissionMode === undefined || cmd.run.runLocation === undefined)
+      ? await getLatestThreadRun(cmd.orgId, cmd.run.threadId, tx) : null;
+    const permissionMode = cmd.run.permissionMode ?? latest?.permissionMode;
+    const runLocation = cmd.run.runLocation === undefined ? latest?.runLocation ?? null : cmd.run.runLocation;
     await createRun(
       {
         id: cmd.run.id,
@@ -105,6 +110,7 @@ export async function insertCommandWithRun(
         resolvedResources: cmd.run.resolvedResources,
         memoryScope: cmd.run.memoryScope,
         permissionMode,
+        runLocation,
         skillId: cmd.run.skillId,
         skillVersion: cmd.run.skillVersion,
         skillContentHash: cmd.run.skillContentHash,

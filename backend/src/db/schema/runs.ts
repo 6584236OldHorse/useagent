@@ -6,6 +6,7 @@ import {
   type MemoryScope,
   type PermissionMode,
   type RunConnector,
+  type RunLocation,
   type RunStatus,
   type StepKind,
 } from "@useagent/agent-client/wire";
@@ -129,6 +130,11 @@ export const runs = pgTable(
     // what its resident runtime may do without asking. Rows from before the
     // column ran with the runtime's full-access posture, hence the default.
     permissionMode: text("permission_mode").$type<PermissionMode>().notNull().default("full-access"),
+    // Where the thread was asked to run (agent-client wire RunLocation): "local"
+    // is the person's connected machine, "cloud" the hosted provider. Chosen on
+    // the root run and copied onto every reply at insert, so a worker reads its
+    // own row; null on rows from before the choice, which ran under the old rule.
+    runLocation: text("run_location").$type<RunLocation>(),
     // Pinned skill/playbook selection for this run — an immutable REFERENCE to a
     // `skill_revisions` row (skill_id + skill_version) plus its content hash. Set
     // when a skill was selected in the composer/run-now; null otherwise. The

@@ -39,6 +39,14 @@ export const PERMISSION_MODES = [
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
+ * Where a thread was asked to run, chosen on its root run: "local" is the
+ * person's connected machine, "cloud" the hosted provider. Absent means the
+ * cloud; a reply inherits its thread's.
+ */
+export const RUN_LOCATIONS = ["cloud", "local"] as const;
+export type RunLocation = (typeof RUN_LOCATIONS)[number];
+
+/**
  * Which harness executes a run. `mock` is the scripted trace; `chat` is the
  * no-sandbox conversational path; the agent engines (opencode / claude / codex)
  * execute inside the per-thread sandbox. `daytona` / `claude-sdk` are legacy ids
@@ -258,6 +266,9 @@ export interface ApiRun {
   /** The permission policy this run was started with. Absent only on rows from
    *  a backend that predates the field; the server always reports it. */
   permission_mode?: PermissionMode;
+  /** Where the thread was asked to run ("local" is the person's machine). Null
+   *  on rows from before the choice existed; absent from an older backend. */
+  run_location?: RunLocation | null;
   /** Pinned skill revision this run loaded (null when none). Immutable: links a
    *  historical run to the EXACT skill version/hash it used. */
   skill_id: string | null;
@@ -366,6 +377,7 @@ const STEP_KIND_SET: ReadonlySet<string> = new Set(STEP_KINDS);
 const ENGINE_ID_SET: ReadonlySet<string> = new Set(ENGINE_IDS);
 const MEMORY_SCOPE_SET: ReadonlySet<string> = new Set(MEMORY_SCOPES);
 const PERMISSION_MODE_SET: ReadonlySet<string> = new Set(PERMISSION_MODES);
+const RUN_LOCATION_SET: ReadonlySet<string> = new Set(RUN_LOCATIONS);
 const RESOURCE_CAPABILITY_SET: ReadonlySet<string> = new Set([
   "content.read",
   "code.checkout",
@@ -738,6 +750,9 @@ export function decodeApiRun(value: unknown): ApiRun | null {
     // Absent only from a backend that predates the field: the chip then shows nothing.
     ...(typeof record.permission_mode === "string"
       ? { permission_mode: record.permission_mode as PermissionMode }
+      : {}),
+    ...(typeof record.run_location === "string" && RUN_LOCATION_SET.has(record.run_location)
+      ? { run_location: record.run_location as RunLocation }
       : {}),
     ...(typeof record.thread_seq === "number" ? { thread_seq: record.thread_seq } : {}),
     skill_id: record.skill_id,

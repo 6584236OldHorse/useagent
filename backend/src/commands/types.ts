@@ -1,4 +1,4 @@
-import type { PermissionMode } from "@useagent/agent-client/wire";
+import type { PermissionMode, RunLocation } from "@useagent/agent-client/wire";
 import type { EngineId, MemoryScope } from "../db/schema";
 import type { ExplicitRunResource, RunResource } from "../resources/types";
 import type { ThreadRelationshipKind } from "../db/schema";
@@ -34,6 +34,9 @@ export interface RunCommandIntent {
   /** The caller's explicit permission mode; null (or absent, for legacy callers)
    * means it delegated to the parent's mode or the operator's posture. */
   readonly permissionMode?: PermissionMode | null;
+  /** Where the root run was asked to execute (agent-client wire RunLocation);
+   * null or absent means the caller made no choice, which is the cloud. */
+  readonly runLocation?: RunLocation | null;
   /** The requested skill pin. A null version means "current" was requested;
    * the resolved immutable version is persisted on the run separately. */
   readonly skillId: string | null;
@@ -121,6 +124,10 @@ export interface RunCommandInput {
     /** The run's permission policy (engines/permission-mode.ts). Product lanes
      *  resolve it; a lane that omits it takes the operator's configured posture. */
     readonly permissionMode?: PermissionMode;
+    /** Where the thread runs (RunLocation). A root run carries the choice, or
+     *  null for the cloud; a reply leaves it unset and the insert copies the
+     *  thread's under the lifecycle lock. */
+    readonly runLocation?: RunLocation | null;
     /** Pinned skill revision reference for this run, or null. Part of the run's
      *  identity (the same prompt WITH a skill is a different turn). The content
      *  hash is stored for provenance but derives from (skillId, version). */

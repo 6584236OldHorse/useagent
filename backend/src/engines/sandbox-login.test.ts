@@ -70,7 +70,7 @@ describe("sandbox login", () => {
     expect(await sandboxLogin(odd.sandbox, { kind: "local", logins: ["codex"] }, "codex")).toBeNull();
   });
 
-  test("a new run is offered the login by the same rule the binding applies", async () => {
+  test("a run its thread placed on the machine is offered the login by the same rule the binding applies", async () => {
     const online = { logins: ["codex", "claude"] as readonly string[] };
     const deps = (runner: typeof online | null, policy: { allowLocalExecution: boolean; allowLocalLogins: boolean }, env: Record<string, string> = {}) => ({
       env,
@@ -78,14 +78,19 @@ describe("sandbox login", () => {
       policy: async () => policy,
     });
     const allowed = { allowLocalExecution: true, allowLocalLogins: true };
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(online, allowed))).toBe(true);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "opencode", deps(online, allowed))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(null, allowed))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps({ logins: ["claude"] }, allowed))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(online, { ...allowed, allowLocalLogins: false }))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(online, { ...allowed, allowLocalExecution: false }))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(online, allowed, { LOCAL_RUNNERS: "off" }))).toBe(false);
-    expect(await sandboxLoginOffered({ orgId: "org", userId: null }, "codex", deps(online, allowed))).toBe(false);
+    const local = { orgId: "org", userId: "user", runLocation: "local" as const };
+    expect(await sandboxLoginOffered(local, "codex", deps(online, allowed))).toBe(true);
+    expect(await sandboxLoginOffered(local, "opencode", deps(online, allowed))).toBe(false);
+    expect(await sandboxLoginOffered(local, "codex", deps(null, allowed))).toBe(false);
+    expect(await sandboxLoginOffered(local, "codex", deps({ logins: ["claude"] }, allowed))).toBe(false);
+    expect(await sandboxLoginOffered(local, "codex", deps(online, { ...allowed, allowLocalLogins: false }))).toBe(false);
+    expect(await sandboxLoginOffered(local, "codex", deps(online, { ...allowed, allowLocalExecution: false }))).toBe(false);
+    expect(await sandboxLoginOffered(local, "codex", deps(online, allowed, { LOCAL_RUNNERS: "off" }))).toBe(false);
+    expect(await sandboxLoginOffered({ ...local, userId: null }, "codex", deps(online, allowed))).toBe(false);
+    // A thread on the cloud, or one that made no choice, never sees the machine's login however connected it is.
+    expect(await sandboxLoginOffered({ orgId: "org", userId: "user", runLocation: "cloud" }, "codex", deps(online, allowed))).toBe(false);
+    expect(await sandboxLoginOffered({ orgId: "org", userId: "user", runLocation: null }, "codex", deps(online, allowed))).toBe(false);
+    expect(await sandboxLoginOffered({ orgId: "org", userId: "user" }, "codex", deps(online, allowed))).toBe(false);
   });
 
   test("a plane that cannot reach the vendor still dispatches when the user's machine offers the login", async () => {
@@ -93,9 +98,11 @@ describe("sandbox login", () => {
     const env = { ENABLED_ENGINES: "claude,codex", NODE_ENV: "production" };
     const online = { logins: ["claude"] as readonly string[] };
     const deps = (runner: typeof online | null) => ({ env, seam: () => ({ onlineForUser: () => runner as never }), policy: async () => ({ allowLocalExecution: true, allowLocalLogins: true }) });
-    const scope = { orgId: "org", userId: "user" };
+    const scope = { orgId: "org", userId: "user", runLocation: "local" as const };
     expect(await dispatchReadyForUser(scope, "claude", "claude-opus-5", "accepted", deps(null))).toBe(false);
     expect(await dispatchReadyForUser(scope, "claude", "claude-opus-5", "accepted", deps(online))).toBe(true);
+    // The same run placed on the cloud cannot use the machine's login, so it is not ready.
+    expect(await dispatchReadyForUser({ ...scope, runLocation: "cloud" }, "claude", "claude-opus-5", "accepted", deps(online))).toBe(false);
     expect(await dispatchReadyForUser(scope, "claude", "claude-opus-5", "persisted", deps(online))).toBe(true);
     // The login never widens what the engine or model policy allows.
     expect(await dispatchReadyForUser(scope, "codex", "gpt-5.6-luna", "accepted", deps(online))).toBe(false);
