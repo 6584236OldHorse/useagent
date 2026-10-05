@@ -157,6 +157,20 @@ export async function chargeChatTurn(input: {
     return;
   }
   const charge = await settleChatCharge(input.account, input.credential);
+  if (charge.cost === null && input.account.generationId) {
+    // Billed (the provider named a generation) but not priced here: the stream
+    // broke before its usage, or the record is not up yet, or a member's own
+    // key served it and cannot be read back. Never a zero: the entry stays
+    // pending with its generation, and the sweep prices it from the
+    // provider's record or counts it unresolved.
+    const generationId = input.account.generationId;
+    const noted = await persistChatWrite(`${where} generation`, () => noteSpendGeneration(input.key, generationId));
+    if (!noted && !unsettledChatCharges.has(input.key)) {
+      unsettledChatCharges.set(input.key, { orgId: input.orgId, userId: input.userId, generationId, figure: null });
+    }
+    console.warn(`[spend] ${where} is billed but not priced yet; left pending with generation ${generationId} for the sweep`);
+    return;
+  }
   const figure: SpendFigure = {
     cost: charge.cost ?? 0,
     tokens: charge.tokens,

@@ -433,4 +433,83 @@ describe("POST /api/chat accounting", () => {
     expect(admitted.status).toBe(200);
     expect((await readSse(admitted, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
   });
+
+  test("a chat that lost its stream after the generation id is never settled at zero: the house key prices it at once and a member key leaves it for the sweep, which recovers the same figure", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(0);
+    mockProvider([], 0.37); // the provider's record of the generation
+    const entry = async (key: string) => (await chatEntries()).find((row) => row.chargeKey === key);
+    // The deployment key reads the record back and settles the lost stream directly.
+    const house = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key: house, orgId: session.orgId, userId });
+    await chargeChatTurn({
+      key: house, orgId: session.orgId, userId,
+      account: { generationId: "gen-lost", usage: null },
+      credential: { value: "house-key", source: "backend_env" },
+    });
+    expect(await entry(house)).toMatchObject({ costUsd: 0.37, source: "provider_generation" });
+    // A member's own key cannot be read back here: the entry stays pending
+    // with its generation, a figure the sweep recovers, never a zero.
+    const mine = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key: mine, orgId: session.orgId, userId });
+    await chargeChatTurn({
+      key: mine, orgId: session.orgId, userId,
+      account: { generationId: "gen-lost-member", usage: null },
+      credential: { value: "member-key", source: "user_connection" },
+    });
+    expect(await entry(mine)).toMatchObject({ source: "pending", generationId: "gen-lost-member", figureSource: null });
+    await Bun.sleep(10);
+    await settlePendingChatCharges(0);
+    expect(await entry(mine)).toMatchObject({ costUsd: 0.37, source: "provider_generation" });
+    expect(await spent()).toBeCloseTo(0.74, 6);
+  });
+
+  test("a sweep in flight is joined, not run beside it, so a second call cannot clear a member the first one is marking", async () => {
+    process.env.OPENROUTER_API_KEY = "house-key";
+    const other = await createOrgSession("chat-spend-other");
+    const [otherMember] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, other.orgId));
+    const otherUser = otherMember!.userId;
+    const unresolvedOf = async (orgId: string, who: string) =>
+      (await db.select({ unresolved: spendAccounts.unresolved }).from(spendAccounts)
+        .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, who))))[0]?.unresolved ?? 0;
+    // X: this member's, with a generation the provider will not price; Y: another member's, with nothing.
+    const x = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key: x, orgId: session.orgId, userId });
+    await noteSpendGeneration(x, "gen-x");
+    const y = `chat:${crypto.randomUUID()}`;
+    await openSpendCharge({ key: y, orgId: other.orgId, userId: otherUser });
+    await Bun.sleep(10);
+    const gate = Promise.withResolvers<void>();
+    let gated = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/generation?id=gen-x") && gated++ === 0) await gate.promise;
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    try {
+      // Sweep A holds its snapshot and waits on the provider.
+      const a = settlePendingChatCharges(0);
+      await waitFor(async () => (gated > 0 ? true : null));
+      // A second call while A is in flight joins A rather than sweeping beside it.
+      const b = settlePendingChatCharges(0);
+      await Bun.sleep(300);
+      expect(gated).toBe(1); // no second pass asked the provider: the call joined A
+      expect(await unresolvedOf(other.orgId, otherUser)).toBe(0);
+      gate.resolve();
+      expect(await b).toEqual(await a);
+      expect(await unresolvedOf(session.orgId, userId)).toBe(1);
+      // The next sweep marks Y, and Y's member is refused until it is settled.
+      await settlePendingChatCharges(0);
+      expect(await unresolvedOf(other.orgId, otherUser)).toBe(1);
+      const refused = await json<{ error: string }>("/api/chat", {
+        method: "POST", cookies: other.cookies, body: { messages: [{ role: "user", content: "hello" }] },
+      });
+      expect(refused.status).toBe(402);
+      expect(refused.body.error).toBe("spend_unresolved");
+    } finally {
+      await db.delete(spendEntries).where(inArray(spendEntries.chargeKey, [x, y]));
+      await settlePendingChatCharges(0);
+    }
+    expect(await unresolvedOf(other.orgId, otherUser)).toBe(0);
+  });
 });
