@@ -5,6 +5,7 @@ import { type DotTone, StatusDot } from "@/components/shared/status-dot";
 import { threadActivityTimestamp } from "@/components/shell/thread-discovery";
 import { backendFetch } from "@/lib/backend-fetch";
 import { relativeTimeShort } from "@/utils/format";
+import { FirstRunRedirect } from "./first-run-redirect";
 import { NewTaskComposer } from "./new-task-composer";
 import { fetchSkills } from "./skills-data";
 
@@ -88,6 +89,7 @@ export default async function NewTaskPage({
 
   return (
     <div className="flex min-h-full flex-col items-center px-4 sm:px-6">
+        <FirstRunRedirect />
         <div className="w-full max-w-3xl py-10 sm:py-14">
           <div className="flex flex-col items-center gap-3 text-center">
             <p className="text-mono-label text-text-tertiary">New thread</p>

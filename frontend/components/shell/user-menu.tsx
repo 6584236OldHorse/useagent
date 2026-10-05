@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { Avatar } from "@/components/base/avatar/avatar";
 import { Badge } from "@/components/base/badges/badge";
+import { Chip } from "@/components/base/badges/chip";
 import {
   Dropdown,
   DropdownDivider,
@@ -20,8 +21,10 @@ import {
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
 import {
+  ROLE_LABEL,
   type Session,
-  listOrganizations,
+  type Workspace,
+  listWorkspaces,
   signOut,
   switchOrganization,
   useSession,
@@ -48,9 +51,7 @@ interface UserMenuProps {
 
 export function UserMenu(props: UserMenuProps = {}) {
   const { loading, session } = useSession();
-  const [workspaces, setWorkspaces] = useState<
-    readonly { readonly id: string; readonly name: string; readonly active: boolean }[] | undefined
-  >();
+  const [workspaces, setWorkspaces] = useState<readonly WorkspaceEntry[] | undefined>();
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,21 +62,9 @@ export function UserMenu(props: UserMenuProps = {}) {
     let cancelled = false;
     setWorkspaces(undefined);
     setWorkspaceSwitchError(null);
-    listOrganizations()
-      .then((organizations) => {
-        if (cancelled) return;
-        const activeId = session.session.activeOrganizationId;
-        setWorkspaces(
-          organizations
-            .map((organization) => ({
-              ...organization,
-              active: organization.id === activeId,
-            }))
-            .sort(
-              (left, right) =>
-                Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
-            ),
-        );
+    listWorkspaces()
+      .then((next) => {
+        if (!cancelled) setWorkspaces(sortedWorkspaces(next));
       })
       .catch(() => {
         if (!cancelled) setWorkspaceSwitchError("Could not load workspaces");
@@ -131,6 +120,35 @@ export function sessionUserProfile(session: Session | null, loading: boolean): U
   };
 }
 
+export type WorkspaceEntry = Pick<Workspace, "id" | "name" | "role" | "active">;
+
+/** The workspace the session is in first, the rest by name. */
+export function sortedWorkspaces(workspaces: readonly WorkspaceEntry[]): WorkspaceEntry[] {
+  return workspaces.toSorted(
+    (left, right) => Number(right.active) - Number(left.active) || left.name.localeCompare(right.name),
+  );
+}
+
+/** One row of the picker: the workspace, the person's role in it, and a check
+ *  on the one the session is in. */
+export function WorkspaceRow({ workspace }: { workspace: WorkspaceEntry }) {
+  return (
+    <>
+      <RiBuilding4Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-body-2-medium">{workspace.name}</span>
+      <Chip variant="caption" color={workspace.role === "owner" ? "purple" : "soft"}>
+        {ROLE_LABEL[workspace.role]}
+      </Chip>
+      {workspace.active ? (
+        <>
+          <RiCheckLine className="size-4 shrink-0 text-foreground-icon-primary" aria-hidden />
+          <span className="sr-only">Selected</span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function UserMenuView({
   trigger,
   profile,
@@ -141,7 +159,7 @@ function UserMenuView({
   onSignOut = signOut,
 }: UserMenuProps & {
   profile: UserMenuProfile;
-  workspaces?: readonly { readonly id: string; readonly name: string; readonly active: boolean }[];
+  workspaces?: readonly WorkspaceEntry[];
   workspacesLoaded?: boolean;
   workspaceAccessError?: string | null;
   onSelectWorkspace?: (organization: string) => Promise<void>;
@@ -225,20 +243,7 @@ function UserMenuView({
                 shouldCloseOnSelect={false}
                 onAction={() => void onSelectWorkspace?.(workspace.id)}
               >
-                <RiBuilding4Line
-                  className="size-5 shrink-0 text-foreground-icon-secondary"
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate text-body-2-medium">{workspace.name}</span>
-                {workspace.active ? (
-                  <>
-                    <RiCheckLine
-                      className="size-4 shrink-0 text-foreground-icon-primary"
-                      aria-hidden
-                    />
-                    <span className="sr-only">Selected</span>
-                  </>
-                ) : null}
+                <WorkspaceRow workspace={workspace} />
               </DropdownMenuItem>
             ))
           ) : (

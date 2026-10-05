@@ -9,7 +9,7 @@ import { IconButton } from "@/components/base/buttons/icon-button";
 import { Input } from "@/components/base/input/input";
 import * as Modal from "@/components/base/modal/modal";
 import { Select, SelectItem } from "@/components/base/select/select";
-import { useAuthConfig, useSession } from "@/lib/auth";
+import { ROLE_LABEL, useAuthConfig, useSession } from "@/lib/auth";
 import { AVATAR_GRADIENT } from "./general-card";
 import { relTime } from "./relative-time";
 import {
@@ -38,7 +38,6 @@ import {
  */
 
 const AVATAR_COLORS = ["neutral", "blue", "pink"] as const;
-const ROLE_LABEL: Record<MemberRole, string> = { owner: "Owner", admin: "Admin", member: "Member" };
 
 /** Which roles the acting person may hand out: only an owner makes owners. */
 export function assignableRoles(myRole: MemberRole | null): readonly MemberRole[] {
@@ -403,7 +402,7 @@ function CopyLinkButton({ href }: { href: string }) {
   );
 }
 
-function InviteDialog({
+export function InviteDialog({
   open,
   onOpenChange,
   organizationId,

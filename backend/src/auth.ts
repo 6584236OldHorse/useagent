@@ -93,6 +93,9 @@ export function createAuthServer() {
     plugins: [
       organization({
         invitationExpiresIn: INVITATION_EXPIRES_IN_SECONDS,
+        // The library stops an organisation at 100 members by default (ledger
+        // G10); a real team never meets this one.
+        membershipLimit: 10_000,
         sendInvitationEmail: async (data) => {
           // The invitation exists whatever the mail does, and the request that
           // created it holds the organisation's turn: delivery runs on its own.
