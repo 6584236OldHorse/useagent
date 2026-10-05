@@ -7,6 +7,7 @@
  * they arrive by parsing the SSE `data:` lines. Never buffers the whole response.
  */
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
+import { providerRejectedKey } from "../provider-gateway/rejected-key";
 import { responseBodyPrefix } from "../provider-gateway/retry";
 import type { ChatContentPart } from "./input";
 
@@ -59,8 +60,8 @@ export function openRouterMessages(messages: readonly ChatMessage[]): OpenRouter
   }));
 }
 
-function safeStatusError(status: number, keyLimit = false): SafeChatStreamError {
-  if (status === 401) return new SafeChatStreamError(status, "authentication");
+function safeStatusError(status: number, keyLimit: boolean, rejectedKey: boolean): SafeChatStreamError {
+  if (rejectedKey) return new SafeChatStreamError(status, "authentication");
   if (status === 402) return new SafeChatStreamError(status, "credits");
   if (keyLimit) return new SafeChatStreamError(status, "key_limit");
   if (status === 403) return new SafeChatStreamError(status, "policy");
@@ -130,10 +131,12 @@ export async function* streamChat(
   });
   if (!res.ok || !res.body) {
     if ([401, 402, 403, 429].includes(res.status) || res.status >= 500) {
-      const keyLimit = res.status === 403 && providerKeyLimitReason(
-        await responseBodyPrefix(res),
-      ) !== null;
-      throw safeStatusError(res.status, keyLimit);
+      const prefix = res.status === 403 ? await responseBodyPrefix(res) : "";
+      throw safeStatusError(
+        res.status,
+        providerKeyLimitReason(prefix) !== null,
+        providerRejectedKey(res.status, prefix),
+      );
     }
     throw new ChatStreamError("chat provider request failed");
   }

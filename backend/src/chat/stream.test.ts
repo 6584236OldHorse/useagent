@@ -61,6 +61,17 @@ describe("chat provider message boundary", () => {
     expect(chatFailure(error).reason).toBe(providerKeyLimitReason("key limit exceeded") ?? "");
   });
 
+  test("a 403 that names a bad key is an authentication failure", async () => {
+    globalThis.fetch = (async () => new Response(
+      '{"error":{"message":"This API key is expired"}}',
+      { status: 403 },
+    )) as unknown as typeof fetch;
+    const error = await streamChat([{ role: "user", content: "hello" }], "model", "key")
+      .next().then(() => null, (failure) => failure);
+    expect(error).toMatchObject({ status: 403, category: "authentication" });
+    expect(String(error)).not.toContain("expired");
+  });
+
   test("bounds oversized 403 classification bodies", async () => {
     const raw = `Key limit exceeded ${"private detail ".repeat(20_000)}`;
     globalThis.fetch = (async () => new Response(raw, { status: 403 })) as unknown as typeof fetch;

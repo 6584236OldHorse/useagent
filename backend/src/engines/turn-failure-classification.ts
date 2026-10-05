@@ -23,6 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { providerKeyLimitReason } from "../provider-gateway/key-limit";
+import { relayedKeyRejectedFailure } from "../provider-gateway/rejected-key";
 
 /** Substrings that mark a dropped provider stream (transient infrastructure
  *  interruption, e.g. the backend restarting under a live turn) rather than a
@@ -87,6 +88,12 @@ export function classifyTurnFailure(
   const keyLimit = providerKeyLimitReason(errorMessage(error));
   if (keyLimit) {
     return { kind: "provider", resumable: false, label: "Provider key limit reached", summary: keyLimit };
+  }
+  // A member's key the provider rejected: the gateway marked it and handed the
+  // engine this remedy, which the engine relays in its error.
+  const rejected = relayedKeyRejectedFailure(errorMessage(error));
+  if (rejected) {
+    return { kind: "provider", resumable: false, label: rejected.label, summary: rejected.reason };
   }
   const message = redactText(errorMessage(error));
   return {

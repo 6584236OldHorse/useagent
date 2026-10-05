@@ -49,6 +49,7 @@ async function writeProviderConnection(
       credentialCiphertext: input.credentialCiphertext,
       iv: input.iv,
       tag: input.tag,
+      statusReason: null,
       revokedAt: input.status === "revoked" ? now : null,
     })
     .onConflictDoUpdate({
@@ -64,6 +65,7 @@ async function writeProviderConnection(
         credentialCiphertext: input.credentialCiphertext,
         iv: input.iv,
         tag: input.tag,
+        statusReason: null,
         revokedAt: input.status === "revoked" ? now : null,
         updatedAt: now,
       },

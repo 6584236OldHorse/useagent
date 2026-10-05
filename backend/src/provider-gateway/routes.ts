@@ -17,6 +17,8 @@ import { verifyProviderToken, type ProviderTokenClaims } from "./token";
 import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 import { applyOpenRouterProviderRouting } from "./provider-routing";
 import { fetchProviderUpstream, providerGatewayMaxRetries } from "./retry";
+import { rejectedMemberKeyResponse } from "./rejected-key";
+import type { markGatewayProviderApiKeyRejected } from "./api-key-credentials";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const REQUEST_CAP_MESSAGE = "This run hit the deployment's request cap";
@@ -29,6 +31,7 @@ export interface ProviderRouteDeps {
   readonly fetchUpstream?: FetchLike;
   readonly beginAudit?: typeof beginProviderGatewayAudit;
   readonly finishAudit?: typeof finishProviderGatewayAudit;
+  readonly markRejectedKey?: typeof markGatewayProviderApiKeyRejected;
 }
 
 type FetchLike = (
@@ -372,6 +375,15 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
           },
         },
       );
+      // A member's key the provider rejected: mark it for reconnect and hand
+      // the engine the remedy instead of the provider's text.
+      const rejected = resolved.source === "user_connection" && run.userId
+        ? await rejectedMemberKeyResponse(
+            upstream,
+            { orgId: claims.orgId, userId: run.userId, provider: target.provider, value: credential },
+            deps.markRejectedKey,
+          )
+        : null;
       const completeAudit = () => {
         void finishAudit({
           id: auditId,
@@ -385,6 +397,10 @@ export function createProviderGatewayRoutes(deps: ProviderRouteDeps = {}): Hono 
           );
         });
       };
+      if (rejected) {
+        completeAudit();
+        return rejected;
+      }
       return new Response(responseBodyWithRelease(upstream.body, completeAudit), {
         status: upstream.status,
         headers: responseHeaders(upstream.headers),

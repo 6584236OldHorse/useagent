@@ -48,6 +48,9 @@ export const providerConnections = pgTable(
     provider: text("provider").$type<ProviderConnectionProvider>().notNull(),
     authMethod: text("auth_method").$type<ProviderConnectionAuthMethod>().notNull(),
     status: text("status").$type<ProviderConnectionStatus>().notNull(),
+    /** Why a key left `connected` on its own, e.g. `provider_rejected_401`:
+     *  the HTTP status only, never the provider's answer. Cleared on save. */
+    statusReason: text("status_reason"),
     metadata: jsonb("metadata")
       .$type<ProviderConnectionMetadata>()
       .notNull()

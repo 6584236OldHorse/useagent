@@ -242,6 +242,17 @@ export function accountLabel(connection: ProviderConnectionMeta | null): string 
   return connection.metadata.email ?? connection.metadata.planType ?? "Account metadata saved";
 }
 
+/** Why a stored API key stopped serving runs: the provider rejected it, and
+ *  only a new key brings it back. */
+export function rejectedKeyNotice(
+  connection: ProviderConnectionMeta | null,
+  providerName: string,
+): string | null {
+  return connection?.authMethod === "api_key" && connection.status === "reauth_required"
+    ? `${providerName} rejected this key (expired or revoked). Save a new key to reconnect.`
+    : null;
+}
+
 export function statusLabel(connection: ProviderConnectionMeta | null): string {
   if (!connection) return "Not connected";
   if (connection.status === "connected") return "Connected";

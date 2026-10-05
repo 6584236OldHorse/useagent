@@ -55,6 +55,18 @@ describe("turn failure classification", () => {
     expect(failure.summary).not.toContain("—");
   });
 
+  test("names a member key the gateway reported rejected, without the engine's wrapping", () => {
+    const failure = classifyTurnFailure(new Error(
+      'APIError: 401 {"type":"error","error":{"type":"authentication_error","message":"Your Anthropic key was rejected (expired or revoked). Reconnect it in Settings."}}',
+    ));
+    expect(failure).toEqual({
+      kind: "provider",
+      resumable: false,
+      label: "Anthropic key rejected",
+      summary: "Your Anthropic key was rejected (expired or revoked). Reconnect it in Settings.",
+    });
+  });
+
   test("falls back to a generic engine error for a message-less throw", () => {
     const failure = classifyTurnFailure(new Error(""));
     expect(failure.kind).toBe("provider");

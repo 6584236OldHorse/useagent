@@ -14,7 +14,8 @@ import { chatModelCatalog } from "./models";
 import { modelOfferedToUser } from "../provider-gateway/provider-accounts";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 import { retrieveChatContext } from "./retrieve";
-import { chatLlmEnabled, chatModel, streamChat, type ChatMessage } from "./stream";
+import { chatLlmEnabled, chatModel, type ChatMessage } from "./stream";
+import { chatFailure, chatTurnStream } from "./turn";
 import { assertSpendAllowance, SpendAllowanceExceededError } from "../runs/spend";
 
 /**
@@ -192,7 +193,7 @@ chatRoutes.post("/", async (c) => {
           ].filter(Boolean).join("\n\n");
           const llmMessages: ChatMessage[] = [{ role: "system", content: system }, ...messages];
           let answer = "";
-          for await (const delta of streamChat(llmMessages, model, resolved.value, signal)) {
+          for await (const delta of chatTurnStream({ model, orgId, userId }, llmMessages, resolved, signal)) {
             if (closed) return;
             answer += delta;
             sendEvent("delta", { delta });
@@ -205,8 +206,8 @@ chatRoutes.post("/", async (c) => {
             // captureChatExchange never throws into the stream.
             void captureChatExchange({ orgId, userId, memoryScope, prompt: query, summary: answer, model });
           }
-        } catch {
-          if (!closed) sendEvent("error", { error: "chat request failed" });
+        } catch (error) {
+          if (!closed) sendEvent("error", { error: chatFailure(error).reason });
         } finally {
           cleanup();
         }

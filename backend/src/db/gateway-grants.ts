@@ -89,9 +89,13 @@ export const GATEWAY_GRANTS: readonly string[] = [
 ];
 
 /** Migration 0039 creates the BYOK credentials view; later migrations extend
- * it with non-secret computer metadata. Grant only if present. */
-const VIEW_GRANT =
-  "GRANT SELECT ON gateway_provider_api_key_credentials TO useagent_gateway";
+ * it with non-secret computer metadata. Grant only if present. The UPDATE lets
+ * the gateway mark a member's key the provider rejected as reauth_required;
+ * the view holds only connected keys, so it can never reconnect one. */
+const VIEW_GRANTS = [
+  "GRANT SELECT ON gateway_provider_api_key_credentials TO useagent_gateway",
+  "GRANT UPDATE (status, status_reason, updated_at) ON gateway_provider_api_key_credentials TO useagent_gateway",
+];
 
 function grantsForRole(role: string): readonly string[] {
   if (role === GATEWAY_DATABASE_ROLE) return GATEWAY_GRANTS;
@@ -132,11 +136,12 @@ export async function applyGatewayGrants(
   }
   const [view] = await sql`SELECT 1 FROM pg_views WHERE viewname = 'gateway_provider_api_key_credentials'`;
   if (view) {
-    const viewGrant = VIEW_GRANT.replaceAll(GATEWAY_DATABASE_ROLE, role);
-    await sql.unsafe(viewGrant).catch((error) => {
-      console.error(`[gateway-grants] failed: ${viewGrant}:`, error);
-      throw error;
-    });
+    for (const viewGrant of VIEW_GRANTS.map((grant) => grant.replaceAll(GATEWAY_DATABASE_ROLE, role))) {
+      await sql.unsafe(viewGrant).catch((error) => {
+        console.error(`[gateway-grants] failed: ${viewGrant}:`, error);
+        throw error;
+      });
+    }
   } else if (options.strict) {
     throw new Error("required hosted credentials view gateway_provider_api_key_credentials is missing");
   }
