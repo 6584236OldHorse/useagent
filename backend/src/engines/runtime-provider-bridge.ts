@@ -48,8 +48,9 @@ const NATIVE_VERSION_PROBE_ATTEMPTS = 3;
 const NATIVE_VERSION_PROBE_DELAYS_MS = [250, 500] as const;
 const NATIVE_VERSION_PROBE_DIAGNOSTIC_PREFIX = "useagent-native-version-probe:";
 const CODEX_VERSION = "0.159.3";
-const CLAUDE_CODE_VERSION = "2.1.226";
-const OPENCODE_VERSION = "1.18.7";
+const CLAUDE_CODE_VERSION = "2.1.285";
+const OPENCODE_VERSION = "2.0.18";
+const OPENCODE_PACKAGE = "@opencode/cli";
 /** The pinned driver versions the bootstrap installs; the native image name is derived from them. */
 export const RUNTIME_ENGINE_VERSIONS = {
   codex: CODEX_VERSION,
@@ -80,7 +81,7 @@ const CLAUDE_INSTALL_IDENTITY_SCRIPT = [
 const OPENCODE_INSTALL_IDENTITY_SCRIPT = [
   'const fs=require("node:fs"),path=require("node:path")',
   'const binary=process.argv[1],packageDirectory=process.argv[2],expectedVersion=process.argv[3],diagnostic=process.argv[4]==="diagnostic"',
-  'try{const packageRoot=fs.realpathSync(packageDirectory);const manifest=JSON.parse(fs.readFileSync(path.join(packageRoot,"package.json"),"utf8"));const binEntry=typeof manifest.bin==="string"?manifest.bin:manifest.bin?.opencode;const binaryReal=fs.realpathSync(binary);const relative=path.relative(packageRoot,binaryReal);const contained=relative!==""&&!relative.startsWith(".."+path.sep)&&!path.isAbsolute(relative);fs.accessSync(binary,fs.constants.X_OK);if(manifest.name!=="opencode-ai"||manifest.version!==expectedVersion||binEntry!=="./bin/opencode.exe"||!contained||binaryReal!==fs.realpathSync(path.resolve(packageRoot,binEntry))||!fs.statSync(binaryReal).isFile())throw new Error("identity_mismatch");const fd=fs.openSync(binaryReal,"r"),magic=Buffer.alloc(4);try{if(fs.readSync(fd,magic,0,4,0)!==4||!magic.equals(Buffer.from([127,69,76,70])))throw new Error("not_native_elf")}finally{fs.closeSync(fd)}process.exit(0)}catch{if(diagnostic)console.error("useagent-native-version-probe: install_identity_mismatch expected="+expectedVersion);process.exit(1)}',
+  'try{const packageRoot=fs.realpathSync(packageDirectory);const manifest=JSON.parse(fs.readFileSync(path.join(packageRoot,"package.json"),"utf8"));const binEntry=typeof manifest.bin==="string"?manifest.bin:manifest.bin?.opencode;const binaryReal=fs.realpathSync(binary);const relative=path.relative(packageRoot,binaryReal);const contained=relative!==""&&!relative.startsWith(".."+path.sep)&&!path.isAbsolute(relative);fs.accessSync(binary,fs.constants.X_OK);if(manifest.name!=="@opencode/cli"||manifest.version!==expectedVersion||binEntry!=="./bin/opencode.exe"||!contained||binaryReal!==fs.realpathSync(path.resolve(packageRoot,binEntry))||!fs.statSync(binaryReal).isFile())throw new Error("identity_mismatch");const fd=fs.openSync(binaryReal,"r"),magic=Buffer.alloc(4);try{if(fs.readSync(fd,magic,0,4,0)!==4||!magic.equals(Buffer.from([127,69,76,70])))throw new Error("not_native_elf")}finally{fs.closeSync(fd)}process.exit(0)}catch{if(diagnostic)console.error("useagent-native-version-probe: install_identity_mismatch expected="+expectedVersion);process.exit(1)}',
 ].join(";");
 
 export function buildClaudeInstallIdentityProbeCommand(
@@ -104,7 +105,7 @@ export function buildOpenCodeInstallIdentityProbeCommand(
   diagnostic = false,
 ): string {
   const prefix = layout.runsAsRoot ? "/usr/local" : `${layout.home}/.local`;
-  return `node -e ${JSON.stringify(OPENCODE_INSTALL_IDENTITY_SCRIPT)} ${JSON.stringify(`${prefix}/bin/opencode`)} ${JSON.stringify(`${prefix}/share/useagent/native-engines/node_modules/opencode-ai`)} ${JSON.stringify(OPENCODE_VERSION)} ${diagnostic ? "diagnostic" : "quiet"}`;
+  return `node -e ${JSON.stringify(OPENCODE_INSTALL_IDENTITY_SCRIPT)} ${JSON.stringify(`${prefix}/bin/opencode`)} ${JSON.stringify(`${prefix}/share/useagent/native-engines/node_modules/${OPENCODE_PACKAGE}`)} ${JSON.stringify(OPENCODE_VERSION)} ${diagnostic ? "diagnostic" : "quiet"}`;
 }
 
 function runtimeBridgeLayout(sandbox: Pick<SandboxHandle, "providerKind">): SandboxRuntimeLayout {
@@ -215,7 +216,7 @@ export function buildRuntimeProviderBootstrapCommand(
     ? `@openai/codex@${CODEX_VERSION}`
     : engine === "claude"
       ? `@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}`
-      : `opencode-ai@${OPENCODE_VERSION}`;
+      : `${OPENCODE_PACKAGE}@${OPENCODE_VERSION}`;
   const nativeBinaryName = engine === "claude" ? "claude" : engine;
   const nativeBinary = `${prefix}/bin/${nativeBinaryName}`;
   const nativeGlobalDirectory = `${prefix}/share/useagent/native-engines`;
@@ -283,7 +284,9 @@ export function buildRuntimeProviderBootstrapCommand(
     `  BUN_CACHE="$(mktemp -d "\${TMPDIR:-/tmp}/useagent-${engine}-bun.XXXXXX")"`,
     '  cleanup_native_bun() { rm -rf -- "$BUN_CACHE"; }',
     "  trap cleanup_native_bun EXIT HUP INT TERM",
-    '  BUN_INSTALL_CACHE_DIR="$BUN_CACHE" BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR" BUN_INSTALL_BIN="$NATIVE_PREFIX/bin" "$BUN_EXECUTABLE" add --global --exact --no-progress "$NATIVE_PACKAGE"',
+    // The package's postinstall puts the platform's native binary in place of the placeholder;
+    // bun runs it only for a trusted package. The identity probe below refuses a placeholder.
+    '  BUN_INSTALL_CACHE_DIR="$BUN_CACHE" BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR" BUN_INSTALL_BIN="$NATIVE_PREFIX/bin" "$BUN_EXECUTABLE" add --global --exact --trust --no-progress "$NATIVE_PACKAGE"',
     "  cleanup_native_bun",
     "  trap - EXIT HUP INT TERM",
     "fi",

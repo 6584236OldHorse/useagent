@@ -35,15 +35,10 @@ const previousGatewaySecret = process.env.PROVIDER_GATEWAY_SECRET;
 // This is a header fixture for install validation, not a runnable native server.
 // Actual startup/session readiness belongs to the native adapter boundary.
 const nativeElfHeaderFixture = Buffer.from("\x7fELF\ninstall identity fixture\n");
-const openCodePostinstallPlaceholder = `echo "Error: opencode-ai's postinstall script was not run." >&2
+const openCodePostinstallPlaceholder = `echo "Error: @opencode/cli's postinstall script was not run." >&2
 echo "" >&2
-echo "This occurs when using --ignore-scripts during installation, or when using a" >&2
-echo "package manager like pnpm that does not run postinstall scripts by default." >&2
-echo "" >&2
-echo "To fix this, run the postinstall script manually:" >&2
-echo "  cd node_modules/opencode-ai && node postinstall.mjs" >&2
-echo "" >&2
-echo "Or reinstall opencode-ai without the --ignore-scripts flag." >&2
+echo "This occurs when installation scripts are disabled." >&2
+echo "Run the package postinstall script or reinstall with scripts enabled." >&2
 exit 1
 `;
 
@@ -54,7 +49,7 @@ function isCodexConfigProbe(command: string): boolean {
 
 async function runColdClaudeBootstrap(
   binaryScript: (home: string) => string,
-  packageVersion = "2.1.226",
+  packageVersion = "2.1.285",
 ): Promise<{
   home: string;
   result: ReturnType<typeof Bun.spawnSync>;
@@ -103,7 +98,7 @@ async function runColdClaudeBootstrap(
 }
 
 async function runColdOpenCodeBootstrap(
-  packageVersion = "1.18.7",
+  packageVersion = "2.0.18",
   installedBinary: Uint8Array = nativeElfHeaderFixture,
 ): Promise<{
   home: string;
@@ -116,14 +111,14 @@ async function runColdOpenCodeBootstrap(
   await mkdir(fakeTools, { recursive: true });
   const encodedBinary = Buffer.from(installedBinary).toString("base64");
   const encodedManifest = Buffer.from(JSON.stringify({
-    name: "opencode-ai",
+    name: "@opencode/cli",
     version: packageVersion,
     bin: { opencode: "./bin/opencode.exe" },
   }), "utf8").toString("base64");
   await Bun.write(join(fakeTools, "bun"), [
     "#!/bin/sh",
     "set -eu",
-    'PACKAGE_DIR="$BUN_INSTALL_GLOBAL_DIR/node_modules/opencode-ai"',
+    'PACKAGE_DIR="$BUN_INSTALL_GLOBAL_DIR/node_modules/@opencode/cli"',
     'mkdir -p "$BUN_INSTALL_BIN" "$PACKAGE_DIR/bin"',
     `printf %s '${encodedBinary}' | base64 -d > "$PACKAGE_DIR/bin/opencode.exe"`,
     `printf %s '${encodedManifest}' | base64 -d > "$PACKAGE_DIR/package.json"`,
@@ -150,7 +145,7 @@ async function runColdOpenCodeBootstrap(
 async function installFakeClaudePackage(
   home: string,
   script: string,
-  version = "2.1.226",
+  version = "2.1.285",
 ): Promise<void> {
   const packageDirectory = join(
     home,
@@ -375,7 +370,7 @@ describe("T3 provider bridge", () => {
     expect(command).toContain('useagent-claude-bun.XXXXXX');
     expect(command).toContain('BUN_INSTALL_GLOBAL_DIR="$NATIVE_GLOBAL_DIR"');
     expect(command).toContain('BUN_INSTALL_BIN="$NATIVE_PREFIX/bin"');
-    expect(command).toContain('@anthropic-ai/claude-code@2.1.226');
+    expect(command).toContain('@anthropic-ai/claude-code@2.1.285');
     expect(command).toContain('node_modules/@anthropic-ai/claude-code');
     expect(command).toContain('manifest.version!==expectedVersion');
     expect(command).toContain('allowedRoots.some');
@@ -567,9 +562,9 @@ describe("T3 provider bridge", () => {
       },
       {
         id: "opencode" as const,
-        package: "opencode-ai@1.18.7",
+        package: "@opencode/cli@2.0.18",
         binary: "opencode",
-        version: "1.18.7",
+        version: "2.0.18",
       },
     ];
     for (const engine of engines) {
@@ -582,14 +577,14 @@ describe("T3 provider bridge", () => {
         if (engine.id === "opencode") {
           const packageDir = join(
             home,
-            ".local/share/useagent/native-engines/node_modules/opencode-ai",
+            ".local/share/useagent/native-engines/node_modules/@opencode/cli",
           );
           const packageBin = join(packageDir, "bin/opencode.exe");
           await mkdir(join(packageDir, "bin"), { recursive: true });
           await Bun.write(packageBin, nativeElfHeaderFixture);
           await Bun.write(join(packageDir, "package.json"), JSON.stringify({
-            name: "opencode-ai",
-            version: "1.18.7",
+            name: "@opencode/cli",
+            version: "2.0.18",
             bin: { opencode: "./bin/opencode.exe" },
           }));
           await Bun.$`chmod 700 ${packageBin}`;
@@ -644,8 +639,8 @@ describe("T3 provider bridge", () => {
         expect(command).toContain(engine.package);
         for (const otherPackage of [
           "@openai/codex@0.159.3",
-          "@anthropic-ai/claude-code@2.1.226",
-          "opencode-ai@1.18.7",
+          "@anthropic-ai/claude-code@2.1.285",
+          "@opencode/cli@2.0.18",
         ]) {
           if (otherPackage !== engine.package) expect(command).not.toContain(otherPackage);
         }
@@ -756,7 +751,7 @@ exit 17
       expect(run.result.exitCode).toBe(1);
       const output = `${run.result.stdout?.toString() ?? ""}${run.result.stderr?.toString() ?? ""}`;
       expect(output).toContain(
-        "useagent-native-version-probe: install_identity_mismatch expected=1.18.7",
+        "useagent-native-version-probe: install_identity_mismatch expected=2.0.18",
       );
       expect(output.length).toBeLessThan(160);
     } finally {
@@ -765,11 +760,11 @@ exit 17
   });
 
   test("rejects the executable placeholder shipped before OpenCode postinstall", async () => {
-    const run = await runColdOpenCodeBootstrap("1.18.7", Buffer.from(openCodePostinstallPlaceholder));
+    const run = await runColdOpenCodeBootstrap("2.0.18", Buffer.from(openCodePostinstallPlaceholder));
     try {
-      expect(Buffer.byteLength(openCodePostinstallPlaceholder)).toBe(479);
+      expect(Buffer.byteLength(openCodePostinstallPlaceholder)).toBe(229);
       expect(run.result.exitCode).toBe(1);
-      expect(run.result.stderr?.toString() ?? "").toContain("install_identity_mismatch expected=1.18.7");
+      expect(run.result.stderr?.toString() ?? "").toContain("install_identity_mismatch expected=2.0.18");
       expect(await Bun.file(run.launchMarker).exists()).toBe(false);
     } finally {
       await rm(run.home, { recursive: true, force: true });
@@ -780,7 +775,7 @@ exit 17
     const run = await runColdOpenCodeBootstrap();
     try {
       expect(run.result.exitCode).toBe(0);
-      const packageDir = join(run.home, ".local/share/useagent/native-engines/node_modules/opencode-ai");
+      const packageDir = join(run.home, ".local/share/useagent/native-engines/node_modules/@opencode/cli");
       const launcher = join(run.home, ".local/bin/opencode");
       if (mutation === "placeholder") {
         await Bun.write(join(packageDir, "bin/opencode.exe"), openCodePostinstallPlaceholder);
@@ -811,7 +806,7 @@ exit 17
       expect(run.result.exitCode).toBe(1);
       const output = `${run.result.stdout?.toString() ?? ""}${run.result.stderr?.toString() ?? ""}`;
       expect(output).toContain(
-        "useagent-native-version-probe: install_identity_mismatch expected=2.1.226",
+        "useagent-native-version-probe: install_identity_mismatch expected=2.1.285",
       );
       expect(output.length).toBeLessThan(160);
     } finally {
@@ -872,7 +867,7 @@ exit 17
         displayName: readiness.displayName,
         enabled: true,
         installed: true,
-        version: "2.1.226",
+        version: "2.1.285",
         status: "ready",
         auth: { status: "authenticated" },
         checkedAt: "2026-09-05T00:00:11.000Z",
@@ -979,8 +974,12 @@ exit 17
     const bootstraps = commands.filter((command) => command.includes("NATIVE_PACKAGE="));
     expect(bootstraps).toHaveLength(3);
     expect(bootstraps[0]).toContain("@openai/codex@0.159.3");
-    expect(bootstraps[1]).toContain("@anthropic-ai/claude-code@2.1.226");
-    expect(bootstraps[2]).toContain("opencode-ai@1.18.7");
+    expect(bootstraps[1]).toContain("@anthropic-ai/claude-code@2.1.285");
+    expect(bootstraps[2]).toContain("@opencode/cli@2.0.18");
+    // Only OpenCode trusts its package scripts: its postinstall places the native binary.
+    expect(bootstraps[2]).toContain("add --global --exact --trust --no-progress");
+    expect(bootstraps[0]).not.toContain("--trust");
+    expect(bootstraps[1]).not.toContain("--trust");
   });
 
   test("reads the durable pending revision when stable bootstrap stdout is empty", async () => {
@@ -1267,7 +1266,7 @@ exit 17
       true,
     );
 
-    expect(commands.filter((command) => command.includes('NATIVE_PACKAGE="opencode-ai@1.18.7"')))
+    expect(commands.filter((command) => command.includes('NATIVE_PACKAGE="@opencode/cli@2.0.18"')))
       .toHaveLength(1);
     expect(commands.filter((command) =>
       command.includes(buildOpenCodeInstallIdentityProbeCommand({
@@ -1298,8 +1297,8 @@ exit 17
       process: {
         executeCommand: async (command: string) => {
           const nativePackage = engine === "claude"
-            ? '@anthropic-ai/claude-code@2.1.226'
-            : 'opencode-ai@1.18.7';
+            ? '@anthropic-ai/claude-code@2.1.285'
+            : '@opencode/cli@2.0.18';
           if (command.includes(`NATIVE_PACKAGE="${nativePackage}"`)) {
             fullBootstraps += 1;
             if (!bootstrapSucceeds) return { exitCode: 1, result: "" };

@@ -7,17 +7,19 @@ asset, not committed to Git.
 `backend/runtime-assets/manifest.json` pins the release filename, archive hash,
 embedded checksum-manifest hash, source commit, dependency version, and frozen
 Bun dependency-lock hash. The archive is built from reviewed fork commit
-`762f4b14b328829b667b65cbe3a081f9af2a191e`, based on upstream `v0.0.45`
-(`6c8fed35dded9ff71c5b46807125457acbb76be6`). It is the server's `dist`
+`dd2b1389590f13819dfa6ecbf894454a72400770`, based on upstream nightly
+`v0.0.46-nightly.20261003.2632` (`f391794a35c604d57e166a3ab48d56fc6e4e469a`), the
+first line with the V2 orchestrator. It is the server's `dist`
 directory with its bundled web client, plus a `T3_SOURCE_COMMIT` marker and a
 `SHA256SUMS` manifest of every file. Artifact identity is not live
 engine/provider certification.
 
 ## Layout in a sandbox
 
-Since `v0.0.45` the server bundle inlines its JavaScript dependencies and leaves
-only native packages external: `@ff-labs/fff-node`, `node-pty` and
-`@napi-rs/keyring`. The upstream npm package is now a launcher for prebuilt
+The server bundle inlines its JavaScript dependencies and leaves only native
+packages external: `@ff-labs/fff-node`, `node-pty` and `@napi-rs/keyring`. The
+fork drops upstream's Cursor driver, whose `@cursor/sdk` closure would otherwise
+be required at load. The upstream npm package is now a launcher for prebuilt
 single executables, so it is not installed. The runtime root holds:
 
 - `node_modules/`: the frozen closure from `backend/runtime-assets/dependencies/`
@@ -40,7 +42,7 @@ isolation remains the separate responsibility of the trusted control plane.
 ## Staging
 
 ```sh
-bun run deploy/stage-native-runtime.ts /path/to/native-runtime-762f4b14b328.tar.gz
+bun run deploy/stage-native-runtime.ts /path/to/native-runtime-dd2b1389590f.tar.gz
 ```
 
 Without an argument, the script downloads the exact filename from the public
@@ -65,19 +67,20 @@ bundle and patch on a new private release. A runtime distribution change does
 not change harness protocol selection: Codex, Claude Code, OpenCode, and Pi
 remain on their native engine drivers.
 
-The matching `t3code-fork-762f4b14b328.bundle` and `.patch` preserve the custom
+The matching `t3code-fork-dd2b1389590f.bundle` and `.patch` preserve the custom
 source; their hashes and upstream prerequisite commit are recorded in
 `third_party/t3code-fork.lock`. Fetch the upstream prerequisite before using
-the Git bundle. The v8 wire/session compatibility label is separate from byte
-identity.
+the Git bundle. The fork's contract label (`orchestrator-v2-hosted-codex-host-switches-v7`)
+is separate from byte identity.
 
 ## Runtime state on retained sandboxes
 
-The runtime's SQLite schema migrates forward on boot (`v0.0.45` takes a
-`v0.0.39` database to its current schema); projects, threads, and workspace
-paths survive. A previous runtime still boots on the migrated database and
-reads the same threads, so a rollback does not need a fresh runtime database.
-Intentional migration data repairs are not reversed by an application rollback.
+The V2 runtime keeps its state in `userdata/statev2.sqlite`. On first boot it would
+import a V1 `state.sqlite` with only thread shells and a transcript excerpt, and a
+V1 runtime cannot read the V2 database. So the launch refuses to start when
+`userdata/state.sqlite` exists: a V1 sandbox is recreated, never migrated, and a
+rollback to a V1 runtime also means fresh sandboxes. The image carries no runtime
+state.
 
 ## History
 
@@ -87,3 +90,8 @@ Intentional migration data repairs are not reversed by an application rollback.
 - 2026-10-03: fork `762f4b14b328` on upstream `v0.0.45`; the fork `dist` sits
   beside a three-package native closure, `fff-node` is imported statically, and
   thread reads use a two-turn window.
+- 2026-10-03: fork `dd2b1389590f` on upstream nightly
+  `v0.0.46-nightly.20261003.2632` (orchestrator V2) for the V2 lane: hosted
+  Codex over the relay, host switches for the runtime's MCP, continuations and
+  instructions, Cursor dropped, a 20 s OpenCode 2 model-load wait. Engines:
+  Claude Code 2.1.285 and `@opencode/cli` 2.0.18.

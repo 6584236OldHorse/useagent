@@ -82,24 +82,24 @@ COPY packages/sandbox-local ./packages/sandbox-local
 
 RUN set -eux; \
     asset_dir=/app/backend/runtime-assets; \
-    archive="$asset_dir/native-runtime-762f4b14b328.tar.gz"; \
+    archive="$asset_dir/native-runtime-dd2b1389590f.tar.gz"; \
     test -f "$archive"; \
     printf '%s  %s\n' \
       '64faa8040f236a620acd928cd648df931311274cfd1501b570e29fb09914e35e' \
       "$asset_dir/dependencies/bun.lock" | sha256sum -c -; \
     printf '%s  %s\n' \
-      '40023789a64a00df1f89cf5dadfac1a3bef9e10dda8f6eedf2883629223571af' \
+      'b71689e418a07f02dda16753483469247e2dcc22eb15e586e8236a89567ed18c' \
       "$archive" | sha256sum -c -; \
     test "$(tar -xOzf "$archive" ./T3_SOURCE_COMMIT)" = \
-      '762f4b14b328829b667b65cbe3a081f9af2a191e'; \
+      'dd2b1389590f13819dfa6ecbf894454a72400770'; \
     tar -xOzf "$archive" ./SHA256SUMS | sha256sum | \
-      grep -Fx '753f5dc0dc5405b0ad9c1b6909ca7c1685ee25fdddf8df5729830b8016d9f2c1  -'; \
+      grep -Fx '8d983e52d5fe97aa2cc045dba15f2909a2f129749d2b16740f55c54c09f5b53f  -'; \
     verify_dir="$(mktemp -d)"; \
     tar -xzf "$archive" -C "$verify_dir"; \
     (cd "$verify_dir" && sha256sum -c SHA256SUMS); \
     rm -rf "$verify_dir"; \
     bun -e \
-      'const m=await Bun.file(process.argv[1]).json();const e={archiveName:"native-runtime-762f4b14b328.tar.gz",archiveSha256:"40023789a64a00df1f89cf5dadfac1a3bef9e10dda8f6eedf2883629223571af",manifestSha256:"753f5dc0dc5405b0ad9c1b6909ca7c1685ee25fdddf8df5729830b8016d9f2c1",sourceCommit:"762f4b14b328829b667b65cbe3a081f9af2a191e",dependencyVersion:"0.0.45",dependencyLockSha256:"64faa8040f236a620acd928cd648df931311274cfd1501b570e29fb09914e35e"};if(JSON.stringify(m)!==JSON.stringify(e))process.exit(1)' \
+      'const m=await Bun.file(process.argv[1]).json();const e={archiveName:"native-runtime-dd2b1389590f.tar.gz",archiveSha256:"b71689e418a07f02dda16753483469247e2dcc22eb15e586e8236a89567ed18c",manifestSha256:"8d983e52d5fe97aa2cc045dba15f2909a2f129749d2b16740f55c54c09f5b53f",sourceCommit:"dd2b1389590f13819dfa6ecbf894454a72400770",dependencyVersion:"0.0.46-nightly.20261003.2632",dependencyLockSha256:"64faa8040f236a620acd928cd648df931311274cfd1501b570e29fb09914e35e"};if(JSON.stringify(m)!==JSON.stringify(e))process.exit(1)' \
       "$asset_dir/manifest.json"
 
 RUN ln -s backend/node_modules /app/node_modules \
@@ -116,8 +116,8 @@ RUN ln -s backend/node_modules /app/node_modules \
       /opt/useagent/native-runtime \
       /opt/useagent/pi-runtime \
     && ln -s /app/backend/runtime-assets/manifest.json /opt/useagent/native-runtime/manifest.json \
-    && ln -s /app/backend/runtime-assets/native-runtime-762f4b14b328.tar.gz \
-      /opt/useagent/native-runtime/native-runtime-762f4b14b328.tar.gz \
+    && ln -s /app/backend/runtime-assets/native-runtime-dd2b1389590f.tar.gz \
+      /opt/useagent/native-runtime/native-runtime-dd2b1389590f.tar.gz \
     && chown -R bun:bun \
       /app/backend/.artifacts \
       /app/backend/.runs \
