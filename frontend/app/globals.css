@@ -3944,47 +3944,191 @@ html {
   --shadow-waitlist: 6px 6px 0 0 hsl(var(--neutral-950));
 }
 
-/* Neobrutal strokes: cards, floating panels and controls carry a real 2px
- * black stroke instead of the hairline, pill CTAs square off, and headings
- * and labels gain weight. Kept out of @layer so the utilities lose. */
+/* Neobrutal strokes and depth. Everything below is scoped to the theme class
+ * and keyed on the classes the shell and the base kit already render, so no
+ * component changes and no other theme moves. Strokes that would shift layout
+ * are drawn as spread shadows (0 0 0 2px) instead of borders; the hard offset
+ * rides on the same declaration. Kept out of @layer so the utilities lose. */
+.neobrutal {
+  --neo-ink: hsl(var(--neutral-950));
+  --neo-stroke: 0 0 0 2px var(--neo-ink);
+  --neo-lift-2: var(--neo-stroke), 2px 2px 0 2px var(--neo-ink);
+  --neo-lift-3: var(--neo-stroke), 3px 3px 0 2px var(--neo-ink);
+  --neo-lift-4: var(--neo-stroke), 4px 4px 0 2px var(--neo-ink);
+  --neo-lift-6: var(--neo-stroke), 6px 6px 0 2px var(--neo-ink);
+  --neo-yellow: hsl(47.43 100% 67.25%);
+  --neo-lime: hsl(80.61 78.54% 55.49%);
+}
+
+/* Cards, panels, menus: a real stroke and a deep offset. */
 .neobrutal :is(.rounded-2xl, .rounded-xl, .rounded-2lg):is(.border, .shadow-card, .shadow-dropdown, .shadow-md, .shadow-lg) {
   border-width: 2px;
   border-style: solid;
-  border-color: hsl(var(--neutral-950));
+  border-color: var(--neo-ink);
+}
+.neobrutal .rounded-2xl:is(.bg-background-primary-default, .bg-background-secondary-default, .bg-bg-white-0, .bg-white):not(.border) {
+  border: 2px solid var(--neo-ink);
+}
+.neobrutal :is(.rounded-2xl, .rounded-xl):is(.shadow-card, .shadow-md, .shadow-lg) {
+  box-shadow: 5px 5px 0 0 var(--neo-ink);
+}
+.neobrutal .shadow-dropdown {
+  box-shadow: 6px 6px 0 0 var(--neo-ink);
+}
+/* Arbitrary radii the composer and reply box use. */
+.neobrutal :is(.rounded-20, .rounded-\[20px\], .rounded-t-2xl) {
+  border-radius: 6px;
+}
+.neobrutal .rounded-t-2xl {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* The composer: the thickest stroke and the deepest offset on the page. */
+.neobrutal fieldset.rounded-2xl.shadow-card,
+.neobrutal .rounded-\[20px\].border.bg-background-primary-default {
+  border-width: 3px;
+  border-color: var(--neo-ink);
+  box-shadow: 7px 7px 0 0 var(--neo-ink);
+}
+/* Chips and pill controls inside the composer, its tray and the turn
+ * summary: a real border (their containers clip shadows) and a small offset. */
+.neobrutal fieldset button.rounded-full,
+.neobrutal .rounded-\[20px\] button.rounded-full,
+.neobrutal .rounded-b-\[16px\] button.rounded-full,
+.neobrutal button.rounded-full.bg-background-secondary-default.ring-1 {
+  border: 2px solid var(--neo-ink);
+  border-radius: 5px;
+  box-shadow: 2px 2px 0 0 var(--neo-ink);
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  background: var(--color-background-primary-default);
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+/* The tray under the composer reads as one stacked block with it. */
+.neobrutal .rounded-b-\[16px\].border-b.bg-bg-white-0 {
+  border-width: 0 3px 3px;
+  border-color: var(--neo-ink);
+  border-radius: 0 0 6px 6px;
+  box-shadow: 7px 7px 0 0 var(--neo-ink);
+}
+/* Rail navigation (settings and similar): bold rows, the selected one lifted. */
+.neobrutal nav a.rounded-2lg {
+  border-radius: 5px;
+  font-weight: 700;
+}
+.neobrutal nav a.rounded-2lg.bg-background-secondary-hover {
+  box-shadow: var(--neo-lift-2);
+  color: #000;
+}
+/* Status chips: the pastel fills keep their text colour and gain a stroke. */
+.neobrutal [class*="bg-status-"][class*="-background"] {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1.5px var(--neo-ink);
+}
+/* Select triggers built on the inset ring. */
+.neobrutal button.rounded-2lg.ring-1.ring-inset {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+/* Primary CTAs: flat fill, stroke, hard offset, and the press on hover. */
+.neobrutal .bg-button-primary {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-3);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.neobrutal .bg-button-primary:hover {
+  transform: translate(2px, 2px);
+  box-shadow: var(--neo-lift-2);
+}
+/* Base buttons (secondary, neutral, danger) that carry a border class. */
+.neobrutal :is(button, [role="button"], a):is(.border, [class*="border-border"]):not(.bg-button-primary):not(:disabled) {
+  border-width: 2px;
+  border-color: var(--neo-ink);
+  border-radius: 5px;
+  box-shadow: 3px 3px 0 0 var(--neo-ink);
 }
 .neobrutal :is(button, [role="button"], a).rounded-full {
-  border-radius: var(--radius-lg);
+  border-radius: 5px;
 }
-.neobrutal :is(button, [role="button"]):not(:disabled):is(.border, [class*="border-border"], [class*="ring-1"]) {
-  border-width: 2px;
-  border-color: hsl(var(--neutral-950));
-  --tw-ring-color: hsl(var(--neutral-950));
+/* Fields: an inset stroke on the base Input's frame. */
+.neobrutal .rounded-2lg.bg-background-tertiary-default {
+  outline: 2px solid var(--neo-ink);
+  outline-offset: -2px;
 }
+/* Sidebar: an edge on the canvas, a yellow brand tile, stroked header
+ * buttons and search, bold rows, and the selected row lifted off the rail. */
+.neobrutal [data-slot="sidebar-container"] {
+  border-right: 2px solid var(--neo-ink);
+}
+.neobrutal [data-slot="sidebar-header"] a.rounded-2lg {
+  background: var(--neo-yellow);
+  color: #000;
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+  font-weight: 800;
+}
+.neobrutal [data-slot="sidebar-header"] button {
+  border-radius: 5px;
+  box-shadow: var(--neo-stroke);
+}
+.neobrutal [data-slot="sidebar-content"] > button.rounded-full.bg-background-tertiary-default {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+  background: var(--color-background-primary-default);
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+.neobrutal [data-sidebar="menu-item"] > a.rounded-2lg {
+  border-radius: 5px;
+  font-weight: 700;
+}
+.neobrutal [data-sidebar="menu-item"] > a.bg-background-secondary-hover,
+.neobrutal [data-sidebar="menu-item"] > a.rounded-2lg:hover {
+  box-shadow: var(--neo-lift-2);
+  color: #000;
+}
+.neobrutal [data-slot="sidebar-content"] .text-mono-label {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+/* Section labels elsewhere follow the same poster voice. */
+.neobrutal h2.text-mono-label {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+/* The user's message is a yellow block; the shell's header rules go black. */
+.neobrutal .rounded-2xl.rounded-br-md.bg-background-secondary-default {
+  background: var(--neo-yellow);
+  color: #000;
+  border: 2px solid var(--neo-ink);
+  border-radius: 6px;
+  box-shadow: 4px 4px 0 0 var(--neo-ink);
+}
+.neobrutal .border-b[class*="border-border-button-default/50"] {
+  border-bottom-width: 2px;
+  border-color: var(--neo-ink);
+}
+.neobrutal .rounded-2lg.bg-segmented-control-background {
+  border-radius: 5px;
+  box-shadow: var(--neo-stroke);
+}
+.neobrutal kbd {
+  box-shadow: 0 0 0 1.5px var(--neo-ink), 1.5px 1.5px 0 1.5px var(--neo-ink);
+  border-radius: 3px;
+}
+/* Type: headings and labels gain weight. */
 .neobrutal :is(h1, h2, h3, [class*="text-title"], [class*="text-display"]) {
   font-weight: 800;
   letter-spacing: -0.02em;
 }
 .neobrutal :is([class*="text-label"], [class*="text-subheading"]) {
   font-weight: 700;
-}
-/* The sidebar meets the canvas on a stroke, not a shadow. */
-.neobrutal [data-slot="sidebar-container"] {
-  border-right: 2px solid hsl(var(--neutral-950));
-}
-/* Primary CTAs: flat fill, stroke, hard offset. */
-.neobrutal .bg-button-primary {
-  border: 2px solid hsl(var(--neutral-950));
-  box-shadow: var(--shadow-sm);
-}
-/* White cards and panels without a stroke class still read as blocks. */
-.neobrutal .rounded-2xl:is(.bg-background-primary-default, .bg-background-secondary-default, .bg-bg-white-0, .bg-white):not(.border) {
-  border: 2px solid hsl(var(--neutral-950));
-}
-/* Fields: an inset stroke on the base Input's frame that cannot fight the
- * ring utilities. */
-.neobrutal .rounded-2lg.bg-background-tertiary-default {
-  outline: 2px solid hsl(var(--neutral-950));
-  outline-offset: -2px;
 }
 
 /* custom scale for Remix Icon */
