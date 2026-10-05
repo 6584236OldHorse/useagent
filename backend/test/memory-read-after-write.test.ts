@@ -45,14 +45,14 @@ async function orgPoolsForNewThread() {
 }
 
 function memoryFetch(stored: Array<{ id: string; role: string; content: string }>) {
-  let adds = 0;
+  const added: string[] = [];
   const fetchMock = (async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
     const body = JSON.parse(String(init?.body ?? "{}")) as {
       messages?: Array<{ role: string; content: string }>;
     };
     if (path === "/v3/conversation/add") {
-      adds += 1;
+      added.push(...(body.messages ?? []).map((message) => message.content));
       for (const message of body.messages ?? []) {
         // One user-authored L0 result is enough to model confirmed upstream
         // recall; assistant summaries are intentionally not local overlay facts.
@@ -79,7 +79,9 @@ function memoryFetch(stored: Array<{ id: string; role: string; content: string }
     }
     throw new Error(`unexpected memory endpoint: ${path}`);
   }) as unknown as typeof fetch;
-  return { fetchMock, adds: () => adds };
+  // Adds are counted per content: a drain delivers every due row, so rows another
+  // suite inserted meanwhile reach this mock too and must not count as this test's.
+  return { fetchMock, adds: (content: string) => added.filter((c) => c === content).length };
 }
 
 test("slow or failed external memory never extends finalize's terminal path", async () => {
@@ -160,7 +162,7 @@ test("concurrent drains deliver once, then confirmed upstream recall replaces th
   await Promise.all([deliverDueCaptures(), deliverDueCaptures()]);
   const confirmedRecall = await recallScopedMemory("what fruit do i like?", pools);
 
-  expect(memory.adds()).toBe(1);
+  expect(memory.adds("i like mango")).toBe(1);
   expect((await getCapture(runId))?.state).toBe("delivered");
   expect(confirmedRecall.items.filter((item) => item.content === "i like mango")).toHaveLength(1);
   expect(confirmedRecall.items.some((item) => item.citation.provider === "useagent-outbox")).toBe(false);
