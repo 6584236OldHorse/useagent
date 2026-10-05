@@ -1,4 +1,4 @@
-import { chargeSpend, noteSpendGeneration, pendingSpendCharges, type SpendFigure } from "../runs/spend";
+import { chargeSpend, markUnresolvedSpend, noteSpendGeneration, pendingSpendCharges, type SpendFigure } from "../runs/spend";
 import { errorMessage } from "../util/error-message";
 import { fetchGenerationCost } from "./stream";
 import { unsettledChatCharges } from "./turn";
@@ -8,7 +8,8 @@ import { unsettledChatCharges } from "./turn";
 // the ledger refused is retried here from the figure this process kept; what
 // a dead process left behind is settled from the figure it had stored, else
 // from the provider's own record of the generation; what nothing can price is
-// reported, every sweep, as a stuck charge.
+// unresolved: reported every sweep, counted on the member's account (which
+// pauses their new work) until an operator settles it.
 
 /** A charge still pending this long after it was opened is no longer a turn in flight. */
 const CHAT_CHARGE_SWEEP_GRACE_MS = 30 * 60_000;
@@ -17,7 +18,7 @@ const CHAT_CHARGE_SWEEP_INTERVAL_MS = 60_000;
 export interface ChatChargeSweep {
   readonly settled: number;
   readonly pending: number;
-  /** Pending charges nothing can price: no stored figure, no readable provider record. */
+  /** Pending charges nothing can price: no stored figure, no readable provider record. Unresolved until an operator settles them. */
   readonly stuck: readonly string[];
 }
 
@@ -41,6 +42,7 @@ export async function settlePendingChatCharges(graceMs = CHAT_CHARGE_SWEEP_GRACE
   // provider's record read with the deployment key, else reported.
   const rows = await pendingSpendCharges(new Date(Date.now() - graceMs));
   const stuck: string[] = [];
+  const unresolved: Array<{ orgId: string; userId: string }> = [];
   let settledRows = 0;
   for (const row of rows) {
     if (unsettledChatCharges.has(row.key)) continue; // still this process's to write
@@ -51,11 +53,13 @@ export async function settlePendingChatCharges(graceMs = CHAT_CHARGE_SWEEP_GRACE
     }
     if (!figure) {
       stuck.push(row.key);
-      console.error(`[spend] chat charge ${row.key} (${row.orgId}/${row.userId}) is stuck: no figure was stored and no provider record prices it; settle it by hand`);
+      unresolved.push({ orgId: row.orgId, userId: row.userId });
+      console.error(`[spend] chat charge ${row.key} (${row.orgId}/${row.userId}) is unresolved: no figure was stored and no provider record prices it; the member's new work is paused until it is settled by hand`);
       continue;
     }
     if (await chargeSpend({ key: row.key, orgId: row.orgId, userId: row.userId, ...figure })) settledRows += 1;
   }
+  await markUnresolvedSpend(unresolved);
   settled += settledRows;
   const pending = rows.length - settledRows;
   if (rows.length > 0 || unsettledChatCharges.size > 0) {

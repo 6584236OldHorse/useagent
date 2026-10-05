@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { and, eq, like, sql } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
 import { settlePendingChatCharges } from "../src/chat/charge-sweep";
@@ -381,23 +381,56 @@ describe("POST /api/chat accounting", () => {
     expect(refused.status).toBe(402);
   }, 20_000);
 
-  test("what a dead process left without a figure is priced from the provider's record, and what has neither is reported stuck, not skipped", async () => {
+  test("what a dead process left is priced from the provider's record when it can be; what nothing can price is unresolved: reported, counted on the account, shown, and pausing the member until an operator settles it", async () => {
     process.env.OPENROUTER_API_KEY = "house-key";
+    await setSpent(0);
+    // Three charges a process died on between the generation write and the
+    // settlement: one the deployment key can read back, one on the member's
+    // own key (the deployment key knows nothing of it), one that never named
+    // a generation at all.
     const priced = `chat:${crypto.randomUUID()}`;
+    const member = `chat:${crypto.randomUUID()}`;
     const bare = `chat:${crypto.randomUUID()}`;
     await openSpendCharge({ key: priced, orgId: session.orgId, userId });
     await noteSpendGeneration(priced, "gen-crash");
+    await openSpendCharge({ key: member, orgId: session.orgId, userId });
+    await noteSpendGeneration(member, "gen-member-crash");
     await openSpendCharge({ key: bare, orgId: session.orgId, userId });
     await Bun.sleep(10); // the sweep reads entries opened before its own clock, to the millisecond
-    const before = await spent();
-    const calls = mockProvider([], 0.25);
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/generation?id=gen-crash")) return Response.json({ data: { id: "gen-crash", total_cost: 0.25 } });
+      if (url.includes("/generation?id=")) return new Response("not found", { status: 404 });
+      return sse([chunk("Hi", ""), "[DONE]"]);
+    }) as typeof fetch;
+    const account = async () => (await db.select({ spent: spendAccounts.spentUsd, unresolved: spendAccounts.unresolved }).from(spendAccounts)
+      .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId))))[0]!;
+
     const swept = await settlePendingChatCharges(0);
     expect(calls.some((url) => url.includes("/generation?id=gen-crash"))).toBe(true);
-    expect(swept.stuck).toContain(bare);
-    expect(swept.stuck).not.toContain(priced);
+    expect([...swept.stuck].toSorted()).toEqual([bare, member].toSorted());
     expect((await chatEntries()).find((row) => row.chargeKey === priced)).toMatchObject({ costUsd: 0.25, source: "provider_generation" });
-    expect((await chatEntries()).find((row) => row.chargeKey === bare)).toMatchObject({ source: "pending" });
-    expect(await spent()).toBeCloseTo(before + 0.25, 6);
-    await db.delete(spendEntries).where(eq(spendEntries.chargeKey, bare));
+    expect((await chatEntries()).filter((row) => [bare, member].includes(row.chargeKey)).map((row) => row.source)).toEqual(["pending", "pending"]);
+    // Unresolved: counted on the account, shown by the figure the composer and
+    // Settings read, and admission pauses with a plain message, well under the cap.
+    expect(await account()).toEqual({ spent: 0.25, unresolved: 2 });
+    expect((await json<{ unresolved: number }>("/api/spend", { cookies: session.cookies })).body.unresolved).toBe(2);
+    const refused = await json<{ error: string; message: string }>("/api/chat", {
+      method: "POST", cookies: session.cookies, body: { messages: [{ role: "user", content: "again" }] },
+    });
+    expect(refused.status).toBe(402);
+    expect(refused.body.error).toBe("spend_unresolved");
+    expect(refused.body.message).toContain("2 chat charges of yours could not be settled");
+    expect(calls.some((url) => url.includes("/chat/completions"))).toBe(false);
+    // An operator settles them by hand (here: drops them); the next sweep
+    // clears the count and the member is admitted again.
+    await db.delete(spendEntries).where(inArray(spendEntries.chargeKey, [bare, member]));
+    await settlePendingChatCharges(0);
+    expect((await account()).unresolved).toBe(0);
+    const admitted = await ask("hello again");
+    expect(admitted.status).toBe(200);
+    expect((await readSse(admitted, { timeoutMs: 8_000 })).some((event) => event.event === "done")).toBe(true);
   });
 });

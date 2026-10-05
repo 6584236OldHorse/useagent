@@ -30,6 +30,9 @@ export const spendAccounts = pgTable(
     spentUsd: numeric("spent_usd", { precision: 14, scale: 6, mode: "number" }).notNull().default(0),
     /** Settled charges for this member, priced or not. */
     runs: integer("runs").notNull().default(0),
+    /** Pending chat charges of this member that nothing can price (counted by
+     *  the sweep once past its window); new work pauses while any stands. */
+    unresolved: integer("unresolved").notNull().default(0),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.userId] })],

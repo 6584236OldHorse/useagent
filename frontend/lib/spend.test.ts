@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseSpend, spendLabel, spendLoader, type SpendSnapshot } from "./spend";
+import { parseSpend, spendCapped, spendLabel, spendLoader, type SpendSnapshot } from "./spend";
 
 describe("spend loader", () => {
   test("only the newest request may report, so an older response never undoes a newer figure", async () => {
@@ -35,11 +35,15 @@ describe("spend loader", () => {
 });
 
 describe("spend figures", () => {
-  test("parses the backend shape and labels it", () => {
-    expect(parseSpend({ spent: 12.345, allowance: 100, runs: 3 })).toEqual({ spent: 12.345, allowance: 100, runs: 3 });
-    expect(parseSpend({ spent: 4, allowance: null })).toEqual({ spent: 4, allowance: null, runs: 0 });
+  test("parses the backend shape and labels it, an unresolved charge named and refusing", () => {
+    expect(parseSpend({ spent: 12.345, allowance: 100, runs: 3, unresolved: 0 })).toEqual({ spent: 12.345, allowance: 100, runs: 3, unresolved: 0 });
+    expect(parseSpend({ spent: 4, allowance: null })).toEqual({ spent: 4, allowance: null, runs: 0, unresolved: 0 });
     expect(parseSpend({ allowance: 100 })).toBeNull();
-    expect(spendLabel({ spent: 12.345, allowance: 100, runs: 3 })).toBe("Spent $12.35 of $100");
-    expect(spendLabel({ spent: 4, allowance: null, runs: 1 })).toBe("Spent $4.00");
+    expect(spendLabel({ spent: 12.345, allowance: 100, runs: 3, unresolved: 0 })).toBe("Spent $12.35 of $100");
+    expect(spendLabel({ spent: 4, allowance: null, runs: 1, unresolved: 0 })).toBe("Spent $4.00");
+    const unresolved = { spent: 4, allowance: 100, runs: 1, unresolved: 1 };
+    expect(spendLabel(unresolved)).toBe("Spent $4.00 of $100, 1 unresolved");
+    expect(spendCapped(unresolved)).toBe(true);
+    expect(spendCapped({ ...unresolved, unresolved: 0 })).toBe(false);
   });
 });

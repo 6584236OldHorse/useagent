@@ -9,6 +9,8 @@ export interface SpendSnapshot {
   /** Null when the deployment runs without a cap. */
   readonly allowance: number | null;
   readonly runs: number;
+  /** Chat charges nothing could price; new tasks pause while any stands. */
+  readonly unresolved: number;
 }
 
 const finite = (value: unknown): number | null =>
@@ -20,7 +22,7 @@ export function parseSpend(data: unknown): SpendSnapshot | null {
   const d = data as Record<string, unknown>;
   const spent = finite(d.spent);
   if (spent === null) return null;
-  return { spent, allowance: finite(d.allowance), runs: finite(d.runs) ?? 0 };
+  return { spent, allowance: finite(d.allowance), runs: finite(d.runs) ?? 0, unresolved: finite(d.unresolved) ?? 0 };
 }
 
 /** "$100" when whole, "$12.34" otherwise. */
@@ -28,14 +30,17 @@ export function money(usd: number): string {
   return Number.isInteger(usd) ? `$${usd}` : `$${usd.toFixed(2)}`;
 }
 
-/** "Spent $12.34 of $100"; without a cap, just what was spent. */
+/** "Spent $12.34 of $100"; without a cap, just what was spent; an unresolved
+ *  charge is named beside it. */
 export function spendLabel(spend: SpendSnapshot): string {
   const spent = `$${spend.spent.toFixed(2)}`;
-  return spend.allowance === null ? `Spent ${spent}` : `Spent ${spent} of ${money(spend.allowance)}`;
+  const base = spend.allowance === null ? `Spent ${spent}` : `Spent ${spent} of ${money(spend.allowance)}`;
+  return spend.unresolved > 0 ? `${base}, ${spend.unresolved} unresolved` : base;
 }
 
+/** New tasks are refused: at the cap, or while a charge is unresolved. */
 export function spendCapped(spend: SpendSnapshot): boolean {
-  return spend.allowance !== null && spend.spent >= spend.allowance;
+  return spend.unresolved > 0 || (spend.allowance !== null && spend.spent >= spend.allowance);
 }
 
 /**

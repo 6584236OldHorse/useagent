@@ -1,4 +1,4 @@
-import { and, eq, like, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, like, lt, or, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { providerEvents, spendAccounts, spendEntries, type SettledSpendSource, type SpendSource } from "../db/schema";
 
@@ -46,20 +46,26 @@ export const SPEND_TOKENS_MAX = 2_147_483_647;
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
+/** The refusal at admission: the member is at the allowance, or a chat charge
+ *  of theirs is unresolved (pending past the sweep's window with nothing to
+ *  price it), which pauses new work until an operator settles it. */
 export class SpendAllowanceExceededError extends Error {
-  readonly code = "spend_allowance_exceeded" as const;
+  readonly code: "spend_allowance_exceeded" | "spend_unresolved";
 
-  constructor(readonly spent: number, readonly allowance: number) {
+  constructor(readonly spent: number, readonly allowance: number, readonly unresolved = 0) {
     super(
-      `You have spent ${usd(spent)} of your ${usd(allowance)} allowance. ` +
-        "New tasks are paused until it is raised.",
+      unresolved > 0
+        ? `${unresolved === 1 ? "A chat charge of yours" : `${unresolved} chat charges of yours`} could not be settled and ` +
+          `${unresolved === 1 ? "is" : "are"} unresolved. New tasks are paused until an operator settles ${unresolved === 1 ? "it" : "them"}.`
+        : `You have spent ${usd(spent)} of your ${usd(allowance)} allowance. New tasks are paused until it is raised.`,
     );
     this.name = "SpendAllowanceExceededError";
+    this.code = unresolved > 0 ? "spend_unresolved" : "spend_allowance_exceeded";
   }
 
   /** The refusal every ingress answers with. */
   get body() {
-    return { error: this.code, message: this.message, spent: this.spent, allowance: this.allowance };
+    return { error: this.code, message: this.message, spent: this.spent, allowance: this.allowance, unresolved: this.unresolved };
   }
 }
 
@@ -81,12 +87,13 @@ export async function assertSpendAllowance(
   const fallback = spendAllowanceDefaultUsd();
   if (!userId || fallback <= 0) return;
   const [account] = await exec
-    .select({ allowanceUsd: spendAccounts.allowanceUsd, spentUsd: spendAccounts.spentUsd })
+    .select({ allowanceUsd: spendAccounts.allowanceUsd, spentUsd: spendAccounts.spentUsd, unresolved: spendAccounts.unresolved })
     .from(spendAccounts)
     .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, userId)))
     .limit(1);
   const spent = account?.spentUsd ?? 0;
   const allowance = effectiveAllowance(account?.allowanceUsd ?? null, fallback);
+  if ((account?.unresolved ?? 0) > 0) throw new SpendAllowanceExceededError(spent, allowance, account!.unresolved);
   if (spent >= allowance) throw new SpendAllowanceExceededError(spent, allowance);
 }
 
@@ -409,6 +416,35 @@ export async function pendingSpendCharges(openedBefore: Date): Promise<Array<{
   }));
 }
 
+/**
+ * Record on each member's account how many of their pending charges nothing
+ * can price (the sweep's stuck entries) and clear the count everywhere else.
+ * Admission refuses a member while any stands, so an unresolved charge is
+ * never quietly outrun; an operator settles the entry (a figure, or dropping
+ * it) and the next sweep clears the count.
+ */
+export async function markUnresolvedSpend(
+  stuck: ReadonlyArray<{ readonly orgId: string; readonly userId: string }>,
+): Promise<void> {
+  const counts = new Map<string, { orgId: string; userId: string; count: number }>();
+  for (const { orgId, userId } of stuck) {
+    const key = `${orgId}\u0000${userId}`;
+    counts.set(key, { orgId, userId, count: (counts.get(key)?.count ?? 0) + 1 });
+  }
+  await db.transaction(async (tx) => {
+    await tx.update(spendAccounts).set({ unresolved: 0, updatedAt: new Date() }).where(gt(spendAccounts.unresolved, 0));
+    for (const { orgId, userId, count } of counts.values()) {
+      await tx
+        .insert(spendAccounts)
+        .values({ orgId, userId, unresolved: count })
+        .onConflictDoUpdate({
+          target: [spendAccounts.orgId, spendAccounts.userId],
+          set: { unresolved: count, updatedAt: new Date() },
+        });
+    }
+  });
+}
+
 /** Charge a settled run to its member from the usage it carries. Runs without
  *  an org or a person behind them have nothing to charge. */
 export async function accrueRunSpend(
@@ -425,6 +461,8 @@ export interface SpendSnapshot {
   /** Null when the cap is off. */
   readonly allowance: number | null;
   readonly runs: number;
+  /** Chat charges nothing could price; new work pauses while any stands. */
+  readonly unresolved: number;
 }
 
 /** The member's own figures. */
@@ -436,6 +474,7 @@ export async function spendSnapshot(orgId: string, userId: string | null): Promi
           allowanceUsd: spendAccounts.allowanceUsd,
           spentUsd: spendAccounts.spentUsd,
           runs: spendAccounts.runs,
+          unresolved: spendAccounts.unresolved,
         })
         .from(spendAccounts)
         .where(and(eq(spendAccounts.orgId, orgId), eq(spendAccounts.userId, userId)))
@@ -445,5 +484,6 @@ export async function spendSnapshot(orgId: string, userId: string | null): Promi
     spent: row?.spentUsd ?? 0,
     allowance: fallback > 0 ? effectiveAllowance(row?.allowanceUsd ?? null, fallback) : null,
     runs: row?.runs ?? 0,
+    unresolved: row?.unresolved ?? 0,
   };
 }
