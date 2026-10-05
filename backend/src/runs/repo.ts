@@ -6,6 +6,7 @@ import type {
   ApiThreadOutlineTurn,
   PermissionMode,
   RunConnector,
+  RunLocation,
 } from "@useagent/agent-client/wire";
 import {
   configuredRuntimeMode,
@@ -112,6 +113,7 @@ function toRun(
     resolved_resources: r.resolvedResources ?? [],
     memory_scope: r.memoryScope,
     permission_mode: r.permissionMode,
+    run_location: r.runLocation ?? null,
     skill_id: r.skillId,
     skill_version: r.skillVersion,
     skill_content_hash: r.skillContentHash,
@@ -223,6 +225,7 @@ export async function createRun(
     /** The run's permission policy. Product lanes resolve it (composer choice or
      *  the parent's); a lane that omits it takes the operator's configured posture. */
     permissionMode?: PermissionMode;
+    /** Where the thread runs (RunLocation); null: the cloud, or a caller that predates the choice. */ runLocation?: RunLocation | null;
     skillId?: string | null;
     skillVersion?: number | null;
     skillContentHash?: string | null;
@@ -284,6 +287,7 @@ export async function createRun(
     repo: primaryRepo,
     memoryScope: input.memoryScope,
     permissionMode,
+    runLocation: input.runLocation ?? null,
     skillId: input.skillId ?? null,
     skillVersion: input.skillVersion ?? null,
     skillContentHash: input.skillContentHash ?? null,

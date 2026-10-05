@@ -41,6 +41,13 @@ describe("runner location", () => {
     expect(runnerLocationLabel("sandbox_1", "daytona", [runner], { ...PROVIDER_NAMES, cube: "E2B" })).toBe("Daytona");
     expect(runnerLocationLabel("sandbox_1", "daytona", [runner])).toBe("Daytona");
     expect(runnerLocationLabel("sandbox_1", undefined, [runner])).toBe("Unknown runtime");
+    // Without a provider name, the place the thread asked for names the run; a
+    // local sandbox still names its machine.
+    expect(runnerLocationLabel("sandbox_1", undefined, [runner], PROVIDER_NAMES, "cloud")).toBe("Cloud");
+    expect(runnerLocationLabel(null, undefined, [], PROVIDER_NAMES, "cloud")).toBe("Cloud");
+    expect(runnerLocationLabel(null, undefined, [], PROVIDER_NAMES, "local")).toBe("Local");
+    expect(runnerLocationLabel("local:rn_a:container_1", undefined, [runner], PROVIDER_NAMES, "local")).toBe("Desk Mac");
+    expect(runnerLocationLabel("sandbox_1", undefined, [runner], PROVIDER_NAMES, null)).toBe("Unknown runtime");
   });
 });
 

@@ -2,6 +2,7 @@ import { isUniqueViolation } from "../db/pg-errors";
 import { runIntentFingerprint, runIntentFromAcceptedRun } from "./fingerprint";
 import { findCommandByKey, insertCommandWithRun } from "./repo";
 import type { CommandRecord } from "./repo";
+import { getLatestThreadRun } from "../runs/repo";
 import type { RunCommandInput, RunCommandIntent, RunCommandOutcome } from "./types";
 import { publishRunLifecycleChange } from "../runs/org-signals";
 import {
@@ -66,6 +67,7 @@ function serializeRunCommandPayload(
     attachmentIds: input.run.attachmentIds ?? [],
     memoryScope: input.run.memoryScope,
     permissionMode: input.run.permissionMode ?? null,
+    runLocation: input.run.runLocation ?? null,
     skillId: input.run.skillId,
     skillVersion: input.run.skillVersion,
     commandName: input.run.commandName,
@@ -370,8 +372,14 @@ async function acceptRunCommandWithOrigin(
             `model ${input.run.model} is not allowed for engine ${input.run.engine}`,
           );
         }
+        // Where the thread runs: a root run's choice, or the thread's for a reply
+        // that carries none, resolved once here for the login readiness below and
+        // for the row itself.
+        const runLocation = input.run.runLocation ?? (input.run.parentRunId
+          ? (await getLatestThreadRun(input.orgId, input.run.threadId, tx))?.runLocation ?? null
+          : null);
         const dispatchReady = await dispatchReadyForUser(
-          { orgId: input.orgId, userId: input.actorId },
+          { orgId: input.orgId, userId: input.actorId, runLocation },
           input.run.engine,
           input.run.model,
           persistedPolicy ? "persisted" : "accepted",
@@ -391,7 +399,7 @@ async function acceptRunCommandWithOrigin(
             actorId: input.actorId,
             payloadFingerprint: fingerprint,
             payload,
-            run: input.run,
+            run: { ...input.run, runLocation },
             expectedSandbox,
             origin,
             priority,

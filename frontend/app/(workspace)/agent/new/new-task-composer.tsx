@@ -1,6 +1,8 @@
 "use client";
 
+import { desktopBridge, type UseAgentDesktopBridge } from "@/components/runners/desktop-bridge";
 import { useMachineRunsWork } from "@/components/runners/local-login-availability";
+import { type RunLocation, RunLocationMenu, submittedRunLocation } from "@/components/runners/run-location-menu";
 import { RiArrowUpLine, RiBookMarkedLine, RiFlashlightLine } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import {
@@ -90,6 +92,13 @@ export function NewTaskComposer({
   const [playbook, setPlaybook] = useState(""); // selected skill/playbook id, "" = none
   // A new thread starts in Full access unless the person picks a mode before sending.
   const [chosenMode, setChosenMode] = useState<PermissionMode>("full-access");
+  // Where the thread runs: the desktop app's Local/Cloud menu sets it (Local
+  // while this machine's runner is connected); the web app has no menu, sends
+  // nothing and runs on the cloud. A machine login counts only on the machine.
+  const [bridge, setBridge] = useState<UseAgentDesktopBridge | null>(null);
+  useEffect(() => setBridge(desktopBridge()), []);
+  const [runLocation, setRunLocation] = useState<RunLocation | null>(null);
+  const onMachine = runLocation === "local";
   // Codex is the preferred default engine. Model membership and the default
   // arrive from the authenticated capability catalog below.
   const [model, setModel] = useState("");
@@ -106,8 +115,8 @@ export function NewTaskComposer({
   // ENABLED_ENGINES): claude/codex surface here only on a backend that turned them
   // on, so the picker never lets a user start a run the backend would 403. This is
   // the capability-driven engine manifest.
-  const engineConfig = useEnabledEngineConfig();
-  const machineRunsWork = useMachineRunsWork();
+  const engineConfig = useEnabledEngineConfig({ machineLogins: onMachine });
+  const machineRunsWork = useMachineRunsWork() && onMachine;
   const enabledEngines = engineConfig.engines;
   const engineId = engine as EngineId;
   const selectableModels = modelOptionsForEngine(
@@ -396,6 +405,10 @@ export function NewTaskComposer({
     const mentionResources = mentionsToRunResources(mentions.mentions);
     const mentionedBots = mentionedBotIds(mentions.mentions);
 
+    // Pinned at the first submission: an unmade choice becomes the Cloud the
+    // menu shows, so a retry of a lost response carries the same body and key.
+    const location = submittedRunLocation(runLocation, bridge !== null);
+    if (location !== runLocation) setRunLocation(location);
     const body = {
       // Send a model only for engines with an explicit picker/catalog. Codex
       // uses bare backend-policy ids; OpenCode uses provider-qualified ids.
@@ -403,6 +416,7 @@ export function NewTaskComposer({
       engine,
       memory_scope: "org",
       permission_mode: permissionMode,
+      ...(location ? { run_location: location } : {}),
       ...(selectableModels.length > 0 ? { model } : {}),
       ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(selectedRepos.length ? { repos: selectedRepos } : {}),
@@ -562,6 +576,8 @@ export function NewTaskComposer({
               {/* Permission for the new thread, the panel's faces over the run's mode
                   (Auto, Manual, Plan mode, Bypass all); rides POST /api/runs as permission_mode. */}
               <PermissionModeChip mode={permissionMode} onChange={setChosenMode} engine={engine} />
+              {/* Desktop app only: Local (this machine) or Cloud for the new thread; rides POST /api/runs as run_location. */}
+              <RunLocationMenu bridge={bridge} location={runLocation} onChange={setRunLocation} disabled={submitting} />
               {submitting ? (
                 /* Status swap while the run is being created: the pickers are
                    inert (the fieldset is disabled), so the row's middle becomes

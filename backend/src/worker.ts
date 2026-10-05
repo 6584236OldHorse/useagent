@@ -406,7 +406,7 @@ async function runWorker(runId: string): Promise<void> {
         run.threadId,
         engineSessionId,
         providerSession,
-        run.expectedSandbox ?? null, run.permissionMode,
+        run.expectedSandbox ?? null, run.permissionMode, run.runLocation,
         run.model,
         run.reasoningEffort ?? undefined,
         run.repos,
@@ -614,7 +614,7 @@ async function runEngine(
   threadId: string,
   engineSessionId: string | undefined,
   providerSession: ProviderSessionBinding | undefined,
-  expectedSandbox: ExpectedSandboxBinding | null, permissionMode: EngineRunContext["permissionMode"],
+  expectedSandbox: ExpectedSandboxBinding | null, permissionMode: EngineRunContext["permissionMode"], runLocation: EngineRunContext["runLocation"],
   model: string,
   reasoningEffort: string | undefined,
   repos: string[],
@@ -647,7 +647,7 @@ async function runEngine(
   // DB write), refuse to spawn its adapter unless the engine is explicitly enabled
   // (ENABLED_ENGINES). Fail the run closed rather than activating it.
   const engine = engineId as EngineId;
-  if (!(await dispatchReadyForUser({ orgId, userId }, engine, model, "persisted"))) {
+  if (!(await dispatchReadyForUser({ orgId, userId, runLocation }, engine, model, "persisted"))) {
     const finalized = await finalizeRun(runId, "failed", `engine/model not ready: ${engineId}/${model}`, 0);
     await emitFinalizedEnd(runId, finalized);
     return;
@@ -722,7 +722,7 @@ async function runEngine(
     resolvedResources,
     engineSessionId,
     providerSession,
-    expectedSandbox, permissionMode,
+    expectedSandbox, permissionMode, runLocation,
     commandName,
     commandSessionId,
     commandProvider,

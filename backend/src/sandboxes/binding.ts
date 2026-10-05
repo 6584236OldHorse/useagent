@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { SandboxNotFoundError, type SandboxProvider, type SandboxProviderKind } from "@useagent/sandbox-contract";
 import { parseLocalSandboxId } from "@useagent/runner-protocol";
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { runs } from "../db/schema";
@@ -105,17 +106,28 @@ function localBinding(runner: BoundRunner, logins: readonly string[], deps: Sand
   };
 }
 
-/** The user's connected machine, when the deployment and the organisation allow local execution. */
+export class MachineNotConnectedError extends Error {
+  readonly code = "machine_not_connected" as const;
+
+  constructor() {
+    super("This thread runs on your machine, which is not connected. Open the desktop app to connect it.");
+    this.name = "MachineNotConnectedError";
+  }
+}
+
+/** The person's connected machine, asked for by the thread: the deployment and
+ *  the organisation must allow local execution and the machine must be
+ *  connected. Nothing here falls back to a hosted provider. */
 async function localRunnerBinding(
   scope: { readonly orgId: string; readonly userId: string },
   deps: SandboxBindingDeps,
-): Promise<SandboxBinding | null> {
-  if (!localRunnersEnabled(deps.env)) return null;
+): Promise<SandboxBinding> {
+  if (!localRunnersEnabled(deps.env)) throw new LocalExecutionDisabledError();
   const seam = runnerSeam(deps);
-  const runner = seam.onlineForUser(scope.orgId, scope.userId);
-  if (!runner) return null;
   const policy = await seam.policy(scope.orgId);
-  if (!policy.allowLocalExecution) return null;
+  if (!policy.allowLocalExecution) throw new LocalExecutionDisabledError();
+  const runner = seam.onlineForUser(scope.orgId, scope.userId);
+  if (!runner) throw new MachineNotConnectedError();
   return localBinding(runner, policy.allowLocalLogins ? runner.logins : [], deps);
 }
 
@@ -271,14 +283,16 @@ async function userSandboxBinding(
   };
 }
 
-/** A new sandbox for this run: the user's own computer when allowed, else the server's. */
+/** A new sandbox for this run: the machine the thread asked for, else a hosted
+ *  provider (the user's own computer when allowed, else the server's). An absent
+ *  choice is the cloud; the control plane never picks a machine on its own. */
 export async function resolveSandboxBindingForRun(
-  scope: { readonly orgId?: string | null; readonly userId?: string | null },
+  scope: { readonly orgId?: string | null; readonly userId?: string | null; readonly runLocation?: RunLocation | null },
   deps: SandboxBindingDeps = {},
 ): Promise<SandboxBinding> {
-  if (scope.orgId && scope.userId) {
-    const local = await localRunnerBinding({ orgId: scope.orgId, userId: scope.userId }, deps);
-    if (local) return local;
+  if (scope.runLocation === "local") {
+    if (!scope.orgId || !scope.userId) throw new MachineNotConnectedError();
+    return localRunnerBinding({ orgId: scope.orgId, userId: scope.userId }, deps);
   }
   if (userComputersEnabled(deps.env) && scope.orgId && scope.userId) {
     const user = await userSandboxBinding({ orgId: scope.orgId, userId: scope.userId }, null, deps);

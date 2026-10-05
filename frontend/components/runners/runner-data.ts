@@ -1,3 +1,5 @@
+import type { RunLocation } from "@useagent/agent-client/wire";
+
 export const RUNNER_STATUSES = ["enrolled", "online", "offline", "revoked"] as const;
 export type RunnerStatus = (typeof RUNNER_STATUSES)[number];
 
@@ -124,17 +126,21 @@ export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   local: "Local machine",
 };
 
+/** Where a run executes, named: the machine for a local sandbox, the provider
+ *  when one is reported, else the place the thread asked for (run_location). */
 export function runnerLocationLabel(
   sandboxId: string | null,
   sandboxProvider: unknown,
   runners: readonly Runner[],
   names: Readonly<Record<string, string>> = PROVIDER_NAMES,
+  runLocation: RunLocation | null | undefined = null,
 ): string {
   const runnerId = localRunnerId(sandboxId);
   if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
-  return typeof sandboxProvider === "string" && sandboxProvider.trim()
-    ? (names[sandboxProvider] ?? sandboxProvider)
-    : "Unknown runtime";
+  if (typeof sandboxProvider === "string" && sandboxProvider.trim()) {
+    return names[sandboxProvider] ?? sandboxProvider;
+  }
+  return runLocation === "cloud" ? "Cloud" : runLocation === "local" ? "Local" : "Unknown runtime";
 }
 
 export function runnerLoginAvailable(
@@ -158,8 +164,8 @@ export function runnerLoginAvailable(
   );
 }
 
-/** Whether this user's own machine is online and allowed to run their work; the
- *  plane sends new threads there ahead of the cloud. */
+/** Whether this user's own machine is online and allowed to run their work; a
+ *  new thread goes there only when the person chooses Local. */
 export function runnerRunsUserWork(
   policy: RunnerPolicy | null,
   runners: readonly Runner[],

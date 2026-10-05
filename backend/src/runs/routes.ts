@@ -5,6 +5,7 @@ import {
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
@@ -83,6 +84,7 @@ import { kickSlackOutbox } from "../slack/outbox";
 import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runModelAndEngine, runPermissionMode, type RunCreateBody } from "./run-create-policy";
 import { reasoningEffortSupportForRun, resolveReasoningEffort } from "./reasoning-effort";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
+import { machineUnavailable, runLocationChoice } from "./run-location";
 import { SpendAllowanceExceededError } from "./spend";
 export type { RunCreateBody } from "./run-create-policy";
 export const runsRoutes = new Hono<AppEnv>();
@@ -123,9 +125,7 @@ export async function handleRunCreate(
   const botMentions = runBotMentions(c.get("orgId"), body.bot_mentions);
   if ("status" in botMentions) return c.json(botMentions.body, botMentions.status);
   const requestedResources = decodeRunResourceSelections(body.resources ?? []);
-  if (!requestedResources) {
-    return c.json({ error: "resources must be an array of valid resource selections" }, 400);
-  }
+  if (!requestedResources) return c.json({ error: "resources must be an array of valid resource selections" }, 400);
 
   const selection = runModelAndEngine(body);
   if (!selection.ok) return c.json({ error: selection.error }, 400);
@@ -146,6 +146,7 @@ export async function handleRunCreate(
   let parentReasoningEffort: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
+  let parentRunLocation: RunLocation | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
   // reply resumes the thread's live session). A native-command intent's client-supplied session
   // id is validated against THIS, never trusted on its own.
@@ -153,9 +154,7 @@ export async function handleRunCreate(
   if (body.parent_run_id !== undefined && body.parent_run_id !== null) {
     const rawParent =
       typeof body.parent_run_id === "string" ? body.parent_run_id.trim() : "";
-    if (!rawParent) {
-      return c.json({ error: "parent_run_id must be a run id string" }, 400);
-    }
+    if (!rawParent) return c.json({ error: "parent_run_id must be a run id string" }, 400);
     const parent = await getRunForOrg(c.get("orgId"), rawParent);
     if (!parent) return c.json({ error: "parent run not found" }, 404);
     parentRunId = parent.id;
@@ -170,6 +169,7 @@ export async function handleRunCreate(
     parentReasoningEffort = parent.reasoningEffort;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
+    parentRunLocation = parent.runLocation;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
       parent.engineSessionId ?? null;
   }
@@ -221,6 +221,9 @@ export async function handleRunCreate(
   const permission = runPermissionMode(body.permission_mode);
   if (!permission.ok) return c.json({ error: permission.error }, 400);
   const { permissionMode } = permission;
+  // Run location: a root run's cloud-or-machine choice (the machine's availability is asked below, of a new acceptance only); a reply inherits.
+  const location = runLocationChoice(body.run_location, parentRunId !== null);
+  if (!location.ok) return c.json(location.body, location.status);
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -232,9 +235,7 @@ export async function handleRunCreate(
   if (body.skill !== undefined && body.skill !== null) {
     const sel = body.skill as { id?: unknown; version?: unknown };
     const rawId = typeof sel.id === "string" ? sel.id.trim() : "";
-    if (!rawId) {
-      return c.json({ error: "skill.id must be a skill id string" }, 400);
-    }
+    if (!rawId) return c.json({ error: "skill.id must be a skill id string" }, 400);
     const version =
       typeof sel.version === "number" &&
       Number.isInteger(sel.version) &&
@@ -293,7 +294,7 @@ export async function handleRunCreate(
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
-    permissionMode: permissionMode ?? null,
+    permissionMode: permissionMode ?? null, runLocation: location.runLocation ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -336,13 +337,12 @@ export async function handleRunCreate(
     return c.json({ error: "idempotency_key_reused", reason: replay.reason }, 409);
   }
   // Mutable authorization/readiness checks apply only to first acceptance.
-  if (parentEngine && requestedEngine && requestedEngine !== parentEngine) {
-    return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
-  }
-  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId") }, parentEngine ?? requestedEngine);
-  if (!resolvedEngine.ok) {
-    return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
-  }
+  const machine = location.runLocation === "local" ? await machineUnavailable({ orgId: c.get("orgId"), userId: c.get("userId") }) : null;
+  if (machine) return c.json(machine.body, machine.status);
+  if (parentEngine && requestedEngine && requestedEngine !== parentEngine) return c.json({ error: "reply_engine_mismatch", engine: parentEngine }, 400);
+  const runLocation = location.runLocation ?? parentRunLocation;
+  const resolvedEngine = await resolveEngineForUser({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, parentEngine ?? requestedEngine);
+  if (!resolvedEngine.ok) return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   const engine = resolvedEngine.engine;
   const inheritedModel =
     parentModel && isReplyModelAllowedForEngine(engine, parentModel, parentModel)
@@ -355,7 +355,7 @@ export async function handleRunCreate(
   const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;
   const effort = resolveReasoningEffort(body.reasoning_effort, await reasoningEffortSupportForRun(engine, model, actor), parentReasoningEffort);
   if (!effort.ok) return c.json({ error: effort.error, engine, efforts: effort.efforts }, 400);
-  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
+  if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId"), runLocation }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
 
@@ -364,9 +364,7 @@ export async function handleRunCreate(
       id: requestedSkillId,
       version: requestedSkillVersion ?? undefined,
     });
-    if (!pinned) {
-      return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
-    }
+    if (!pinned) return c.json({ error: "skill not found in this org (or unknown version)" }, 400);
     skillId = pinned.skillId;
     skillVersion = pinned.version;
     skillContentHash = pinned.contentHash;
@@ -432,7 +430,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, runLocation: location.runLocation, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId

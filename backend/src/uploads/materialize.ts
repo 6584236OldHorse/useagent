@@ -4,6 +4,7 @@ import { type SandboxHandle, sandboxProviderKind } from "../sandboxes/provider";
 import type { EngineRunContext, RunInputFile } from "../engines/types";
 import { artifactStorage } from "../artifacts/storage";
 import { resolveSandboxBindingForRun } from "../sandboxes/binding";
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { listRunUploads } from "./repo";
 
 const INPUT_ROOT = "/root/work/.skynet-inputs";
@@ -28,6 +29,7 @@ export async function runInputFiles(run: {
   readonly id: string;
   readonly orgId?: string | null;
   readonly userId?: string | null;
+  readonly runLocation?: RunLocation | null;
 }): Promise<RunInputFile[]> {
   // Path choice only; a run without sandbox credentials (mock engine) still gets its inputs listed.
   const kind = await resolveSandboxBindingForRun(run).then((binding) => binding.kind, () => sandboxProviderKind());

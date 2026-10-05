@@ -1,6 +1,7 @@
 "use client";
 
 import { RiComputerLine } from "@remixicon/react";
+import type { RunLocation as RunLocationChoice } from "@useagent/agent-client/wire";
 import { useEffect, useState } from "react";
 import { fetchRunners, fetchSandboxProviderName, type SandboxProviderName } from "./runner-api";
 import { localRunnerId, PROVIDER_NAMES, type Runner, runnerLocationLabel } from "./runner-data";
@@ -8,6 +9,8 @@ import { localRunnerId, PROVIDER_NAMES, type Runner, runnerLocationLabel } from 
 export type LocatedRun = {
   readonly sandbox_id: string | null;
   readonly sandbox_provider?: unknown;
+  /** Where the thread asked to run; names the place before any sandbox exists. */
+  readonly run_location?: RunLocationChoice | null;
 };
 
 /** Where a run executes, named: the runner's machine for a local sandbox, the
@@ -44,12 +47,12 @@ export function useRunLocationLabel(run: LocatedRun): string | null {
       cancelled = true;
     };
   }, [cloud]);
-  if (!sandboxId && !sandboxProvider) return null;
+  if (!sandboxId && !sandboxProvider && !run.run_location) return null;
   const names =
     deployment && deployment.provider === sandboxProvider
       ? { ...PROVIDER_NAMES, [deployment.provider]: deployment.label }
       : PROVIDER_NAMES;
-  return runnerLocationLabel(sandboxId, sandboxProvider, runners, names);
+  return runnerLocationLabel(sandboxId, sandboxProvider, runners, names, run.run_location);
 }
 
 export function RunLocation({ run }: { readonly run: LocatedRun }) {

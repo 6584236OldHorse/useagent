@@ -27,6 +27,8 @@ export interface RunCreateBody {
   memory_scope?: unknown;
   /** The permission policy for this run (PERMISSION_MODES); a reply inherits its parent's when absent. */
   permission_mode?: unknown;
+  /** Where a root run should execute (RUN_LOCATIONS); absent is the cloud, and a reply ignores it (run-location.ts). */
+  run_location?: unknown;
   skill?: unknown;
   command?: unknown;
   attachments?: unknown;

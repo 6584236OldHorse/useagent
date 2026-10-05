@@ -1,11 +1,13 @@
 // An engine login from the user's own machine, used inside a sandbox on that
 // machine in place of the plane's provider gateway capability. The runner
 // mounts the login and names it in USEAGENT_LOGIN_<ENGINE>; the binding says
-// whether the org lent it. Only a run bound to a machine carries any login,
-// so every hosted provider takes the provider gateway path untouched. Tools
-// still reach the plane through the tool gateway; only the model call goes
-// straight from the sandbox to the vendor with the user's own login.
+// whether the org lent it. Only a run whose thread asked to run on the machine
+// (run_location "local") carries any login, so every hosted provider takes the
+// provider gateway path untouched. Tools still reach the plane through the tool
+// gateway; only the model call goes straight from the sandbox to the vendor
+// with the user's own login.
 
+import type { RunLocation } from "@useagent/agent-client/wire";
 import { activeRunnerSeam } from "../runners/directory";
 import { getRunnerPolicy, localRunnersEnabled } from "../runners/policy";
 import type { EngineId } from "../db/schema";
@@ -82,12 +84,17 @@ export interface LoginOfferDeps {
   readonly policy?: typeof getRunnerPolicy;
 }
 
-/** Whether a new run for this user would carry the engine's login: the rule the binding applies, asked before the run exists. */
-export async function sandboxLoginOffered(
-  scope: { readonly orgId: string | null | undefined; readonly userId: string | null | undefined },
-  engine: string,
-  deps: LoginOfferDeps = {},
-): Promise<boolean> {
+/** The user and the place the thread runs, as every readiness question sees them. */
+export interface LoginScope {
+  readonly orgId: string | null | undefined;
+  readonly userId: string | null | undefined;
+  /** The thread's run_location; a login is offered only to a thread bound to the machine. */
+  readonly runLocation?: RunLocation | null;
+}
+
+/** Whether a run for this user would carry the engine's login: the rule the binding applies, asked before the run exists. */
+export async function sandboxLoginOffered(scope: LoginScope, engine: string, deps: LoginOfferDeps = {}): Promise<boolean> {
+  if (scope.runLocation !== "local") return false;
   if (!isLoginEngine(engine) || !scope.orgId || !scope.userId || !localRunnersEnabled(deps.env ?? process.env)) return false;
   const runner = (deps.seam ?? activeRunnerSeam)().onlineForUser(scope.orgId, scope.userId);
   if (!runner || !runner.logins.includes(engine)) return false;
@@ -97,7 +104,7 @@ export async function sandboxLoginOffered(
 
 /** Engine resolution at run creation, with the user's machine login able to stand in for the plane's provider. */
 export async function resolveEngineForUser(
-  scope: { readonly orgId: string | null | undefined; readonly userId: string | null | undefined },
+  scope: LoginScope,
   rawEngine: unknown,
   deps: LoginOfferDeps = {},
 ): Promise<EngineResolution> {
@@ -113,7 +120,7 @@ export async function resolveEngineForUser(
  * ask this one question.
  */
 export async function dispatchReadyForUser(
-  scope: { readonly orgId: string | null | undefined; readonly userId: string | null | undefined },
+  scope: LoginScope,
   engine: EngineId,
   model: string,
   policy: "accepted" | "persisted",

@@ -1,4 +1,4 @@
-import type { PermissionMode } from "@useagent/agent-client/wire";
+import type { PermissionMode, RunLocation } from "@useagent/agent-client/wire";
 import type { EngineId, StepKind } from "../db/schema";
 import type { TimingSpanEnd } from "../runs/run-timing";
 import type { RunResource } from "../resources/types";
@@ -108,6 +108,10 @@ export interface EngineRunContext {
    *  no identity → the adapter skips gateway wiring (fail closed). */
   orgId?: string | null;
   userId?: string | null;
+  /** Where the thread asked to run (the run row's run_location): "local" binds
+   *  the person's connected machine and never falls back; anything else is the
+   *  hosted provider. */
+  runLocation?: RunLocation | null;
   /** Server-owned run origin. Product fan-out policy is never injected into
    * internal eval/canary turns. */
   origin?: string | null;

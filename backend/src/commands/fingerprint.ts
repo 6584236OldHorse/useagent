@@ -18,6 +18,7 @@ export function runIntentFromAcceptedRun(
     attachmentIds: run.attachmentIds ?? [],
     memoryScope: run.memoryScope ?? "org",
     permissionMode: run.permissionMode ?? null,
+    runLocation: run.runLocation ?? null,
     skillId: run.skillId ?? null,
     skillVersion: run.skillVersion ?? null,
     commandName: run.commandName ?? null,
@@ -74,6 +75,10 @@ export function runIntentFingerprint(intent: RunCommandIntent): string {
   // The reasoning effort joins the intent only when one was requested, for the
   // same reason.
   if (intent.reasoningEffort) fields.push(["reasoning_effort", intent.reasoningEffort]);
+  // Where a root run was asked to execute is part of its intent (a turn on the
+  // person's machine is not the same turn as one on the cloud); like the mode
+  // it joins the hash only when chosen, so every earlier fingerprint holds.
+  if (intent.runLocation) fields.push(["run_location", intent.runLocation]);
   if (intent.expectedSandbox) {
     fields.push([
       intent.expectedSandbox.version,
