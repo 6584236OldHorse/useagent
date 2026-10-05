@@ -56,6 +56,7 @@ export function buildRuntimeEnvironmentBootScript(
     // valid one), and a marker tells the plane a desktop boot is in progress.
     `mkdir -p "${skynet}" && chmod 700 "${skynet}"`,
     `[ -s "${skynet}/cdp-relay.token" ] || { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' >"${skynet}/cdp-relay.token"; chmod 600 "${skynet}/cdp-relay.token"; }`,
+    `rm -f "${skynet}/desktop.pid"`,
     `touch "${skynet}/${DESKTOP_BOOT_MARKER_NAME}"`,
     // The runtime comes up in the background; the sandbox's own command (the
     // image's, or what the launcher passed) is the main process from the start,
