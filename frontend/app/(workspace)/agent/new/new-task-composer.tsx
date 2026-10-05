@@ -672,7 +672,7 @@ export function NewTaskComposer({
           are chosen, their branch pickers. Wrapped in a disabled fieldset so it
           goes inert during submit, exactly like the in-card controls. */}
       <fieldset disabled={submitting} className="contents">
-        <div className="relative z-0 mx-2.5 -mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-b-[16px] border-x border-b border-border-button-default bg-background-tertiary-default px-3 pt-3.5 pb-1.5">
+        <div className="relative z-0 mx-2.5 -mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-b-[16px] border-x border-b border-border-button-default bg-bg-white-0 px-3 pt-3.5 pb-1.5">
           {/* Project chooser: the same repositories selector as the "+" menu,
               rendered as the notch's quiet "Choose project" chip. */}
           <RepoMultiPicker
