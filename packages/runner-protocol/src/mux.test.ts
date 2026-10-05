@@ -548,6 +548,23 @@ describe("review findings", () => {
     expect(sent.some((m) => m.includes('"stream.reset"'))).toBe(true);
   });
 
+  test("bytes the consumer already drained before a late acknowledgement still count against it", async () => {
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, {}, { window: 8 });
+    const opening = plane.openStream({}).then(() => "resolved", (e: unknown) => e);
+    const id = (JSON.parse(sent[0]!) as { id: number }).id;
+    const frame = new Uint8Array(5 + 17);
+    frame.set([1, 0, 0, 0, id]);
+    plane.receive(frame);
+    // The readable's prefetch drains and credits the chunk before the acknowledgement lands.
+    await Bun.sleep(0);
+    plane.receive(JSON.stringify({ t: "stream.opened", id, window: 8 }));
+    const error = await opening;
+    expect(error).toBeInstanceOf(StreamRefusedError);
+    expect((error as StreamRefusedError).message).toMatch(/window/);
+    expect(plane.openStreams).toBe(0);
+  });
+
   test("an older acceptor may send the protocol default before it acknowledges", async () => {
     let runnerMux!: Mux;
     const plane = new Mux("plane", { send: (m) => queueMicrotask(() => runnerMux.receive(m)) }, {}, { window: 8 });
