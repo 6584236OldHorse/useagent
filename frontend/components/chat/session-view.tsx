@@ -41,6 +41,7 @@ import {
   useRailWidth,
   useSplitTooNarrow,
 } from "@/components/chat/rail-resizer";
+import { RunFeedback } from "@/components/chat/run-feedback";
 import { SubagentChips } from "@/components/chat/subagent-pane";
 import {
   RAIL_ICON_BUTTON,
@@ -681,9 +682,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
               <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              {/* Status pill + New session removed (user 2026-08-23): run state
-                  already lives in the composer/timeline and New thread in the
-                  sidebar - the header stays quiet. Stop remains the composer's. */}
+              {/* Status pill + New session removed (user 2026-08-23): run state lives in the composer/timeline, New thread in the sidebar, Stop in the composer. */}
+              <RunFeedback key={newest.id} runId={newest.id} />
               {/* In sheet mode (below md, or a too-narrow md+ split) this is
                   the rail's opener (the reopen strip covers side-by-side). */}
               {hasRuntimeSurfaces && !sheetSurfacesOpen && (

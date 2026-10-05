@@ -40,6 +40,7 @@ import {
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
 import { terminalRoutes } from "./runs/terminal";
+import { runFeedbackRoutes } from "./runs/feedback-routes";
 import { runnerLinkRoutes, runnerRegistryProxyRoutes } from "./runners/link";
 import { runnerBridgeRoutes } from "./runners/bridge";
 import { runnerRoutes } from "./runners/routes";
@@ -468,6 +469,8 @@ app.route("/api/uploads", uploadRoutes);
 // Interactive terminal WS bridge (browser xterm ⇄ sandbox PTY). Mounted before
 // nothing — separate router so the SSE/step routes stay untouched.
 app.route("/api/runs", terminalRoutes);
+// In-app feedback on a run: stored, then a Slack notice through the outbox.
+app.route("/api/runs", runFeedbackRoutes);
 // Same-origin bridge to a thread's opencode server for the embedded "Live" tab
 // (frontend/public/opencode-app). Injects the Daytona preview token, streams
 // SSE through untouched.
