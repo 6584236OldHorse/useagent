@@ -601,11 +601,17 @@ test("an invitation cannot be cancelled once accepted, and two managers inviting
 test("a workspace and an inviter send a bounded number of invitations a day; operators are not counted", async () => {
   const org = await createOrgSession("invite-cap");
   const operator = await createOrgSession("invite-cap-operator");
+  // This test needs a second workspace for the same inviter; the per-user
+  // organization limit is not what it measures.
+  const savedOrgLimit = process.env.ORG_CREATE_LIMIT_PER_USER;
+  process.env.ORG_CREATE_LIMIT_PER_USER = "10";
   const second = await json<{ id: string }>("/api/auth/organization/create", {
     method: "POST",
     cookies: org.cookies,
     body: { name: "Second workspace", slug: `invite-cap-${crypto.randomUUID().slice(0, 8)}` },
   });
+  if (savedOrgLimit === undefined) delete process.env.ORG_CREATE_LIMIT_PER_USER;
+  else process.env.ORG_CREATE_LIMIT_PER_USER = savedOrgLimit;
   expect(second.status).toBe(200);
   const invite = (cookies: string, organizationId: string, email: string, resend = false) =>
     json<{ message?: string }>("/api/auth/organization/invite-member", {
