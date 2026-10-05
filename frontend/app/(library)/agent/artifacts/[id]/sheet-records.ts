@@ -37,14 +37,16 @@ export interface SheetRecordColumn {
   readonly ref: string;
 }
 
+/** The workbook's emphasis (bold, italic, alignment) carries over; its colours
+ *  do not. A fill or a font colour an agent wrote for Excel's white page paints
+ *  over the theme, so a dark theme ended up with white rows and grey text. The
+ *  grid takes every colour from the theme. */
 function cellStyle(sheet: Worksheet, ref: string, numeric: boolean): CSSProperties {
   const fmt = sheet.cells[ref]?.fmt;
   return {
     fontWeight: fmt?.bold ? 600 : undefined,
     fontStyle: fmt?.italic ? "italic" : undefined,
     textAlign: fmt?.align ?? (numeric ? "right" : "left"),
-    ...(fmt?.color ? { color: fmt.color } : {}),
-    ...(fmt?.fill ? { background: fmt.fill } : {}),
   };
 }
 

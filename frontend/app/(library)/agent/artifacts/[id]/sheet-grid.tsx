@@ -239,14 +239,14 @@ function TypedCell({
       );
     case "number":
       return (
-        <span style={{ ...cell.style, background: undefined }} className="block text-right text-caption-1-regular tabular-nums text-text-secondary">
+        <span style={cell.style} className="block text-right text-caption-1-regular tabular-nums text-text-secondary">
           {cell.display}
         </span>
       );
     default:
       return (
         <span
-          style={{ ...cell.style, background: undefined }}
+          style={cell.style}
           className="block max-w-[28rem] truncate text-caption-1-regular text-text-secondary"
         >
           {cell.display}
@@ -506,7 +506,6 @@ export function SheetGridSurface({
                       "whitespace-nowrap",
                       type === "number" && "text-right",
                     )}
-                    style={cell.style.background ? { background: cell.style.background } : undefined}
                   >
                     {isEditing ? (
                       <CellEditor
