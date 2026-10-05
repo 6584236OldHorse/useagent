@@ -5,6 +5,13 @@
 // bound the Codex app-servers this host keeps; a run beyond them gets a session
 // of its own that closes with the run.
 
+/** Kill switch: SESSION_REUSE=off gives every run its own Codex session, as before. */
+export function codexSessionReuseEnabled(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return env.SESSION_REUSE?.trim().toLowerCase() !== "off";
+}
+
 const MAX_SESSIONS = 40;
 const MAX_SESSIONS_PER_USER = 4;
 const IDLE_EVICTION_MS = 5 * 60_000;

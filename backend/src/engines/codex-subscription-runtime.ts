@@ -43,6 +43,7 @@ import {
 } from "./codex-code-mode-sandbox";
 import {
   claimCodexThreadSession,
+  codexSessionReuseEnabled,
   codexThreadSessionKey,
   evictCodexThreadSession,
   keepCodexThreadSession,
@@ -113,8 +114,10 @@ export async function prepareCodexSubscription(input: {
   readonly workdir: string;
   readonly runtime: CodexSubscriptionRuntimeSelection;
   readonly dependencies?: Partial<SubscriptionDependencies>;
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }): Promise<CodexSubscriptionLease> {
   const { sandbox, ctx, workdir, runtime } = input;
+  const reuse = codexSessionReuseEnabled(input.env);
   const dependencies = { ...defaultDependencies, ...input.dependencies };
   const orgId = requiredIdentity(ctx.orgId, "organization");
   const userId = requiredIdentity(ctx.userId, "user");
@@ -166,7 +169,7 @@ export async function prepareCodexSubscription(input: {
   // A follow-up turn on a sandbox whose services never went away takes the
   // thread's kept session: the runtime's Codex session is still connected to
   // it, so the run only becomes the one it serves.
-  if (servicesUp) {
+  if (reuse && servicesUp) {
     const kept = claimCodexThreadSession<SubscriptionSessionParts>(sessionKey);
     if (kept && !kept.parts.relay.closed && kept.parts.cwd === workdir) {
       kept.parts.codeModeBridge.rotateBearer(codeModeBearer);
@@ -255,7 +258,7 @@ export async function prepareCodexSubscription(input: {
       execServerUrl: execBridge.url,
       codeModeHostUrl: codeModeBridge.url,
       toolGateway: toolGateway ? { serverName: toolGateway.serverName, url: toolGateway.url } : null,
-      reusable: true,
+      reusable: reuse,
     });
     relay.activate(run);
     // Retained-sandbox validation requires both the immutable control-plane
@@ -294,7 +297,7 @@ export async function prepareCodexSubscription(input: {
   };
   // Kept for the thread's next runs when the host has room; otherwise this
   // run's session is its own and goes with it, as before.
-  const kept = keepCodexThreadSession(sessionKey, userId, parts);
+  const kept = reuse ? keepCodexThreadSession(sessionKey, userId, parts) : null;
   if (kept) {
     return {
       authEpoch: runtime.authEpoch,

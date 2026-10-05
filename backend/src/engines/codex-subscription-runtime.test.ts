@@ -203,6 +203,32 @@ describe("T3 Codex subscription lease", () => {
     expect(liveCodexThreadSessions()).toBe(1);
   });
 
+  test("SESSION_REUSE=off gives every run its own single-use session, as before reuse", async () => {
+    const closed: string[] = [];
+    const relays = relaySessions(closed);
+    const dependencies = {
+      loadThreadBinding: async () => "provider-thread-1",
+      openExecBridge: () => ({ url: "ws://127.0.0.1:43111/grant", close: () => void closed.push("bridge") }),
+      openCodeModeBridge: codeModeBridges(closed),
+      openRelaySession: relays.open,
+    };
+    const env = { SESSION_REUSE: "off" };
+    const first = await prepareCodexSubscription({
+      sandbox: fakeSandbox().sandbox, ctx: context(), workdir: "/root/work", runtime: runtime(), dependencies, env,
+    });
+    await first.close();
+    expect(closed.toSorted()).toEqual(["bridge", "code-mode", "relay"]);
+    const warm = fakeSandbox({ execServerListening: true, codeModeListening: true });
+    const second = await prepareCodexSubscription({
+      sandbox: warm.sandbox, ctx: { ...context(), runId: "run-2" }, workdir: "/root/work", runtime: runtime(), dependencies, env,
+    });
+    expect(second.sessionReused).toBe(false);
+    expect(relays.opened.map(({ input }) => input.reusable)).toEqual([false, false]);
+    expect(liveCodexThreadSessions()).toBe(0);
+    await second.close();
+    expect(warm.commands.at(-1)?.command).toContain("delete current.providerInstances.codex");
+  });
+
   test("restarted sandbox services retire the kept session and start a new one", async () => {
     const closed: string[] = [];
     const relays = relaySessions(closed);
