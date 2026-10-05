@@ -1479,6 +1479,44 @@ exit 17
     )).toBe(true);
   });
 
+  test("writes a Claude turn's capability, generation marker and workspace access together", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const sandbox = {
+      id: "t3-provider-claude-concurrent",
+      process: {
+        executeCommand: async (command: string) => {
+          const tracked = command.startsWith("$HOME/.skynet/t3/skynet-bin/prepare-claude-access ") ||
+            command.includes("/tmp/useagent-claude-capability") ||
+            command.includes("provider-gateway-generation");
+          if (tracked) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await Bun.sleep(20);
+            inFlight -= 1;
+          }
+          return { exitCode: 0, result: "" };
+        },
+      },
+    } as unknown as SandboxHandle;
+    await prepareRuntimeProviderBridge(sandbox, {
+      runId: "run-claude-concurrent",
+      threadId: "thread-claude-concurrent",
+      prompt: "work",
+      bootstrapContext: "",
+      turnContext: "",
+      workdir: "/root/work",
+      orgId: "org-a",
+      userId: "user-a",
+      model: "claude-sonnet-5",
+      signal: new AbortController().signal,
+      emit: async () => undefined,
+      setSummary: () => undefined,
+    }, "claude", "/root/work");
+    // Three independent writes after the bootstrap: one round trip, not three.
+    expect(maxInFlight).toBe(3);
+  });
+
   test("prepares Box Claude capability and wrapper without root ownership operations", async () => {
     const commands: string[] = [];
     const sandbox = {

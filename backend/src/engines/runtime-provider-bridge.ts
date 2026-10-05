@@ -682,9 +682,14 @@ export async function prepareRuntimeProviderBridge(
       async close() {},
     };
   } else if (engine === "claude") {
-    await prepareProviderGatewaySandbox(sandbox, ctx, engine, {
-      rootOwnedClaudeCapability: layout.runsAsRoot,
-    });
+    // The run's capability and the Claude user's access to the workspace are
+    // independent writes, both after the bootstrap that installs the helper.
+    await Promise.all([
+      prepareProviderGatewaySandbox(sandbox, ctx, engine, {
+        rootOwnedClaudeCapability: layout.runsAsRoot,
+      }),
+      prepareClaudeRuntimeAccess(sandbox, workdir),
+    ]);
   } else {
     const mode = engineAuthMode("codex");
     if (!mode) throw new Error("invalid ENGINE_AUTH_MODE_CODEX");
@@ -710,7 +715,6 @@ export async function prepareRuntimeProviderBridge(
   }
 
   if (engine === "claude") {
-    await prepareClaudeRuntimeAccess(sandbox, workdir);
     return {
       authPath: null,
       authEpoch: null,
