@@ -67,11 +67,13 @@ const DEFAULT_RETAINED_SANDBOX_TTL_MIN = 4_320;
  * auto-delete boundary. Historical run mappings older than that boundary are
  * no longer capacity reservations: providers may already have deleted them,
  * and the explicit release path clears them sooner when deletion is observed.
+ * FLEET_RETAINED_RESERVATION_MIN shortens the reservation alone, for a hosted
+ * provider that pauses an idle sandbox long before the reuse window ends.
  */
 export function retainedSandboxReservationTtlMs(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
-  const minutes = Number(env.SANDBOX_AUTO_DELETE_MIN ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN);
+  const minutes = Number(env.FLEET_RETAINED_RESERVATION_MIN ?? env.SANDBOX_AUTO_DELETE_MIN ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN);
   return Number.isFinite(minutes) && minutes > 0
     ? minutes * 60_000
     : DEFAULT_RETAINED_SANDBOX_TTL_MIN * 60_000;
