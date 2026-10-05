@@ -1,6 +1,7 @@
-import type { SandboxProvider, SandboxProviderKind } from "@useagent/sandbox-contract";
-import { and, asc, desc, eq, isNotNull, isNull } from "drizzle-orm";
-import { db } from "../db/client";
+import { createHash } from "node:crypto";
+import { SandboxNotFoundError, type SandboxProvider, type SandboxProviderKind } from "@useagent/sandbox-contract";
+import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { db, type Executor } from "../db/client";
 import { runs } from "../db/schema";
 import { listProviderConnections } from "../provider-connections/repo";
 import { getTrustedProviderCredential } from "../provider-connections/service";
@@ -13,6 +14,8 @@ import {
   sandboxTemplate,
 } from "./provider";
 import { isSandboxProviderKind } from "./plugins";
+import { ExpectedSandboxMismatchError, parseExpectedSandboxBinding, type ExpectedSandboxBinding } from "./expected-binding";
+export { ExpectedSandboxMismatchError } from "./expected-binding";
 
 /**
  * Which computer a run's sandbox lives on. The server's env provider is the
@@ -45,6 +48,7 @@ export interface SandboxBinding {
 }
 
 export interface SandboxBindingDeps {
+  readonly expectedSandbox?: ExpectedSandboxBinding;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly connections?: typeof listProviderConnections;
   readonly credential?: typeof getTrustedProviderCredential;
@@ -53,6 +57,43 @@ export interface SandboxBindingDeps {
   /** Test seam: provider factories per kind (default: the plugin registry). */
   readonly providers?: Partial<Record<SandboxProviderKind, (apiKey: string) => SandboxProvider>>;
   readonly envProvider?: () => SandboxBinding | null;
+}
+
+/** Captured provider configuration, not a fresh read of ambient credentials. */
+export function sandboxBindingCredentialGeneration(binding: SandboxBinding): string {
+  const fingerprint = binding.provider.connectionFingerprint;
+  if (!fingerprint || !/^[a-f0-9]{64}$/.test(fingerprint) ||
+    (binding.credential === "user" && (!binding.userId || !binding.connectionUpdatedAt))) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  return createHash("sha256").update(JSON.stringify([
+    fingerprint, binding.kind, binding.credential, binding.userId,
+    binding.connectionUpdatedAt ?? null,
+  ])).digest("hex");
+}
+
+export function sandboxBindingExpectation(
+  binding: SandboxBinding,
+  orgId: string,
+  sandboxId: string,
+): ExpectedSandboxBinding {
+  return parseExpectedSandboxBinding({
+    version: 1, sandboxId, provider: binding.kind, credential: binding.credential,
+    ownerOrgId: orgId, ownerUserId: binding.credential === "user" ? binding.userId : null,
+    credentialGeneration: sandboxBindingCredentialGeneration(binding),
+  })!;
+}
+
+export function assertExpectedSandboxBinding(
+  expected: ExpectedSandboxBinding,
+  binding: SandboxBinding,
+  orgId: string,
+  sandboxId: string,
+): void {
+  if (JSON.stringify(parseExpectedSandboxBinding(expected)) !==
+    JSON.stringify(sandboxBindingExpectation(binding, orgId, sandboxId))) {
+    throw new ExpectedSandboxMismatchError();
+  }
 }
 
 export function userComputersEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
@@ -218,13 +259,61 @@ export async function resolveSandboxBindingForThread(
   threadId: string,
   deps: SandboxBindingDeps = {},
 ): Promise<SandboxBinding> {
+  const expected = parseExpectedSandboxBinding(deps.expectedSandbox);
+  if (expected && (expected.ownerOrgId !== orgId || !threadId)) throw new ExpectedSandboxMismatchError();
   const [recorded] = await db
     .select(recordedSandboxColumns)
     .from(runs)
     .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId), isNotNull(runs.sandboxId)))
     .orderBy(desc(runs.createdAt), desc(runs.id))
     .limit(1);
-  return bindingForRecorded(recorded?.sandboxId ? await sandboxOwnerRecord(recorded.sandboxId, recorded) : null, deps);
+  if (expected && (recorded?.sandboxId !== expected.sandboxId ||
+    recorded.sandboxProvider !== expected.provider || recorded.sandboxCredential !== expected.credential)) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  const binding = await bindingForRecorded(recorded?.sandboxId ? await sandboxOwnerRecord(recorded.sandboxId, recorded) : null, deps);
+  if (expected) assertExpectedSandboxBinding(expected, binding, orgId, expected.sandboxId);
+  return binding;
+}
+
+/** Reused by execution and recovery; never consults a default/fallback provider. */
+export async function resolveExpectedSandbox(expected: ExpectedSandboxBinding, threadId: string) {
+  const binding = await resolveSandboxBindingForThread(expected.ownerOrgId, threadId, { expectedSandbox: expected });
+  const sandbox = await binding.provider.get(expected.sandboxId).catch((error: unknown) => {
+    if (error instanceof SandboxNotFoundError) throw new ExpectedSandboxMismatchError();
+    throw error;
+  });
+  if (sandbox.id !== expected.sandboxId) throw new ExpectedSandboxMismatchError();
+  return sandbox;
+}
+
+/** A live turn owns the thread runtime; otherwise its newest accepted turn does. */
+export async function getThreadExpectedSandbox(orgId: string, threadId: string, exec: Executor = db) {
+  const [run] = await exec.select({ expectedSandbox: runs.expectedSandbox }).from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))
+    .orderBy(sql`(${runs.status} = 'running') DESC`, desc(runs.createdAt), desc(runs.id)).limit(1);
+  const expected = parseExpectedSandboxBinding(run?.expectedSandbox);
+  if (expected && expected.ownerOrgId !== orgId) throw new ExpectedSandboxMismatchError();
+  return expected;
+}
+
+/** Run-bound tools share the execution fence instead of resolving by ID alone. */
+export async function resolveRunSandbox(run: {
+  readonly orgId: string | null;
+  readonly threadId: string;
+  readonly sandboxId: string | null;
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
+}) {
+  const expected = parseExpectedSandboxBinding(run.expectedSandbox) ??
+    (run.orgId ? await getThreadExpectedSandbox(run.orgId, run.threadId) : null);
+  if (expected) {
+    if (run.orgId !== expected.ownerOrgId || run.sandboxId !== expected.sandboxId) {
+      throw new ExpectedSandboxMismatchError();
+    }
+    return await resolveExpectedSandbox(expected, run.threadId);
+  }
+  if (!run.sandboxId) throw new Error("run has no sandbox");
+  return await (await resolveSandboxBindingForSandbox(run.sandboxId)).provider.get(run.sandboxId);
 }
 
 /** The provider that created a sandbox, by sandbox id (for callers that hold only the id). */

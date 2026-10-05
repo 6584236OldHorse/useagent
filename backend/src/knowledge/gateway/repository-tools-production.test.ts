@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { ensureRepoClone as realEnsureRepoClone } from "../../engines/repo-prep";
 import { db } from "../../db/client";
@@ -30,6 +31,7 @@ const executeCommand = mock(async () => ({
   exitCode: 0,
   result: "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d\nfeature/auth\n",
 }));
+const connectionFingerprint = "f".repeat(64);
 
 mock.module("../../engines/repo-prep", () => ({
   ...repoPrepModule,
@@ -45,6 +47,7 @@ mock.module("../../sandboxes/provider", () => ({
   sandboxProviderFor: (kind: Parameters<typeof sandboxProviderModule.sandboxProviderFor>[0], apiKey: string) => {
     if (kind === "box" && apiKey === "sandbox-key") {
       return {
+        connectionFingerprint,
         get: async (sandboxId: string): Promise<SandboxHandle> => {
           expect(sandboxId).toBe("sandbox-1");
           return sandboxHandle();
@@ -56,6 +59,7 @@ mock.module("../../sandboxes/provider", () => ({
   sandboxProvider: (apiKey: string) => {
     if (apiKey === "sandbox-key") {
       return {
+        connectionFingerprint,
         get: async (sandboxId: string): Promise<SandboxHandle> => {
           expect(sandboxId).toBe("sandbox-1");
           return sandboxHandle();
@@ -80,6 +84,21 @@ describe("repository gateway production clone", () => {
       scope: "run",
       exp: Date.now() + 60_000,
     };
+    const expectedSandbox = {
+      version: 1 as const,
+      sandboxId: "sandbox-1",
+      provider: "box" as const,
+      credential: "env" as const,
+      ownerOrgId: claims.orgId,
+      ownerUserId: null,
+      credentialGeneration: createHash("sha256").update(JSON.stringify([
+        connectionFingerprint,
+        "box",
+        "env",
+        null,
+        null,
+      ])).digest("hex"),
+    };
     await createRun({
       id: runId,
       prompt: "prepare repo clone",
@@ -91,6 +110,7 @@ describe("repository gateway production clone", () => {
       threadId: claims.threadId,
       repos: ["upstream-org/backend:feature/auth"],
       memoryScope: "org",
+      expectedSandbox,
     });
     await setRunSandbox(runId, "sandbox-1", { kind: "box", credential: "env" });
 
@@ -147,6 +167,7 @@ describe("repository gateway production clone", () => {
 function sandboxHandle(): SandboxHandle {
   return {
     id: "sandbox-1",
+    providerKind: "box",
     cpu: 2,
     memory: 4096,
     process: {

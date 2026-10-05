@@ -126,7 +126,10 @@ export interface PublicationToolDependencies {
     bytes: Uint8Array,
     input: Parameters<typeof freezeGitHubChangeSet>[0],
   ) => ReturnType<typeof freezeGitHubChangeSet>;
-  readonly readSandboxBundle: (sandboxId: string, path: string, workspaceRoot: string) => Promise<Uint8Array>;
+  readonly readSandboxBundle: (
+    sandboxId: string, path: string, workspaceRoot: string,
+    run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>,
+  ) => Promise<Uint8Array>;
   readonly readPayload: (key: string) => Promise<Uint8Array>;
   readonly getChangeSet: typeof getGitHubChangeSetForOrg;
   readonly getReceipt: typeof getGitHubPublicationReceiptForChangeSet;
@@ -151,7 +154,7 @@ const productionDependencies: PublicationToolDependencies = {
       await artifactStorage().put(key, bytes);
       return freezeGitHubChangeSet(input, tx);
     }),
-  readSandboxBundle: async (sandboxId, path, workspaceRoot) => {
+  readSandboxBundle: async (sandboxId, path, workspaceRoot, run) => {
     const requested = path.trim();
     if (
       !requested ||
@@ -162,11 +165,11 @@ const productionDependencies: PublicationToolDependencies = {
     ) {
       throw new Error(`bundlePath must be a canonical non-secret path under ${workspaceRoot}`);
     }
-    const resolved = await resolveSandboxFilePath(sandboxId, requested);
+    const resolved = await resolveSandboxFilePath(sandboxId, requested, run);
     if (resolved !== requested || !resolved.startsWith(`${workspaceRoot}/`) || isProtectedInjectedSecretPath(resolved)) {
       throw new Error(`bundlePath must not traverse or use a symlink outside ${workspaceRoot}`);
     }
-    return (await downloadSandboxFile(sandboxId, resolved, MAX_BUNDLE_BYTES)).bytes;
+    return (await downloadSandboxFile(sandboxId, resolved, MAX_BUNDLE_BYTES, run)).bytes;
   },
   readPayload: (key) => artifactStorage().read(key),
   getChangeSet: getGitHubChangeSetForOrg,
@@ -416,6 +419,7 @@ async function prepare(
     run.sandboxId,
     requiredString(args.bundlePath, "bundlePath"),
     await resolveAttachedSandboxWorkspaceRoot({ sandboxId: run.sandboxId, sandboxProvider: run.sandboxProvider }),
+    run,
   );
   let bundle: unknown;
   try {

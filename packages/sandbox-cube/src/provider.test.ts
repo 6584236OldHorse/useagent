@@ -81,6 +81,60 @@ function fakeSandbox(options: {
 }
 
 describe("Cube sandbox provider", () => {
+  test("connection identity pins the captured endpoint, proxy namespace, and key", () => {
+    process.env.CUBE_API_URL = "https://cube-api.example.test";
+    process.env.CUBE_SANDBOX_DOMAIN = "sandbox.example.test";
+    process.env.CUBE_PROXY_SCHEME = "https";
+    process.env.CUBE_PROXY_PORT_HTTP = "443";
+    const original = cubeSandboxProvider("fixture-key", ready);
+    const identity = original.connectionFingerprint;
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(cubeSandboxProvider("fixture-key", ready).connectionFingerprint).toBe(identity);
+    expect(cubeSandboxProvider("other-key", ready).connectionFingerprint).not.toBe(identity);
+    process.env.CUBE_API_URL = "https://other-api.example.test";
+    expect(cubeSandboxProvider("fixture-key", ready).connectionFingerprint).not.toBe(identity);
+    expect(original.connectionFingerprint).toBe(identity);
+    process.env.CUBE_API_URL = "https://cube-api.example.test";
+    process.env.CUBE_SANDBOX_DOMAIN = "other-sandbox.example.test";
+    expect(cubeSandboxProvider("fixture-key", ready).connectionFingerprint).not.toBe(identity);
+  });
+
+  test("pins effective SDK fallbacks and rejects newly introduced ambient credentials or targets", async () => {
+    const names = ["E2B_API_KEY", "E2B_ACCESS_TOKEN", "E2B_SANDBOX_URL"] as const;
+    for (const name of names) delete process.env[name];
+    const getInfo = spyOn(E2BSandbox, "getInfo").mockResolvedValue(sandboxInfo());
+    const connect = spyOn(E2BSandbox, "connect").mockResolvedValue(fakeSandbox());
+    const kill = spyOn(E2BSandbox, "kill").mockResolvedValue(true);
+    try {
+      for (const name of names) {
+        const anonymous = cubeSandboxProvider("", ready);
+        const originalIdentity = anonymous.connectionFingerprint;
+        const handle = await anonymous.get("cube-1");
+        getInfo.mockClear();
+        kill.mockClear();
+        process.env[name] = name === "E2B_SANDBOX_URL" ? "https://first.example.test" : "first-fixture-value";
+        const captured = cubeSandboxProvider("", ready);
+        expect(captured.connectionFingerprint).not.toBe(originalIdentity);
+        await expect(anonymous.get("cube-1")).rejects.toThrow("Cube SDK connection changed");
+        await expect(handle.delete()).rejects.toThrow("Cube SDK connection changed");
+        expect(getInfo).not.toHaveBeenCalled();
+        expect(kill).not.toHaveBeenCalled();
+        const capturedIdentity = captured.connectionFingerprint;
+        process.env[name] = name === "E2B_SANDBOX_URL" ? "https://second.example.test" : "second-fixture-value";
+        expect(cubeSandboxProvider("", ready).connectionFingerprint).not.toBe(capturedIdentity);
+        await captured.get("cube-1");
+        const options = getInfo.mock.calls.at(-1)?.[1];
+        const field = name === "E2B_API_KEY" ? "apiKey" : name === "E2B_ACCESS_TOKEN" ? "accessToken" : "sandboxUrl";
+        expect(options).toHaveProperty(field, name === "E2B_SANDBOX_URL" ? "https://first.example.test" : "first-fixture-value");
+        delete process.env[name];
+      }
+    } finally {
+      getInfo.mockRestore();
+      connect.mockRestore();
+      kill.mockRestore();
+    }
+  });
+
   test("translates only missing top-level metadata into the neutral absence error", async () => {
     const getInfo = spyOn(E2BSandbox, "getInfo").mockRejectedValue(
       new E2BSandboxNotFoundError("sandbox missing"),
@@ -90,6 +144,19 @@ describe("Cube sandbox provider", () => {
       .toBeInstanceOf(SandboxNotFoundError);
 
     getInfo.mockRestore();
+  });
+
+  test("rejects a different metadata sandbox before connecting or probing it", async () => {
+    const getInfo = spyOn(E2BSandbox, "getInfo").mockResolvedValue(sandboxInfo({ sandboxId: "foreign-sandbox" }));
+    const connect = spyOn(E2BSandbox, "connect").mockResolvedValue(fakeSandbox());
+    try {
+      await expect(cubeSandboxProvider("fixture-key", ready).get("cube-1")).rejects
+        .toThrow("Cube sandbox metadata identity mismatch");
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      getInfo.mockRestore();
+      connect.mockRestore();
+    }
   });
 
   test("does not translate an envd not-found after metadata lookup succeeds", async () => {

@@ -9,7 +9,8 @@ import {
   rememberLiveThreadSandbox,
 } from "../engines/sandbox-runtime";
 import { getThreadSandbox } from "./repo";
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import { resolveExpectedSandbox, resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
 // PREVIEW PROXY — shared machinery for the same-origin bridges that expose a
@@ -78,17 +79,19 @@ export async function resolvePreviewEndpoint(
   threadId: string,
   port: number,
   force = false,
+  expectedSandbox?: ExpectedSandboxBinding | null,
 ): Promise<PreviewEndpoint> {
   const key = `${threadId}:${port}`;
-  if (!force) {
+  if (!force && !expectedSandbox) {
     const cached = endpoints.get(key);
     if (cached && Date.now() - cached.resolvedAt < PREVIEW_ENDPOINT_TTL_MS) return cached;
   }
-  let sandbox = await resolvePreviewSandbox(threadId);
+  let sandbox = await resolvePreviewSandbox(threadId, expectedSandbox);
   let link: Awaited<ReturnType<SandboxHandle["getPreviewLink"]>>;
   try {
     link = await sandbox.getPreviewLink(port);
-  } catch {
+  } catch (error) {
+    if (expectedSandbox) throw error;
     // A process-local SDK object can outlive a Daytona-side rotation. Evict it
     // and retry once through the durable mapping instead of pinning every
     // subsequent preview request to a dead object.
@@ -101,14 +104,23 @@ export async function resolvePreviewEndpoint(
     ...previewLinkBase(link),
     resolvedAt: Date.now(),
   };
-  endpoints.set(key, ep);
+  if (!expectedSandbox) endpoints.set(key, ep);
   return ep;
 }
 
 /** Resolve and wake the durable Daytona sandbox behind a thread. Kept beside
  * preview-link resolution so terminal/desktop proxies do not duplicate sandbox
  * identity or lifecycle rules. */
-export async function resolvePreviewSandbox(threadId: string): Promise<SandboxHandle> {
+export async function resolvePreviewSandbox(
+  threadId: string,
+  expectedSandbox?: ExpectedSandboxBinding | null,
+): Promise<SandboxHandle> {
+  if (expectedSandbox) {
+    const sandbox = await resolveExpectedSandbox(expectedSandbox, threadId);
+    const state = (sandbox as { state?: string }).state;
+    if (state === "stopped" || state === "paused" || state === "archived") await sandbox.start();
+    return sandbox;
+  }
   const cached = getLiveThreadSandbox(threadId);
   if (cached) {
     const state = (cached as { state?: string }).state;

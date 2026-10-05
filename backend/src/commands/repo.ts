@@ -3,6 +3,7 @@ import { db, type Executor } from "../db/client";
 import { bots, commands, runs, type CommandState } from "../db/schema";
 import { createRun } from "../runs/repo";
 import type { RunCommandInput } from "./types";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { claimUploadsForRun, UploadClaimError } from "../uploads/repo";
 import { recordAdmissionOnAccept } from "../fleet/intake";
 import { ensureRootThreadRelationship, insertThreadRelationship } from "../runs/thread-relationship-repo";
@@ -33,6 +34,7 @@ export interface NewRunCommand {
   readonly payloadFingerprint: string;
   readonly payload: string;
   readonly run: RunCommandInput["run"];
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
   /** Exact server-owned internal origin (src/runs/origin.ts); null for a product
    *  run. Persisted so downstream policy reads the accepted authority and never
    *  derives trust from identifiers. */
@@ -100,6 +102,7 @@ export async function insertCommandWithRun(
         commandProvider: cmd.run.commandProvider,
         commandSessionId: cmd.run.commandSessionId,
         commandCatalogRevision: cmd.run.commandCatalogRevision,
+        expectedSandbox: cmd.expectedSandbox ?? null,
         origin: cmd.origin,
       },
       tx,

@@ -535,6 +535,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
       });
       const { sandbox, workdir, redact } = prepared;
       const providerBridgeLease: RuntimeProviderBridgeLease = prepared.providerState;
+      const controlMetadata = ctx.expectedSandbox
+        ? { expectedSandbox: ctx.expectedSandbox, threadId: ctx.threadId ?? ctx.runId }
+        : undefined;
 
       try {
         // Claude also patches T3 settings.json above. The explicit provider
@@ -683,7 +686,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           threadId: ctx.threadId ?? ctx.runId,
           session,
           input: { kind: "prompt", text: prompt, model: ctx.model },
-          metadata: { runtimeMode, createdAt },
+          metadata: controlMetadata
+            ? { runtimeMode, createdAt, ...controlMetadata }
+            : { runtimeMode, createdAt },
           signal: ctx.signal,
         });
         endDispatch?.();
@@ -731,13 +736,21 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             // stop the sandbox-side turn so a persistent thread does not keep
             // retrying against the provider gateway. Best-effort only: a cancel
             // failure must not mask the no-progress reason.
-            await driver.cancel(session, "provider made no progress").catch(() => {});
+            await driver.cancel(
+              session,
+              "provider made no progress",
+              controlMetadata,
+            ).catch(() => {});
           }
           throw error;
         } finally {
           endTurn?.();
           if (ctx.signal.aborted && !skipQueuedCancel) {
-            const cancelResult = await driver.cancel(session, "turn aborted");
+            const cancelResult = await driver.cancel(
+              session,
+              "turn aborted",
+              controlMetadata,
+            );
             if (cancelResult.status !== "ok") {
               throw new Error(
                 `the provider runtime ${engine} cancel failed (${cancelResult.status}): ${cancelResult.message ?? "unsupported"}`,

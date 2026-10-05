@@ -4,7 +4,7 @@ import { type SandboxHandle, sandboxProviderKind, sandboxRuntimeLayout } from ".
 import { executeArtifactTool, type ToolResult } from "./artifact-tools";
 import { compressScreenshotForModel } from "./screenshot-compression";
 import type { ToolTokenClaims } from "./token";
-import { resolveSandboxBindingForThread } from "../../sandboxes/binding";
+import { resolveRunSandbox } from "../../sandboxes/binding";
 
 export type ComputerToolContent =
   | { type: "text"; text: string }
@@ -328,7 +328,7 @@ async function computerSandbox(claims: ToolTokenClaims): Promise<SandboxHandle> 
   const run = await getRunForOrg(claims.orgId, claims.runId);
   if (!run || run.threadId !== claims.threadId) throw new Error("run is not active in this thread");
   if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
-  return await (await resolveSandboxBindingForThread(claims.orgId, run.threadId)).provider.get(run.sandboxId);
+  return await resolveRunSandbox(run);
 }
 
 async function readySandbox(claims: ToolTokenClaims): Promise<SandboxHandle> {

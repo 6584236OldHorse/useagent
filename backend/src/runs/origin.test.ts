@@ -8,6 +8,7 @@ import {
   isInternalRunOrigin,
   isUnattendedRunOrigin,
   AUTOMATION_RUN_ORIGIN,
+  expectedSandboxRunOrigin,
 } from "./origin";
 
 describe("isInternalRunOrigin", () => {
@@ -34,6 +35,15 @@ describe("isInternalRunOrigin", () => {
       expect(isInternalRunOrigin(origin)).toBe(false);
       if (origin !== null) expect(() => assertInternalRunOrigin(origin)).toThrow();
     }
+  });
+});
+
+describe("expectedSandboxRunOrigin", () => {
+  test("inherits only an exact allowlisted parent origin", () => {
+    expect(expectedSandboxRunOrigin("internal:hosted-infra-soak"))
+      .toBe("internal:hosted-infra-soak");
+    expect(expectedSandboxRunOrigin("internal:hosted-infra-soak:forged")).toBeNull();
+    expect(expectedSandboxRunOrigin(null)).toBeNull();
   });
 });
 

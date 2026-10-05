@@ -190,9 +190,13 @@ describe("GitHub publication gateway workflow", () => {
     ["box", "/home/user/work"],
   ] as const)("prepare uses the attached %s workspace, never a tool-supplied root", async (kind, root) => {
     const base = dependencies();
-    const reads: Array<[string, string, string]> = [];
+    const reads: Array<Parameters<PublicationToolDependencies["readSandboxBundle"]>> = [];
+    const run = { ...(await base.getRun(claims.orgId, claims.runId))!, sandboxProvider: kind,
+      expectedSandbox: { version: 1 as const, sandboxId: "sandbox-a", provider: kind,
+        credential: "env" as const, ownerOrgId: claims.orgId, ownerUserId: null,
+        credentialGeneration: "a".repeat(64) } };
     const execute = createGithubPublicationToolExecutor(dependencies({
-      getRun: async (...args) => ({ ...(await base.getRun(...args))!, sandboxProvider: kind }),
+      getRun: async () => run,
       readSandboxBundle: async (...args) => {
         reads.push(args);
         return base.readSandboxBundle(...args);
@@ -203,7 +207,7 @@ describe("GitHub publication gateway workflow", () => {
       bundlePath: `${root}/bundle.json`, workspaceRoot: "/tmp/untrusted",
     });
     expect(result.isError).not.toBe(true);
-    expect(reads).toEqual([["sandbox-a", `${root}/bundle.json`, root]]);
+    expect(reads).toEqual([["sandbox-a", `${root}/bundle.json`, root, run]]);
   });
 
   test("prepare freezes server-resolved base SHA and content-addressed payload for the live binding", async () => {

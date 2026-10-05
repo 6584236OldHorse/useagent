@@ -48,8 +48,16 @@ import {
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/client";
 import { providerSessionAuthIsCurrent } from "../engines/provider-session-authority";
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import {
+  ExpectedSandboxMismatchError,
+  resolveExpectedSandbox,
+  resolveSandboxBindingForSandbox,
+} from "../sandboxes/binding";
 import { piBridgeManager } from "../engines/pi-rpc-bridge";
+import {
+  parseExpectedSandboxBinding,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
 
 /** The event type for the durable "reconciling after restart" marker. Distinct
  *  from the terminal events so the timeline can show a run is being re-probed. */
@@ -101,15 +109,31 @@ const defaultReconcile: ReconcileProbe = (handle, checkpoint) => {
 export type RestartTransportCleanup = (input: {
   readonly engine: string;
   readonly sandboxId: string | null;
+  readonly threadId: string;
+  readonly expectedSandbox: ExpectedSandboxBinding | null;
 }) => Promise<void>;
 
 const defaultRestartTransportCleanup: RestartTransportCleanup = async (input) => {
   if (input.engine !== "pi") return;
   if (!input.sandboxId) throw new Error("Pi restart cleanup has no sandbox identity");
-  const binding = await resolveSandboxBindingForSandbox(input.sandboxId);
-  const sandbox = await binding.provider.get(input.sandboxId);
-  await piBridgeManager.prepare(sandbox);
+  if (input.expectedSandbox && input.sandboxId !== input.expectedSandbox.sandboxId) {
+    throw new ExpectedSandboxMismatchError();
+  }
+  const sandbox = input.expectedSandbox
+    ? await resolveExpectedSandbox(input.expectedSandbox, input.threadId)
+    : await (await resolveSandboxBindingForSandbox(input.sandboxId)).provider.get(input.sandboxId);
+  await piBridgeManager.prepare(sandbox, input.expectedSandbox ?? undefined);
 };
+
+function recoveryMetadata(
+  expectedSandbox: ExpectedSandboxBinding | null,
+  threadId: string,
+  sandboxId: string | null,
+): Record<string, unknown> | undefined {
+  if (!expectedSandbox) return undefined;
+  if (sandboxId !== expectedSandbox.sandboxId) throw new ExpectedSandboxMismatchError();
+  return { expectedSandbox, threadId };
+}
 
 export interface RecoveryResult {
   readonly reconciled: number;
@@ -157,12 +181,29 @@ async function resolveDispatched(
   reconcile: ReconcileProbe,
   cleanup: RestartTransportCleanup,
 ): Promise<DispatchedResolution> {
-  if (cmd.engine === "pi") {
-    await cleanup({ engine: cmd.engine, sandboxId: cmd.sandboxId });
-  }
   let outcome: DispatchedResolution = "settled";
-  if (cmd.runStatus === "running") {
-    outcome = await recoverRunningRun(cmd, reconcile);
+  try {
+    if (cmd.expectedSandbox && cmd.threadId !== cmd.runThreadId) {
+      throw new ExpectedSandboxMismatchError();
+    }
+    if (cmd.engine === "pi") {
+      await cleanup({
+        engine: cmd.engine,
+        sandboxId: cmd.sandboxId,
+        threadId: cmd.runThreadId,
+        expectedSandbox: cmd.expectedSandbox,
+      });
+    }
+    if (cmd.runStatus === "running") {
+      outcome = await recoverRunningRun(cmd, reconcile);
+    }
+  } catch (error) {
+    if (!(error instanceof ExpectedSandboxMismatchError)) throw error;
+    if (cmd.runStatus === "running") {
+      const finalized = await finalizeRun(cmd.runId, "failed", error.message, 0);
+      const durable = await resolveDurableFinalizationOutcome(cmd.runId, finalized);
+      outcome = durable?.status === "completed" ? "reconciled" : "failed";
+    }
   }
   if (outcome === "parked") return outcome; // keep the command dispatched
   // The run is now terminal (reconciled/failed) or was already terminal/queued;
@@ -216,6 +257,7 @@ async function recoverRunningRun(
 
   const lastStepAt = await getLastStepAt(cmd.runId);
   const redact = await orgSecretRedactor(cmd.orgId);
+  const metadata = recoveryMetadata(cmd.expectedSandbox, cmd.runThreadId, cmd.sandboxId);
   const handle: HarnessSessionHandle = {
     provider: binding!.provider,
     sessionId: binding!.nativeSessionId,
@@ -231,13 +273,15 @@ async function recoverRunningRun(
     result = await Promise.race([
       reconcile(handle, {
         sinceMs: lastStepAt?.getTime() ?? 0,
-        eventContext: { runId: cmd.runId, threadId: cmd.threadId, redact },
+        metadata,
+        eventContext: { runId: cmd.runId, threadId: cmd.runThreadId, redact },
       }),
       new Promise<HarnessReconciliation>((resolve) =>
         setTimeout(() => resolve({ status: "unreachable" }), RECONCILE_BUDGET_MS),
       ),
     ]);
-  } catch {
+  } catch (error) {
+    if (error instanceof ExpectedSandboxMismatchError) throw error;
     result = { status: "unreachable" };
   }
 
@@ -496,8 +540,19 @@ export async function runDueReconciles(
       else lost++;
       continue;
     }
-    if (run.engine === "pi") {
-      await cleanup({ engine: run.engine, sandboxId: run.sandboxId });
+    const expectedSandbox = parseExpectedSandboxBinding(run.expectedSandbox);
+    const queueIdentityAgrees = entry.threadId === run.threadId &&
+      entry.sandboxId === run.sandboxId &&
+      entry.sessionId === run.engineSessionId &&
+      (!expectedSandbox || entry.sandboxId === expectedSandbox.sandboxId);
+    if (expectedSandbox && !queueIdentityAgrees) throw new ExpectedSandboxMismatchError();
+    if (run.engine === "pi" && queueIdentityAgrees) {
+      await cleanup({
+        engine: run.engine,
+        sandboxId: run.sandboxId,
+        threadId: run.threadId,
+        expectedSandbox,
+      });
     }
     if (run.orgId && await hasRunCancelIntent(run.orgId, run.id)) {
       const durable = await finalizeOwned(entry, "failed", CANCEL_SUMMARY);
@@ -511,7 +566,16 @@ export async function runDueReconciles(
       ? await providerSessionAuthIsCurrent({ binding, orgId: run.orgId, userId: run.userId })
       : false;
     const redact = await orgSecretRedactor(run.orgId);
-    const result = await probeParked(entry, authCurrent ? binding : null, redact, reconcile);
+    const result = await probeParked(
+      entry,
+      authCurrent ? binding : null,
+      redact,
+      reconcile,
+      expectedSandbox,
+      run.threadId,
+      run.sandboxId,
+      run.engineSessionId,
+    );
     // CONTINUITY (#63): ingest reachable native activity before deciding whether
     // to retry or adopt. Completed-event ingestion is strict because finalization
     // seals the run; in-progress activity remains best-effort timeline continuity.
@@ -586,6 +650,19 @@ export async function runDueReconciles(
       else lost++;
     }
    } catch (err) {
+     if (err instanceof ExpectedSandboxMismatchError) {
+       try {
+         const durable = await finalizeOwned(entry, "failed", err.message);
+         if (!durable) lost++;
+         else if (durable.status === "completed") adopted++;
+         else failed++;
+       } catch (finalizeError) {
+         console.error(`[reconcile] expected sandbox failure for run ${entry.runId} could not settle:`, finalizeError);
+         if (await rescheduleEntry(entry).catch(() => false)) retried++;
+         else lost++;
+       }
+       continue;
+     }
      // Bump this entry's next attempt so a persistently failing one backs off
      // instead of hot-looping, and move on to the rest of the batch.
      console.error(`[reconcile] entry ${entry.runId} failed, skipping:`, err);
@@ -602,9 +679,16 @@ async function probeParked(
   binding: ProviderSessionBinding | null,
   redact: Awaited<ReturnType<typeof orgSecretRedactor>>,
   reconcile: ReconcileProbe,
+  expectedSandbox: ExpectedSandboxBinding | null,
+  runThreadId: string,
+  runSandboxId: string | null,
+  runSessionId: string | null,
 ): Promise<HarnessReconciliation> {
   if (
     !binding ||
+    entry.threadId !== runThreadId ||
+    entry.sandboxId !== runSandboxId ||
+    entry.sessionId !== runSessionId ||
     binding.runtime.kind !== "sandbox" ||
     binding.runtime.id !== entry.sandboxId ||
     binding.nativeSessionId !== entry.sessionId
@@ -620,17 +704,20 @@ async function probeParked(
     authEpoch: binding.authEpoch,
     currentAuthEpoch: binding.authEpoch,
   };
+  const metadata = recoveryMetadata(expectedSandbox, entry.threadId, entry.sandboxId);
   try {
     return await Promise.race([
       reconcile(handle, {
         sinceMs: entry.sinceMs,
+        metadata,
         eventContext: { runId: entry.runId, threadId: entry.threadId, redact },
       }),
       new Promise<HarnessReconciliation>((resolve) =>
         setTimeout(() => resolve({ status: "unreachable" }), RECONCILE_BUDGET_MS),
       ),
     ]);
-  } catch {
+  } catch (error) {
+    if (error instanceof ExpectedSandboxMismatchError) throw error;
     return { status: "unreachable" };
   }
 }

@@ -6,7 +6,9 @@ import {
   PPTX_CONTENT_TYPE,
   XLSX_CONTENT_TYPE,
 } from "@useagent/artifact-workspace";
-import { resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+import { resolveRunSandbox, resolveSandboxBindingForSandbox } from "../sandboxes/binding";
+
+type RunSandboxAuthority = Parameters<typeof resolveRunSandbox>[0];
 
 /** The Office binary content types LibreOffice can render to a PDF preview. */
 const OFFICE_PREVIEW_CONTENT_TYPES = new Set([
@@ -27,6 +29,7 @@ export function isOfficePreviewContentType(contentType: string): boolean {
 
 export interface OfficePreviewInput {
   readonly sandboxId: string;
+  readonly run?: RunSandboxAuthority;
   readonly sourceName: string;
   readonly sourceBytes: Uint8Array;
   readonly timeoutSeconds: number;
@@ -46,8 +49,9 @@ function shellQuote(value: string): string {
 }
 
 async function providerConvert(input: OfficePreviewInput): Promise<Uint8Array | null> {
-  const provider = (await resolveSandboxBindingForSandbox(input.sandboxId)).provider;
-  const sandbox = await provider.get(input.sandboxId);
+  const sandbox = input.run
+    ? await resolveRunSandbox(input.run)
+    : await (await resolveSandboxBindingForSandbox(input.sandboxId)).provider.get(input.sandboxId);
   const extension = /\.(docx|xlsx|pptx)$/i.exec(basename(input.sourceName))?.[0].toLowerCase() ?? ".office";
   const root = `/tmp/useagent-office-preview-${randomUUID()}`;
   const sourcePath = `${root}/input${extension}`;

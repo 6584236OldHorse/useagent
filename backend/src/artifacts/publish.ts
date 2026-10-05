@@ -124,12 +124,13 @@ function checkedSourcePath(value: string, workspaceRoot: string): string {
 }
 
 async function resolvePublishablePath(
-  sandboxId: string,
+  run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>,
   value: string,
   workspaceRoot: string,
 ): Promise<string> {
   const requested = checkedSourcePath(value, workspaceRoot);
-  const resolved = await resolveSandboxFilePath(sandboxId, requested);
+  if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
+  const resolved = await resolveSandboxFilePath(run.sandboxId, requested, run);
   if (
     resolved !== requested ||
     (resolved !== workspaceRoot && !resolved.startsWith(`${workspaceRoot}/`))
@@ -164,6 +165,7 @@ async function attachOfficePreview(
     readonly orgId: string;
     readonly record: ArtifactRecord;
     readonly sandboxId: string;
+    readonly run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>;
     readonly sourceBytes: Uint8Array;
   },
   opts: { readonly regenerate: boolean },
@@ -175,6 +177,7 @@ async function attachOfficePreview(
 
   const pdf = await convertOfficeToPdf({
     sandboxId: input.sandboxId,
+    run: input.run,
     sourceName: input.record.name,
     sourceBytes: input.sourceBytes,
     timeoutSeconds: OFFICE_PREVIEW_TIMEOUT_SECONDS,
@@ -326,9 +329,9 @@ export async function publishSandboxArtifact(input: {
     sandboxId: run.sandboxId,
     sandboxProvider: run.sandboxProvider,
   });
-  const sourcePath = await resolvePublishablePath(run.sandboxId, input.path, workspaceRoot);
+  const sourcePath = await resolvePublishablePath(run, input.path, workspaceRoot);
   const editablePath = input.editablePath
-    ? await resolvePublishablePath(run.sandboxId, input.editablePath, workspaceRoot)
+    ? await resolvePublishablePath(run, input.editablePath, workspaceRoot)
     : null;
   if (
     (requiresScreenshotProofPurpose(sourcePath)
@@ -341,7 +344,7 @@ export async function publishSandboxArtifact(input: {
   }
 
   const redactionValues = await loadInjectedSecretRedactionValues(input.orgId);
-  const file = await downloadSandboxFile(run.sandboxId, sourcePath, MAX_ARTIFACT_BYTES);
+  const file = await downloadSandboxFile(run.sandboxId, sourcePath, MAX_ARTIFACT_BYTES, run);
   assertNoInjectedSecretBytes(file.bytes, redactionValues);
   const digest = createHash("sha256").update(file.bytes).digest("hex");
   const name = safeName(sourcePath, input.name);
@@ -351,7 +354,7 @@ export async function publishSandboxArtifact(input: {
     throw new Error("editable_path can only accompany a supported document or spreadsheet");
   }
   const editable = editablePath
-    ? await downloadSandboxFile(run.sandboxId, editablePath, MAX_WORKPIECE_STATE_BYTES)
+    ? await downloadSandboxFile(run.sandboxId, editablePath, MAX_WORKPIECE_STATE_BYTES, run)
     : null;
   if (editable) assertNoInjectedSecretBytes(editable.bytes, redactionValues);
   let workpieceState = workpieceKind
@@ -448,7 +451,7 @@ export async function publishSandboxArtifact(input: {
     // The new bytes invalidate any prior preview: regenerate (or clear) it so the
     // embedded PDF preview reflects the revised content, never the old version.
     const revisedWithPreview = await attachOfficePreview(
-      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, sourceBytes: file.bytes },
+      { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
       { regenerate: true },
     );
     const descriptor = toArtifactDescriptor(revisedWithPreview);
@@ -517,7 +520,7 @@ export async function publishSandboxArtifact(input: {
   // Best-effort Office->PDF preview for a fresh Office binary (skips a re-publish
   // that already carries one). Non-fatal: a missing preview stays download-only.
   const record = await attachOfficePreview(
-    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, sourceBytes: file.bytes },
+    { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
     { regenerate: false },
   );
   const descriptor = toArtifactDescriptor(record);

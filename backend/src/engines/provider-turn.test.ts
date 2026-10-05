@@ -89,8 +89,55 @@ const ctx = {
   model: "model-1",
   signal: new AbortController().signal,
 };
+const expectedSandbox = {
+  version: 1 as const,
+  sandboxId: "sandbox-1",
+  provider: "cube" as const,
+  credential: "env" as const,
+  ownerOrgId: "org-1",
+  ownerUserId: null,
+  credentialGeneration: "a".repeat(64),
+};
 
 describe("production provider turn lifecycle", () => {
+  test("passes the trusted sandbox fence through both start and resume metadata", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const fresh = driver([]);
+    fresh.start = async (request) => {
+      seen.push(request.metadata);
+      return { status: "ok", value: session("session-new") };
+    };
+    await establishProviderSession({
+      driver: fresh,
+      ctx: { ...ctx, expectedSandbox },
+      runtime: { kind: "sandbox", id: "sandbox-1" },
+      capabilities,
+      executionCapabilities,
+      startMetadata: { workdir: "/work" },
+      persistSession: async () => {},
+    });
+
+    const resumed = driver([]);
+    resumed.resume = async (request) => {
+      seen.push(request.metadata);
+      return { status: "ok", value: request.session };
+    };
+    await establishProviderSession({
+      driver: resumed,
+      ctx: { ...ctx, engineSessionId: "session-existing", expectedSandbox },
+      runtime: { kind: "sandbox", id: "sandbox-1" },
+      capabilities,
+      executionCapabilities,
+      startMetadata: { workdir: "/work" },
+      persistSession: async () => {},
+    });
+
+    expect(seen).toEqual([
+      { workdir: "/work", expectedSandbox, threadId: "thread-1" },
+      { workdir: "/work", expectedSandbox, threadId: "thread-1" },
+    ]);
+  });
+
   test("does not steer when authoritative session capability persistence fails", async () => {
     const calls: string[] = [];
     const provider = driver(calls);

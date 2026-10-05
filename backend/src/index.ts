@@ -324,8 +324,8 @@ app.route(
     pump: pumpThread,
     cancel: signalCancel,
     approveGatewayRequest: approveApprovalRequestAsRunOwner,
-    admitReleaseParity: (c, body) =>
-      handleRunCreate(c, { body, origin: "internal:eval" }),
+    admitReleaseParity: (c, body, expectedSandbox) =>
+      handleRunCreate(c, { body, origin: "internal:eval", expectedSandbox }),
   }),
 );
 

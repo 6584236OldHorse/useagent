@@ -3,6 +3,11 @@ import { Hono, type Context } from "hono";
 import type { AdmissionChange, RunAdmissionState } from "../commands/admission";
 import type { AppEnv } from "../http";
 import type { RunCreateBody } from "./routes";
+import {
+  InvalidExpectedSandboxBindingError,
+  parseExpectedSandboxBinding,
+  type ExpectedSandboxBinding,
+} from "../sandboxes/expected-binding";
 
 /**
  * Loopback operator bridge for cross-process run dispatch.
@@ -40,6 +45,7 @@ interface OperatorOps {
   readonly admitReleaseParity: (
     c: Context<AppEnv>,
     body: RunCreateBody,
+    expectedSandbox: ExpectedSandboxBinding | null,
   ) => Promise<Response>;
 }
 
@@ -128,6 +134,7 @@ export function createOperatorRoutes(ops: OperatorOps): Hono<AppEnv> {
       orgId?: unknown;
       userId?: unknown;
       run?: unknown;
+      expectedSandbox?: unknown;
     } | null;
     const orgId = typeof payload?.orgId === "string" ? payload.orgId.trim() : "";
     const userId = typeof payload?.userId === "string" ? payload.userId.trim() : "";
@@ -140,9 +147,18 @@ export function createOperatorRoutes(ops: OperatorOps): Hono<AppEnv> {
     ) {
       return c.json({ error: "orgId_userId_run_required" }, 400);
     }
+    let expectedSandbox: ExpectedSandboxBinding | null;
+    try {
+      expectedSandbox = parseExpectedSandboxBinding(payload.expectedSandbox);
+    } catch (error) {
+      if (error instanceof InvalidExpectedSandboxBindingError) {
+        return c.json({ error: error.code }, 400);
+      }
+      throw error;
+    }
     c.set("orgId", orgId);
     c.set("userId", userId);
-    return ops.admitReleaseParity(c, payload.run as RunCreateBody);
+    return ops.admitReleaseParity(c, payload.run as RunCreateBody, expectedSandbox);
   });
 
   routes.post("/approve-gateway-request", async (c) => {

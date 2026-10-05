@@ -1,9 +1,24 @@
 import { resolvePreviewSandbox } from "../runs/preview-proxy";
+import { resolveExpectedSandbox } from "../sandboxes/binding";
+import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 import { providerEventExists, recordProviderEvent } from "../runs/provider-events";
 import { requestRuntimeEnvironment } from "./runtime-environment-client";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
 const RUNTIME_APPROVAL_TIMEOUT_MS = 15_000;
+
+export function resolveRuntimeApprovalSandbox(
+  threadId: string,
+  expectedSandbox: ExpectedSandboxBinding | null | undefined,
+  dependencies = {
+    expected: resolveExpectedSandbox,
+    preview: resolvePreviewSandbox,
+  },
+) {
+  return expectedSandbox
+    ? dependencies.expected(expectedSandbox, threadId)
+    : dependencies.preview(threadId);
+}
 
 export const RUNTIME_APPROVAL_DECISIONS = [
   "accept",
@@ -108,12 +123,13 @@ export async function replyToRuntimeApproval(input: {
   readonly requestId: string;
   readonly decision: unknown;
   readonly signal: AbortSignal;
+  readonly expectedSandbox?: ExpectedSandboxBinding | null;
 }): Promise<{ alreadyAnswered: boolean }> {
   const respondedEventId = approvalEventId(input.runId, input.requestId, "responded");
   if (await providerEventExists(respondedEventId)) return { alreadyAnswered: true };
 
   const decision = validateRuntimeApprovalDecision(input.decision);
-  const sandbox = await resolvePreviewSandbox(input.threadId);
+  const sandbox = await resolveRuntimeApprovalSandbox(input.threadId, input.expectedSandbox);
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(RUNTIME_APPROVAL_TIMEOUT_MS)]);
   const snapshot = await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
     sandbox,

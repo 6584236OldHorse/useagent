@@ -1,11 +1,20 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
+import { websocket } from "hono/bun";
+import { eq } from "drizzle-orm";
+import { db } from "../db/client";
+import { runs } from "../db/schema";
+import * as desktop from "../engines/desktop";
+import { forgetLiveThreadSandbox, rememberLiveThreadSandbox } from "../engines/sandbox-runtime";
+import * as sandboxProviders from "../sandboxes/provider";
+import { sandboxBindingExpectation } from "../sandboxes/binding";
+import { invalidatePreviewEndpoint, resolvePreviewEndpoint } from "./preview-proxy";
 import { betterAuthTrustedOrigins } from "../env";
 import type { AppEnv } from "../http";
 import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
 import { desktopClientQueryRedirect, desktopProxyRoutes } from "./desktop-proxy";
 import { terminalRoutes } from "./terminal";
+import { portProxyRoutes } from "./port-proxy";
 
 describe("browser WebSocket origin policy", () => {
   // The documented frontend command runs on :3400 without configuration.
@@ -128,14 +137,62 @@ describe("desktop proxy recovery", () => {
     ).toBeNull();
   });
 
-  test("repairs retained Daytona desktops before retrying a failed preview", () => {
-    const source = readFileSync(new URL("./desktop-proxy.ts", import.meta.url), "utf8");
-
-    expect(source).toContain("await ensureDesktopPreview(threadId)");
-    expect(source).toContain("await ensureSandboxDesktopView(sandbox, AbortSignal.timeout(120_000))");
-    expect(source).toContain("const desktopRepairs = new Map<string, Promise<void>>()");
-    expect(source).toContain('desktopProxyRoutes.get("/:threadId/ready"');
-    expect(source).toContain("const desktopReadyUntil = new Map<string, number>()");
-    expect(source).toContain("invalidateDesktopPreview(threadId)");
+  test("root-run desktop and terminal routes enforce a live child's binding even with warm caches", async () => {
+    const threadId = crypto.randomUUID();
+    const orgId = `desktop-fence-${threadId}`;
+    const calls: string[] = [];
+    const stale = { id: "stale", getPreviewLink: async () => ({ url: "https://stale.invalid" }),
+      process: { createPty: async () => { calls.push("pty"); throw new Error("fixture PTY"); } } } as unknown as sandboxProviders.SandboxHandle;
+    const provider = { connectionFingerprint: "a".repeat(64),
+      get: async () => { calls.push("get"); return stale; } } as unknown as sandboxProviders.SandboxProvider;
+    const expected = sandboxBindingExpectation({ kind: "cube", credential: "env", userId: null,
+      snapshot: null, provider }, orgId, "expected");
+    const factory = spyOn(sandboxProviders, "sandboxProviderFor").mockReturnValue({ ...provider, connectionFingerprint: "b".repeat(64) });
+    const repair = spyOn(desktop, "ensureSandboxDesktopView").mockImplementation(async () => {
+      calls.push("repair");
+      return { available: true, browserTools: false, home: "/home/fixture", workdir: "/home/fixture/work", browserExecutable: null };
+    });
+    const app = new Hono<AppEnv>();
+    app.use("*", async (c, next) => { c.set("orgId", orgId); c.set("userId", "fixture-user"); return next(); });
+    app.route("/api/runs", terminalRoutes);
+    app.route("/api/desktop-proxy", desktopProxyRoutes);
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: app.fetch, websocket });
+    app.route("/api/port-proxy", portProxyRoutes);
+    try {
+      const base = { orgId, threadId, prompt: "fixture", model: "mock", engine: "mock" as const,
+        sandboxId: "expected", sandboxProvider: "cube" as const, sandboxCredential: "env" as const };
+      await db.insert(runs).values({ ...base, id: threadId, status: "completed", createdAt: new Date(1) });
+      rememberLiveThreadSandbox(threadId, stale);
+      expect((await app.request(`/api/desktop-proxy/${threadId}/ready`)).status).toBe(204);
+      await resolvePreviewEndpoint(threadId, 6080);
+      calls.length = 0;
+      await db.insert(runs).values({ ...base, id: crypto.randomUUID(), parentRunId: threadId,
+        status: "running", expectedSandbox: expected, createdAt: new Date(2) });
+      for (const path of ["ready", "vnc.html"]) {
+        const response = await app.request(`/api/desktop-proxy/${threadId}/${path}`);
+        expect(response.status).toBe(502);
+        expect(await response.text()).toContain("accepted sandbox binding");
+      }
+      const portResponse = await app.request(`/api/port-proxy/${threadId}/6080/`);
+      expect(portResponse.status).toBe(502);
+      expect(await portResponse.text()).toContain("accepted sandbox binding");
+      const origin = new URL(process.env.FRONTEND_ORIGIN ?? "http://localhost:3400").origin;
+      for (const path of [`/api/runs/${threadId}/terminal`, `/api/desktop-proxy/${threadId}/websockify`]) {
+        await new Promise<void>((resolve, reject) => {
+          const socket = new WebSocket(`${server.url.origin.replace("http:", "ws:")}${path}`, { headers: { origin } });
+          const timeout = setTimeout(() => { socket.close(); reject(new Error("fenced socket did not close")); }, 2_000);
+          socket.onclose = () => { clearTimeout(timeout); resolve(); };
+          socket.onerror = () => { clearTimeout(timeout); reject(new Error("socket upgrade failed")); };
+        });
+      }
+      expect(calls).toEqual([]);
+    } finally {
+      server.stop(true);
+      repair.mockRestore();
+      factory.mockRestore();
+      forgetLiveThreadSandbox(threadId);
+      invalidatePreviewEndpoint(threadId, 6080);
+      await db.delete(runs).where(eq(runs.orgId, orgId));
+    }
   });
 });

@@ -8,6 +8,7 @@ import {
   updateStepCode,
 } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
+import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
 import { resolveProviderRegistration, runProviderTurn } from "./engines";
 import { persistedEngineModelReadyForDispatch } from "./runs/engine-readiness";
@@ -74,10 +75,6 @@ async function emitFinalizedEnd(runId: string, finalized: FinalizeRunResult): Pr
 
 // ---------------------------------------------------------------------------
 // Actor-lite registry: one logical worker per run id.
-//
-// This is a STUB. The scripted trace below stands in for the real Claude Agent
-// SDK loop (migration step 2). It exists to prove the durable event log + SSE
-// streaming path end-to-end — now writing into Postgres via Drizzle.
 // ---------------------------------------------------------------------------
 
 const registry = new Map<string, Promise<void>>();
@@ -423,6 +420,7 @@ async function runWorker(runId: string): Promise<void> {
         run.threadId,
         engineSessionId,
         providerSession,
+        run.expectedSandbox ?? null,
         run.model,
         run.repos,
         run.resolvedResources,
@@ -626,6 +624,7 @@ async function runEngine(
   threadId: string,
   engineSessionId: string | undefined,
   providerSession: ProviderSessionBinding | undefined,
+  expectedSandbox: ExpectedSandboxBinding | null,
   model: string,
   repos: string[],
   resolvedResources: EngineRunContext["resolvedResources"],
@@ -731,6 +730,7 @@ async function runEngine(
     resolvedResources,
     engineSessionId,
     providerSession,
+    expectedSandbox,
     commandName,
     commandSessionId,
     commandProvider,

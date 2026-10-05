@@ -61,6 +61,9 @@ export interface HarnessSessionHandle {
  *  the adapter only reports a completion strictly newer than what we have. */
 export interface HarnessCheckpoint {
   sinceMs?: number;
+  /** Backend-only runtime authority used to fence restart recovery. Never sent
+   * to the provider/model. */
+  metadata?: Record<string, unknown>;
   /** In-process product context for projecting recovered native activity through
    *  the same mapper and redactor as the live lane. Never sent to a provider. */
   eventContext?: {
@@ -133,6 +136,7 @@ export interface HarnessAdapter {
   cancel(
     handle: HarnessSessionHandle,
     reason: string,
+    metadata?: Record<string, unknown>,
   ): Promise<HarnessOperationResult>;
   /** Probe native history after an interruption (see north star Crash Recovery).
    *  Bounded and non-throwing; unreachable is a normal outcome, not an error. */
@@ -292,6 +296,8 @@ export interface ProviderResumeRequest {
 export interface ProviderReconcileRequest {
   session: HarnessSession;
   checkpoint?: HarnessCheckpoint;
+  /** Backend-only runtime authority required by fenced recovery. */
+  metadata?: Record<string, unknown>;
   signal?: AbortSignal;
 }
 
@@ -323,7 +329,11 @@ export interface ProviderDriver {
    *  a second provider registry. */
   reconcile?(request: ProviderReconcileRequest): Promise<HarnessReconciliation>;
   steer(request: ProviderSteerRequest): Promise<HarnessOperationResult>;
-  cancel(session: HarnessSession, reason: string): Promise<HarnessOperationResult>;
+  cancel(
+    session: HarnessSession,
+    reason: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<HarnessOperationResult>;
 }
 
 /** Compatibility projection onto the legacy control facade. The canonical driver
