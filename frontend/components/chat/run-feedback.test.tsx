@@ -47,7 +47,11 @@ describe("RunFeedbackForm", () => {
     expect(render({ verdict: "good", error: "This run is no longer available." })).toContain(
       '<p role="alert" class="text-paragraph-xs text-error-base">This run is no longer available.</p>',
     );
-    expect(render({ verdict: "good", busy: true })).toMatch(/<button[^>]*disabled=""[^>]*><span[^>]*>Sending<\/span>/);
+    const busy = render({ verdict: "good", text: "half typed", busy: true });
+    expect(busy).toMatch(/<button[^>]*disabled=""[^>]*><span[^>]*>Sending<\/span>/);
+    // Nothing can change under a request in flight, so the sent state matches what was sent.
+    expect(count(busy, 'disabled=""')).toBe(4);
+    expect(busy).toMatch(/<textarea[^>]*disabled=""/);
   });
 
   test("after sending, thanks the person instead of asking again", () => {

@@ -10,7 +10,13 @@ import { eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, runFeedback, slackOutbox, user } from "../src/db/schema";
 import { env } from "../src/env";
-import { FEEDBACK_MAX_PER_WINDOW, FEEDBACK_TEXT_MAX } from "../src/runs/feedback-routes";
+import {
+  admitFeedback,
+  FEEDBACK_MAX_PER_WINDOW,
+  FEEDBACK_TEXT_MAX,
+  FEEDBACK_WINDOW_MS,
+  feedbackWindow,
+} from "../src/runs/feedback-routes";
 import { createRun, setRunStatus } from "../src/runs/repo";
 import { startSlackOutbox } from "../src/slack";
 import type { SlackClient } from "../src/slack/client";
@@ -105,6 +111,8 @@ describe("run feedback", () => {
     expect((await send(runId, org.cookies, {})).status).toBe(400);
     expect((await send(runId, org.cookies, { verdict: "meh" })).status).toBe(400);
     expect((await send(runId, org.cookies, { verdict: "bad", text: 7 })).status).toBe(400);
+    expect((await send(runId, org.cookies, { verdict: "bad", text: null })).status).toBe(400);
+    expect((await send(runId, org.cookies, { verdict: "bad", text: "a\u0000b" })).status).toBe(400);
     const long = await send(runId, org.cookies, { verdict: "bad", text: "x".repeat(FEEDBACK_TEXT_MAX + 1) });
     expect(long.status).toBe(400);
     expect(await rowsFor(runId)).toHaveLength(0);
@@ -128,6 +136,17 @@ describe("run feedback", () => {
     const rows = await rowsFor(runId);
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === first.body.id)?.verdict).toBe("bad");
+  });
+
+  test("the window forgets people once their window has elapsed", () => {
+    const t0 = Date.now() + 10 * FEEDBACK_WINDOW_MS; // clear of every stamp the route tests left
+    expect(admitFeedback("fb-user-a", t0)).toEqual({ ok: true });
+    expect(admitFeedback("fb-user-b", t0 + 1)).toEqual({ ok: true });
+    expect(feedbackWindow.has("fb-user-a")).toBe(true);
+    // b's next call lands once a's window has elapsed but b's has not: a is dropped, b is kept.
+    expect(admitFeedback("fb-user-b", t0 + FEEDBACK_WINDOW_MS)).toEqual({ ok: true });
+    expect(feedbackWindow.has("fb-user-a")).toBe(false);
+    expect(feedbackWindow.get("fb-user-b")).toEqual([t0 + 1, t0 + FEEDBACK_WINDOW_MS]);
   });
 
   test("one person is held to the window; the refused resend changes nothing", async () => {
