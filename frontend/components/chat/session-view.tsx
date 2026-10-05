@@ -1031,7 +1031,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                     )
                   ) : railTab === "agents" ? (
                     <AgentsRail
-                      rootRunId={rootId}
+                      rootRunId={rootId} engine={newest.engine}
                       parentThreadId={root.thread_id}
                       steps={allSteps}
                       live={live}
