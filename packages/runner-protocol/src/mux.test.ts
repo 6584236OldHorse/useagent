@@ -517,6 +517,37 @@ describe("review findings", () => {
     expect(runner.openStreams).toBe(0);
   });
 
+  test("a raw older acceptor may send nine bytes into a window of eight before it acknowledges", async () => {
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, {}, { window: 8 });
+    const opening = plane.openStream({});
+    const id = (JSON.parse(sent[0]!) as { id: number }).id;
+    const frame = new Uint8Array(5 + 9);
+    frame.set([1, 0, 0, 0, id]);
+    plane.receive(frame);
+    plane.receive(JSON.stringify({ t: "stream.opened", id }));
+    const stream = await opening;
+    plane.receive(JSON.stringify({ t: "stream.close", id }));
+    expect((await readAllFromStream(stream)).byteLength).toBe(9);
+    stream.end();
+  });
+
+  test("an acknowledgement that lowers the allowance below what already arrived rejects the opener", async () => {
+    const sent: string[] = [];
+    const plane = new Mux("plane", { send: (m) => { if (typeof m === "string") sent.push(m); } }, {}, { window: 8 });
+    const opening = plane.openStream({}).then(() => "resolved", (e: unknown) => e);
+    const id = (JSON.parse(sent[0]!) as { id: number }).id;
+    const frame = new Uint8Array(5 + 17);
+    frame.set([1, 0, 0, 0, id]);
+    plane.receive(frame);
+    plane.receive(JSON.stringify({ t: "stream.opened", id, window: 8 }));
+    const error = await opening;
+    expect(error).toBeInstanceOf(StreamRefusedError);
+    expect((error as StreamRefusedError).message).toMatch(/window/);
+    expect(plane.openStreams).toBe(0);
+    expect(sent.some((m) => m.includes('"stream.reset"'))).toBe(true);
+  });
+
   test("an older acceptor may send the protocol default before it acknowledges", async () => {
     let runnerMux!: Mux;
     const plane = new Mux("plane", { send: (m) => queueMicrotask(() => runnerMux.receive(m)) }, {}, { window: 8 });

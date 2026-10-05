@@ -304,9 +304,11 @@ export class Mux {
         const pending = this.opening.get(frame.id);
         const state = this.streams.get(frame.id);
         if (!pending || !state) return;
+        // A lowered allowance is checked against what already arrived; a violation
+        // resets the stream, which rejects this opener through finishStream.
+        if (!this.grantPeerWindow(state, frame.window)) return;
         this.opening.delete(frame.id);
         clearTimeout(pending.timer);
-        this.grantPeerWindow(state, frame.window);
         pending.resolve(state.stream);
         return;
       }
@@ -378,13 +380,18 @@ export class Mux {
    * that advertised nothing predates the field: it sends against the protocol
    * default, so that is what this side must accept from it.
    */
-  private grantPeerWindow(state: StreamState, window: number | undefined): void {
+  private grantPeerWindow(state: StreamState, window: number | undefined): boolean {
     state.peerWindow = window ?? ASSUMED_PEER_WINDOW;
     state.recvWindow = window === undefined ? Math.max(this.window, ASSUMED_PEER_WINDOW) : this.window;
+    if (state.recvOutstanding > state.recvWindow) {
+      this.finishStream(state, new Error("peer exceeded the stream window"));
+      return false;
+    }
     state.sendCredit = state.peerWindow;
     const waiters = state.creditWaiters;
     state.creditWaiters = [];
     for (const wake of waiters) wake();
+    return true;
   }
 
   private async acceptStream(id: number, target: unknown, peerWindow: number | undefined): Promise<void> {
