@@ -395,15 +395,19 @@ export async function handleSlackEvent(
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;
   const files = Array.isArray(event.files) ? event.files : [];
 
-  const stablePrompt = ingressText(rawText, botUserId);
-  let prompt = await cleanPrompt(stablePrompt, (id) => mentionName(client, teamId, id));
-  if (!prompt) {
+  // Two prompts from one message: the STABLE one (bot mention stripped,
+  // mention markup left as Slack sent it) is what replays fingerprint, exactly
+  // as rows accepted before names were resolved were fingerprinted; the run
+  // itself gets the names resolved.
+  let stablePrompt = ingressText(rawText, botUserId);
+  let prompt = (await cleanPrompt(stablePrompt, (id) => mentionName(client, teamId, id))) || stablePrompt;
+  if (!stablePrompt) {
     // A files-only message still runs (the attachments ARE the request); an
     // empty message with no attached files stays a no-op.
     if (files.length === 0) {
       return { status: "permanent_noop", reason: "empty_message" };
     }
-    prompt = "Review the attached files.";
+    stablePrompt = prompt = "Review the attached files.";
   }
 
   // Threading: an existing Slack thread → reply under its root run (inherits the
@@ -458,6 +462,7 @@ export async function handleSlackEvent(
   // a supported provider capability); engine switches only start NEW threads -
   // an existing thread's engine owns its native session state.
   const { directives, rest } = parseSlackDirectives(prompt);
+  const stableRest = parseSlackDirectives(stablePrompt).rest;
   const guide = (text: string) =>
     enqueuePostMessage({
       idempotencyKey: `slack-directive:${teamId}:${channel}:${ts}`,
@@ -468,8 +473,10 @@ export async function handleSlackEvent(
       threadTs: slackThreadTs,
     });
   if (directives.engine || directives.model) {
-    if (rest) prompt = rest;
-    else if (files.length === 0) {
+    if (rest) {
+      prompt = rest;
+      stablePrompt = stableRest || stablePrompt;
+    } else if (files.length === 0) {
       await guide("Include your request in the same message as the directive, e.g. `model:sol summarize this thread`.");
       return { status: "permanent_noop", reason: "directive_without_prompt" };
     }
@@ -510,8 +517,10 @@ export async function handleSlackEvent(
     ]),
   );
   const intent: RunCommandIntent = {
-    // The intent carries the stable ingress text: identical events must
-    // fingerprint identically whatever users.info answers on a replay.
+    // The intent carries the processed prompt with names UNRESOLVED (the
+    // directives applied, the attachment default applied): identical events
+    // fingerprint identically whatever users.info answers on a replay, and
+    // rows accepted before names were resolved replay unchanged.
     prompt: stablePrompt,
     model,
     engine,

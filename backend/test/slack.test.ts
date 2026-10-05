@@ -34,6 +34,7 @@ import {
   slackThreadCardBase,
 } from "../src/slack/repo";
 import { ensureRootThreadRelationship } from "../src/runs/thread-relationship-repo";
+import { runIntentFingerprint } from "../src/commands/fingerprint";
 import { toSlackMrkdwn } from "../src/slack/mrkdwn";
 import {
   enqueueAddReaction,
@@ -1042,6 +1043,39 @@ describe("slack event → run", () => {
     expect(title).not.toContain("<@");
   });
 
+  test("the replay fingerprint is the processed prompt with names unresolved, as before names were resolved", async () => {
+    const marker = uid("fp");
+    const channel = `C${uid("ch")}`;
+    const ts = `${uid("ts")}.1`;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> model:sonnet do <@U-X-${marker}|dana> ${marker}`, ts }),
+    );
+    const run = await waitFor(async () => findRunByPrompt(`do @dana ${marker}`));
+    const [command] = await db
+      .select({ fingerprint: commands.payloadFingerprint })
+      .from(commands)
+      .where(and(eq(commands.runId, run.id), eq(commands.kind, "run.create")))
+      .limit(1);
+    // The directive applied, the mention left as Slack sent it: exactly what
+    // an event accepted before name resolution existed was fingerprinted on.
+    expect(command?.fingerprint).toBe(runIntentFingerprint({
+      prompt: `do <@U-X-${marker}|dana> ${marker}`,
+      model: run.model,
+      engine: run.engine,
+      parentRunId: null,
+      requestedRepos: [],
+      requestedResources: [],
+      attachmentIds: [],
+      memoryScope: "org",
+      skillId: null,
+      skillVersion: null,
+      commandName: null,
+      commandProvider: null,
+      commandSessionId: null,
+      commandCatalogRevision: null,
+    }));
+  });
+
   test("replaying an event whose mention lookup turned out differently still heals instead of conflicting", async () => {
     const marker = uid("replaymention");
     const channel = `C${uid("ch")}`;
@@ -1428,9 +1462,20 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(stopped.blocks).toBeUndefined();
   });
 
-  test("an answer longer than its streamed message holds arrives complete: the rest follows as its own message", async () => {
+  test("a summary recovered after a restart is never cut by what the stream already held", async () => {
+    const t = await rootThread("recovered summary");
+    await startNativeStream(t, "Hello world, this is a long opening that streamed live before the restart");
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars ? true : null));
+    // The process restarted: the narration buffer is empty, the stream's
+    // accepted offset persisted. The failure line must still arrive whole.
+    await finalizeRun(t.runId, "failed", "lost", 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    expect(stopped.chunks).toEqual([{ type: "markdown_text", text: "**Run failed**: lost" }]);
+  });
+
+  test("an answer longer than its streamed message holds arrives complete: the rest follows as its own messages, in order", async () => {
     const t = await rootThread("long answer");
-    const answer = `${"A".repeat(12_499)}Z`;
+    const answer = `${"A".repeat(24_499)}Z`;
     // The watcher streamed the first 12,000 chars live; the buffer holds it all.
     await startNativeStream(t, answer.slice(0, 12_000));
     await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 12_000 ? true : null));
@@ -1439,11 +1484,32 @@ describe("slack native stream and Block Kit fallback", () => {
     const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
     // The streamed message already holds everything it can: a bare stop.
     expect(stopped.chunks).toEqual([]);
-    const tail = await waitFor(async () =>
-      rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks && m.text.endsWith("Z")) ?? null,
-    );
-    expect(tail.text).toBe(toSlackMrkdwn(answer.slice(12_000)));
-    expect(rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks)).toHaveLength(1);
+    // The tails follow as plain messages (each tail row itself chunked to
+    // Slack's message size), in order, until the answer's last char lands.
+    const joined = await waitFor(async () => {
+      kickSlackOutbox(); // the test relay never ticks; a tail waits on the one before it
+      const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);
+      const text = mine.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("");
+      return text.endsWith("Z") ? text : null;
+    }, { timeoutMs: 14_000 });
+    expect(joined).toBe(toSlackMrkdwn(answer.slice(12_000)));
+    // Each tail waits for the row before it, durably: the closed stream, then tail 0.
+    const first = JSON.parse((await getSlackOutbox(`slack-reply-tail:${TEAM}:${t.runId}:0`))!.payload) as { waitForIdempotencyKey?: string };
+    const second = JSON.parse((await getSlackOutbox(`slack-reply-tail:${TEAM}:${t.runId}:1`))!.payload) as { waitForIdempotencyKey?: string };
+    expect(first.waitForIdempotencyKey).toBe(`slack-reply:${TEAM}:${t.runId}`);
+    expect(second.waitForIdempotencyKey).toBe(`slack-reply-tail:${TEAM}:${t.runId}:0`);
+  });
+
+  test("an escape-heavy answer on the plain path arrives complete, nothing shed", async () => {
+    const t = await rootThread("ampersands");
+    const answer = `${"<".repeat(12_000)}Z`;
+    await finalizeRun(t.runId, "completed", answer, 1);
+    const posts = await waitFor(async () => {
+      const mine = rec.messages.filter((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks);
+      return mine.some((m) => m.text.endsWith("Z")) ? mine : null;
+    }, { timeoutMs: 14_000 });
+    const joined = posts.map((m) => m.text.replace(/\n\n_\(continued…\)_$/, "")).join("");
+    expect(joined).toBe(toSlackMrkdwn(answer));
   });
 
   test("an append API error disables the native stream without stray posts", async () => {
@@ -3438,6 +3504,7 @@ describe("slack inbound attachments", () => {
 
   test("a files-only DM (file_share subtype, no text) still creates a run", async () => {
     const fileName = `${uid("filesonly")}.txt`;
+    const file = slackFile(fileName);
     await postSlack(
       eventCallback({
         type: "message",
@@ -3447,7 +3514,7 @@ describe("slack inbound attachments", () => {
         user: "U-HUMAN",
         text: "",
         ts: `${uid("ts")}.1`,
-        files: [slackFile(fileName)],
+        files: [file],
       }),
     );
     // Wait for the CLAIMED upload, not merely the row: the files-only path
@@ -3460,6 +3527,29 @@ describe("slack inbound attachments", () => {
     expect(upload.runId).toBeTruthy();
     const { body: run } = await json<any>(`/api/runs/${upload.runId}`);
     expect(run.prompt).toBe("Review the attached files.");
+    // The replay fingerprint hashes that same default, as rows accepted before
+    // name resolution existed were hashed.
+    const [command] = await db
+      .select({ fingerprint: commands.payloadFingerprint })
+      .from(commands)
+      .where(and(eq(commands.runId, upload.runId), eq(commands.kind, "run.create")))
+      .limit(1);
+    expect(command?.fingerprint).toBe(runIntentFingerprint({
+      prompt: "Review the attached files.",
+      model: run.model,
+      engine: run.engine,
+      parentRunId: null,
+      requestedRepos: [],
+      requestedResources: [],
+      attachmentIds: [file.id],
+      memoryScope: "org",
+      skillId: null,
+      skillVersion: null,
+      commandName: null,
+      commandProvider: null,
+      commandSessionId: null,
+      commandCatalogRevision: null,
+    }));
   });
 
   test("a scanner rejection is explicit and never starts a text-only run", async () => {

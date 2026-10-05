@@ -266,8 +266,9 @@ export interface SlackThreadCard extends SlackThreadTarget {
   cardUpdatedAt: Date | null;
 }
 
-/** Remember the thread card's message ts and the revision just applied (one
- *  card per rooted Slack thread; the revision only ever moves forward). */
+/** Remember the thread card's message ts and the revision just applied, as
+ *  applied (one card per rooted Slack thread): a replay of that revision is
+ *  then told from a due one by equality. */
 export async function setSlackCardTs(
   rootRunId: string,
   cardTs: string,
@@ -279,10 +280,7 @@ export async function setSlackCardTs(
       cardTs,
       cardUpdatedAt: new Date(),
       ...(revision
-        ? {
-            cardRevision: sql`greatest(${slackThreads.cardRevision}, ${revision.revision})`,
-            cardRevisionRunId: revision.runId,
-          }
+        ? { cardRevision: revision.revision, cardRevisionRunId: revision.runId }
         : {}),
     })
     .where(eq(slackThreads.rootRunId, rootRunId));

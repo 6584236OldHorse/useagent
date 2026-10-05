@@ -7,7 +7,7 @@
  * state transitions.
  */
 import type { DeliveryResult, SlackClient } from "../client";
-import { getSlackCardTsByRoot, setSlackCardTs } from "../repo";
+import { getSlackCardTsByRoot, setSlackCardTs, type SlackThreadCard } from "../repo";
 import type { ClaimedRow } from "./repo";
 
 /** Post the thread card once per thread (a heal or a later turn re-enqueues
@@ -52,15 +52,7 @@ export async function deliverUpdateCard(client: SlackClient, p: Record<string, u
   const runId = string("runId") ?? rootRunId;
   const revision = typeof p.revision === "number" ? p.revision : null;
   const card = await getSlackCardTsByRoot(rootRunId);
-  // Revisions are ordered thread-wide: one older than the card's (a
-  // retried row, a delayed terminal revision of a turn a newer turn has
-  // since moved past) is done without touching Slack. A turn's own
-  // terminal revision is the exception: it settles whatever live
-  // revision of that turn landed after it was enqueued.
-  if (card && revision !== null && revision <= card.cardRevision) {
-    const ownTurn = p.live !== true && card.cardRevisionRunId === runId;
-    if (!ownTurn) return { ok: true };
-  }
+  if (revisionVerdict(card, revision, runId, p.live === true) !== "due") return { ok: true };
   const applied = revision === null ? undefined : { revision, runId };
   // Advance the thread card in place; a transient/rate-limited failure
   // retries the whole row.
@@ -76,11 +68,30 @@ export async function deliverUpdateCard(client: SlackClient, p: Record<string, u
   return posted;
 }
 
+/** What a revision does against the card's ledger, the one rule pacing and
+ *  delivery share. Revisions are ordered thread-wide: the card's own revision
+ *  seen again is a replayed row, already applied; an older one is superseded
+ *  (a retried row, a delayed terminal revision of a turn a newer turn has
+ *  moved past). A turn's terminal revision is the exception below a newer
+ *  LIVE revision of that same turn: that live one landed after the terminal
+ *  was enqueued, so the terminal is still due. */
+export function revisionVerdict(
+  card: SlackThreadCard | null,
+  revision: number | null,
+  runId: string,
+  live: boolean,
+): "applied" | "superseded" | "due" {
+  if (!card || revision === null || revision > card.cardRevision) return "due";
+  if (revision === card.cardRevision) return "applied";
+  return !live && card.cardRevisionRunId === runId ? "due" : "superseded";
+}
+
 /** Card revisions are paced to Slack's chat.update guidance (one every few
- *  seconds): how long a revision must still wait after the card's last update.
- *  Zero for a thread without a card yet or for a revision already superseded. */
+ *  seconds): how long a DUE revision must still wait after the card's last
+ *  update. Zero for a thread without a card yet or for a revision that will
+ *  not touch Slack at all. */
 export async function cardPaceWaitMs(row: ClaimedRow): Promise<number> {
-  let payload: { rootRunId?: unknown; runId?: unknown; revision?: unknown };
+  let payload: { rootRunId?: unknown; runId?: unknown; revision?: unknown; live?: unknown };
   try {
     payload = JSON.parse(row.payload) as typeof payload;
   } catch {
@@ -90,7 +101,9 @@ export async function cardPaceWaitMs(row: ClaimedRow): Promise<number> {
   if (!rootRunId) return 0;
   const card = await getSlackCardTsByRoot(rootRunId);
   if (!card?.cardUpdatedAt) return 0;
-  if (typeof payload.revision === "number" && payload.revision <= card.cardRevision) return 0;
+  const runId = typeof payload.runId === "string" ? payload.runId : rootRunId;
+  const revision = typeof payload.revision === "number" ? payload.revision : null;
+  if (revisionVerdict(card, revision, runId, payload.live === true) !== "due") return 0;
   const paceMs = Number(process.env.SLACK_CARD_PACE_MS ?? 3000);
   return Math.max(0, paceMs - (Date.now() - card.cardUpdatedAt.getTime()));
 }

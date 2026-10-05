@@ -1058,8 +1058,15 @@ describe("native slack streaming outbox", () => {
       await processDue(rec.client);
       expect(rec.updates).toHaveLength(2);
       const thread = await getSlackCardTsByRoot(runId);
-      expect(thread?.cardRevision).toBe(20); // the ledger only moves forward
+      expect(thread?.cardRevision).toBe(15); // the ledger records what was applied
       expect(thread?.cardRevisionRunId).toBe("turn-b");
+      // A replay of that terminal row (its update persisted, the row not yet
+      // acknowledged) is already applied: no redelivery, no pacing bypass.
+      const replay = uid("card-b-final-replay");
+      await enqueue({ kind: "update_card", idempotencyKey: replay, payload: { ...base, runId: "turn-b", revision: 15, ...card("complete") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(replay))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(2);
     } finally {
       delete process.env.SLACK_CARD_PACE_MS;
     }
@@ -1093,5 +1100,45 @@ describe("native slack streaming outbox", () => {
     } finally {
       delete process.env.SLACK_CARD_PACE_MS;
     }
+  });
+
+  test("an answer's tails post in order: a tail waits for the tail before it, not only for the closed stream", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const stopKey = uid("tail-stop");
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: stopKey,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", closingMarkdown: "head", text: "head", fallbackChunks: ["head"] },
+    });
+    const tail0 = uid("tail-0");
+    const tail1 = uid("tail-1");
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail0,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail zero"], messageRole: "reply_tail", part: 0, waitForIdempotencyKey: stopKey },
+    });
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail1,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail one"], messageRole: "reply_tail", part: 1, waitForIdempotencyKey: tail0 },
+    });
+    // The head posts; tail zero fails once, transiently.
+    const rec = recorder(() => ({ ok: true }));
+    const post = rec.client.postMessage;
+    rec.client.postMessage = async (m) => (m.text === "tail zero" && !rec.posted.some((p) => p.text === "tail zero")
+      ? (rec.posted.push(m), { ok: false, class: "transient", message: "internal_error" })
+      : post(m));
+    await processDue(rec.client);
+    expect(rec.posted.map((m) => m.text)).toEqual(["head", "tail zero"]);
+    expect((await getSlackOutbox(tail0))?.state).toBe("pending");
+    // Tail one waited on tail zero instead of overtaking it.
+    expect((await getSlackOutbox(tail1))?.state).toBe("pending");
+    // Both rows come due (the deferral is a short wait): tail zero retries first.
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail0));
+    await processDue(rec.client);
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail1));
+    await processDue(rec.client);
+    expect(rec.posted.map((m) => m.text)).toEqual(["head", "tail zero", "tail zero", "tail one"]);
+    expect((await getSlackOutbox(tail1))?.state).toBe("delivered");
   });
 });

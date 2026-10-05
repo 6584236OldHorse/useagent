@@ -538,10 +538,13 @@ async function deliverOne(
         runId?: unknown;
         messageRole?: unknown;
       };
+      // The same run's user mirror before its result; an answer's tail after
+      // the closed stream and after the tail before it.
       validDependency =
         typeof payload.runId === "string" &&
         payload.runId === dependencyRunId &&
-        ((dependency.kind === "post_message" && payload.messageRole === "user_mirror") ||
+        ((dependency.kind === "post_message" &&
+          (payload.messageRole === "user_mirror" || payload.messageRole === "reply_tail")) ||
           dependency.kind === "stop_stream");
     } catch {
       validDependency = false;

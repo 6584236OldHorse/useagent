@@ -306,6 +306,8 @@ describe("slack reply durability at finalization (GAP 3)", () => {
       threadTs: root.ts,
     });
 
+    // The root's own turn is over; only then does the family card settle.
+    await setRunStatus(root.runId, "completed");
     await finalizeRun(childId, "completed", "Interaction design finished", 100);
 
     const reply = await getSlackOutbox(`slack-reply:${TEAM}:${childId}`);
@@ -328,6 +330,75 @@ describe("slack reply durability at finalization (GAP 3)", () => {
     expect(card.blocks?.[1]?.elements?.[0]?.url).toContain(`/session/${root.runId}`);
     expect(JSON.stringify(card.blocks)).not.toContain(childId);
     expect(JSON.stringify(card.blocks)).not.toContain("Calendar interaction design");
+  });
+
+  test("a finishing child keeps the family card spinning while a sibling is still queued", async () => {
+    const root = await slackRootRun("coordinate siblings");
+    await insertThreadRelationship({
+      orgId: ORG,
+      threadId: root.runId,
+      parentThreadId: null,
+      familyThreadId: root.runId,
+      kind: "root",
+      title: "Coordinate siblings",
+      sourceRunId: root.runId,
+    });
+    const child = async (prompt: string, title: string) => {
+      const id = crypto.randomUUID();
+      await insertCommandWithRun({
+        commandId: crypto.randomUUID(),
+        idempotencyKey: null,
+        orgId: ORG,
+        actorId: null,
+        payloadFingerprint: "b".repeat(64),
+        payload: "{}",
+        origin: null,
+        priority: 0,
+        run: {
+          id,
+          prompt,
+          model: "claude-opus-5",
+          engine: "mock",
+          parentRunId: null,
+          threadId: id,
+          repos: [],
+          resolvedResources: [],
+          attachmentIds: [],
+          memoryScope: "org",
+          skillId: null,
+          skillVersion: null,
+          skillContentHash: null,
+          commandName: null,
+          commandProvider: null,
+          commandSessionId: null,
+          commandCatalogRevision: null,
+        },
+        threadRelationship: {
+          parentThreadId: root.runId,
+          familyThreadId: root.runId,
+          kind: "delegated",
+          title,
+          sourceRunId: root.runId,
+          sourceExecutionId: null,
+        },
+      });
+      return id;
+    };
+    const first = await child("Design the calendar", "Calendar design");
+    const second = await child("Design the inbox", "Inbox design");
+    await setRunStatus(root.runId, "completed");
+    const cardStatus = async (runId: string) => {
+      const row = await getSlackOutbox(`slack-card:final:${TEAM}:${runId}`);
+      return (JSON.parse(row?.payload ?? "{}") as { blocks?: Array<{ status?: string; output?: unknown }> }).blocks?.[0];
+    };
+
+    await finalizeRun(first, "completed", "Calendar done", 100);
+    // The sibling is still queued: the shared card keeps spinning, its verb cleared.
+    expect(await cardStatus(first)).toMatchObject({ status: "in_progress" });
+    expect((await cardStatus(first))?.output).toBeUndefined();
+
+    await finalizeRun(second, "completed", "Inbox done", 100);
+    expect(await cardStatus(second)).toMatchObject({ status: "complete" });
   });
 
   test("reply enqueue is idempotent across re-finalization (crash-retry safe)", async () => {

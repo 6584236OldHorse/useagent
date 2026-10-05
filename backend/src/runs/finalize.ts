@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { artifacts, providerEvents, runs, type RunStatus } from "../db/schema";
+import { artifacts, providerEvents, runs, threadRelationships, type RunStatus } from "../db/schema";
 import { completeRun } from "./repo";
 import { resolveScopedMemory } from "../memory/scope";
 import { enqueueCapture } from "../memory/capture-outbox";
@@ -62,6 +62,41 @@ export function terminalCanonicalizationEligible(engine: string): boolean {
 
 type RunRow = typeof runs.$inferSelect;
 
+/** The longest prefix of `text` (at most `max` chars) whose plain mrkdwn form
+ *  also fits `max`: an escape-heavy answer grows when converted, and an outbox
+ *  row must hold both forms without shedding a single chunk. */
+function fittingPrefix(text: string, max: number): number {
+  let length = Math.min(text.length, max);
+  for (;;) {
+    const escaped = toSlackMrkdwn(text.slice(0, length)).length;
+    if (length === 0 || escaped <= max) return length;
+    length = Math.min(length - 1, Math.floor((length * max) / escaped));
+  }
+}
+
+/** Whether any run of the Slack thread's family other than `runId` is still
+ *  queued or running: the family root's own turns and every product child
+ *  thread under it. Read inside the finalize transaction, where this run is
+ *  already terminal. */
+async function familyHasLiveRuns(tx: Executor, orgId: string, familyThreadId: string, runId: string): Promise<boolean> {
+  const children = await tx
+    .select({ threadId: threadRelationships.threadId })
+    .from(threadRelationships)
+    .where(and(eq(threadRelationships.orgId, orgId), eq(threadRelationships.familyThreadId, familyThreadId)));
+  const threadIds = [...new Set([familyThreadId, ...children.map((c) => c.threadId)])];
+  const [live] = await tx
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(
+      eq(runs.orgId, orgId),
+      inArray(runs.threadId, threadIds),
+      inArray(runs.status, ["queued", "running"]),
+      ne(runs.id, runId),
+    ))
+    .limit(1);
+  return live !== undefined;
+}
+
 export async function enqueueSlackTerminalDeliveryForRunTx(
   tx: Executor,
   run: RunRow,
@@ -103,16 +138,22 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   // The COMPLETE reply as markdown: the narration the live watcher streamed
   // into the message body (process-local buffer; empty after a restart) plus
   // whatever of the reply that body lacks. The streamed message holds the
-  // first STREAM_NARRATION_CAP chars (the stop appends exactly the part the
-  // stream has not accepted yet); everything past that follows as plain
-  // messages of its own, so no answer is ever cut.
+  // head of it; everything past that follows as plain messages of its own,
+  // each waiting for the one before it, so no answer is ever cut or reordered.
   const narration = turnStream.snapshot(run.id) ?? "";
-  const body = narration + composeStreamClosing({
+  const closing = composeStreamClosing({
     status: status === "failed" ? "failed" : "completed",
     summary,
     narration,
   });
-  const head = body.slice(0, STREAM_NARRATION_CAP);
+  const body = narration + closing;
+  const headLength = fittingPrefix(body, STREAM_NARRATION_CAP);
+  // Narration and closing travel apart: delivery drops from the narration
+  // only what the stream already accepted, so a closing recovered after a
+  // restart (the buffer empty, the stream's offset persisted) is never
+  // mistaken for streamed text and emptied.
+  const narrationHead = narration.slice(0, headLength);
+  const closingHead = closing.slice(0, headLength - narrationHead.length);
   const replyKey = `slack-reply:${slack.teamId}:${run.id}`;
 
   kickSlack = (await enqueueStopStreamTx(tx, {
@@ -123,29 +164,39 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     threadTs: slack.threadTs,
     runId: run.id,
     chunks: [],
-    narrationText: head,
-    fallbackText: toSlackMrkdwn(head),
+    narrationText: narrationHead,
+    closingMarkdown: closingHead,
+    fallbackText: toSlackMrkdwn(narrationHead + closingHead),
     ...(userMirror.status === "ready"
       ? { waitForIdempotencyKey: userMirror.idempotencyKey }
       : {}),
   })) || kickSlack;
-  for (let part = 0, at = STREAM_NARRATION_CAP; at < body.length; part += 1, at += STREAM_NARRATION_CAP) {
+  let tailAfter = replyKey;
+  for (let part = 0, at = headLength; at < body.length; part += 1) {
+    const length = Math.max(1, fittingPrefix(body.slice(at), STREAM_NARRATION_CAP));
+    const tailKey = `slack-reply-tail:${slack.teamId}:${run.id}:${part}`;
     const tailCreated = await enqueuePostMessageTx(tx, {
-      idempotencyKey: `slack-reply-tail:${slack.teamId}:${run.id}:${part}`,
+      idempotencyKey: tailKey,
       orgId: run.orgId,
       teamId: slack.teamId,
       channel: slack.channel,
       threadTs: slack.threadTs,
       runId: run.id,
-      text: toSlackMrkdwn(body.slice(at, at + STREAM_NARRATION_CAP)),
+      text: toSlackMrkdwn(body.slice(at, at + length)),
       messageRole: "reply_tail",
       part,
-      waitForIdempotencyKey: replyKey,
+      waitForIdempotencyKey: tailAfter,
     });
+    tailAfter = tailKey;
+    at += length;
     kickSlack = kickSlack || tailCreated;
   }
   if (base) {
-    const card = buildRunCard({ ...base, status: cardStatusFor(status) });
+    // The shared card settles only when the whole family is done: a child
+    // thread or a queued reply still to run keeps it spinning, cleared of
+    // this turn's verb.
+    const familyLive = await familyHasLiveRuns(tx, run.orgId, cardRoot, run.id);
+    const card = buildRunCard({ ...base, status: familyLive ? "in_progress" : cardStatusFor(status) });
     const cardSettled = await enqueueUpdateCardTx(tx, {
       idempotencyKey: `slack-card:final:${slack.teamId}:${run.id}`,
       orgId: run.orgId,
