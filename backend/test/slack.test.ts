@@ -1107,13 +1107,18 @@ describe("slack event → run", () => {
     const channel = `C${uid("ch")}`;
     profiles.set("U-CACHED", { name: "Cached Person", email: null, image: null });
     const crowd = Array.from({ length: 10 }, (_, i) => `<@U-CROWD${i}-${marker}>`).join(" ");
+    // The sender's own identity resolves once per team and user: a first message
+    // warms it, so the counts below are mention lookups only.
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> warm ${marker}`, ts: `${uid("ts")}.1` }),
+    );
+    await waitFor(async () => (await findRunByPrompt(`warm ${marker}`))?.connector ?? null);
     const before = userInfoCalls;
     await postSlack(
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> ${crowd} count ${marker}`, ts: `${uid("ts")}.1` }),
     );
-    // The sender's identity stamp adds one lookup of its own once the run is accepted.
     await waitFor(async () => (await findRunByPrompt(`count ${marker}`))?.connector ?? null);
-    expect(userInfoCalls - before).toBe(9); // ten strangers, eight lookups, none named, plus the sender
+    expect(userInfoCalls - before).toBe(8); // ten strangers, eight lookups, none named
 
     const cached = userInfoCalls;
     await postSlack(
@@ -1124,7 +1129,7 @@ describe("slack event → run", () => {
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> <@U-CACHED> third ${marker}`, ts: `${uid("ts")}.1` }),
     );
     await waitFor(async () => (await findRunByPrompt(`@Cached Person third ${marker}`))?.connector ?? null);
-    expect(userInfoCalls - cached).toBe(3); // one lookup serves every later mention; each message stamps its sender
+    expect(userInfoCalls - cached).toBe(1); // one lookup serves every later mention
   });
 
   test("duplicate delivery (same channel:ts) creates only one run", async () => {

@@ -212,6 +212,24 @@ describe("slack turn identity", () => {
     expect(calls.permalinks).toEqual([`${channel}:${rootTs}`]);
   });
 
+  test("a repeated sender resolves once; the permalink is fetched per message", async () => {
+    const againTs = "1700000000.000150";
+    await persistSlackInboxEvent(envelope({
+      type: "message",
+      channel,
+      user: SUNDAR,
+      text: "one more from the same person",
+      ts: againTs,
+      thread_ts: rootTs,
+    }));
+    await processSlackInbox(handleSlackInboxClaim);
+    const again = await stampedRow(await runIdForMessage(channel, againTs));
+    expect(again.connector?.sender_name).toBe("Sundar");
+    expect(again.connector?.permalink).toBe(permalinkFor(channel, againTs));
+    expect(calls.userInfo).toEqual([SUNDAR]);
+    expect(calls.permalinks).toEqual([`${channel}:${rootTs}`, `${channel}:${againTs}`]);
+  });
+
   test("a thread reply from another member is stamped as its own turn", async () => {
     await persistSlackInboxEvent(envelope({
       type: "message",

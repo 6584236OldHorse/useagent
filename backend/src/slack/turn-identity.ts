@@ -20,7 +20,7 @@ import { runs, slackIdentityLookups } from "../db/schema";
 import { slackConfig } from "../env";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
 import { publishThreadChange } from "../runs/thread-signals";
-import { resolveSlackClient } from "./client";
+import { resolveSlackClient, type SlackClient, type SlackUserProfile } from "./client";
 
 export type SlackTurnIdentityOutcome = "stamped" | "already_stamped" | "unavailable";
 export type SlackTurnIdentityIntentOutcome = "recorded" | "already_recorded";
@@ -30,6 +30,11 @@ const DEFAULT_LOOKUP_MS = 5_000;
  *  past it the lookup row stays and the boot sweep finishes the stamp. */
 const STAMP_LOCK_TIMEOUT = "30s";
 const RECOVERY_LIMIT = 200;
+/** A sender's profile resolves once per team and user for a few minutes, so ten
+ *  messages from one person cost one users.info; the permalink stays per message. */
+const SENDER_PROFILE_TTL_MS = 5 * 60 * 1000;
+const SENDER_PROFILE_CACHE_MAX = 1000;
+const senderProfiles = new Map<string, { profile: SlackUserProfile | null; until: number }>();
 
 /** How long both Slack lookups may take together; a response that never
  *  completes is cut here and the socket released. */
@@ -46,6 +51,25 @@ function within<T>(lookup: Promise<T | null> | undefined, signal: AbortSignal): 
     lookup.then((value) => resolve(value ?? null), () => resolve(null));
     signal.addEventListener("abort", () => resolve(null), { once: true });
   });
+}
+
+/** The sender's profile, from the cache while fresh, else from Slack. A lookup
+ *  the deadline cut is not cached: the next message asks again. */
+async function senderProfile(
+  client: SlackClient,
+  teamId: string,
+  userId: string,
+  signal: AbortSignal,
+): Promise<SlackUserProfile | null> {
+  const key = `${teamId}:${userId}`;
+  const cached = senderProfiles.get(key);
+  if (cached && cached.until > Date.now()) return cached.profile;
+  const profile = await within(client.userInfo?.({ user: userId, signal }), signal);
+  if (!signal.aborted) {
+    if (senderProfiles.size >= SENDER_PROFILE_CACHE_MAX) senderProfiles.clear();
+    senderProfiles.set(key, { profile, until: Date.now() + SENDER_PROFILE_TTL_MS });
+  }
+  return profile;
 }
 
 /** Record, durably and before the inbox claim completes, what the stamp owes.
@@ -99,7 +123,7 @@ export async function stampSlackTurnIdentity(runId: string): Promise<SlackTurnId
     const deadlineMs = lookupDeadlineMs();
     const signal = AbortSignal.timeout(deadlineMs);
     const [profile, permalink] = await Promise.all([
-      within(owed.slackUserId ? client.userInfo?.({ user: owed.slackUserId, signal }) : undefined, signal),
+      owed.slackUserId ? senderProfile(client, owed.teamId, owed.slackUserId, signal) : null,
       within(client.getPermalink?.({ channel: owed.channel, messageTs: owed.messageTs, signal }), signal),
     ]);
     if (signal.aborted) {
