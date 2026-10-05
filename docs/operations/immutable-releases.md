@@ -133,3 +133,56 @@ digest check.
 If a run stops without a final status line, rerun it with the same inputs: the
 first rerun recovers the pending operation and exits with `retryRequired`, the
 second one promotes.
+
+## Gates on demand
+
+The certification that `deploy/hetzner/release-gate.sh` ran inline during a
+promotion (and that held run admission closed for the whole matrix) is
+available as `.github/workflows/gates.yml`: one job per gate family, run
+against whatever is live at `sha`. A promotion is fast by default;
+`promote.yml` calls `gates.yml` with `readiness,canary` afterwards and adds
+`parity` only when its `parity` input is true. Every job refuses to start, and
+refuses to pass, unless the public `/healthz` body and the backend
+`x-useagent-release-fingerprint` header report exactly `sha`. No job deploys,
+writes under `/opt/useagent` or `/etc/useagent`, or takes the deploy lock; a
+promotion during a gate fails that gate at its closing commit check.
+
+| Gate | Runs | Cost | Time |
+| --- | --- | --- | --- |
+| `readiness` (default) | release contracts, canary cookie, product-child catalog, loopback operator bridge, provider readiness | no sandbox runs; one "Reply exactly OK" request per engine | about 5 min |
+| `canary` (default) | `hosted-release-canary.ts` preflight and post-promotion phases | one Codex run, upload scanner, automation create/delete | about 10 min |
+| `models` | `advertised-model-canary.ts` | one bounded run per advertised OpenCode model (11 paid plus the free lane) | about 15 min |
+| `lifecycle` | Pi cancel and the four-harness product-child family; Claude cutover, approval, question and cancel when `RELEASE_RUNTIME_ENGINES` includes `claude` | about 17 runs, plus 4 Claude runs | about 15 min |
+| `parity` | `t3-parity-canary.ts` over 19 cases for claude, codex and opencode plus 4 Pi cases, then a `release-readiness.ts` dry run | 61 real runs, fewer on resume | 60 to 90 min |
+| `desktop` | `t3-hosted-cutover-canary.ts` (Playwright; needs Google Chrome on the runner) | one Codex run with a desktop | about 5 min |
+
+Host-side gates (`readiness`, `lifecycle`, `parity`) rsync the exact commit
+into `/var/lib/useagent/gates/<gate>-<sha12>/`, install its locked backend and
+package dependencies there, run the canaries with `/etc/useagent/backend.env`
+(and `gateway.env` where the inline gate did), and remove the directory when
+done. The host needs `bun` on its PATH. Compose colors are honoured: the
+active backend's loopback port is read from `release-history.json` and passed
+to the canaries as `USEAGENT_LOOPBACK_ORIGIN`.
+
+Run it from Actions (Release gates, Run workflow) or with
+`gh workflow run gates.yml -f sha=<sha> -f gates=readiness,canary,parity`.
+Each job uploads `gate-<name>-<sha>` (logs, `candidate.json` and its cache
+manifest, Pi evidence, and the readiness lines the evidence would promote) and
+writes a pass/fail step summary. To resume a parity matrix that failed within
+the last six hours, pass `evidence_run_id=<that run's id>`; only rows that did
+not pass are re-run.
+
+The same script runs one family from an operator machine:
+
+```bash
+USEAGENT_SSH_KEY=<key> USEAGENT_SSH_HOST=root@<host> \
+USEAGENT_COOKIE_FILE=<netscape cookie jar> CANARY_ORG_ID=<org> CANARY_USER_ID=<user> \
+  bash deploy/hetzner/live-release-gate.sh parity
+```
+
+Production environment secrets: `USEAGENT_DEPLOY_SSH_KEY`,
+`USEAGENT_DEPLOY_KNOWN_HOSTS`, `USEAGENT_DEPLOY_HOST`,
+`USEAGENT_CANARY_COOKIE`, `USEAGENT_CANARY_ORG_ID`, `USEAGENT_CANARY_USER_ID`
+and, for `desktop`, `USEAGENT_CANARY_EMAIL`. Variables: `USEAGENT_APP_DOMAIN`
+and `RELEASE_RUNTIME_ENGINES`. Everything else a canary reads comes from
+`/etc/useagent` on the host.
