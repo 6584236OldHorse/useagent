@@ -7,10 +7,9 @@ export function DesktopSignIn({ openExternal }: { openExternal: (url: string) =>
   const [opened, setOpened] = useState(false);
   return (
     <section className="space-y-5" aria-label="Desktop sign-in">
-      <h1 className="text-display-sm text-text-primary">Sign in to UseAgent</h1>
+      <h1 className="text-display-sm text-text-primary">Sign in to useAgent</h1>
       <p className="text-body-regular text-text-secondary">
-        Continue in your browser for Google, GitHub or email sign-in. You will return here when
-        finished.
+        Continue in your browser to sign in. You will return here when finished.
       </p>
       <Button
         className="rounded-full"

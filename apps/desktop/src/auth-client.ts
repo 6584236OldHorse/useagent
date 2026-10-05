@@ -1,5 +1,6 @@
 import { electronClient } from "@better-auth/electron/client";
 import { createAuthClient, type BetterAuthClientPlugin } from "better-auth/client";
+import { organizationClient } from "better-auth/client/plugins";
 import { safeStorage } from "electron";
 import { join } from "node:path";
 import { authScope, createAuthStorage } from "./auth-storage";
@@ -13,14 +14,17 @@ export function createDesktopAuthClient(plane: URL, userData: string) {
     : createAuthStorage(join(userData, `auth-state.${scope}.json`));
   return createAuthClient({
     baseURL: plane.origin,
-    plugins: [electronClient({
-      signInURL: new URL("/desktop-auth", plane),
-      protocol: { scheme: "useagent" },
-      callbackPath: "/auth/callback",
-      storagePrefix: `better-auth-${scope}`,
-      storage,
-      userImageProxy: { enabled: false },
-      // @better-auth/electron 1.6.25's runtime API is sound, but its BetterFetch generic fails TS2322 here.
-    }) as unknown as BetterAuthClientPlugin],
+    plugins: [
+      electronClient({
+        signInURL: new URL("/desktop-auth", plane),
+        protocol: { scheme: "useagent" },
+        callbackPath: "/auth/callback",
+        storagePrefix: `better-auth-${scope}`,
+        storage,
+        userImageProxy: { enabled: false },
+        // @better-auth/electron 1.6.25's runtime API is sound, but its BetterFetch generic fails TS2322 here.
+      }) as unknown as BetterAuthClientPlugin,
+      organizationClient(),
+    ],
   }) as unknown as DesktopAuthClient;
 }

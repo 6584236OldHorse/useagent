@@ -18,7 +18,8 @@ import { createRunnerController, stopRunnerBeforeQuit, type RunnerStatus } from 
 import { externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender } from "./security";
 import { createTokenStore } from "./token-store";
 import { createDesktopWindow } from "./window";
-import { createDesktopSignIn } from "./sign-in";
+import { createDesktopSignIn, type DesktopOrganization } from "./sign-in";
+import { createDesktopAuthClient } from "./auth-client";
 
 const keepRunningInBackground = process.env.USEAGENT_KEEP_RUNNING_IN_BACKGROUND === "1";
 let mainWindow: BrowserWindow | undefined;
@@ -28,8 +29,8 @@ let quitAfterRunnerStops = false;
 let signIn: ReturnType<typeof createDesktopSignIn> | undefined;
 
 function completeSignIn(url: string): void {
-  if (!signIn) { dialog.showErrorBox("Sign-in expired", "Open UseAgent and start sign-in again."); return; }
-  void signIn.complete(url).catch(() => dialog.showErrorBox("Sign-in did not complete", "Return to UseAgent and try signing in again."));
+  if (!signIn) { dialog.showErrorBox("Sign-in expired", "Open useAgent and start sign-in again."); return; }
+  void signIn.complete(url).catch(() => dialog.showErrorBox("Sign-in did not complete", "Return to useAgent and try signing in again."));
 }
 
 app.on("open-url", (event, url) => { event.preventDefault(); completeSignIn(url); });
@@ -124,8 +125,26 @@ async function startDesktop(): Promise<void> {
     }
   });
 
-  mainWindow = createDesktopWindow(plane);
-  signIn = createDesktopSignIn(plane, mainWindow, url => shell.openExternal(url));
+  const window = createDesktopWindow(plane);
+  mainWindow = window;
+  signIn = createDesktopSignIn(
+    plane,
+    window,
+    createDesktopAuthClient(plane, app.getPath("userData")),
+    async (organizations: readonly DesktopOrganization[]) => {
+      const result = await dialog.showMessageBox(window, {
+        type: "question",
+        title: "Choose workspace",
+        message: "Choose the workspace to open in useAgent.",
+        buttons: [...organizations.map(organization => organization.name), "Cancel"],
+        defaultId: 0,
+        cancelId: organizations.length,
+        noLink: true,
+      });
+      return organizations[result.response]?.id;
+    },
+  );
+  await signIn.restore();
   if (app.isPackaged) app.setAsDefaultProtocolClient("useagent");
   mainWindow.on("close", (event) => {
     if (keepRunningInBackground && !quitting) {
@@ -137,7 +156,7 @@ async function startDesktop(): Promise<void> {
   const trayImage = nativeImage.createFromPath(join(app.getAppPath(), "resources/trayTemplate.svg"));
   trayImage.setTemplateImage(true);
   tray = new Tray(trayImage);
-  tray.setToolTip("UseAgent");
+  tray.setToolTip("useAgent");
   const refreshTray = (): void => {
     const status = shellStatus ?? runner.getStatus();
     tray?.setContextMenu(
@@ -146,7 +165,7 @@ async function startDesktop(): Promise<void> {
         { label: "Sandboxes: Unknown", enabled: false },
         { label: `Image: ${manifest.image}`, enabled: false },
         { type: "separator" },
-        { label: mainWindow?.isVisible() ? "Hide UseAgent" : "Open UseAgent", click: () => (mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show()) },
+        { label: mainWindow?.isVisible() ? "Hide useAgent" : "Open useAgent", click: () => (mainWindow?.isVisible() ? mainWindow.hide() : mainWindow?.show()) },
         { label: "Quit", click: () => app.quit() },
       ]),
     );
@@ -168,7 +187,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.whenReady().then(startDesktop).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "The desktop could not start.";
-    dialog.showErrorBox("UseAgent could not start", message);
+    dialog.showErrorBox("useAgent could not start", message);
     app.quit();
   });
 }

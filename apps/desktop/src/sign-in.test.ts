@@ -1,40 +1,79 @@
-import { afterEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { expect, test } from "bun:test";
 import type { BrowserWindow } from "electron";
-
-const opened: string[] = [];
 import { createDesktopSignIn } from "./sign-in";
-const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; opened.length = 0; });
 
-test("browser sign-in binds one callback to PKCE, injects only into the trusted frame, and rejects replay", async () => {
-  const scripts: string[] = [];
-  const window = { webContents: { mainFrame: { url: "https://plane.example/login", executeJavaScript: async (source: string) => scripts.push(source) } }, show() {}, focus() {} } as unknown as BrowserWindow;
-  const login = createDesktopSignIn(new URL("https://plane.example"), window, async url => { opened.push(url); });
+test("browser sign-in uses the official exchange, writes only to the app session, and rejects invalid callbacks", async () => {
+  const set: unknown[] = [];
+  const loaded: string[] = [];
+  const window = {
+    webContents: { session: { cookies: { set: async (cookie: unknown) => { set.push(cookie); } } } },
+    loadURL: async (url: string) => { loaded.push(url); }, show() {}, focus() {},
+  } as unknown as BrowserWindow;
+  let requested = 0;
+  const tokens: string[] = [];
+  const activated: string[] = [];
+  const client = {
+    async requestAuth() { requested++; },
+    async authenticate({ token }: { token: string }) { tokens.push(token); return { error: null }; },
+    getCookie: () => "__Secure-better-auth.session_token=app-session; unrelated=value",
+    async getSession() { return { data: { session: { activeOrganizationId: null } }, error: null }; },
+    organization: {
+      async list() { return { data: [{ id: "org-one", name: "One" }], error: null }; },
+      async setActive({ organizationId }: { organizationId: string }) { activated.push(organizationId); return { error: null }; },
+    },
+  };
+  const login = createDesktopSignIn(new URL("https://plane.example"), window, client, async () => undefined);
+  expect(await login.restore()).toBe(true);
+  expect(set).toHaveLength(1);
+  set.length = 0;
   await login.begin();
-  const start = new URL(opened[0]!);
-  expect(start.origin).toBe("https://plane.example");
-  expect(start.pathname).toBe("/desktop-auth");
-  const state = start.searchParams.get("state")!;
-  const challenge = start.searchParams.get("challenge")!;
-  let exchanges = 0;
-  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    exchanges++;
-    expect(String(url)).toBe("https://plane.example/api/auth/desktop/exchange");
-    const body = JSON.parse(init?.body as string);
-    expect(body.state).toBe(state);
-    expect(createHash("sha256").update(body.verifier).digest("base64url")).toBe(challenge);
-    expect(start.href).not.toContain(body.verifier);
-    return Response.json({ ticket: "one-use-fixture-ticket" });
-  }) as typeof fetch;
-  const code = "B".repeat(43);
-  await expect(login.complete(`useagent://auth/callback?state=${"A".repeat(43)}&code=${code}`)).rejects.toThrow("another request");
-  expect(exchanges).toBe(0);
-  const callback = `useagent://auth/callback?state=${state}&code=${code}`;
-  await login.complete(callback);
-  expect(exchanges).toBe(1);
-  expect(scripts[0]).toContain("one-use-fixture-ticket");
-  expect(callback).not.toContain("one-use-fixture-ticket");
-  await expect(login.complete(callback)).rejects.toThrow("another request");
-  expect(exchanges).toBe(1);
+  await expect(login.complete("not-a-url")).rejects.toThrow("Invalid");
+  await expect(login.complete("useagent://auth:123/callback#token=valid")).rejects.toThrow("Invalid");
+  await expect(login.complete("useagent://auth/callback#token=valid&token=replay")).rejects.toThrow("Invalid");
+  expect(tokens).toEqual([]);
+
+  await login.complete("useagent://auth/callback#token=official_token");
+  expect(requested).toBe(1);
+  expect(tokens).toEqual(["official_token"]);
+  expect(activated).toEqual(["org-one"]);
+  expect(set).toEqual([{ url: "https://plane.example/", name: "__Secure-better-auth.session_token", value: "app-session", path: "/", httpOnly: true, secure: true, sameSite: "lax" }]);
+  expect(loaded).toEqual(["https://plane.example/"]);
+});
+
+test("two-workspace sign-in cannot load the hosted app until a member workspace is chosen", async () => {
+  const set: unknown[] = [];
+  const loaded: string[] = [];
+  const window = {
+    webContents: { session: { cookies: { set: async (cookie: unknown) => { set.push(cookie); } } } },
+    loadURL: async (url: string) => { loaded.push(url); }, show() {}, focus() {},
+  } as unknown as BrowserWindow;
+  const activated: string[] = [];
+  let choose!: (organizationId: string) => void;
+  let chooserStarted = false;
+  const choice = new Promise<string>(resolve => { choose = resolve; });
+  const client = {
+    async requestAuth() {},
+    async authenticate() { return { error: null }; },
+    getCookie: () => "better-auth.session_token=app-session",
+    async getSession() { return { data: { session: { activeOrganizationId: null } }, error: null }; },
+    organization: {
+      async list() { return { data: [{ id: "org-one", name: "One" }, { id: "org-two", name: "Two" }], error: null }; },
+      async setActive({ organizationId }: { organizationId: string }) { activated.push(organizationId); return { error: null }; },
+    },
+  };
+  const login = createDesktopSignIn(new URL("https://plane.example"), window, client, async () => {
+    chooserStarted = true;
+    return choice;
+  });
+
+  const completing = login.complete("useagent://auth/callback#token=official_token");
+  while (!chooserStarted) await Promise.resolve();
+  expect(set).toEqual([]);
+  expect(loaded).toEqual([]);
+
+  choose("org-two");
+  await completing;
+  expect(activated).toEqual(["org-two"]);
+  expect(set).toHaveLength(1);
+  expect(loaded).toEqual(["https://plane.example/"]);
 });

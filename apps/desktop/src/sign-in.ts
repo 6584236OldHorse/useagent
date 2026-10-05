@@ -1,55 +1,79 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { parseCookies } from "better-auth/cookies";
 import type { BrowserWindow } from "electron";
 
-const random = () => randomBytes(32).toString("base64url");
-const encoded = /^[A-Za-z0-9_-]{43}$/;
+export type DesktopAuthClient = {
+  requestAuth(): Promise<void>;
+  authenticate(input: { token: string }): Promise<{ error: { message?: string } | null }>;
+  getCookie(): string;
+  getSession(): Promise<{ data: { session: { activeOrganizationId?: string | null } } | null; error: unknown }>;
+  organization: {
+    list(): Promise<{ data: Array<{ id: string; name: string }> | null; error: unknown }>;
+    setActive(input: { organizationId: string }): Promise<{ error: unknown }>;
+  };
+};
 
-/** Browser authentication and the local app meet through a single-use PKCE exchange. */
-export function createDesktopSignIn(plane: URL, window: BrowserWindow, openExternal: (url: string) => Promise<void>) {
-  let pending: { state: string; verifier: string; expires: number } | undefined;
+export type DesktopOrganization = { id: string; name: string };
+
+function callbackToken(value: string): string {
+  if (value.length > 16_384) throw new Error("Invalid desktop sign-in callback.");
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error("Invalid desktop sign-in callback."); }
+  if (url.protocol !== "useagent:" || url.hostname !== "auth" || url.pathname !== "/callback"
+    || url.port || url.search || url.username || url.password || !/^#token=[A-Za-z0-9_-]+$/.test(url.hash)) {
+    throw new Error("Invalid desktop sign-in callback.");
+  }
+  return url.hash.slice(7);
+}
+
+/** Better Auth owns PKCE and the one-use exchange; only its session cookies enter the app partition. */
+export function createDesktopSignIn(
+  plane: URL,
+  window: BrowserWindow,
+  client: DesktopAuthClient,
+  chooseOrganization: (organizations: readonly DesktopOrganization[]) => Promise<string | undefined>,
+) {
+  const restore = async (): Promise<boolean> => {
+    const cookies = [...parseCookies(client.getCookie())]
+      .filter(([name]) => /^(?:__Secure-|__Host-)?better-auth\.(?:session_token|session_data)$/.test(name));
+    if (!cookies.some(([name]) => name.endsWith(".session_token"))) return false;
+    await Promise.all(cookies.map(([name, cookie]) => window.webContents.session.cookies.set({
+      url: plane.href, name, value: cookie, path: "/", httpOnly: true,
+      secure: plane.protocol === "https:", sameSite: "lax",
+    })));
+    return true;
+  };
+  const ensureActiveOrganization = async (): Promise<void> => {
+    const [session, organizations] = await Promise.all([client.getSession(), client.organization.list()]);
+    if (session.error || !session.data || organizations.error || !Array.isArray(organizations.data)) {
+      throw new Error("Desktop workspace could not be verified.");
+    }
+    const available = organizations.data.filter(organization =>
+      typeof organization.id === "string" && organization.id.length > 0
+      && typeof organization.name === "string" && organization.name.length > 0);
+    const active = session.data.session.activeOrganizationId;
+    if (active) {
+      if (!available.some(organization => organization.id === active)) throw new Error("Desktop workspace could not be verified.");
+      return;
+    }
+    const organizationId = available.length === 1 ? available[0]!.id
+      : available.length > 1 ? await chooseOrganization(available) : undefined;
+    if (!organizationId || !available.some(organization => organization.id === organizationId)) {
+      throw new Error("Desktop workspace was not selected.");
+    }
+    if ((await client.organization.setActive({ organizationId })).error) {
+      throw new Error("Desktop workspace could not be selected.");
+    }
+  };
   return {
-    async begin(): Promise<void> {
-      const verifier = random();
-      const state = random();
-      pending = { state, verifier, expires: Date.now() + 10 * 60_000 };
-      const url = new URL("/desktop-auth", plane);
-      url.searchParams.set("state", state);
-      url.searchParams.set("challenge", createHash("sha256").update(verifier).digest("base64url"));
-      try { await openExternal(url.href); }
-      catch { pending = undefined; throw new Error("Could not open the sign-in browser."); }
-    },
+    begin: () => client.requestAuth(),
+    restore,
     async complete(value: string): Promise<void> {
-      const url = new URL(value);
-      if (url.protocol !== "useagent:" || url.hostname !== "auth" || url.pathname !== "/callback" || url.hash || url.username || url.password) {
-        throw new Error("Invalid desktop sign-in callback.");
-      }
-      const state = url.searchParams.get("state") ?? "";
-      const code = url.searchParams.get("code") ?? "";
-      if (!pending || Date.now() >= pending.expires || !encoded.test(state) || !encoded.test(code)
-        || url.searchParams.getAll("state").length !== 1 || url.searchParams.getAll("code").length !== 1
-        || !timingSafeEqual(Buffer.from(state), Buffer.from(pending.state))) {
-        throw new Error("Desktop sign-in expired or belongs to another request. Try again.");
-      }
-      const request = pending;
-      pending = undefined;
-      const response = await fetch(new URL("/api/auth/desktop/exchange", plane), {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code, state, verifier: request.verifier }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error("Desktop sign-in could not be verified. Try again.");
-      const result = await response.json() as { ticket?: unknown };
-      if (typeof result.ticket !== "string" || result.ticket.length > 16_384) throw new Error("Invalid sign-in response.");
-      const frame = window.webContents.mainFrame;
-      if (new URL(frame.url).origin !== plane.origin) throw new Error("Desktop sign-in page changed. Try again.");
-      // The ticket travels only over HTTPS and into the trusted app frame, never in a URL or log.
-      await frame.executeJavaScript(`(async () => {
-        if (location.origin !== ${JSON.stringify(plane.origin)} || !window.Clerk?.loaded) throw new Error('Sign-in page is not ready');
-        const attempt = await window.Clerk.client.signIn.create({strategy:'ticket',ticket:${JSON.stringify(result.ticket)}});
-        if (attempt.status !== 'complete') throw new Error('Sign-in did not complete');
-        await window.Clerk.setActive({session:attempt.createdSessionId});
-        location.replace('/');
-      })()`);
+      const result = await client.authenticate({ token: callbackToken(value) });
+      if (result.error) throw new Error("Desktop sign-in could not be verified. Try again.");
+      await ensureActiveOrganization();
+      if (!await restore()) throw new Error("Invalid sign-in response.");
+      await window.loadURL(plane.href);
       window.show();
       window.focus();
     },
