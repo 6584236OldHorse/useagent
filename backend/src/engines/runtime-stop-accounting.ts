@@ -1,7 +1,7 @@
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
 /** How long a stopped turn may spend landing the usage the runtime billed before it halted. */
-const RUNTIME_STOP_ACCOUNTING_MS = 5_000;
+export const RUNTIME_STOP_ACCOUNTING_MS = 5_000;
 
 /** Resolve with `operation`, or reject the moment `signal` aborts; the
  *  operation itself is left to finish or fail on its own. */

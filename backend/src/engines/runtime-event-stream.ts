@@ -4,6 +4,7 @@ import {
 } from "../sandboxes/provider";
 import { setTimeout as delay } from "node:timers/promises";
 import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
+import { RUNTIME_STOP_ACCOUNTING_MS } from "./runtime-stop-accounting";
 import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
 
@@ -127,6 +128,12 @@ export function decodeRuntimeThreadStreamItems(data: string): readonly RuntimeTh
   });
 }
 
+/** Resolves once `signal` aborts (at once when it already has). */
+const onceAborted = (signal: AbortSignal): Promise<void> =>
+  signal.aborted
+    ? Promise.resolve()
+    : new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+
 function messageText(data: unknown): Promise<string> {
   if (typeof data === "string") return Promise.resolve(data);
   if (data instanceof ArrayBuffer) {
@@ -144,6 +151,8 @@ export async function followRuntimeThreadSnapshots(input: {
   readonly readSnapshot: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
   readonly applySnapshot: (snapshot: RuntimeThreadSnapshot) => Promise<boolean>;
   readonly subscribe?: typeof subscribeRuntimeThread;
+  /** How long a cancelled follow still waits for a projection in flight; tests shorten it. */
+  readonly stopBoundMs?: number;
 }): Promise<void> {
   let observedSequence = input.initialSequence;
   let refreshThroughSequence = observedSequence;
@@ -200,6 +209,15 @@ export async function followRuntimeThreadSnapshots(input: {
   const awaitApplications = async () => {
     await applicationTail;
   };
+  // Work in flight is drained in full while the turn runs. Once the caller has
+  // cancelled, only for the stop bound: a projection stalled on a step write
+  // must not hold the provider cancellation behind it, and the settlement seal
+  // keeps whatever such a projection records after settlement from landing.
+  const drainWithinStopBound = () => Promise.race([
+    awaitRefresh().then(awaitApplications),
+    onceAborted(input.signal).then(() =>
+      delay(input.stopBoundMs ?? RUNTIME_STOP_ACCOUNTING_MS, undefined, { ref: false })),
+  ]);
 
   let streamError: unknown;
   try {
@@ -220,8 +238,7 @@ export async function followRuntimeThreadSnapshots(input: {
         return true;
       },
     );
-    await awaitRefresh();
-    await awaitApplications();
+    await drainWithinStopBound();
     stopped.abort();
   } catch (error) {
     streamError = error;

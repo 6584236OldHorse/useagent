@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { member, providerEvents, runs, spendAccounts, spendEntries } from "../src/db/schema";
+import { followRuntimeThreadSnapshots } from "../src/engines/runtime-event-stream";
 import { createTurnProjector } from "../src/engines/turn-projector";
 import type { EngineRunContext } from "../src/engines/types";
 import { settleStoppedTurnUsage } from "../src/engines/runtime-stop-accounting";
@@ -143,4 +144,105 @@ test("once the stop bound fires the projection records nothing further, even whe
   expect(projector.seen().has("tool-b")).toBe(false);
   const rows = await db.select({ id: providerEvents.id }).from(providerEvents).where(eq(providerEvents.runId, runId));
   expect(rows.map((row) => row.id)).toEqual([`pe_${runId}_t3_tool-a`]);
+});
+
+// Stop against a stalled projection, through the real follower, projector,
+// capture chain, stop accounting and settlement: the follower returns within
+// the stop bound, so the provider is cancelled while the step write still
+// stalls; the stop accounting lands the usage the runtime billed; and the
+// projection that resumes once the write releases records nothing further.
+test("a stalled step write does not hold the stop: cancellation proceeds within the bound, and the resumed projection records nothing further", async () => {
+  const session = await createOrgSession("seal-follow");
+  const [who] = await db.select({ userId: member.userId }).from(member).where(eq(member.organizationId, session.orgId));
+  const userId = who!.userId;
+  const runId = `seal_follow_${crypto.randomUUID()}`;
+  await db.insert(runs).values({
+    id: runId, orgId: session.orgId, userId, prompt: "stop me", model: "claude-opus-5",
+    engine: "claude", status: "running", threadId: runId, origin: "internal:e2e",
+  });
+  const stalled = Promise.withResolvers<void>();
+  const turn = new AbortController();
+  const emitted: string[] = [];
+  const ctx = {
+    runId,
+    threadId: runId,
+    signal: turn.signal,
+    emit: async (step: { label: string }) => {
+      emitted.push(step.label);
+      if (emitted.length === 1) await stalled.promise; // the first step write stalls past the stop
+      return `step-${emitted.length}`;
+    },
+    setSummary() {},
+  } as unknown as EngineRunContext;
+  const projector = createTurnProjector({ ctx, redact: createSecretRedactor([]), engine: "codex", seen: new Map() });
+  const usage = (id: string, costUsd: number) => ({
+    id, tone: "tool" as const, kind: "tool.completed", summary: `Tool ${id}`,
+    payload: { toolCallId: id, status: "completed", typedUsage: { inputTokens: 10, outputTokens: 5, costUsd } },
+    turnId: "turn-1", sequence: 1,
+  });
+  const snapshot = {
+    snapshotSequence: 2,
+    thread: {
+      id: `skynet-thread-${runId}`,
+      latestTurn: { turnId: "turn-1", state: "completed" as const, assistantMessageId: null },
+      messages: [],
+      activities: [usage("tool-a", 0.1), usage("tool-b", 0.2)],
+      session: null,
+    },
+  };
+
+  // The follower captures tool-a and stalls on its step write; Stop is pressed.
+  const startedAt = Date.now();
+  await followRuntimeThreadSnapshots({
+    sandbox: {} as never,
+    threadId: snapshot.thread.id,
+    initialSequence: 0,
+    signal: turn.signal,
+    stopBoundMs: 100,
+    readSnapshot: async () => {
+      throw new Error("unexpected refresh");
+    },
+    // Applied as the adapter applies while the turn runs: no fence of its own.
+    applySnapshot: async (snap) => !(await projector.apply(snap)).settled,
+    subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
+      void onItem({ kind: "snapshot", snapshot });
+      await waitFor(async () => (emitted.length === 1 ? true : null));
+      turn.abort(new Error("turn aborted")); // the socket resolves its subscription on abort
+    },
+  });
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+  expect(emitted).toHaveLength(1);
+
+  // Cancellation reaches the provider while the write still stalls, and the
+  // stop accounting lands the usage the runtime billed (tool-b; tool-a was
+  // captured before the stall).
+  let cancelled = false;
+  const landed = await settleStoppedTurnUsage({
+    cancel: async () => {
+      cancelled = true;
+    },
+    read: async () => snapshot,
+    apply: (snap, signal) => projector.apply(snap, undefined, { signal }),
+  });
+  expect(cancelled).toBe(true);
+  expect(landed).toBe(true);
+  await drainProviderEvents(runId);
+  const captured = () => db.select({ id: providerEvents.id }).from(providerEvents).where(eq(providerEvents.runId, runId));
+  expect((await captured()).map((row) => row.id).toSorted()).toEqual([`pe_${runId}_t3_tool-a`, `pe_${runId}_t3_tool-b`]);
+  expect(emitted).toHaveLength(2);
+
+  // The run settles and is charged what was captured; the stalled write then
+  // releases and the abandoned projection resumes: nothing further lands.
+  const finalized = await finalizeRun(runId, "failed", "stopped", 10);
+  expect(finalized.applied).toBe(true);
+  const [entry] = await db.select().from(spendEntries).where(eq(spendEntries.chargeKey, runId));
+  expect(entry).toMatchObject({ costUsd: 0.3, source: "usage" });
+  stalled.resolve();
+  await Bun.sleep(30);
+  await drainProviderEvents(runId);
+  expect(await captured()).toHaveLength(2);
+  expect(emitted).toHaveLength(2);
+  const [account] = await db.select({ spent: spendAccounts.spentUsd }).from(spendAccounts)
+    .where(and(eq(spendAccounts.orgId, session.orgId), eq(spendAccounts.userId, userId)));
+  expect(account!.spent).toBeCloseTo(0.3, 6);
 });
