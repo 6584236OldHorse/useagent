@@ -60,7 +60,7 @@ import {
   runtimeEnvironmentHealthy,
 } from "./runtime-environment";
 import { createNoProgressWatchdog, NoProgressError } from "./turn-no-progress";
-import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, turnRecovery, withUpstreamCause } from "./turn-recovery";
+import { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR, RuntimeTurnFailedError, continuationRunId, turnRecovery, upstreamCauseLabel } from "./turn-recovery";
 import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { operatorEnv } from "./runtime-env";
 import { prepareSandboxTurn } from "./sandbox-turn-preparation";
@@ -88,8 +88,7 @@ export function runtimeSessionHasAuthoritativeHistory(
 const RUNTIME_POLL_INTERVAL_MS = 125;
 // T3 can publish root idle just before the final assistant projection. Re-read
 // for two seconds so that ordering gap is tolerated without accepting no output.
-// The runtime signals completion a moment before its final message lands in
-// the projection; a loaded sandbox needs more than a couple of seconds.
+// The final message lands a moment after the runtime signals completion; a loaded sandbox needs more than a couple of seconds.
 const RUNTIME_TERMINAL_OUTPUT_DRAIN_MS = 15_000;
 const RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS = 2;
 const RUNTIME_TERMINAL_CLEANUP_MS = 250;
@@ -451,7 +450,7 @@ export async function waitForRuntimeTurn(
     finalText = projection.finalText;
 
     const error = runtimeTurnError(snapshot);
-    if (error) throw new Error(redact.text(error));
+    if (error) throw new RuntimeTurnFailedError(redact.text(error));
     return !settled;
   };
   const acceptSnapshot = async (snapshot: RuntimeThreadSnapshot): Promise<boolean> => {
@@ -697,7 +696,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             ctx.timing?.mark("dispatch");
             const endDispatch = ctx.timing?.begin("t3.dispatch_request");
             const steerResult = await driver.steer({
-              runId: ctx.runId,
+              runId: attempt === 1 ? ctx.runId : continuationRunId(ctx.runId, attempt),
               threadId: ctx.threadId ?? ctx.runId,
               session,
               input: turnInput,
@@ -708,15 +707,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             });
             endDispatch?.();
             if (steerResult.status !== "ok") {
-              throw new Error(
-                `the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`,
-              );
+              throw new Error(`the provider runtime ${engine} steer failed (${steerResult.status}): ${steerResult.message ?? "unsupported"}`);
             }
-            await ctx.emit({
-              kind: "task",
-              label: "Waiting for provider activity…",
-              chip: `runtime:${engine}`,
-            });
+            await ctx.emit({ kind: "task", label: "Waiting for provider activity…", chip: `runtime:${engine}` });
             try {
               const summary = await waitForRuntimeTurn(
                 ctx,
@@ -750,11 +743,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
                 // stop the sandbox-side turn so a persistent thread does not keep
                 // retrying against the provider gateway. Best-effort only: a cancel
                 // failure must not mask the no-progress reason.
-                await driver.cancel(
-                  session,
-                  "provider made no progress",
-                  controlMetadata,
-                ).catch(() => {});
+                await driver.cancel(session, "provider made no progress", controlMetadata).catch(() => {});
                 throw error;
               }
               // A turn that may still be running is never steered again; only a
@@ -762,11 +751,24 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               // runtime reported) gets one continuation before it stands.
               if (error instanceof RuntimeFirstActivityTimeoutError || ctx.signal.aborted) throw error;
               const recovery = turnRecovery(error, attempt);
-              if (!recovery) throw await withUpstreamCause(ctx.runId, error);
+              if (!recovery) {
+                const cause = await upstreamCauseLabel(ctx.runId, error);
+                if (cause) await ctx.emit({ kind: "task", label: cause, chip: `runtime:${engine}` });
+                throw error;
+              }
               attempt += 1;
-              await ctx.emit({ kind: "task", label: recovery.label, chip: `runtime:${engine}` });
               if (recovery.delayMs > 0) await delay(recovery.delayMs, undefined, { signal: ctx.signal });
-              turnBase = turnBaseline(await readThreadSnapshot(ctx, sandbox));
+              const settledSnapshot = await readThreadSnapshot(ctx, sandbox);
+              const lateText = recovery.answerMayBeLate ? redact.text(assistantText(settledSnapshot)).trim() : "";
+              if (lateText) {
+                // The answer landed after the drain gave up; it is the answer, nothing is resent.
+                ctx.publishDelta?.(lateText);
+                await ctx.emit({ kind: "done", label: "Done", chip: null });
+                ctx.setSummary(lateText, Date.now() - startedAt);
+                break;
+              }
+              await ctx.emit({ kind: "task", label: recovery.label, chip: `runtime:${engine}` });
+              turnBase = turnBaseline(settledSnapshot);
               turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
             }
           }
