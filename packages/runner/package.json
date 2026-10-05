@@ -1,0 +1,21 @@
+{
+  "name": "@useagent/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "useagent-runner": "./src/main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "start": "bun run src/main.ts",
+    "build": "bun run scripts/build.ts"
+  },
+  "dependencies": {
+    "@useagent/runner-protocol": "file:../runner-protocol"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  }
+}
