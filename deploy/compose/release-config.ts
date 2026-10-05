@@ -483,13 +483,12 @@ export function rewriteCaddyUpstreams(
 	upstreams: Pick<CaddyUpstreams, "frontend" | "backend" | "gateway">,
 ): string {
 	const lines = config.split("\n");
+	const apiMatcher = /^(\s*@\S+\s+path\s+\/api\/\*)(\s+\/v2\/\*)?(\s*)$/;
 	const hasGatewayRoute = lines.some((line) =>
 		/^\s*@\S+\s+path\s+\/api\/mcp\/\*\s+\/api\/provider\/\*\s*$/.test(line),
 	);
 	if (!hasGatewayRoute) {
-		const apiIndex = lines.findIndex((line) =>
-			/^\s*@\S+\s+path\s+\/api\/\*\s*$/.test(line),
-		);
+		const apiIndex = lines.findIndex((line) => apiMatcher.test(line));
 		if (apiIndex >= 0) {
 			const indent = lines[apiIndex]?.match(/^\s*/)?.[0] ?? "";
 			lines.splice(
@@ -503,6 +502,13 @@ export function rewriteCaddyUpstreams(
 				"",
 			);
 		}
+	}
+	// Runners pull the sandbox image through the plane's registry proxy under
+	// /v2, which the backend serves; a config from before that route sends the
+	// pull to the frontend instead.
+	for (let index = 0; index < lines.length; index += 1) {
+		const match = lines[index]?.match(apiMatcher);
+		if (match && !match[2]) lines[index] = `${match[1]} /v2/*${match[3]}`;
 	}
 	for (const service of releaseServices) {
 		const value = upstreams[service];
