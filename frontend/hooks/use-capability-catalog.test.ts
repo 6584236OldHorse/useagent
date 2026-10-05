@@ -165,3 +165,32 @@ describe("capability catalog refresh polling", () => {
     expect(timers.pendingCount).toBe(0);
   });
 });
+
+describe("shared capability catalog", () => {
+  test("every consumer on a page reads one request until the ttl passes", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const load = createCapabilityCatalogLoader(async () => {
+      fetchCount += 1;
+      return capabilityCatalog(false);
+    }, { isShared: () => true });
+    const [a, b] = await Promise.all([load(), load()]);
+    expect(a).toBe(b);
+    await load();
+    expect(fetchCount).toBe(1);
+  });
+
+  test("a refresh retry asks for a fresh catalog and a failed load is not kept", async () => {
+    const { createCapabilityCatalogLoader } = await import("./use-capability-catalog");
+    let fetchCount = 0;
+    const load = createCapabilityCatalogLoader(async () => {
+      fetchCount += 1;
+      return fetchCount === 1 ? null : capabilityCatalog(fetchCount < 3);
+    }, { isShared: () => true });
+    expect(await load()).toBeNull();
+    expect((await load())?.engines[0]?.modelCatalog?.stale).toBe(true);
+    expect((await load())?.engines[0]?.modelCatalog?.stale).toBe(true);
+    expect((await load(true))?.engines[0]?.modelCatalog?.stale).toBe(false);
+    expect(fetchCount).toBe(3);
+  });
+});

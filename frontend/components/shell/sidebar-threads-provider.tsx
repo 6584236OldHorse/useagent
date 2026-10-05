@@ -1,7 +1,15 @@
 "use client";
 
 import type { ThreadRelationship } from "@useagent/agent-client";
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { fetchSidebarRuns } from "@/app/(workspace)/agent/runs/runs-data";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import type { OrgChange } from "@/lib/org-changes";
@@ -40,11 +48,20 @@ export function SidebarThreadsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // The mount load below is the authoritative snapshot for the stream's first
+  // open; only a later open (a reconnect that may have missed changes) reloads.
+  const streamOpened = useRef(false);
   useOrgChanges(
     (change) => {
       if (refreshesSidebarThreads(change)) void load(true);
     },
-    () => void load(true),
+    () => {
+      if (!streamOpened.current) {
+        streamOpened.current = true;
+        return;
+      }
+      void load(true);
+    },
   );
 
   useEffect(() => {

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import type { ThreadView } from "@/components/chat/load-thread-view";
 import { cx } from "@/utils/cx";
 import { BotThreadHeader } from "./bot-details";
@@ -7,6 +8,7 @@ import { BotThreadPane } from "./bot-thread-pane";
 import { BotsRoster } from "./bots-roster";
 import { FirstMessage } from "./first-message";
 import { BotsOnboarding } from "./onboarding";
+import { publishRoster } from "./roster-store";
 import type { ApiBot } from "./types";
 
 /**
@@ -25,6 +27,8 @@ export function BotsWorkspace({
   selected: ApiBot | null;
   thread: ThreadView | null;
 }) {
+  // The shell's roster column follows the roster this navigation fetched.
+  useEffect(() => publishRoster(bots), [bots]);
   return (
     <div className="flex h-full min-h-0">
       <BotsRoster

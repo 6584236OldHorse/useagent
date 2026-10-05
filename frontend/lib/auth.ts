@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { backendFetch } from "./backend-fetch";
+import { type CachedRequest, cachedRequest } from "./cached-request";
 
 export interface SessionUser {
   id: string;
@@ -19,17 +20,36 @@ export interface Session {
   user: SessionUser;
 }
 
-/** The authenticated session, or null when anonymous (incl. the dev-org path,
- *  where domain APIs still work but no better-auth session cookie exists). */
-export async function getSession(): Promise<Session | null> {
+async function fetchSession(fetcher: typeof backendFetch): Promise<Session | null> {
   try {
-    const res = await backendFetch("/api/auth/get-session");
+    const res = await fetcher("/api/auth/get-session");
     if (!res.ok) return null;
     const data = (await res.json()) as { user?: SessionUser } | null;
     return data?.user ? { user: data.user } : null;
   } catch {
     return null;
   }
+}
+
+/** One session request per page, shared by every `useSession` consumer. */
+export function createSessionRequest(
+  fetcher: typeof backendFetch = backendFetch,
+  options: { readonly isShared?: () => boolean } = {},
+): CachedRequest<Session | null> {
+  return cachedRequest(() => fetchSession(fetcher), options);
+}
+
+const sessionRequest = createSessionRequest();
+
+/** The authenticated session, or null when anonymous (incl. the dev-org path,
+ *  where domain APIs still work but no better-auth session cookie exists). */
+export function getSession(): Promise<Session | null> {
+  return sessionRequest.get();
+}
+
+/** Forget the cached session so the next read asks the backend again. */
+export function invalidateSession(): void {
+  sessionRequest.invalidate();
 }
 
 /** Begin the Google OAuth flow: better-auth returns the provider URL to visit,
@@ -53,6 +73,7 @@ export async function signOut(): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
+  invalidateSession();
 }
 
 export interface AuthConfig {
@@ -88,16 +109,22 @@ export async function getAuthConfig(): Promise<AuthConfig> {
   }
 }
 
-/** Subscribe to the current session; `refresh()` re-fetches (e.g. after sign-out). */
+/** Subscribe to the current session; `refresh()` re-fetches (e.g. after sign-out).
+ *  Every consumer on a page shares one request; a consumer mounting after it
+ *  settled starts from the cached session instead of a loading state. */
 export function useSession(): {
   session: Session | null;
   loading: boolean;
   refresh: () => void;
 } {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = sessionRequest.peek();
+  const [session, setSession] = useState<Session | null>(cached ?? null);
+  const [loading, setLoading] = useState(cached === undefined);
   const [nonce, setNonce] = useState(0);
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    invalidateSession();
+    setNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
