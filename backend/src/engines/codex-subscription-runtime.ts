@@ -48,6 +48,7 @@ import {
   evictCodexThreadSession,
   keepCodexThreadSession,
   releaseCodexThreadSession,
+  type CodexThreadSession,
   type CodexThreadSessionParts,
 } from "./codex-thread-sessions";
 
@@ -185,7 +186,7 @@ export async function prepareCodexSubscription(input: {
         authEpoch: runtime.authEpoch,
         hasCurrentEpochThreadBinding,
         sessionReused: true,
-        close: async () => releaseCodexThreadSession(kept),
+        close: releaseWhenDone(kept),
       };
     }
   }
@@ -313,7 +314,7 @@ export async function prepareCodexSubscription(input: {
       authEpoch: runtime.authEpoch,
       hasCurrentEpochThreadBinding,
       sessionReused: false,
-      close: async () => releaseCodexThreadSession(kept),
+      close: releaseWhenDone(kept),
     };
   }
   let closed = false;
@@ -328,6 +329,15 @@ export async function prepareCodexSubscription(input: {
       parts.close();
       await sandbox.process.deleteSession(CODEX_EXEC_SERVER_SESSION).catch(() => {});
     },
+  };
+}
+
+/** The run is done: its kept session serves no run, so the relay refuses
+ * connections and turn starts until the thread's next run takes it. */
+function releaseWhenDone(kept: CodexThreadSession<SubscriptionSessionParts>): () => Promise<void> {
+  return async () => {
+    kept.parts.relay.deactivate();
+    releaseCodexThreadSession(kept);
   };
 }
 

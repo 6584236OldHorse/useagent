@@ -11,6 +11,8 @@ import {
 import {
   invalidateRuntimeEnvironmentAccess,
   requestRuntimeEnvironment,
+  runtimeEnvironmentAccessValidated,
+  type RuntimeEnvironmentRequest,
 } from "./runtime-environment-client";
 import { awaitCodexProviderReady } from "./codex-subscription-runtime";
 import {
@@ -163,6 +165,8 @@ interface RuntimeShellSnapshot {
   readonly threads: readonly { readonly id: string }[];
 }
 
+const SHELL_REQUEST = { method: "GET", path: "/api/orchestration/shell" } as const satisfies RuntimeEnvironmentRequest;
+
 export { runtimeRunSnapshot };
 
 export { configuredRuntimeMode } from "./permission-mode";
@@ -181,6 +185,11 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         chip: `runtime:${engine}`,
       });
       let stableProviderPendingRevision: string | null = null;
+      // A runtime this process already talks to lists the same projects and
+      // threads before and after the provider bridge, so its shell is read
+      // alongside the bridge; any barrier below that may restart it reads again.
+      let earlyShell: Promise<RuntimeShellSnapshot | null> | null = null;
+      let runtimeTouched = false;
       const prepared = await prepareSandboxTurn(ctx, {
         snapshot: runtimeRunSnapshot(),
         chip: `runtime:${engine}`,
@@ -199,6 +208,9 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           stableProviderPendingRevision = await prepareStableRuntimeProvider(sandbox, ctx, engine);
         },
         async prepareProvider(sandbox, workdir, binding, preparation) {
+          if (runtimeEnvironmentAccessValidated(sandbox)) {
+            earlyShell = requestRuntimeEnvironment<RuntimeShellSnapshot>(sandbox, SHELL_REQUEST, ctx.signal).catch(() => null);
+          }
           return await prepareRuntimeProviderBridge(
             sandbox,
             ctx,
@@ -227,6 +239,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           providerBridgeLease.authPath !== "subscription" &&
           providerBridgeLease.pendingProviderConfigurationRevision
         ) {
+          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             await applyPendingCodexProviderConfiguration({
@@ -245,6 +258,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // T3 applied the gateway-backed wrapper rather than merely observing
         // that the settings file exists.
         if (providerBridgeLease.readiness) {
+          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             await ensureRuntimeProviderReadyForTurn({
@@ -269,6 +283,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // a per-run instance, and Claude has its own marker barrier above. The
         // no-first-activity watchdog below remains the final safety net.
         if (providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused) {
+          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             // A sandbox whose runtime is down cannot publish the status cache,
@@ -303,11 +318,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         }
 
         const endShell = ctx.timing?.begin("t3.shell");
-        const shell = await requestRuntimeEnvironment<RuntimeShellSnapshot>(
-          sandbox,
-          { method: "GET", path: "/api/orchestration/shell" },
-          ctx.signal,
-        );
+        const shell = (!runtimeTouched && await earlyShell) ||
+          await requestRuntimeEnvironment<RuntimeShellSnapshot>(sandbox, SHELL_REQUEST, ctx.signal);
         endShell?.();
         const threadId = runtimeThreadId(ctx);
         const threadExists = shell.threads.some((thread) => thread.id === threadId);
@@ -368,6 +380,10 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           },
         });
         const session = established.session;
+        // The session's native command list, recorded with the session so the
+        // reply composer's typed commands and Compact authorize against it. Best
+        // effort and independent of the snapshot read below, so the two overlap.
+        const commandCatalog = recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
         // `start()` may adopt a thread the runtime already projected even when
         // the durable provider lifecycle is fresh. Always capture its current
         // turn before steering so an initialization greeting cannot be mistaken
@@ -393,9 +409,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           source: engine,
           resumed: established.resumed,
         });
-        // The session's native command list, recorded with the session so the
-        // reply composer's typed commands and Compact authorize against it.
-        await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });
+        await commandCatalog;
         let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });

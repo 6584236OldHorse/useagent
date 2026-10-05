@@ -11,6 +11,7 @@ import { ModelKeysContext } from "@/components/chat/catalog-model-picker";
 import { StartFreePrompt, useStartFree } from "@/app/(workspace)/agent/new/start-free-prompt";
 import type { ReactNode } from "react";
 import type { SlashCommand } from "@/components/chat/slash-command";
+import type { ThreadErrorResend } from "@/components/session-ui/thread-error-banner";
 export function ReplyComposer({
   engine,
   model,
@@ -30,6 +31,7 @@ export function ReplyComposer({
   runStartedAt,
   threadError,
   onDismissThreadError,
+  threadErrorResend,
   notice,
   onDismissNotice,
   engineUnavailable,
@@ -64,6 +66,7 @@ export function ReplyComposer({
   runStartedAt?: string | null;
   threadError?: string | null;
   onDismissThreadError?: () => void;
+  threadErrorResend?: ThreadErrorResend;
   /** A notice about the last accepted reply (a bot that did not get it). */
   notice?: string | null;
   onDismissNotice?: () => void;
@@ -126,6 +129,7 @@ export function ReplyComposer({
             runStartedAt={runStartedAt}
             threadError={threadError}
             onDismissThreadError={onDismissThreadError}
+            threadErrorResend={threadErrorResend}
             notice={notice}
             onDismissNotice={onDismissNotice}
             engineUnavailable={engineUnavailable}

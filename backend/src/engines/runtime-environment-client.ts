@@ -108,6 +108,11 @@ function runtimeEnvironmentAccessKey(sandbox: SandboxHandle): string {
   return `${RUNTIME_GENERATION}:${sandbox.id}`;
 }
 
+/** Whether this process already talks to the sandbox's runtime (a warm one). */
+export function runtimeEnvironmentAccessValidated(sandbox: SandboxHandle): boolean {
+  return validatedAccess.has(runtimeEnvironmentAccessKey(sandbox));
+}
+
 export function invalidateRuntimeEnvironmentAccess(sandbox: SandboxHandle): void {
   validatedAccess.delete(runtimeEnvironmentAccessKey(sandbox));
 }

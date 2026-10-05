@@ -55,6 +55,14 @@ export async function createRun(body: unknown, idempotencyKey = crypto.randomUUI
   return sounded(postAcceptedCommand("/api/runs", body, idempotencyKey), idempotencyKey);
 }
 
+/** Send a failed run's prompt again as a new turn in its thread. */
+export async function resendRun(runId: string, idempotencyKey = crypto.randomUUID()) {
+  return sounded(
+    postAcceptedCommand(`/api/runs/${encodeURIComponent(runId)}/resend`, {}, idempotencyKey),
+    idempotencyKey,
+  );
+}
+
 export async function createThreadMessage(
   threadId: string,
   body: {

@@ -3,20 +3,19 @@ import type { CodexSubscriptionRelayBinding } from "./codex-subscription-relay";
 import { CodexSubscriptionProtocol } from "./codex-subscription-protocol";
 
 describe("CodexSubscriptionProtocol", () => {
-  test("rejects thread fields that could override host-owned Codex configuration", async () => {
+  test("strips thread config the host owns and refuses a model provider override", async () => {
     const protocol = makeProtocol();
 
-    await expect(
-      protocol.acceptClientFrame(JSON.stringify({
-        id: 1,
-        method: "thread/start",
-        params: {
-          cwd: "/root/work",
-          model: "gpt-5.5",
-          config: { model_provider: "attacker" },
-        },
-      })),
-    ).rejects.toThrow("thread config is host-owned");
+    const start = await protocol.acceptClientFrame(JSON.stringify({
+      id: 1,
+      method: "thread/start",
+      params: {
+        cwd: "/root/work",
+        model: "gpt-5.5",
+        config: { model_provider: "attacker", "tools.update_plan.enabled": true },
+      },
+    }));
+    expect(JSON.parse(start)).toEqual({ id: 1, method: "thread/start", params: { cwd: "/root/work", model: "gpt-5.5" } });
 
     await expect(
       protocol.acceptClientFrame(JSON.stringify({
@@ -30,18 +29,17 @@ describe("CodexSubscriptionProtocol", () => {
       })),
     ).rejects.toThrow("model provider is host-owned");
 
-    await expect(
-      protocol.acceptClientFrame(JSON.stringify({
-        id: 3,
-        method: "thread/resume",
-        params: {
-          threadId: "provider-thread-from-old-auth-epoch",
-          cwd: "/root/work",
-          model: "gpt-5.5",
-          config: { model_provider: "attacker" },
-        },
-      })),
-    ).rejects.toThrow("thread config is host-owned");
+    const resume = await protocol.acceptClientFrame(JSON.stringify({
+      id: 3,
+      method: "thread/resume",
+      params: {
+        threadId: "provider-thread-from-old-auth-epoch",
+        cwd: "/root/work",
+        model: "gpt-5.5",
+        config: { model_provider: "attacker" },
+      },
+    }));
+    expect(JSON.parse(resume).params.config).toBeUndefined();
   });
 
   test("rejects a turn-level workspace override outside the bound remote environment", async () => {
@@ -592,6 +590,84 @@ describe("CodexSubscriptionProtocol", () => {
       id: 31,
       result: { thread: { id: "provider-thread-race-winner" } },
     }))).rejects.toThrow("resume response changed thread");
+  });
+});
+
+describe("CodexSubscriptionProtocol V2 methods", () => {
+  test("a resume without model or cwd takes the active run's, a different one is still refused", async () => {
+    const protocol = makeProtocol({ providerThreadId: "provider-thread-1" });
+    const filled = await protocol.acceptClientFrame(JSON.stringify({
+      id: 1,
+      method: "thread/resume",
+      params: { threadId: "provider-thread-1", excludeTurns: true },
+    }));
+    expect(JSON.parse(filled)).toEqual({
+      id: 1,
+      method: "thread/resume",
+      params: { threadId: "provider-thread-1", excludeTurns: true, model: "gpt-5.5", cwd: "/root/work" },
+    });
+    await expect(protocol.acceptClientFrame(JSON.stringify({
+      id: 2,
+      method: "thread/resume",
+      params: { threadId: "provider-thread-1", model: "gpt-4o" },
+    }))).rejects.toThrow("model binding mismatch");
+  });
+
+  test("answers unsubscribe for its own thread itself, so the kept session keeps the thread loaded", async () => {
+    const protocol = makeProtocol({ providerThreadId: "provider-thread-1" });
+    expect(await protocol.answerLocally(JSON.stringify({ id: 3, method: "turn/start", params: {} }))).toBeNull();
+    await expect(protocol.answerLocally(JSON.stringify({
+      id: 4, method: "thread/unsubscribe", params: { threadId: "provider-thread-1" },
+    }))).rejects.toThrow("thread binding mismatch");
+    await confirmResume(protocol, 5, "provider-thread-1");
+    expect(JSON.parse((await protocol.answerLocally(JSON.stringify({
+      id: 6, method: "thread/unsubscribe", params: { threadId: "provider-thread-1" },
+    })))!)).toEqual({ id: 6, result: { status: "unsubscribed" } });
+    await expect(protocol.answerLocally(JSON.stringify({
+      id: 7, method: "thread/unsubscribe", params: { threadId: "provider-thread-foreign" },
+    }))).rejects.toThrow("thread binding mismatch");
+  });
+
+  test("steers only the active turn of its own thread", async () => {
+    const protocol = makeProtocol({ providerThreadId: "provider-thread-1" });
+    await confirmResume(protocol, 1, "provider-thread-1");
+    const steer = (id: number, threadId: string, expectedTurnId: string) => JSON.stringify({
+      id, method: "turn/steer", params: { threadId, expectedTurnId, input: [{ type: "text", text: "also this" }] },
+    });
+    await expect(protocol.acceptClientFrame(steer(2, "provider-thread-1", "turn-1"))).rejects.toThrow("steer turn binding mismatch");
+    await observe(protocol, JSON.stringify({ method: "turn/started", params: { threadId: "provider-thread-1", turn: { id: "turn-1" } } }));
+    expect(await protocol.acceptClientFrame(steer(3, "provider-thread-1", "turn-1"))).toBe(steer(3, "provider-thread-1", "turn-1"));
+    await expect(protocol.acceptClientFrame(steer(4, "provider-thread-forged", "turn-1"))).rejects.toThrow("thread binding mismatch");
+    await expect(protocol.acceptClientFrame(steer(5, "provider-thread-1", "turn-other"))).rejects.toThrow("steer turn binding mismatch");
+  });
+
+  test("compacts and manages background terminals only on its own thread", async () => {
+    const protocol = makeProtocol({ providerThreadId: "provider-thread-1" });
+    await confirmResume(protocol, 1, "provider-thread-1");
+    const frames = [
+      { id: 2, method: "thread/compact/start", params: { threadId: "provider-thread-1" } },
+      { id: 3, method: "thread/backgroundTerminals/list", params: { threadId: "provider-thread-1", limit: 50 } },
+      { id: 4, method: "thread/backgroundTerminals/terminate", params: { threadId: "provider-thread-1", processId: "proc-7" } },
+    ].map((frame) => JSON.stringify(frame));
+    for (const frame of frames) expect(await protocol.acceptClientFrame(frame)).toBe(frame);
+    for (const [id, method] of [[5, "thread/compact/start"], [6, "thread/backgroundTerminals/list"], [7, "thread/backgroundTerminals/terminate"]] as const) {
+      await expect(protocol.acceptClientFrame(JSON.stringify({
+        id, method, params: { threadId: "provider-thread-foreign", processId: "proc-7" },
+      }))).rejects.toThrow("thread binding mismatch");
+    }
+    await expect(protocol.acceptClientFrame(JSON.stringify({
+      id: 8, method: "thread/backgroundTerminals/terminate", params: { threadId: "provider-thread-1" },
+    }))).rejects.toThrow("background terminal id is required");
+  });
+
+  test("keeps refusing fork, revert, turn listing and feedback upload", async () => {
+    const protocol = makeProtocol({ providerThreadId: "provider-thread-1" });
+    await confirmResume(protocol, 1, "provider-thread-1");
+    for (const method of ["thread/fork", "thread/revert", "thread/turns/list", "feedback/upload"]) {
+      await expect(protocol.acceptClientFrame(JSON.stringify({
+        id: 9, method, params: { threadId: "provider-thread-1" },
+      }))).rejects.toThrow("unavailable through the run relay");
+    }
   });
 });
 

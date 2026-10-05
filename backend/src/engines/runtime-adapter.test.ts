@@ -210,17 +210,23 @@ describe("T3 run adapter gate", () => {
     expect(source).not.toContain("keyword");
   });
 
-  test("records the session's command catalog after session.started, before steering, and again once the turn settled", () => {
+  test("records the session's command catalog once the session is up, before steering, and again once the turn settled", () => {
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const establishedIdx = source.indexOf("const session = established.session;");
+    const catalogIdx = source.indexOf("const commandCatalog = recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const snapshotIdx = source.indexOf("snapshot: await readThreadSnapshot(ctx, sandbox),");
     const sessionStartedIdx = source.indexOf("await recordProviderSessionStarted(ctx, session, {");
-    const catalogIdx = source.indexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
+    const awaitedIdx = source.indexOf("await commandCatalog;");
     const revalidateIdx = source.indexOf("await runtimeCommandDispatchRejection({");
     const steerIdx = source.indexOf("const steerResult = await driver.steer({");
     const settledIdx = source.lastIndexOf("await recordRuntimeCommandCatalog({ ctx, sandbox, engine, session });");
     const closeIdx = source.indexOf("await prepared.close().catch(() => {});");
-    expect(sessionStartedIdx).toBeGreaterThan(-1);
-    expect(catalogIdx).toBeGreaterThan(sessionStartedIdx);
-    expect(revalidateIdx).toBeGreaterThan(catalogIdx);
+    expect(establishedIdx).toBeGreaterThan(-1);
+    expect(catalogIdx).toBeGreaterThan(establishedIdx);
+    // The catalog probe runs alongside the thread snapshot read, not after it.
+    expect(snapshotIdx).toBeGreaterThan(catalogIdx);
+    expect(awaitedIdx).toBeGreaterThan(sessionStartedIdx);
+    expect(revalidateIdx).toBeGreaterThan(awaitedIdx);
     expect(steerIdx).toBeGreaterThan(revalidateIdx);
     expect(settledIdx).toBeGreaterThan(steerIdx);
     expect(closeIdx).toBeGreaterThan(settledIdx);
@@ -262,6 +268,21 @@ describe("T3 run adapter gate", () => {
       .toContain("CANONICAL PRIOR THREAD HISTORY");
     expect(promptFor(living, { authPath: "subscription", hasCurrentEpochThreadBinding: true }))
       .not.toContain("CANONICAL PRIOR THREAD HISTORY");
+  });
+
+  test("reads a warm runtime's shell alongside the provider bridge, and again after any barrier", () => {
+    const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
+    const prepareProviderIdx = source.indexOf("async prepareProvider(sandbox, workdir, binding, preparation) {");
+    const earlyIdx = source.indexOf("if (runtimeEnvironmentAccessValidated(sandbox)) {", prepareProviderIdx);
+    const bridgeIdx = source.indexOf("return await prepareRuntimeProviderBridge(", prepareProviderIdx);
+    expect(prepareProviderIdx).toBeGreaterThan(-1);
+    expect(earlyIdx).toBeGreaterThan(prepareProviderIdx);
+    expect(bridgeIdx).toBeGreaterThan(earlyIdx);
+    // Every barrier, which may restart the runtime, discards the early read.
+    const barriers = source.split('const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");');
+    expect(barriers).toHaveLength(4);
+    for (const before of barriers.slice(0, -1)) expect(before.trimEnd().endsWith("runtimeTouched = true;")).toBe(true);
+    expect(source).toContain("const shell = (!runtimeTouched && await earlyShell) ||");
   });
 
   test("keeps desktop/noVNC readiness off the ordinary T3 turn critical path", () => {

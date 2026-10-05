@@ -16,13 +16,20 @@
 // - Their line-clamp + Tooltip full-text affordance -> the whole reason, wrapped,
 //   plus a copy affordance (the backend already slices the reason; the banner
 //   must not hide any more of it).
-// - `onRetry` renders a Retry action ONLY when a real handler is passed. Today
-//   NO thread-level retry/resend action exists in session-view/composer
-//   (handleReply starts a NEW turn; the composer's internal retry covers failed
-//   SUBMITS only), so no call site passes it and the button never renders.
+// - Their Retry -> Resend (`resend`): it sends the failed prompt again as a new
+//   turn (POST /api/runs/:id/resend) and renders only when the caller passes it.
 
-import { RiCloseLine, RiErrorWarningLine } from "@remixicon/react";
+import { RiCloseLine, RiErrorWarningLine, RiRestartLine } from "@remixicon/react";
+import { Button } from "@/components/base/buttons/button";
 import { MessageCopyButton } from "@/components/session-ui/message-copy-button";
+
+/** The Resend action for the failed run: the click, whether a resend is in
+ *  flight, and why the last one was refused. */
+export interface ThreadErrorResend {
+  readonly onResend: () => void;
+  readonly pending: boolean;
+  readonly error: string | null;
+}
 
 export function getThreadErrorBannerKey(threadKey: string, error: string | null): string | null {
   return error === null ? null : `${threadKey}\u0000${error}`;
@@ -76,14 +83,13 @@ export function isThreadErrorBannerDismissedForSession(bannerKey: string | null)
 export function ThreadErrorBanner({
   error,
   onDismiss,
-  onRetry,
+  resend,
 }: {
   /** The failed run's real error summary (run.summary); null renders nothing. */
   error: string | null;
   onDismiss?: () => void;
-  /** Renders a Retry action when a REAL existing retry handler is supplied;
-   *  absent (the current product state - no such action exists) means no button. */
-  onRetry?: () => void;
+  /** Renders a Resend action; absent means no button. */
+  resend?: ThreadErrorResend;
 }) {
   if (!error) return null;
   return (
@@ -99,16 +105,22 @@ export function ThreadErrorBanner({
           <span className="text-text-tertiary"> - </span>
           {error}
         </p>
+        {resend?.error && (
+          <p className="text-caption-1-regular text-text-error-primary mt-1">{resend.error}</p>
+        )}
       </div>
       <MessageCopyButton text={error} label="Copy error" />
-      {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="border-red-200 text-text-error-primary hover:bg-red-200/40 shrink-0 rounded-lg border px-2 py-0.5 text-caption-1-medium transition-colors"
+      {resend && (
+        <Button
+          variant="secondary"
+          size="xs"
+          leadingIcon={RiRestartLine}
+          className="shrink-0 rounded-full"
+          disabled={resend.pending}
+          onClick={resend.onResend}
         >
-          Retry
-        </button>
+          {resend.pending ? "Resending" : "Resend"}
+        </Button>
       )}
       {onDismiss && (
         <button

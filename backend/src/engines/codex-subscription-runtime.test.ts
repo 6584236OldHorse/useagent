@@ -42,16 +42,26 @@ afterEach(() => {
   else process.env.PROVIDER_GATEWAY_SECRET = priorGatewaySecret;
 });
 
-/** Relay sessions opened by a preparation, and the runs each was activated for. */
+/** Relay sessions opened by a preparation, and the run each serves now (null between runs). */
 function relaySessions(log: string[] = []) {
-  const opened: Array<{ input: Parameters<typeof openCodexRelaySession>[0]; runs: CodexRelayRun[]; closed: boolean }> = [];
+  const opened: Array<{
+    input: Parameters<typeof openCodexRelaySession>[0];
+    runs: CodexRelayRun[];
+    serving: CodexRelayRun | null;
+    closed: boolean;
+  }> = [];
   const open: typeof openCodexRelaySession = (input) => {
-    const record = { input, runs: [] as CodexRelayRun[], closed: false };
+    const record = { input, runs: [] as CodexRelayRun[], serving: null as CodexRelayRun | null, closed: false };
     opened.push(record);
     return {
       url: "wss://useagent.example.test/api/internal/codex-relay/opaque",
-      activate: (run) => void record.runs.push(run),
-      deactivate() {},
+      activate(run) {
+        record.runs.push(run);
+        record.serving = run;
+      },
+      deactivate() {
+        record.serving = null;
+      },
       get connected() { return false; },
       get closed() { return record.closed; },
       close: () => {
@@ -156,8 +166,11 @@ describe("T3 Codex subscription lease", () => {
       harness.commands.some(({ command }) => command.includes("provider-gateway-generation")),
     ).toBe(true);
 
-    // The run is done; the session stays for the thread's next run.
+    // The run is done; the session stays for the thread's next run, serving
+    // no run until then, so the relay refuses connections and turn starts.
+    expect(relays.opened[0]!.serving).toMatchObject({ runId: "run-1" });
     await lease.close();
+    expect(relays.opened[0]!.serving).toBeNull();
     expect(closed).toEqual([]);
     expect(liveCodexThreadSessions()).toBe(1);
     expect(harness.commands.some(({ command }) => command.includes("delete current.providerInstances.codex"))).toBe(false);
@@ -201,7 +214,9 @@ describe("T3 Codex subscription lease", () => {
     expect(bearers).toHaveLength(2);
     expect(bearers[1]).not.toBe(bearers[0]);
     expect(warm.commands[0]?.command).toContain(createHash("sha256").update(bearers[1]!).digest("hex"));
+    expect(relays.opened[0]!.serving).toMatchObject({ runId: "run-2" });
     await second.close();
+    expect(relays.opened[0]!.serving).toBeNull();
     expect(liveCodexThreadSessions()).toBe(1);
   });
 

@@ -1142,6 +1142,97 @@ describe("Codex relay sessions across runs", () => {
     session.close();
   });
 
+  test("answers the runtime's unsubscribe itself and keeps the session's app-server and connection", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    child.received.splice(0);
+    session.deactivate();
+
+    const reply = collectMessages(socket, 1);
+    socket.send(JSON.stringify({ id: 3, method: "thread/unsubscribe", params: { threadId: "provider-thread-1" } }));
+    expect(await reply).toEqual([JSON.stringify({ id: 3, result: { status: "unsubscribed" } })]);
+    expect(child.received).toEqual([]);
+    expect(session.connected).toBe(true);
+    expect(child.wasKilled()).toBe(false);
+    session.close();
+  });
+
+  test("steering or compacting needs an active run, and compaction counts toward its turn starts", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    const compact = (id: number) => JSON.stringify({ id, method: "thread/compact/start", params: { threadId: "provider-thread-1" } });
+    socket.send(compact(3));
+    socket.send(turnStart(4, "gpt-5.5"));
+    await eventually(() => expect(child.received.some((frame) => frame.includes('"id":4'))).toBe(true));
+    const limited = socketClosed(socket);
+    socket.send(compact(5));
+    expect(await limited).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":5'))).toBe(false);
+
+    session.close();
+  });
+
+  test("a steer of the active turn reaches the app-server only while a run is active", async () => {
+    const server = startRelayServer();
+    const child = fakeAppServer();
+    setCodexSubscriptionRelayDependenciesForTest({
+      selectRuntime: async () => runtime(),
+      loadThreadBinding: async () => "provider-thread-1",
+      spawnAppServer: () => child.process,
+    });
+    const session = openCodexRelaySession({
+      scope: scope(), runtime: runtime(), execServerUrl: EXEC, codeModeHostUrl: CODE_MODE,
+      toolGateway: null, reusable: true, publicOrigin: `http://127.0.0.1:${server.port}`,
+    });
+    session.activate({ runId: "run-1", model: "gpt-5.5" });
+    const socket = await opened(session.url);
+    sockets.push(socket);
+    await initializeRelay(socket, child, 1);
+    await resume(socket, child, 2, "gpt-5.5");
+    const started = collectMessages(socket, 1);
+    child.stdout.write(`${JSON.stringify({ method: "turn/started", params: { threadId: "provider-thread-1", turn: { id: "turn-1" } } })}\n`);
+    await started;
+    const steer = (id: number) => JSON.stringify({
+      id, method: "turn/steer", params: { threadId: "provider-thread-1", expectedTurnId: "turn-1", input: [{ type: "text", text: "and this" }] },
+    });
+    socket.send(steer(3));
+    await eventually(() => expect(child.received.some((frame) => frame.includes('"id":3'))).toBe(true));
+    session.deactivate();
+    const refused = socketClosed(socket);
+    socket.send(steer(4));
+    expect(await refused).toMatchObject({ code: 1008 });
+    expect(child.received.some((frame) => frame.includes('"id":4'))).toBe(false);
+    session.close();
+  });
+
   test("native output belongs to the run whose turn produced it, never to the run active when it lands", async () => {
     process.env.FINISHED_WORK_ROLLOUT = "shadow";
     const storage = new InMemoryArtifactStorage();
