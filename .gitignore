@@ -64,6 +64,7 @@ docs/internal/
 CLAUDE.local.md
 progress/
 /plans/
+/plan/
 .worktrees/
 
 # Production Terraform operator inputs remain local. The private Pro repository
