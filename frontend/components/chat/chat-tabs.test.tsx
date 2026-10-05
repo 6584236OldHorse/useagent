@@ -5,7 +5,7 @@ import { ChatTabStrip, tabKeyAction } from "./chat-tabs";
 const TABS = [
   { id: "r1", title: "Fix the login bug", href: "/session/r1", engine: "codex", status: "running" as const },
   { id: "r2", title: "Deploy to staging", href: "/session/r2", engine: "claude", status: "failed" as const },
-  { id: "r3", title: "Write the release notes", href: "/session/r3" },
+  { id: "r3", title: "Write the release notes", href: "/session/r3", engine: "opencode", status: "completed" as const },
 ];
 
 describe("ChatTabStrip", () => {
@@ -38,6 +38,13 @@ describe("ChatTabStrip", () => {
     expect(html).toContain('aria-label="Failed"');
     expect(html).toContain('aria-label="Completed"');
     expect(html).toContain("bg-red-500");
+    // A tab whose thread the rail list does not hold yet shows no dot at all:
+    // an unknown state must not read as done.
+    const unknown = renderToStaticMarkup(
+      <ChatTabStrip tabs={[{ id: "r9", title: "Chat", href: "/session/r9" }]} activeId="r9" onClose={() => {}} />,
+    );
+    expect(unknown).not.toContain('role="img"');
+    expect(unknown).not.toContain("Completed");
     // A vendor mark per engine (the knot for Codex, the starburst for Claude), decorative.
     expect(html).toContain("M22.2819 9.8211");
     expect(html).toContain("m4.7144 15.9555");

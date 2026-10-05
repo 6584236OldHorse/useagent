@@ -78,7 +78,9 @@ export function ChatTabStrip({
       {tabs.map((tab) => {
         const active = tab.id === activeId;
         const Mark = engineMarkFor(tab.engine ?? "");
-        const status = threadStatusPresentation(tab.status ?? "completed");
+        // No dot until the status is known (the rail list still loading, or a tab
+        // older than the list holds): an unknown state is not "done".
+        const status = tab.status ? threadStatusPresentation(tab.status) : null;
         return (
           <div
             key={tab.id}
@@ -102,9 +104,11 @@ export function ChatTabStrip({
             >
               {tab.title}
             </Link>
-            <span role="img" aria-label={status.label} title={status.label}>
-              <StatusDot {...(status.dot ?? { tone: "neutral" })} />
-            </span>
+            {status && (
+              <span role="img" aria-label={status.label} title={status.label}>
+                <StatusDot {...(status.dot ?? { tone: "neutral" })} />
+              </span>
+            )}
             <button
               type="button"
               aria-label={`Close ${tab.title}`}
