@@ -380,7 +380,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
         }
         const res = submissionLane === "child"
           ? await createThreadMessage(rootId, {
-                text,
+                text, ...(permissionMode ? { permission_mode: permissionMode } : {}),
                 ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
               }, idempotencyKey)
           : await createRun(replyRunBody({

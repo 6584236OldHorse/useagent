@@ -8,6 +8,7 @@ import {
   type ThreadRelationshipView,
 } from "./thread-relationship-repo";
 import { acceptThreadFollowup } from "./thread-followups";
+import { isPermissionMode } from "../engines/permission-mode";
 import { productChildThreadsEnabled, threadRelationshipsEnabled } from "./thread-relationship-switch";
 import { pumpThread } from "../worker";
 import { runQueueView } from "../fleet/view";
@@ -267,12 +268,15 @@ routes.post("/:threadId/messages", async (c) => {
   try { body = JSON.parse(raw); } catch { return c.json({ error: "invalid_json" }, 400); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "invalid_body" }, 400);
   const record = body as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "text" && key !== "attachments")) return c.json({ error: "invalid_body" }, 400);
+  if (Object.keys(record).some((key) => key !== "text" && key !== "attachments" && key !== "permission_mode")) return c.json({ error: "invalid_body" }, 400);
   const text = typeof record.text === "string" ? record.text.trim() : "";
   const attachments = record.attachments === undefined ? [] : record.attachments;
+  // The chip's choice for this turn; absent keeps the thread's current mode.
+  const permissionMode = record.permission_mode === undefined ? undefined : record.permission_mode;
   if (
     !text || !Array.isArray(attachments) || attachments.length > 10 ||
-    attachments.some((id) => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))
+    attachments.some((id) => typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) ||
+    (permissionMode !== undefined && !isPermissionMode(permissionMode))
   ) {
     return c.json({ error: "invalid_body" }, 400);
   }
@@ -285,6 +289,7 @@ routes.post("/:threadId/messages", async (c) => {
       text,
       attachmentIds,
       idempotencyKey,
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
     });
     if (accepted.status === "not_found") return c.json({ error: "not_found" }, 404);
     if (accepted.status === "stale_parent") return c.json({ error: "stale_parent_run" }, 409);

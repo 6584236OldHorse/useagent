@@ -17,7 +17,7 @@
 import { slackConfig } from "../env";
 import { runs, type MemoryScope, type RunStatus } from "../db/schema";
 import { db } from "../db/client";
-import { getRunForOrg } from "../runs/repo";
+import { getLatestThreadRun, getRunForOrg } from "../runs/repo";
 import {
   acceptConnectorRunCommand,
   preflightConnectorRunCommandReplay,
@@ -450,9 +450,13 @@ export async function handleSlackEvent(
   let model = config.model;
   let inheritedResources: readonly RunResource[] = [];
   let parent: Awaited<ReturnType<typeof getRunForOrg>> | null = null;
+  // The thread's newest turn owns the permission mode a Slack reply keeps: the
+  // root is where the thread started, not what a later reply changed it to.
+  let latest: Awaited<ReturnType<typeof getLatestThreadRun>> = null;
   if (link && isThreadReply) {
     parent = await getRunForOrg(orgId, link.rootRunId);
     if (parent) {
+      latest = await getLatestThreadRun(orgId, parent.threadId);
       parentRunId = parent.id;
       threadId = parent.threadId;
       memoryScope = parent.memoryScope;
@@ -699,9 +703,10 @@ export async function handleSlackEvent(
         // Staged inbound attachments — claimed atomically with run acceptance.
         ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         memoryScope,
-        // Slack has no permission chooser: a reply keeps its thread's mode, a new
-        // thread takes the operator's configured posture (createRun's default).
-        ...(parent ? { permissionMode: parent.permissionMode } : {}),
+        // Slack has no permission chooser: a reply keeps its thread's current mode
+        // (its newest turn's), a new thread takes the operator's configured
+        // posture (createRun's default).
+        ...(parent ? { permissionMode: (latest ?? parent).permissionMode } : {}),
         // Slack turns don't pin a skill yet.
         skillId: null,
         skillVersion: null,

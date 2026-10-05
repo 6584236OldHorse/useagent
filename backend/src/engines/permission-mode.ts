@@ -53,6 +53,30 @@ export function permissionModeSupported(engine: string): boolean {
   return canonicalEngine(engine) !== "pi";
 }
 
+/** Thrown at the single run insert point when a run would be stored with a
+ *  mode its engine cannot honour, whichever lane asked for it. */
+export class PermissionModeUnsupportedError extends Error {
+  readonly code = "permission_mode_unsupported" as const;
+  constructor(readonly engine: string, readonly mode: PermissionMode) {
+    super(`${engine} cannot honour the ${mode} permission mode`);
+  }
+}
+
+/** From least to most permissive: what each mode lets the runtime do without asking. */
+const PERMISSION_ORDER: readonly PermissionMode[] = [
+  "read-only",
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+
+/** The narrower of two modes: a turn handed to another thread may not widen
+ *  what the turn that asked for it was allowed to do. */
+export function narrowerPermissionMode(a: PermissionMode, b: PermissionMode): PermissionMode {
+  return PERMISSION_ORDER.indexOf(a) <= PERMISSION_ORDER.indexOf(b) ? a : b;
+}
+
 /** For a read-only run: what the runtime asked to do and must be refused, or
  *  null when the request may proceed (reading a file). Unknown request kinds
  *  are refused too; a read-only run fails closed. */

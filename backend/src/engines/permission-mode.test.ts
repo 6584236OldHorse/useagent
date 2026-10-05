@@ -3,6 +3,8 @@ import {
   approvalDecisionAllowed,
   configuredRuntimeMode,
   isPermissionMode,
+  narrowerPermissionMode,
+  PermissionModeUnsupportedError,
   permissionModeSupported,
   readOnlyRefusal,
   runtimeModeFor,
@@ -59,5 +61,15 @@ describe("permission modes", () => {
     expect(isPermissionMode(null)).toBe(false);
     expect(configuredRuntimeMode({})).toBe("full-access");
     expect(configuredRuntimeMode({ RUNTIME_MODE: "approval-required" })).toBe("approval-required");
+  });
+
+  test("a handed-off turn takes the narrower of the two modes, and an unsupported pairing names itself", () => {
+    expect(narrowerPermissionMode("full-access", "read-only")).toBe("read-only");
+    expect(narrowerPermissionMode("approval-required", "auto-accept-edits")).toBe("approval-required");
+    expect(narrowerPermissionMode("auto", "full-access")).toBe("auto");
+    expect(narrowerPermissionMode("full-access", "full-access")).toBe("full-access");
+    const error = new PermissionModeUnsupportedError("pi", "read-only");
+    expect(error.code).toBe("permission_mode_unsupported");
+    expect(error.message).toContain("pi");
   });
 });

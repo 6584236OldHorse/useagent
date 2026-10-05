@@ -6,7 +6,11 @@ import type {
   ApiThreadOutlineTurn,
   PermissionMode,
 } from "@useagent/agent-client/wire";
-import { configuredRuntimeMode } from "../engines/permission-mode";
+import {
+  configuredRuntimeMode,
+  PermissionModeUnsupportedError,
+  permissionModeSupported,
+} from "../engines/permission-mode";
 import {
   and,
   desc,
@@ -229,6 +233,13 @@ export async function createRun(
    *  commits the command + run atomically). Defaults to the shared pool. */
   exec: Executor = db,
 ): Promise<void> {
+  // The one place every lane inserts a run: a mode the engine cannot honour
+  // never reaches the row, whoever asked for it (a child of a read-only turn
+  // spawned on Pi, a bot handoff to a Pi bot).
+  const permissionMode = input.permissionMode ?? configuredRuntimeMode();
+  if (permissionMode !== "full-access" && !permissionModeSupported(input.engine)) {
+    throw new PermissionModeUnsupportedError(input.engine, permissionMode);
+  }
   const primaryRepo = input.repos?.[0] ? parseRepoRef(input.repos[0]).repo : null;
   const project =
     input.orgId && primaryRepo
@@ -255,7 +266,7 @@ export async function createRun(
     // Legacy single-value mirror: clean "owner/name" (drop any branch suffix).
     repo: primaryRepo,
     memoryScope: input.memoryScope,
-    permissionMode: input.permissionMode ?? configuredRuntimeMode(),
+    permissionMode,
     skillId: input.skillId ?? null,
     skillVersion: input.skillVersion ?? null,
     skillContentHash: input.skillContentHash ?? null,
@@ -270,6 +281,17 @@ export async function createRun(
 
 export async function getRun(id: string): Promise<RunRecord | null> {
   const [row] = await db.select().from(runs).where(eq(runs.id, id)).limit(1);
+  return row ?? null;
+}
+
+/** The thread's newest run: the turn whose mode a follow-up without a choice keeps. */
+export async function getLatestThreadRun(orgId: string, threadId: string): Promise<RunRecord | null> {
+  const [row] = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.threadId, threadId)))
+    .orderBy(desc(runs.createdAt), desc(runs.id))
+    .limit(1);
   return row ?? null;
 }
 

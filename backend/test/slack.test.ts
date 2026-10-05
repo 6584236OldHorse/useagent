@@ -825,6 +825,39 @@ describe("slack event → run", () => {
     expect(settled.every((u) => (u.blocks as any[])[0].title === `root ${marker}`)).toBe(true);
   });
 
+  test("a thread reply keeps the thread's current permission mode, not the root's", async () => {
+    const marker = uid("perm");
+    const channel = `C${uid("ch")}`;
+    const rootTs = `${uid("ts")}.1`;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> root ${marker}`, ts: rootTs }),
+    );
+    const root = await waitFor(async () => findRunByPrompt(`root ${marker}`));
+    expect(root.permission_mode).toBe("full-access");
+
+    // A web reply narrows the thread to read only; the Slack reply after it must not widen it back.
+    const narrowed = await json<{ id: string }>("/api/runs", {
+      method: "POST",
+      headers: { "Idempotency-Key": uid("web") },
+      body: { prompt: `narrow ${marker}`, parent_run_id: root.id, permission_mode: "read-only" },
+    });
+    expect(narrowed.status).toBe(201);
+
+    await postSlack(
+      eventCallback({
+        type: "app_mention",
+        channel,
+        user: "U-HUMAN",
+        text: `<@${BOT}> more ${marker}`,
+        ts: `${uid("ts")}.2`,
+        thread_ts: rootTs,
+      }),
+    );
+    const reply = await waitFor(async () => findRunByPrompt(`more ${marker}`));
+    expect(reply.thread_id).toBe(root.id);
+    expect(reply.permission_mode).toBe("read-only");
+  });
+
   test("a web reply mirrors its author into the linked Slack thread once without arming mentions", async () => {
     const rootId = crypto.randomUUID();
     const channel = `C${uid("web-mirror")}`;
