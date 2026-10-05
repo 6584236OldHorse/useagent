@@ -389,6 +389,9 @@ class CubeProcess implements SandboxProcess {
       rows: options.rows,
       onData: options.onData,
       user: CUBE_EXEC_USER,
+      // E2B defaults PTY streams to 60 seconds. Retained engine PTYs own their
+      // lifetime and still require the existing numeric termination evidence.
+      timeoutMs: 0,
       ...(options.cwd ? { cwd: options.cwd } : {}),
       ...(options.envs ? { envs: options.envs } : {}),
     });

@@ -39,6 +39,7 @@ function sandboxInfo(overrides: Partial<SandboxInfo> = {}): SandboxInfo {
 function fakeSandbox(options: {
   kill?: (pid: number) => Promise<boolean>;
   list?: () => Promise<Array<{ pid: number; envs: Record<string, string> }>>;
+  onPtyCreate?: (options: unknown) => void;
   ptySendInput?: (pid: number, data: Uint8Array) => Promise<void>;
   ptyWait?: () => Promise<{ exitCode: number; error?: string; stdout: string; stderr: string }>;
   run?: (command: string, options?: unknown) => Promise<unknown>;
@@ -57,17 +58,20 @@ function fakeSandbox(options: {
     },
     getHost: (port: number) => `${port}-cube-1.sandbox.example.com`,
     pty: {
-      create: async () => ({
-        disconnect: async () => {},
-        exitCode: undefined,
-        error: undefined,
-        kill: async () => true,
-        pid: 42,
-        wait: options.ptyWait ?? (async () => ({ exitCode: 0, stdout: "", stderr: "" })),
-        sendStdin: async () => {
-          throw new Error("CommandHandle.sendStdin must not be used for a PTY");
-        },
-      }),
+      create: async (ptyOptions: unknown) => {
+        options.onPtyCreate?.(ptyOptions);
+        return {
+          disconnect: async () => {},
+          exitCode: undefined,
+          error: undefined,
+          kill: async () => true,
+          pid: 42,
+          wait: options.ptyWait ?? (async () => ({ exitCode: 0, stdout: "", stderr: "" })),
+          sendStdin: async () => {
+            throw new Error("CommandHandle.sendStdin must not be used for a PTY");
+          },
+        };
+      },
       resize: async () => {},
       sendInput: options.ptySendInput ?? (async () => {}),
     },
@@ -225,7 +229,9 @@ describe("Cube sandbox provider", () => {
   test("sends terminal input through the Cube PTY API", async () => {
     process.env.CUBE_PROXY_SCHEME = "https";
     const writes: Array<{ pid: number; text: string }> = [];
+    let ptyOptions: unknown;
     const sandbox = fakeSandbox({
+      onPtyCreate: (options) => { ptyOptions = options; },
       ptySendInput: async (pid, data) => {
         writes.push({ pid, text: new TextDecoder().decode(data) });
       },
@@ -242,6 +248,13 @@ describe("Cube sandbox provider", () => {
     });
     await pty.sendInput("printf 'CUBE_PTY_OK\\n'\n");
 
+    expect(ptyOptions).toEqual({
+      cols: 80,
+      rows: 24,
+      onData: expect.any(Function),
+      user: "root",
+      timeoutMs: 0,
+    });
     expect(writes).toEqual([{ pid: 42, text: "printf 'CUBE_PTY_OK\\n'\n" }]);
     expect(await pty.waitForTermination()).toEqual({ exitCode: 0 });
 
