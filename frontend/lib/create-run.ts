@@ -86,8 +86,11 @@ export async function runCreateFailureMessage(
   response: Response,
   fallback = "Couldn't start the thread. Check Settings and try again.",
 ): Promise<string> {
-  const payload = (await response.json().catch(() => null)) as { message?: unknown } | null;
-  return typeof payload?.message === "string" && payload.message.trim()
-    ? payload.message.trim()
-    : fallback;
+  const payload = (await response.json().catch(() => null)) as
+    | { message?: unknown; reason?: unknown }
+    | null;
+  const text = [payload?.message, payload?.reason].find(
+    (value): value is string => typeof value === "string" && value.trim() !== "",
+  );
+  return text ? text.trim() : fallback;
 }

@@ -598,6 +598,7 @@ export type {
   SessionCommandCatalog,
 } from "./canonical-session";
 export {
+  intentCommands,
   resolveCommandCatalog,
   selectActiveSessionId,
   selectSessionCapabilities,

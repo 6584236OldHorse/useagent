@@ -99,6 +99,14 @@ export type CommandCatalogState =
       readonly stale?: boolean;
     };
 
+/** The commands the reply composer may send as TYPED native intents: only the active
+ *  session's own catalog. The pre-session priming snapshot (`stale`) is display only: the
+ *  backend authorizes an intent solely against the live session's advertised catalog, so an
+ *  intent composed from a primed list is always rejected (400 invalid_command). */
+export function intentCommands(state: CommandCatalogState): readonly CanonicalCommandView[] {
+  return state.status === "ready" && !state.stale ? state.commands : [];
+}
+
 export function resolveCommandCatalog(
   durable: readonly CanonicalCommandView[] | null,
   fetchState: { phase: "loading" | "done" | "error"; commands: readonly CanonicalCommandView[] },
