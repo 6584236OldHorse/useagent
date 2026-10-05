@@ -458,13 +458,11 @@ export async function awaitRuntimeProviderReady(
 
 /** A warm turn's read-only provider checks, issued alongside sandbox
  * acquisition: the install validation for a sandbox this process already
- * bootstrapped, and subscription Codex's services probe. Claude is left out:
- * its bootstrap carries the run's gateway environment. */
+ * bootstrapped (no environment, no writes; a turn that bootstraps afresh just
+ * leaves it untaken), and subscription Codex's services probe. */
 export function prefetchRuntimeProviderBridge(sandbox: SandboxHandle, engine: RuntimeEngineId): void {
-  if (engine === "claude") return;
   const layout = runtimeBridgeLayout(sandbox);
-  const bootstrap = buildRuntimeProviderBootstrapCommand(engine, {}, layout, "plane");
-  if (bootstrapStates.get(sandbox.id || sandbox)?.has(bootstrap)) {
+  if (bootstrapStates.get(sandbox.id || sandbox)?.size) {
     const pendingRevision = engine === "codex" ? codexProviderConfigurationRevision(layout) : null;
     prefetchSandboxCommand(sandbox, buildRuntimeProviderValidationCommand(engine, layout, pendingRevision), 10);
   }

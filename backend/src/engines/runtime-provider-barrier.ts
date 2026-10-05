@@ -31,6 +31,7 @@ const runtimeProviderBarrierDependencies: RuntimeProviderBarrierDependencies = {
     requestRuntimeRpc(sandbox, "server.refreshProviders", { instanceId }, signal, timeoutMs),
 };
 
+/** Resolves once the provider is ready; true when the runtime had to be restarted for it. */
 export async function ensureRuntimeProviderReadyForTurn(input: {
   readonly sandbox: SandboxHandle;
   readonly signal: AbortSignal;
@@ -39,7 +40,7 @@ export async function ensureRuntimeProviderReadyForTurn(input: {
   readonly verifyDeadlineMs: number;
   readonly providerLabel: string;
   readonly dependencies?: RuntimeProviderBarrierDependencies;
-}): Promise<void> {
+}): Promise<boolean> {
   const dependencies = input.dependencies ?? runtimeProviderBarrierDependencies;
   // A sandbox whose runtime is down cannot fill its status cache no matter how
   // long the barrier waits. Boot straight away instead of burning the whole
@@ -51,14 +52,14 @@ export async function ensureRuntimeProviderReadyForTurn(input: {
     const deadline = Date.now() + input.barrierDeadlineMs;
     const remaining = () => Math.max(1, deadline - Date.now());
     const firstLookMs = dependencies.refresh ? Math.min(QUICK_PROBE_MS, input.barrierDeadlineMs) : input.barrierDeadlineMs;
-    if (await dependencies.awaitReady(input.sandbox, input.signal, firstLookMs, input.readiness)) return;
+    if (await dependencies.awaitReady(input.sandbox, input.signal, firstLookMs, input.readiness)) return false;
     // T3 re-checks a provider only when its settings change or every five
     // minutes. A run's fresh gateway capability is neither (a pooled sandbox
     // was checked before any run's capability existed), so ask for the check
     // now instead of waiting out the deadline and restarting the runtime.
     if (dependencies.refresh) {
       await dependencies.refresh(input.sandbox, input.readiness.instanceId, input.signal, remaining()).catch(() => false);
-      if (await dependencies.awaitReady(input.sandbox, input.signal, remaining(), input.readiness)) return;
+      if (await dependencies.awaitReady(input.sandbox, input.signal, remaining(), input.readiness)) return false;
     }
   }
   input.signal.throwIfAborted();
@@ -76,4 +77,5 @@ export async function ensureRuntimeProviderReadyForTurn(input: {
     input.signal.throwIfAborted();
     throw new Error(`${input.providerLabel} runtime did not become ready after restart`);
   }
+  return true;
 }

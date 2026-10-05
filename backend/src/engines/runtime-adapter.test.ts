@@ -271,7 +271,7 @@ describe("T3 run adapter gate", () => {
       .not.toContain("CANONICAL PRIOR THREAD HISTORY");
   });
 
-  test("reads a warm runtime's shell alongside the provider bridge, and again after any barrier", () => {
+  test("reads a warm runtime's shell alongside the provider bridge, and again after a restart", () => {
     const source = readFileSync(new URL("./runtime-adapter.ts", import.meta.url), "utf8");
     const prepareProviderIdx = source.indexOf("async prepareProvider(sandbox, workdir, binding, preparation) {");
     const earlyIdx = source.indexOf("if (runtimeEnvironmentAccessValidated(sandbox)) {", prepareProviderIdx);
@@ -279,10 +279,18 @@ describe("T3 run adapter gate", () => {
     expect(prepareProviderIdx).toBeGreaterThan(-1);
     expect(earlyIdx).toBeGreaterThan(prepareProviderIdx);
     expect(bridgeIdx).toBeGreaterThan(earlyIdx);
-    // Every barrier, which may restart the runtime, discards the early read.
-    const barriers = source.split('const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");');
-    expect(barriers).toHaveLength(4);
-    for (const before of barriers.slice(0, -1)) expect(before.trimEnd().endsWith("runtimeTouched = true;")).toBe(true);
+    // A barrier that restarts the runtime discards the early read; one that
+    // only waits (or asks T3 to re-check) keeps it.
+    const pending = source.indexOf("await applyPendingCodexProviderConfiguration({");
+    // The pending Codex configuration always restarts the runtime.
+    const pendingBlock = source.lastIndexOf('providerBridgeLease.authPath !== "subscription" &&', pending);
+    expect(pendingBlock).toBeGreaterThan(-1);
+    expect(source.slice(pendingBlock, pending)).toContain("runtimeTouched = true;");
+    expect(source).toContain("runtimeTouched = (await ensureRuntimeProviderReadyForTurn({");
+    const subscriptionRestart = source.indexOf("await restartRuntimeEnvironment(sandbox, ctx.signal, ctx.timing);");
+    const lineAbove = source.lastIndexOf("\n", source.lastIndexOf("\n", subscriptionRestart) - 1);
+    expect(source.slice(lineAbove, subscriptionRestart)).toContain("runtimeTouched = true;");
+    expect(source.match(/runtimeTouched = true;/g)).toHaveLength(2);
     expect(source).toContain("const shell = (!runtimeTouched && await earlyShell) ||");
   });
 
@@ -769,7 +777,7 @@ describe("T3 run adapter gate", () => {
   test("asks T3 to re-check Claude when the cache is not ready, and restarts nothing once it is", async () => {
     const calls: string[] = [];
     const looks = [false, true];
-    await ensureRuntimeProviderReadyForTurn({
+    const restarted = await ensureRuntimeProviderReadyForTurn({
       sandbox: {} as never,
       signal: new AbortController().signal,
       readiness: {
@@ -801,12 +809,13 @@ describe("T3 run adapter gate", () => {
     // A pooled sandbox's cache predates the run's capability: one quick look,
     // a targeted re-check, and the rest of the same deadline. No restart.
     expect(calls).toEqual(["look:quick", "refresh:claudeAgent:within-deadline", "look:rest"]);
+    expect(restarted).toBe(false);
   });
 
   test("still restarts once when the re-check does not make Claude ready", async () => {
     const calls: string[] = [];
     const looks = [false, false, true];
-    await ensureRuntimeProviderReadyForTurn({
+    const restarted = await ensureRuntimeProviderReadyForTurn({
       sandbox: {} as never,
       signal: new AbortController().signal,
       readiness: {
@@ -836,6 +845,7 @@ describe("T3 run adapter gate", () => {
       },
     });
     expect(calls).toEqual(["look", "refresh", "look", "restart", "invalidate", "look"]);
+    expect(restarted).toBe(true);
   });
 
   test("restarts Claude exactly once after a readiness timeout", async () => {

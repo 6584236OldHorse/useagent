@@ -387,7 +387,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
       let stableProviderPendingRevision: string | null = null;
       // A runtime this process already talks to lists the same projects and
       // threads before and after the provider bridge, so its shell is read
-      // alongside the bridge; any barrier below that may restart it reads again.
+      // alongside the bridge; a barrier below that restarts it reads again.
       let earlyShell: Promise<RuntimeShellSnapshot | null> | null = null;
       let runtimeTouched = false;
       const prepared = await prepareSandboxTurn(ctx, {
@@ -459,17 +459,16 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // T3 applied the gateway-backed wrapper rather than merely observing
         // that the settings file exists.
         if (providerBridgeLease.readiness) {
-          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
-            await ensureRuntimeProviderReadyForTurn({
+            runtimeTouched = (await ensureRuntimeProviderReadyForTurn({
               sandbox,
               signal: ctx.signal,
               readiness: providerBridgeLease.readiness,
               barrierDeadlineMs: CLAUDE_BARRIER_DEADLINE_MS,
               verifyDeadlineMs: CLAUDE_VERIFY_DEADLINE_MS,
               providerLabel: "Claude",
-            });
+            })) || runtimeTouched;
           } finally {
             endBarrier?.();
           }
@@ -484,7 +483,6 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // a per-run instance, and Claude has its own marker barrier above. The
         // no-first-activity watchdog below remains the final safety net.
         if (providerBridgeLease?.authPath === "subscription" && !providerBridgeLease.sessionReused) {
-          runtimeTouched = true;
           const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
           try {
             // A sandbox whose runtime is down cannot publish the status cache,
@@ -505,6 +503,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               // reads the relay config synchronously and builds the remote instance
               // from the start, then verify once before steering. Honest error if
               // the runtime never reports ready.
+              runtimeTouched = true;
               await restartRuntimeEnvironment(sandbox, ctx.signal, ctx.timing);
               invalidateRuntimeEnvironmentAccess(sandbox);
               if (

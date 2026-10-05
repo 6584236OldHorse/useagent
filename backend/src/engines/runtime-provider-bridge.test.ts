@@ -1243,6 +1243,10 @@ exit 17
     await expect(prepareStableRuntimeProvider(sandbox, context, "codex")).resolves.toBeNull();
     // The stable check took the prefetched validation instead of running its own.
     expect(validations()).toBe(1);
+
+    // Claude's validation is environment-free and read-only too, so it is prefetched alike.
+    prefetchRuntimeProviderBridge(sandbox, "claude");
+    expect(commands.some((command) => command.includes(buildClaudeInstallIdentityProbeCommand(layout)) && !command.includes("NATIVE_PACKAGE="))).toBe(true);
   });
 
   test("a valid install with an unreadable pending revision fails closed instead of re-bootstrapping", async () => {
