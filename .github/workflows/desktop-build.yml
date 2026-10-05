@@ -54,7 +54,7 @@ jobs:
           git merge-base --is-ancestor "$commit" origin/main
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve the runner prerelease
+      - name: Resolve the runner prerelease to a commit on main
         id: runner
         shell: bash
         env:
@@ -66,6 +66,10 @@ jobs:
               --jq '[.[] | select(.prerelease and (.tag_name | startswith("runner-")))][0].tag_name // empty')"
           fi
           [[ "$RUNNER_TAG" =~ ^runner-[0-9a-f]{9}$ ]]
+          # The runner is packaged and signed as part of the product, so it needs the same main ancestry as the product commit.
+          runner_commit="$(git rev-parse --verify "refs/tags/$RUNNER_TAG^{commit}")"
+          [[ "$runner_commit" == "${RUNNER_TAG#runner-}"* ]]
+          git merge-base --is-ancestor "$runner_commit" origin/main
           echo "tag=$RUNNER_TAG" >> "$GITHUB_OUTPUT"
 
   macos:

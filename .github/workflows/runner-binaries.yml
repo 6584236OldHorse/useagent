@@ -23,6 +23,8 @@ env:
 jobs:
   build:
     name: Build and publish runner binaries
+    # The desktop build trusts runner-* prereleases, so only main may publish one; a dispatch from any other ref is skipped.
+    if: github.ref == 'refs/heads/main'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write

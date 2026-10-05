@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { CookieJar, createOrgSession, fetchApi, json } from "./helpers";
+import { CookieJar, createOrgSession, fetchApi, json, ORIGIN } from "./helpers";
 
 test("Electron PKCE handoff creates a separate revocable session and rejects replay", async () => {
   const browser = await createOrgSession("desktop-handoff");
@@ -20,11 +20,13 @@ test("Electron PKCE handoff creates a separate revocable session and rejects rep
     method: "POST", cookies: browser.cookies, body: {},
   });
   expect(transferred.status).toBe(200);
-  const exchange = {
-    method: "POST",
-    headers: { origin: "useagent:/" },
-    body: { token: transferred.body.electron_authorization_code, state, code_verifier: verifier },
-  };
+  const body = { token: transferred.body.electron_authorization_code, state, code_verifier: verifier };
+  // Renderer JavaScript carries the web origin; only the native main process reaches the exchange.
+  expect((await fetchApi("/api/auth/electron/token", { method: "POST", body })).status).toBe(403);
+  expect((await fetchApi("/api/auth/electron/token", {
+    method: "POST", body, headers: { origin: ORIGIN, "electron-origin": "useagent:/" },
+  })).status).toBe(403);
+  const exchange = { method: "POST", headers: { origin: "useagent:/" }, body };
   const response = await fetchApi("/api/auth/electron/token", exchange);
   expect(response.status).toBe(200);
   const desktop = new CookieJar();
