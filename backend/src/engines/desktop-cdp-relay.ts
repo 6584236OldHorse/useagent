@@ -57,6 +57,7 @@ function ensureBrowser() {
   starting = (async () => {
     if (await browserAnswers()) return true;
     const child = spawn("sh", [LAUNCH], { detached: true, stdio: "ignore" });
+    child.on("error", () => {}); // a failed spawn shows up as a browser that never answers, below
     child.unref();
     for (let attempt = 0; attempt < 80; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));

@@ -13,6 +13,8 @@ export const BROWSER_DISPLAY = ":1";
 export const BROWSER_CDP_ENDPOINT = "http://127.0.0.1:9222";
 
 const CDP_TIMEOUT_MS = 10_000;
+/** The relay starts a closed browser on the first request, which can take 20 s. */
+const BROWSER_START_TIMEOUT_MS = 30_000;
 
 interface CdpTarget {
   readonly type?: string;
@@ -26,6 +28,7 @@ interface CdpResponse {
   readonly result?: {
     readonly result?: { readonly value?: unknown };
     readonly frameId?: string;
+    readonly errorText?: string;
   };
   readonly exceptionDetails?: { readonly text?: string };
 }
@@ -145,7 +148,7 @@ async function visibleCdpConnection(sandbox: SandboxHandle): Promise<CdpConnecti
   };
   const response = await fetch(`${baseUrl}/json/list`, {
     headers,
-    signal: AbortSignal.timeout(CDP_TIMEOUT_MS),
+    signal: AbortSignal.timeout(BROWSER_START_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error("browser control endpoint is unavailable");
   const targets = (await response.json()) as CdpTarget[];
@@ -201,7 +204,8 @@ const productionBrowserControl: BrowserControlTransport = {
   async navigate(sandbox: SandboxHandle, url: string) {
     const connection = await visibleCdpConnection(sandbox);
     try {
-      await connection.request("Page.navigate", { url });
+      const response = await connection.request("Page.navigate", { url });
+      if (response.result?.errorText) throw new Error(`navigation failed: ${response.result.errorText}`);
     } finally {
       connection.close();
     }

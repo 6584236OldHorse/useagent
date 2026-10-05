@@ -1,5 +1,6 @@
 import { navigateVisibleBrowserPage } from "../../engines/browser-mcp";
 import {
+  addressBarNavigateCommand,
   buildCubeSequenceCommand,
   buttonNumber,
   type ComputerSequenceAction,
@@ -432,7 +433,9 @@ const productionService: ComputerUseService = {
     for (const batch of sequenceBatches(actions)) {
       if ("navigate" in batch) {
         try {
-          await navigateVisibleBrowserPage(sandbox, batch.navigate);
+          // A provider-native desktop has no browser relay: the URL goes through the address bar.
+          if (sandbox.desktop) await cubeCommand(sandbox, addressBarNavigateCommand(batch.navigate, sandbox.desktop.browserExecutable ?? null));
+          else await navigateVisibleBrowserPage(sandbox, batch.navigate);
         } catch (error) {
           throw new Error(`Action ${offset + 1} of ${actions.length} (navigate) failed: ${error instanceof Error ? error.message : String(error)}`);
         }
