@@ -126,21 +126,30 @@ export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   local: "Local machine",
 };
 
-/** Where a run executes, named: the machine for a local sandbox, the provider
- *  when one is reported, else the place the thread asked for (run_location). */
+/** Where a run executes, in the composer's two words: the machine's enrolled
+ *  name for a local sandbox ("This Mac" until the runner list names it, or
+ *  when the thread asked for Local and no sandbox exists yet) and "Cloud" for
+ *  anything hosted. A sandbox that is not local is hosted, and a thread that
+ *  asked for nothing runs in the cloud; the vendor never appears here. */
 export function runnerLocationLabel(
   sandboxId: string | null,
-  sandboxProvider: unknown,
   runners: readonly Runner[],
-  names: Readonly<Record<string, string>> = PROVIDER_NAMES,
   runLocation: RunLocation | null | undefined = null,
 ): string {
   const runnerId = localRunnerId(sandboxId);
-  if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "Unknown machine";
-  if (typeof sandboxProvider === "string" && sandboxProvider.trim()) {
-    return names[sandboxProvider] ?? sandboxProvider;
-  }
-  return runLocation === "cloud" ? "Cloud" : runLocation === "local" ? "Local" : "Unknown runtime";
+  if (runnerId) return runners.find((runner) => runner.id === runnerId)?.name ?? "This Mac";
+  return !sandboxId && runLocation === "local" ? "This Mac" : "Cloud";
+}
+
+/** The vendor behind a hosted sandbox, kept for a title only: the deployment's
+ *  own label when the caller passes it in `names`, else the plugin's name. */
+export function sandboxVendorLabel(
+  sandboxProvider: unknown,
+  names: Readonly<Record<string, string>> = PROVIDER_NAMES,
+): string | null {
+  return typeof sandboxProvider === "string" && sandboxProvider.trim()
+    ? (names[sandboxProvider] ?? sandboxProvider)
+    : null;
 }
 
 export function runnerLoginAvailable(
