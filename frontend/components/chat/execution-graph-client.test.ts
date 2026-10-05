@@ -27,6 +27,23 @@ function event(eventId: string, deliverySeq: number, revision = 0): StoredCanoni
 describe("execution graph client", () => {
   beforeEach(() => resetExecutionGraphCache());
 
+  test("the build-time kill switch normalizes off like the backend", () => {
+    for (const [value, enabled] of [[undefined, true], ["off", false], [" OFF ", false], ["read", true], ["shadow", true]] as const) {
+      const result = Bun.spawnSync([
+        process.execPath,
+        "-e",
+        'const { EXECUTION_GRAPH_CLIENT_ENABLED } = await import("./execution-graph-client.ts"); console.log(EXECUTION_GRAPH_CLIENT_ENABLED);',
+      ], {
+        cwd: import.meta.dir,
+        env: value === undefined ? {} : { NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT: value },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim()).toBe(String(enabled));
+    }
+  });
+
   test("resolves only a durable native-child execution id", () => {
     expect(
       resolveExecutionId(

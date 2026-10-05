@@ -4,7 +4,7 @@ import { type StoredCanonicalEvent, validateCanonicalEvent } from "./canonical-t
  *  sets `NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT=off`; the variable keeps its historical
  *  name so an existing `read` value means on. */
 export const EXECUTION_GRAPH_CLIENT_ENABLED =
-  process.env.NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT !== "off";
+  process.env.NEXT_PUBLIC_EXECUTION_GRAPH_ROLLOUT?.trim().toLowerCase() !== "off";
 
 export interface ExecutionGraphRow {
   readonly id: string;
