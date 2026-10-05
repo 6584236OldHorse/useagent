@@ -422,6 +422,7 @@ export async function enqueueAppendStream(entry: {
   runId: string;
   chunks: readonly SlackStreamChunk[];
   narrationOffset?: number;
+  cardSeq?: number;
   fallbackBlocks: readonly unknown[];
   fallbackText: string;
 }): Promise<void> {
@@ -436,6 +437,7 @@ export async function enqueueAppendStream(entry: {
       runId: entry.runId,
       chunks: entry.chunks,
       ...(entry.narrationOffset !== undefined ? { narrationOffset: entry.narrationOffset } : {}),
+      ...(entry.cardSeq !== undefined ? { cardSeq: entry.cardSeq } : {}),
       fallbackBlocks: entry.fallbackBlocks,
       fallbackText: entry.fallbackText,
     },

@@ -128,6 +128,10 @@ export type AppendStreamPayload = {
   /** For a narration append: the exact char offset this segment starts at.
    *  Delivery fences on it so retries can never scramble the streamed text. */
   readonly narrationOffset?: number;
+  /** For a tool-card append: the watcher's batch sequence. Delivery skips a
+   *  batch older than the newest one already delivered for the run, so a
+   *  retried batch never restores stale card state. */
+  readonly cardSeq?: number;
   /** Fallback card update used when a stream append is permanently unsupported. */
   readonly fallbackBlocks: readonly unknown[];
   readonly fallbackText: string;

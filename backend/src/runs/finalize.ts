@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
 import { artifacts, providerEvents, runs, steps, type RunStatus } from "../db/schema";
 import { completeRun } from "./repo";
@@ -34,6 +34,8 @@ import {
   directMessageChannel,
   STREAM_NARRATION_CAP,
   terminalTaskChunks,
+  toolTaskChunk,
+  type SlackTaskUpdateStreamChunk,
 } from "../slack/streaming";
 import { turnStream } from "./turn-stream";
 import { env } from "../env";
@@ -112,13 +114,34 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   const chromeCard = buildRunCard({ title, phase, model: run.model, repoSpecs, webUrl, answer: summary, omitAnswer: true });
   const replyText = composeSlackReplyText(status, summary);
 
-  // The last started tool task settles alongside the root task at stop.
-  const [lastStep] = await tx
-    .select({ id: steps.id, label: steps.label })
-    .from(steps)
-    .where(and(eq(steps.runId, run.id), ne(steps.kind, "done")))
-    .orderBy(desc(steps.idx))
-    .limit(1);
+  // The recent tool cards settle alongside the root task at stop, from their
+  // durable rows: a live append still pending when the run turns terminal is
+  // dropped, so the stop carries each card's final state itself. Only tool
+  // rows count (runtime chatter and plan rows never become cards). A native
+  // todowrite call is told apart only by its code_json, so the lookback pages
+  // past the rows toolTaskChunk drops until ten cards are in hand.
+  const CARD_LOOKBACK = 10;
+  const cards: SlackTaskUpdateStreamChunk[] = [];
+  let before: number | null = null;
+  for (;;) {
+    const page = await tx
+      .select({ id: steps.id, idx: steps.idx, kind: steps.kind, label: steps.label, chip: steps.chip, code_json: steps.codeJson })
+      .from(steps)
+      .where(and(
+        eq(steps.runId, run.id),
+        before === null ? undefined : lt(steps.idx, before),
+        or(inArray(steps.kind, ["command", "file"]), eq(steps.chip, "subagent")),
+        or(isNull(steps.chip), ne(steps.chip, "plan")),
+      ))
+      .orderBy(desc(steps.idx))
+      .limit(CARD_LOOKBACK);
+    for (const step of page) {
+      const card = toolTaskChunk(step);
+      if (card && cards.length < CARD_LOOKBACK) cards.unshift(card);
+    }
+    if (cards.length >= CARD_LOOKBACK || page.length < CARD_LOOKBACK) break;
+    before = page.at(-1)!.idx;
+  }
 
   // Narration the live watcher streamed into the message body (process-local
   // buffer; empty after a restart). The stop delivery appends exactly the tail
@@ -137,7 +160,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     channel: slack.channel,
     threadTs: slack.threadTs,
     runId: run.id,
-    chunks: terminalTaskChunks({ phase, title, lastStep: lastStep ?? null }),
+    chunks: terminalTaskChunks({ phase, title, cards }),
     narrationText: narration,
     closingMarkdown,
     blocks: chromeCard.blocks,

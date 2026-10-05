@@ -28,6 +28,8 @@ export interface SlackRunResponseTarget extends SlackThreadTarget {
   fallbackMessageTs: string | null;
   /** Narration chars the native stream has accepted (offset fence + stop tail). */
   streamedChars: number;
+  /** Card id -> newest delivered batch sequence (stale-retry fence). */
+  cardRevisions: Record<string, number>;
 }
 
 /** The useAgent root run for a Slack thread, or null if the bot hasn't engaged it. */
@@ -185,11 +187,24 @@ export async function findSlackRunResponse(
       nativeStreamMode: slackRunResponses.nativeStreamMode,
       fallbackMessageTs: slackRunResponses.fallbackMessageTs,
       streamedChars: slackRunResponses.streamedChars,
+      cardRevisions: slackRunResponses.cardRevisions,
     })
     .from(slackRunResponses)
     .where(eq(slackRunResponses.runId, runId))
     .limit(1);
   return row ?? null;
+}
+
+/** Record the batch sequence just delivered for each card it revised. */
+export async function noteSlackCardRevisions(runId: string, revisions: Record<string, number>): Promise<void> {
+  if (Object.keys(revisions).length === 0) return;
+  await db
+    .update(slackRunResponses)
+    .set({
+      cardRevisions: sql`${slackRunResponses.cardRevisions} || ${JSON.stringify(revisions)}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(eq(slackRunResponses.runId, runId));
 }
 
 export async function setSlackNativeStream(

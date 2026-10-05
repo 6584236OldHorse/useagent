@@ -13,6 +13,7 @@ import {
   findSlackRunResponse,
   setSlackFallbackMessageTs,
   setSlackNativeStream,
+  noteSlackCardRevisions,
 } from "../repo";
 import type { ProcessResult, SlackDeliveryOutcome, SlackErrorClass } from "./types";
 import {
@@ -20,6 +21,7 @@ import {
   type SlackSessionStatus,
   type SlackStreamChunk,
   type SlackStreamTaskDisplayMode,
+  streamChunksFrom,
 } from "../streaming";
 import { findSlackWorkspace } from "../workspaces";
 import { resolveSlackBotTokenForWorkspace } from "../../integrations/slack-token-resolver";
@@ -48,59 +50,6 @@ const TICK_MS = Number(process.env.SLACK_OUTBOX_TICK_MS ?? 2000);
 function backoffMs(attempt: number): number {
   const exp = Math.min(CAP_MS, BASE_MS * 2 ** Math.max(0, attempt - 1));
   return exp + Math.floor(Math.random() * Math.min(1000, exp * 0.25));
-}
-
-/** Normalize a stored chunk to the DOCUMENTED wire shape. Pre-migration rows
- *  carried a `markdown_text` text field, `task_update` fields nested under
- *  `task` (with `task_id`), and plan items typed `task` - Slack rejected all of
- *  them, so legacy plan items are dropped and the rest are converted. */
-function normalizeStreamChunk(raw: unknown): SlackStreamChunk | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const chunk = raw as Record<string, unknown>;
-  if (chunk.type === "markdown_text") {
-    const text =
-      typeof chunk.text === "string" && chunk.text
-        ? chunk.text
-        : typeof chunk.markdown_text === "string" && chunk.markdown_text
-          ? chunk.markdown_text
-          : null;
-    return text ? { type: "markdown_text", text } : null;
-  }
-  if (chunk.type === "plan_update") {
-    return typeof chunk.title === "string" && chunk.title ? { type: "plan_update", title: chunk.title } : null;
-  }
-  if (chunk.type === "task_update") {
-    const source = (
-      chunk.task && typeof chunk.task === "object" && !Array.isArray(chunk.task) ? chunk.task : chunk
-    ) as Record<string, unknown>;
-    const id =
-      typeof source.id === "string" && source.id
-        ? source.id
-        : typeof source.task_id === "string" && source.task_id
-          ? source.task_id
-          : null;
-    const title = typeof source.title === "string" && source.title ? source.title : null;
-    const status =
-      source.status === "in_progress" || source.status === "complete" || source.status === "error"
-        ? source.status
-        : null;
-    if (!id || !title || !status) return null;
-    return {
-      type: "task_update",
-      id,
-      title,
-      status,
-      ...(typeof source.details === "string" && source.details ? { details: source.details } : {}),
-      ...(typeof source.output === "string" && source.output ? { output: source.output } : {}),
-    };
-  }
-  return null;
-}
-
-function streamChunks(value: unknown): readonly SlackStreamChunk[] {
-  return Array.isArray(value)
-    ? value.map(normalizeStreamChunk).filter((chunk): chunk is SlackStreamChunk => chunk !== null)
-    : [];
 }
 
 function sessionStatus(value: unknown): SlackSessionStatus | undefined {
@@ -329,7 +278,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const threadTs = string("threadTs");
       const runId = string("runId") ?? string("rootRunId");
       const mode = taskDisplayMode(p.taskDisplayMode);
-      const chunks = streamChunks(p.chunks);
+      const chunks = streamChunksFrom(p.chunks);
       const fallbackBlocks = Array.isArray(p.fallbackBlocks) ? p.fallbackBlocks : undefined;
       const fallbackText = string("fallbackText");
       if (!teamId || !channel || !threadTs || !runId || !mode || chunks.length === 0 || !fallbackText) {
@@ -361,18 +310,33 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const channel = string("channel");
       const threadTs = string("threadTs");
       const runId = string("runId") ?? string("rootRunId");
-      const chunks = streamChunks(p.chunks);
+      const stored = streamChunksFrom(p.chunks);
       const narrationOffset =
         typeof p.narrationOffset === "number" && Number.isFinite(p.narrationOffset)
           ? p.narrationOffset
           : undefined;
       const fallbackBlocks = Array.isArray(p.fallbackBlocks) ? p.fallbackBlocks : undefined;
       const fallbackText = string("fallbackText");
-      if (!teamId || !channel || !threadTs || !runId || chunks.length === 0 || !fallbackText) {
+      if (!teamId || !channel || !threadTs || !runId || stored.length === 0 || !fallbackText) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
       const response = await findSlackRunResponse(runId);
       if (!response) return { ok: false, class: "transient", message: "stream_not_started" };
+      // A card batch drops each card a NEWER batch already revised (the ledger
+      // lives on the response row, so a retry after a restart is fenced too);
+      // nothing left means the whole batch was superseded.
+      const cardSeq = typeof p.cardSeq === "number" ? p.cardSeq : null;
+      const chunks = cardSeq === null
+        ? stored
+        : stored.filter((c) => c.type !== "task_update" || (response.cardRevisions[c.id] ?? 0) < cardSeq);
+      if (chunks.length === 0) return { ok: true };
+      const noteCardSeq = (): Promise<void> =>
+        cardSeq === null
+          ? Promise.resolve()
+          : noteSlackCardRevisions(
+              runId,
+              Object.fromEntries(chunks.flatMap((c) => (c.type === "task_update" ? [[c.id, cardSeq]] : []))),
+            );
       let nativeJustDisabled = false;
       if (response.nativeStreamTs) {
         // Offset fence for narration text: retries and backoff can reorder
@@ -392,6 +356,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
             0,
           );
           await addSlackStreamedChars(runId, markdownChars);
+          await noteCardSeq();
           return stream;
         }
         if (stream.class === "rate_limited") return stream;
@@ -401,7 +366,9 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         nativeJustDisabled = true;
       }
       if (response.fallbackMessageTs) {
-        return client.updateMessage({ channel, ts: response.fallbackMessageTs, text: fallbackText, blocks: fallbackBlocks });
+        const updated = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text: fallbackText, blocks: fallbackBlocks });
+        if (updated.ok) await noteCardSeq();
+        return updated;
       }
       // Progress is best-effort: with the stream just disabled and no card to
       // update, drop the row rather than post stray surfaces after the fact.
@@ -414,7 +381,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const threadTs = string("threadTs");
       const runId = string("runId") ?? string("rootRunId");
       const text = string("text");
-      const chunks = streamChunks(p.chunks);
+      const chunks = streamChunksFrom(p.chunks);
       const narrationText = string("narrationText") ?? "";
       const closingMarkdown = string("closingMarkdown") ?? "";
       const blocks = Array.isArray(p.blocks) ? p.blocks : undefined;
