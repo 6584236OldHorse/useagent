@@ -227,6 +227,7 @@ export interface EngineRunContext {
   timing?: {
     begin(stage: string): TimingSpanEnd;
     mark(stage: string): void;
+    add?(stage: string, durMs: number): void;
   };
 }
 

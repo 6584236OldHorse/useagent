@@ -211,4 +211,78 @@ describe("T3 native thread event stream", () => {
       },
     })).rejects.toThrow("ended before a terminal snapshot");
   });
+
+  test("applies events in place and reads a full snapshot only across a gap or an event it cannot apply", async () => {
+    const activity = (id: string, kind = "tool.started") => ({
+      id, tone: "tool" as const, kind, summary: id, payload: {}, turnId: "turn-1",
+    });
+    const withActivities = (sequence: number, ids: readonly string[]): RuntimeThreadSnapshot => ({
+      ...snapshot(sequence),
+      thread: { ...snapshot(sequence).thread, activities: ids.map((id) => activity(id)) },
+    });
+    const appended = (sequence: number, id: string, kind?: string): RuntimeThreadStreamItem => ({
+      kind: "event",
+      event: {
+        sequence, aggregateKind: "thread", aggregateId: "skynet-thread-1",
+        type: "thread.activity-appended", payload: { threadId: "skynet-thread-1", activity: activity(id, kind) },
+      },
+    });
+    const applied: string[] = [];
+    const readStarted = Promise.withResolvers<void>();
+    const releaseRead = Promise.withResolvers<void>();
+    let reads = 0;
+    let readMs = 0;
+    const ended = Promise.withResolvers<void>();
+
+    await followRuntimeThreadSnapshots({
+      sandbox: {} as never,
+      threadId: "skynet-thread-1",
+      initialSequence: 9,
+      signal: new AbortController().signal,
+      readSnapshot: async () => {
+        reads += 1;
+        if (reads === 2) return { ...withActivities(17, ["a-11", "a-12", "a-13", "a-14", "a-16"]) };
+        readStarted.resolve();
+        await releaseRead.promise;
+        // The runtime's snapshot holds a-12, which the stream never delivered.
+        return withActivities(13, ["a-11", "a-12", "a-13"]);
+      },
+      onRead: (ms) => { readMs += ms; },
+      applySnapshot: async (value) => {
+        applied.push(`${value.snapshotSequence}:${value.thread.activities.map(({ id }) => id).join(",")}`);
+        if (value.snapshotSequence === 17) ended.resolve();
+        return value.snapshotSequence !== 17;
+      },
+      subscribe: async (_sandbox, _threadId, _after, _signal, onItem) => {
+        expect(await onItem({ kind: "snapshot", snapshot: withActivities(10, []) })).toBe(true);
+        await onItem(appended(11, "a-11"));
+        // 12 never arrives: a gap before anything but a tool update reads the thread.
+        await onItem(appended(13, "a-13"));
+        await readStarted.promise;
+        // Delivered while that read is in flight: it waits and applies on top of it.
+        await onItem(appended(14, "a-14"));
+        releaseRead.resolve();
+        await Bun.sleep(5);
+        // The runtime's stream drops superseded tool updates, so this jump is not a gap.
+        await onItem(appended(16, "a-16", "tool.updated"));
+        // A session change is not applied in place.
+        await onItem({ kind: "event", event: {
+          sequence: 17, aggregateKind: "thread", aggregateId: "skynet-thread-1",
+          type: "thread.session-set", payload: { threadId: "skynet-thread-1", session: { status: "ready" } },
+        } });
+        await ended.promise;
+      },
+    });
+
+    expect(reads).toBe(2);
+    expect(readMs).toBeGreaterThan(0);
+    expect(applied).toEqual([
+      "10:",
+      "11:a-11",
+      "13:a-11,a-12,a-13",
+      "14:a-11,a-12,a-13,a-14",
+      "16:a-11,a-12,a-13,a-14,a-16",
+      "17:a-11,a-12,a-13,a-14,a-16",
+    ]);
+  });
 });

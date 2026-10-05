@@ -388,9 +388,8 @@ export async function waitForRuntimeTurn(
     return await applySnapshot(snapshot);
   };
 
-  // Snapshot mode lets T3 attach live delivery before it reads the authoritative
-  // projection, closing the dispatch-to-subscribe race without an initial REST
-  // poll. Event-only bursts schedule at most one authoritative refresh at a time.
+  // Snapshot mode attaches live delivery before the runtime reads the thread, so
+  // nothing between dispatch and subscribe is lost; events then apply in place.
   let streamError: unknown;
   try {
     await followRuntimeThreadSnapshots({
@@ -402,6 +401,7 @@ export async function waitForRuntimeTurn(
       applySnapshot: acceptSnapshot,
       subscribe: dependencies.subscribeRuntimeThread,
       onHeard: liveness.heard,
+      onRead: (durationMs) => ctx.timing?.add?.("t3.snapshot_reads", durationMs),
     });
   } catch (error) {
     streamError = error;

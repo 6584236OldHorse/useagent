@@ -7,6 +7,7 @@ import { RUNTIME_ENVIRONMENT_PORT } from "./runtime-environment";
 import { issueRuntimeEnvironmentWebSocketTicket } from "./runtime-environment-client";
 import { pingRuntimeSocket } from "./turn-liveness";
 import type { RuntimeThreadSnapshot } from "./runtime-orchestration";
+import { applyRuntimeThreadEvent, type RuntimeThreadEvent } from "./runtime-thread-events";
 
 const SUBSCRIPTION_REQUEST_ID = 1;
 const SUBSCRIPTION_TAG = "orchestration.subscribeThread";
@@ -17,8 +18,7 @@ export type RuntimeThreadStreamItem =
   | { readonly kind: "event"; readonly event: RuntimeThreadStreamEvent }
   | { readonly kind: "synchronized" };
 
-export interface RuntimeThreadStreamEvent {
-  readonly sequence: number;
+export interface RuntimeThreadStreamEvent extends RuntimeThreadEvent {
   readonly aggregateKind: "thread";
   readonly aggregateId: string;
 }
@@ -137,6 +137,13 @@ function messageText(data: unknown): Promise<string> {
   return Promise.reject(new Error("The provider stream returned an unsupported frame"));
 }
 
+/**
+ * Follows one thread until a snapshot settles it. The thread state starts from
+ * the snapshot the subscription sends first, and stream events apply to it in
+ * place (runtime-thread-events.ts). An event that cannot be applied, or a gap,
+ * reads a full snapshot through the sandbox; events that arrive meanwhile wait
+ * and apply on top of it. Every state reaches `applySnapshot` in order.
+ */
 export async function followRuntimeThreadSnapshots(input: {
   readonly sandbox: SandboxHandle;
   readonly threadId: string;
@@ -147,25 +154,30 @@ export async function followRuntimeThreadSnapshots(input: {
   readonly subscribe?: typeof subscribeRuntimeThread;
   /** Called whenever the stream shows it is alive (a frame or a pong). */
   readonly onHeard?: () => void;
+  /** Called after each full snapshot read with how long it took. */
+  readonly onRead?: (durationMs: number) => void;
 }): Promise<void> {
-  let observedSequence = input.initialSequence;
-  let refreshThroughSequence = observedSequence;
+  let state: RuntimeThreadSnapshot | null = null;
+  const observedSequence = () => state?.snapshotSequence ?? input.initialSequence;
+  let refreshThroughSequence = input.initialSequence;
   let refreshOperation: Promise<void> | null = null;
+  let waiting: RuntimeThreadStreamEvent[] = [];
   let refreshError: unknown;
   let applicationTail: Promise<void> = Promise.resolve();
   let terminalObserved = false;
   const stopped = new AbortController();
   const signal = AbortSignal.any([input.signal, stopped.signal]);
-  const apply = (value: unknown): Promise<boolean> => {
+  const fail = (error: unknown) => {
+    if (!input.signal.aborted && !stopped.signal.aborted) refreshError ??= error;
+    stopped.abort();
+  };
+  const apply = (value: RuntimeThreadSnapshot): Promise<boolean> => {
     let keepFollowing = true;
     const operation = applicationTail.then(async () => {
       if (signal.aborted) {
         keepFollowing = false;
         return;
       }
-      if (!isRuntimeThreadSnapshot(value)) return;
-      if (value.thread.id !== input.threadId || value.snapshotSequence <= observedSequence) return;
-      observedSequence = value.snapshotSequence;
       keepFollowing = await input.applySnapshot(value);
       if (!keepFollowing) {
         terminalObserved = true;
@@ -175,22 +187,57 @@ export async function followRuntimeThreadSnapshots(input: {
     applicationTail = operation;
     return operation.then(() => keepFollowing);
   };
+  const follow = (event: RuntimeThreadStreamEvent): void => {
+    if (signal.aborted || event.sequence <= observedSequence()) return;
+    if (refreshThroughSequence > observedSequence()) {
+      waiting.push(event);
+      return;
+    }
+    const next = state && applyRuntimeThreadEvent(state, event);
+    if (!next) {
+      scheduleRefresh(event.sequence);
+      return;
+    }
+    state = next;
+    apply(next).catch(fail);
+  };
+  /** A snapshot older than the state is stale; one at its sequence only seeds an empty state. */
+  const accept = (value: unknown): Promise<boolean> | null => {
+    if (!isRuntimeThreadSnapshot(value) || value.thread.id !== input.threadId) return null;
+    const sequence = observedSequence();
+    if (value.snapshotSequence < sequence || (value.snapshotSequence === sequence && state)) return null;
+    state = value;
+    const applied = value.snapshotSequence > sequence ? apply(value) : null;
+    if (refreshThroughSequence <= observedSequence()) {
+      const queued = waiting;
+      waiting = [];
+      for (const event of queued) follow(event);
+    }
+    return applied;
+  };
+  const read = async (readSignal: AbortSignal): Promise<RuntimeThreadSnapshot> => {
+    const startedAt = performance.now();
+    try {
+      return await input.readSnapshot(readSignal);
+    } finally {
+      input.onRead?.(performance.now() - startedAt);
+    }
+  };
   const scheduleRefresh = (sequence: number): void => {
-    if (sequence <= observedSequence || signal.aborted) return;
+    if (sequence <= observedSequence() || signal.aborted) return;
     refreshThroughSequence = Math.max(refreshThroughSequence, sequence);
     if (refreshOperation) return;
     refreshOperation = (async () => {
       try {
-        while (!signal.aborted && observedSequence < refreshThroughSequence) {
+        while (!signal.aborted && observedSequence() < refreshThroughSequence) {
           const targetSequence = refreshThroughSequence;
-          await apply(await input.readSnapshot(signal));
-          if (observedSequence < targetSequence && !signal.aborted) {
+          await accept(await read(signal));
+          if (observedSequence() < targetSequence && !signal.aborted) {
             await delay(125, undefined, { signal });
           }
         }
       } catch (error) {
-        if (!input.signal.aborted && !stopped.signal.aborted) refreshError = error;
-        stopped.abort();
+        fail(error);
       } finally {
         refreshOperation = null;
       }
@@ -212,14 +259,10 @@ export async function followRuntimeThreadSnapshots(input: {
       undefined,
       signal,
       async (item) => {
-        if (item.kind === "snapshot") return await apply(item.snapshot);
-        if (
-          item.kind === "event" &&
-          item.event.aggregateId === input.threadId &&
-          item.event.sequence > observedSequence
-        ) {
-          scheduleRefresh(item.event.sequence);
+        if (item.kind === "snapshot") {
+          return await (accept(item.snapshot) ?? applicationTail.then(() => !signal.aborted));
         }
+        if (item.kind === "event" && item.event.aggregateId === input.threadId) follow(item.event);
         return true;
       },
       input.onHeard,

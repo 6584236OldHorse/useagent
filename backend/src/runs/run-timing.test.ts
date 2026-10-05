@@ -96,6 +96,17 @@ describe("run-timing ledger", () => {
     expect(events[1]?.id).toBe("run-2:timing:dispatch");
   });
 
+  test("a repeated stage keeps one row with its count and total time", () => {
+    const { sink, events } = collector();
+    const timer = createRunTimer("run-4", "thread-4", sink);
+    timer.add("t3.snapshot_reads", 120.4);
+    timer.add("t3.snapshot_reads", 80.4);
+    expect(events.map(({ id }) => id)).toEqual(["run-4:timing:t3.snapshot_reads", "run-4:timing:t3.snapshot_reads"]);
+    expect(events[1]?.payload).toMatchObject({ stage: "t3.snapshot_reads", durMs: 201, count: 2 });
+    const [row] = deriveTimingTable([{ eventType: TIMING_SPAN, payload: events[1]!.payload }]).rows;
+    expect(row).toMatchObject({ stage: "t3.snapshot_reads", kind: "span", durMs: 201, count: 2 });
+  });
+
   test("records only the first visible, reasoning, and text output milestones", () => {
     const stages: string[] = [];
     const markOutput = createFirstOutputMarker({ mark: (stage) => stages.push(stage) });
