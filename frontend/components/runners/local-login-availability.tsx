@@ -3,7 +3,7 @@
 import { RiCheckboxCircleLine, RiCloseCircleLine } from "@remixicon/react";
 import { useMemo } from "react";
 import type { EngineId } from "@/components/chat/types";
-import { runnerLoginAvailable } from "./runner-data";
+import { runnerRunsUserWork, runnerLoginAvailable } from "./runner-data";
 import { useOptionalRunnerSettings, useRunnerSettings } from "./runner-settings-context";
 
 const ENGINE_LOGINS = [
@@ -63,4 +63,10 @@ export function LocalLoginAvailability() {
       })}
     </div>
   );
+}
+
+/** True while this user's own machine will run new threads. */
+export function useMachineRunsWork(): boolean {
+  const { policy, runnerEnabled, runners, userId } = useRunnerSettings();
+  return useMemo(() => runnerRunsUserWork(policy, runners, userId, runnerEnabled), [policy, runnerEnabled, runners, userId]);
 }

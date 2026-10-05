@@ -88,10 +88,10 @@ export function modelCatalogNotice(
 }
 
 const ENGINE_RUNTIME_CAPTIONS: Partial<Record<EngineId, string>> = {
-  opencode: "any model · cloud sandbox",
-  claude: "Anthropic agent · cloud sandbox",
-  codex: "OpenAI agent · cloud sandbox",
-  pi: "native Pi harness · cloud sandbox",
+  opencode: "any model · cloud",
+  claude: "Anthropic agent · cloud",
+  codex: "OpenAI agent · cloud",
+  pi: "native Pi harness · cloud",
   chat: "Chat only: answers from context, no computer or tools",
 };
 
@@ -109,8 +109,11 @@ export function engineRuntimeCaption(
   runtime: CapabilityEngineRuntime | undefined,
   readiness: EngineReadinessStatus | undefined,
   localLoginOffered = false,
+  machineRunsWork = false,
 ): string {
-  const label = runtime ? ENGINE_RUNTIME_CAPTIONS[engine] ?? "Runtime unavailable" : "Runtime unavailable";
+  const caption = runtime ? ENGINE_RUNTIME_CAPTIONS[engine] ?? "Runtime unavailable" : "Runtime unavailable";
+  // The user's own machine takes new threads when it is online; the caption says so.
+  const label = runtime && machineRunsWork ? caption.replace(/ · cloud$/, " · local") : caption;
   if (localLoginOffered) {
     return `${ENGINES.find((candidate) => candidate.id === engine)?.label ?? "Engine"} · machine login available`;
   }
