@@ -2845,12 +2845,20 @@ describe("slack workspace identity (fail closed)", () => {
     const invited = await json<{ status: string }>(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email: insider.email } });
     expect(invited.body.status).toBe("invited");
     const [inv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${request.id}`);
-    const accepted = await json("/api/auth/organization/accept-invitation", { method: "POST", cookies: insider.cookies, body: { invitationId: (inv as { invitation_id: string }).invitation_id } });
+    const invitationId = (inv as { invitation_id: string }).invitation_id;
+    // The direct path keeps the library's rule about where a request may come from.
+    const elsewhere = await json("/api/auth/organization/accept-invitation", { method: "POST", cookies: insider.cookies, headers: { origin: "https://elsewhere.example" }, body: { invitationId } });
+    expect(elsewhere.status).toBe(403);
+    const accepted = await json<{ organizationId?: string }>("/api/auth/organization/accept-invitation", { method: "POST", cookies: insider.cookies, body: { invitationId } });
     expect(accepted.status).toBe(200);
+    expect(accepted.body.organizationId).toBe(DEV_ORG_ID);
     const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
     expect((binding as { user_id: string }).user_id).toBe(insiderUser!.id);
     const memberships = await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, DEV_ORG_ID), eq(member.userId, insiderUser!.id)));
     expect(memberships).toHaveLength(1);
+    // And the accepted workspace is the active one afterwards.
+    const now = await json<{ session?: { activeOrganizationId?: string | null } }>("/api/auth/get-session", { cookies: insider.cookies });
+    expect(now.body.session?.activeOrganizationId).toBe(DEV_ORG_ID);
   });
 
   test("an invitation accepted before the bind still binds on the next message, and a rebound workspace refuses an old one", async () => {
@@ -2863,11 +2871,15 @@ describe("slack workspace identity (fail closed)", () => {
     await json(`/api/team/access-requests/${request.id}/allow`, { method: "POST", body: { email } });
     const [inv] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${request.id}`);
     const invitationId = (inv as { invitation_id: string }).invitation_id;
-    // The library accepted (status, membership) but our binding never ran.
+    // The library marked it accepted but has not written the membership yet: nothing binds, nothing is created.
     const [account] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Early Bird', ${email}, true) returning id`);
-    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (account as { id: string }).id, role: "member", createdAt: new Date() });
     await db.execute(sql`update invitation set status = 'accepted' where id = ${invitationId}`);
-    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("z")}`, ts: `${uid("ts")}.2` }));
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("w")}`, ts: `${uid("ts")}.2` }));
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("Still waiting")) ?? null);
+    expect(await db.select({ id: member.id }).from(member).where(and(eq(member.organizationId, DEV_ORG_ID), eq(member.userId, (account as { id: string }).id)))).toHaveLength(0);
+    // Once the membership exists, the next message finishes the binding.
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (account as { id: string }).id, role: "member", createdAt: new Date() });
+    await postSlack(eventCallback({ type: "message", channel, channel_type: "im", user: slackUserId, text: `hi ${uid("z")}`, ts: `${uid("ts")}.3` }));
     await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.text.includes("You are in now")) ?? null);
     const [binding] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${slackUserId}`);
     expect((binding as { user_id: string }).user_id).toBe((account as { id: string }).id);

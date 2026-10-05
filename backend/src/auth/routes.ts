@@ -400,9 +400,13 @@ routes.post("/api/auth/organization/accept-invitation", async (c) => {
   const session = await auth.api.getSession({ headers: request.headers });
   if (session && body && typeof body.invitationId === "string") {
     // Already a member here, invited on a Slack sender's behalf: the library
-    // would add a second membership, so the invitation is consumed directly.
-    if (await acceptLinkedInvitationAsMember(body.invitationId, { id: session.user.id, email: session.user.email })) {
-      return c.json({ status: "accepted" });
+    // would add a second membership, so the invitation is consumed directly,
+    // behind the same source check the library applies.
+    if (!trustedOrigin(request)) return c.json({ message: "Invalid origin" }, 403);
+    const organizationId = await acceptLinkedInvitationAsMember(body.invitationId, { id: session.user.id, email: session.user.email });
+    if (organizationId) {
+      await auth.api.setActiveOrganization({ headers: request.headers, body: { organizationId } }).catch(() => undefined);
+      return c.json({ status: "accepted", organizationId });
     }
   }
   const response = await auth.handler(request);

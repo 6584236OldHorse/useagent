@@ -158,8 +158,10 @@ export async function requestSlackAccess(input: {
  *  landed between the library's acceptance and our binding): finish the binding now. */
 async function settleAccepted(invitationId: string): Promise<AccessRequestVerdict> {
   const acceptor = await acceptorOf(invitationId);
-  if (acceptor) await bindInvitedSlackSender(invitationId, acceptor);
-  return "already_in";
+  // The library marks the invitation accepted before it writes the membership;
+  // until that membership exists there is nothing to bind to, and it is never
+  // created here: a membership an admin removed must not come back this way.
+  return acceptor && (await bindInvitedSlackSender(invitationId, acceptor)) ? "already_in" : "waiting";
 }
 
 export interface AccessRequestRow {
@@ -295,7 +297,14 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
       .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
       .for("update");
     if (!row) return false;
-    await admit(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
+    // Acceptance binds a membership that exists; it never creates one.
+    const [membership] = await tx
+      .select({ id: member.id })
+      .from(member)
+      .where(and(eq(member.organizationId, row.orgId), eq(member.userId, userId)))
+      .limit(1);
+    if (!membership) return false;
+    await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
     await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
     return true;
   });
@@ -307,8 +316,8 @@ export async function bindInvitedSlackSender(invitationId: string, userId: strin
  *  here cannot go through the library, which would insert a second membership.
  *  The matching, signed-in recipient consumes it directly and keeps their
  *  membership; anyone else is left to the library's own checks. */
-export async function acceptLinkedInvitationAsMember(invitationId: string, who: { id: string; email: string }): Promise<boolean> {
-  const consumed = await db.transaction(async (tx) => {
+export async function acceptLinkedInvitationAsMember(invitationId: string, who: { id: string; email: string }): Promise<string | null> {
+  const consumed = await db.transaction(async (tx): Promise<string | null> => {
     const [row] = await tx
       .select({ id: invitation.id, email: invitation.email, organizationId: invitation.organizationId })
       .from(invitation)
@@ -316,22 +325,22 @@ export async function acceptLinkedInvitationAsMember(invitationId: string, who: 
       .where(and(eq(invitation.id, invitationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
       .for("update", { of: invitation })
       .limit(1);
-    if (!row || row.email.toLowerCase() !== who.email.toLowerCase()) return false;
+    if (!row || row.email.toLowerCase() !== who.email.toLowerCase()) return null;
     const [membership] = await tx
       .select({ id: member.id })
       .from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, who.id)))
       .limit(1);
-    if (!membership) return false;
+    if (!membership) return null;
     await tx.update(invitation).set({ status: "accepted" }).where(eq(invitation.id, row.id));
-    return true;
+    return row.organizationId;
   });
-  if (!consumed) return false;
+  if (!consumed) return null;
   await bindInvitedSlackSender(invitationId, who.id);
-  return true;
+  return consumed;
 }
 
-/** Member row if missing, the binding, and the Slack reply, in the caller's transaction. */
+/** An admin's Allow: the member row if missing, then the binding. Only this path creates membership. */
 async function admit(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }): Promise<void> {
   const [membership] = await tx
     .select({ id: member.id })
@@ -341,6 +350,11 @@ async function admit(tx: Executor, input: { orgId: string; teamId: string; slack
   if (!membership) {
     await tx.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: input.orgId, userId: input.userId, role: "member", createdAt: new Date() });
   }
+  await bind(tx, input);
+}
+
+/** The binding and the Slack reply, in the caller's transaction. */
+async function bind(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }): Promise<void> {
   await upsertSlackUser({ teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, userId: input.userId }, tx);
   await enqueuePostMessageTx(tx, {
     idempotencyKey: `slack-access-allowed:${input.teamId}:${input.slackUserId}:${input.userId}`,
