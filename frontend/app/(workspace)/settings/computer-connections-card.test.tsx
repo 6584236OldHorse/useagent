@@ -9,7 +9,7 @@ test("renders an honest loading shell for every computer provider without creden
   const html = renderToStaticMarkup(
     createElement(ProviderConnectionsProvider, null, createElement(ComputerConnectionsCard)),
   );
-  expect(html).toContain("Managed Cube");
+  expect(html).toContain("Managed sandboxes");
   expect(html).toContain("Loading Daytona connection...");
   expect(html).toContain("Loading Box connection...");
   expect(html).not.toContain("DAYTONA_API_KEY");
