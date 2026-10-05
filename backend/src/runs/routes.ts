@@ -1,13 +1,12 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
-import type { PermissionMode } from "@useagent/agent-client/wire";
 import {
   ENGINE_IDS,
   type EngineId,
   type MemoryScope,
   type RunStatus,
 } from "../db/schema";
-import { permissionModeSupported } from "../engines/permission-mode";
+import { PermissionModeUnsupportedError } from "../engines/permission-mode";
 import { acceptedRunHandoffs, runBotMentions } from "../bots/handoffs";
 import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { orgScope } from "../middleware/org";
@@ -151,7 +150,6 @@ export async function handleRunCreate(
   let inheritedRepos: string[] = [];
   let inheritedResources: readonly RunResource[] = [];
   let parentScope: MemoryScope | null = null;
-  let parentPermissionMode: PermissionMode | null = null;
   let parentModel: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
@@ -175,7 +173,6 @@ export async function handleRunCreate(
         ? parent.resolvedResources
         : legacyParentResources(parent.repos, "web");
     parentScope = parent.memoryScope;
-    parentPermissionMode = parent.permissionMode;
     parentModel = parent.model;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
@@ -219,15 +216,17 @@ export async function handleRunCreate(
     }
   }
 
-  // Memory scope and permission mode: an explicit choice from the authenticated
-  // user (validated) wins; otherwise a reply INHERITS its parent's and a root run
-  // takes the default. Only the enums are read from the body, never an identity.
+  // Memory scope: an explicit choice from the authenticated user (validated) wins;
+  // otherwise a reply INHERITS its parent's and a root run defaults to "org".
+  // Permission mode: only an explicit choice is taken here; an omitted mode is
+  // resolved at the insert, under the thread lock, so an older parent or a read
+  // made before a narrowing reply cannot widen the thread.
   const scope = runMemoryScope(body.memory_scope, parentScope);
   if (!scope.ok) return c.json({ error: scope.error }, 400);
   const { memoryScope, requestedMemoryScope } = scope;
-  const permission = runPermissionMode(body.permission_mode, parentPermissionMode);
+  const permission = runPermissionMode(body.permission_mode);
   if (!permission.ok) return c.json({ error: permission.error }, 400);
-  const { permissionMode, requestedPermissionMode } = permission;
+  const { permissionMode } = permission;
 
   // Parse the stable skill selection before the replay lookup. Its mutable
   // org-scoped revision is resolved only for a genuinely new acceptance below.
@@ -299,7 +298,7 @@ export async function handleRunCreate(
     requestedResources,
     attachmentIds,
     memoryScope: requestedMemoryScope,
-    permissionMode: requestedPermissionMode,
+    permissionMode: permissionMode ?? null,
     skillId: requestedSkillId,
     skillVersion: requestedSkillVersion,
     commandName: requestedCommand?.name.trim() || null,
@@ -350,7 +349,6 @@ export async function handleRunCreate(
     return c.json(engineResolutionErrorBody(resolvedEngine), resolvedEngine.status);
   }
   const engine = resolvedEngine.engine;
-  if (permissionMode !== "full-access" && !permissionModeSupported(engine)) return c.json({ error: "permission_mode_unsupported", engine }, 400);
   const inheritedModel =
     parentModel && isReplyModelAllowedForEngine(engine, parentModel, parentModel)
       ? parentModel
@@ -448,6 +446,7 @@ export async function handleRunCreate(
     if (error instanceof RunPromptTooLargeError) {
       return c.json({ error: error.code }, 413);
     }
+    if (error instanceof PermissionModeUnsupportedError) return c.json({ error: error.code, engine: error.engine }, 400);
     if (error instanceof UploadClaimError) {
       return c.json({ error: "upload_unavailable" }, 409);
     }

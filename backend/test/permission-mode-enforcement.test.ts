@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PermissionMode } from "@useagent/agent-client/wire";
 import { json } from "./helpers";
+import { recordProviderEvent, threadHasSessionGrant } from "../src/runs/provider-events";
 import { waitForRuntimeTurn } from "../src/engines/runtime-adapter";
 import { runtimeThreadId, type RuntimeThreadSnapshot } from "../src/engines/runtime-orchestration";
 import type { RuntimeThreadStreamItem } from "../src/engines/runtime-event-stream";
@@ -154,5 +155,30 @@ describe("permission mode enforcement in the runtime adapter", () => {
     const { replies, steps } = await driveTurn("approval-required", "file-change");
     expect(replies).toEqual([]);
     expect(steps.some((step) => step.chip === "read-only")).toBe(false);
+  });
+
+  test("a thread whose session was granted 'always allow' is known from our own receipts, so read only can refuse it", async () => {
+    const run = await acceptedRun("approval-required");
+    expect(await threadHasSessionGrant(run.threadId)).toBe(false);
+    await recordProviderEvent({
+      id: `pe_${run.runId}_approval-9_approval_responded`,
+      runId: run.runId,
+      threadId: run.threadId,
+      provider: "t3",
+      eventType: "approval.responded",
+      nativeSessionId: runtimeThreadId({ runId: run.runId, threadId: run.threadId }),
+      payload: { requestId: "approval-9", decision: "accept" },
+    }, { required: true });
+    expect(await threadHasSessionGrant(run.threadId)).toBe(false);
+    await recordProviderEvent({
+      id: `pe_${run.runId}_approval-10_approval_responded`,
+      runId: run.runId,
+      threadId: run.threadId,
+      provider: "t3",
+      eventType: "approval.responded",
+      nativeSessionId: runtimeThreadId({ runId: run.runId, threadId: run.threadId }),
+      payload: { requestId: "approval-10", decision: "acceptForSession" },
+    }, { required: true });
+    expect(await threadHasSessionGrant(run.threadId)).toBe(true);
   });
 });

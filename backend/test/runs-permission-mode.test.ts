@@ -80,4 +80,15 @@ describe("permission mode at the run creation boundary", () => {
     expect(changed.status).toBe(409);
     expect(changed.body.error).toBe("idempotency_key_reused");
   });
+
+  test("a reply without a choice that names an older parent keeps the thread's current mode, not the parent's", async () => {
+    const root = await createRun({ prompt: "root" }); // full access
+    expect(root.status).toBe(201);
+    const narrowed = await createRun({ prompt: "look only", parent_run_id: root.body.id, permission_mode: "read-only" });
+    expect(narrowed.status).toBe(201);
+    // A client still holding the root as its parent sends no mode: the thread was narrowed since.
+    const late = await createRun({ prompt: "and this?", parent_run_id: root.body.id });
+    expect(late.status).toBe(201);
+    expect(await getMode(late.body.id)).toBe("read-only");
+  });
 });

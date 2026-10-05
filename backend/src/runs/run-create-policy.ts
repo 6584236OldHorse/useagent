@@ -6,7 +6,7 @@ import {
   RUN_PROMPT_MAX_CHARS,
   RunPromptTooLargeError,
 } from "../commands/prompt-policy";
-import { configuredRuntimeMode, isPermissionMode } from "../engines/permission-mode";
+import { isPermissionMode } from "../engines/permission-mode";
 import { isMemoryScope } from "../memory/scope";
 
 export const RUN_CREATE_MAX_BODY_BYTES = 256 * 1024;
@@ -89,16 +89,16 @@ export function runMemoryScope(value: unknown, inherited: MemoryScope | null):
   return { ok: true, memoryScope: value, requestedMemoryScope: value };
 }
 
-/** `permission_mode`: an explicit, validated choice wins; a reply inherits its
- *  parent's; a root run takes the operator's configured posture. */
-export function runPermissionMode(value: unknown, inherited: PermissionMode | null):
-  | { readonly ok: true; readonly permissionMode: PermissionMode; readonly requestedPermissionMode: PermissionMode | null }
+/** `permission_mode`: an explicit, validated choice; when absent the mode stays
+ *  unset here on purpose, so the insert resolves it under the thread lock (a
+ *  reply keeps the thread's mode as it stands at acceptance, a root run takes
+ *  the operator's configured posture) instead of a value read before it. */
+export function runPermissionMode(value: unknown):
+  | { readonly ok: true; readonly permissionMode: PermissionMode | undefined }
   | { readonly ok: false; readonly error: string } {
-  if (value === undefined || value === null) {
-    return { ok: true, permissionMode: inherited ?? configuredRuntimeMode(), requestedPermissionMode: null };
-  }
+  if (value === undefined || value === null) return { ok: true, permissionMode: undefined };
   if (!isPermissionMode(value)) {
     return { ok: false, error: `permission_mode must be one of: ${PERMISSION_MODES.join(", ")}` };
   }
-  return { ok: true, permissionMode: value, requestedPermissionMode: value };
+  return { ok: true, permissionMode: value };
 }

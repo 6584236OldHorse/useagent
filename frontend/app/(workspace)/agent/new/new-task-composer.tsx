@@ -704,6 +704,7 @@ export function NewTaskComposer({
           <PermissionModeChip
             mode={permissionMode}
             onChange={setPermissionMode}
+            engine={engine}
             className="rounded-full px-2 py-1"
           />
 

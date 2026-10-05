@@ -173,6 +173,7 @@ export function ConversationComposer({
             <PermissionModeChip
               mode={permissionMode}
               onChange={setChosenMode}
+              engine={defaultEngine}
               // Answering a native question resumes the running turn; no new run, no new mode.
               disabled={Boolean(pendingQuestion && composerCanAnswerQuestion)}
             />

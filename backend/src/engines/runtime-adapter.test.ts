@@ -470,6 +470,8 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("watchdog.observeActivity(activity);");
     // The run's mode is applied to the runtime THREAD before the turn is steered.
     expect(source).toContain("const priorSnapshot = await ensureRuntimeThreadMode({");
+    // A read-only turn never resumes a thread whose session holds an "always allow" grant.
+    expect(source).toContain('ctx.permissionMode === "read-only" && await threadHasSessionGrant(');
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");
     expect(source).toContain('"turn aborted",');
