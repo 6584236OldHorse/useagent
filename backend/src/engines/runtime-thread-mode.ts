@@ -1,7 +1,31 @@
+import type { PermissionMode } from "@useagent/agent-client/wire";
 import { setTimeout as delay } from "node:timers/promises";
+import { threadHasSessionGrant } from "../runs/provider-events";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { requestRuntimeEnvironment } from "./runtime-environment-client";
 import type { RuntimeMode, RuntimeThreadSnapshot } from "./runtime-orchestration";
+
+/**
+ * A grant answered "always allow this session" outlives a mode change on the
+ * provider session, and the runtime offers no way to take it back, so a
+ * read-only turn cannot be enforced on a thread that may hold one. The thread
+ * is refused, visibly, before its turn starts. "May hold one" is read from our
+ * own durable records: the intent written before a grant is dispatched and the
+ * receipt written after; an intent whose receipt never landed counts too.
+ */
+export async function assertReadOnlyTurnAllowed(input: {
+  readonly threadId: string;
+  readonly permissionMode: PermissionMode | undefined;
+  readonly threadExists: boolean;
+  readonly hasSessionGrant?: typeof threadHasSessionGrant;
+}): Promise<void> {
+  if (!input.threadExists || input.permissionMode !== "read-only") return;
+  if (await (input.hasSessionGrant ?? threadHasSessionGrant)(input.threadId)) {
+    throw new Error(
+      "This thread remembers approvals for its session, so read only cannot be enforced on it. Start a new thread for read-only work.",
+    );
+  }
+}
 
 // The resident runtime applies a turn's permission mode from the THREAD it
 // stores, not from the turn start command: a turn on an existing thread runs

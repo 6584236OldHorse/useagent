@@ -3,6 +3,8 @@ import type { PermissionMode } from "@useagent/agent-client/wire";
 import { json } from "./helpers";
 import { recordProviderEvent, threadHasSessionGrant } from "../src/runs/provider-events";
 import { waitForRuntimeTurn } from "../src/engines/runtime-adapter";
+import { replyToRuntimeApproval, type RuntimeApprovalReplyDependencies } from "../src/engines/runtime-approval";
+import { assertReadOnlyTurnAllowed } from "../src/engines/runtime-thread-mode";
 import { runtimeThreadId, type RuntimeThreadSnapshot } from "../src/engines/runtime-orchestration";
 import type { RuntimeThreadStreamItem } from "../src/engines/runtime-event-stream";
 import type { EmitStep, EngineRunContext } from "../src/engines/types";
@@ -157,28 +159,75 @@ describe("permission mode enforcement in the runtime adapter", () => {
     expect(steps.some((step) => step.chip === "read-only")).toBe(false);
   });
 
-  test("a thread whose session was granted 'always allow' is known from our own receipts, so read only can refuse it", async () => {
+  /** The reply path against a fake runtime holding one pending command request,
+   *  with the ledger writes routed through `recordEvent`. */
+  function grantHarness(run: { runId: string; threadId: string }, options: { readonly loseReceipt: boolean }) {
+    const sessionId = runtimeThreadId({ runId: run.runId, threadId: run.threadId });
+    const log: string[] = [];
+    const pendingSnapshot = (): RuntimeThreadSnapshot => ({
+      snapshotSequence: 3,
+      thread: {
+        id: sessionId,
+        latestTurn: { turnId: "turn-1", state: "running", assistantMessageId: null },
+        messages: [],
+        activities: [requested("approval-1", "command")],
+        session: null,
+      },
+    });
+    const dependencies: Partial<RuntimeApprovalReplyDependencies> = {
+      resolveSandbox: async () => ({} as SandboxHandle),
+      request: (async (_sandbox: SandboxHandle, req: { method: string; payload?: unknown }) => {
+        if (req.method === "GET") return pendingSnapshot();
+        log.push(`dispatch:${(req.payload as { decision?: string }).decision}`);
+        return {};
+      }) as unknown as RuntimeApprovalReplyDependencies["request"],
+      recordEvent: (async (input, opts) => {
+        if (options.loseReceipt && input.eventType === "approval.responded") throw new Error("ledger unavailable");
+        log.push(`record:${input.eventType}`);
+        return recordProviderEvent(input, opts);
+      }) as RuntimeApprovalReplyDependencies["recordEvent"],
+    };
+    const reply = (decision: "accept" | "acceptForSession") => replyToRuntimeApproval({
+      runId: run.runId,
+      threadId: run.threadId,
+      sessionId,
+      requestId: "approval-1",
+      decision,
+      signal: new AbortController().signal,
+      expectedSandbox: null,
+      permissionMode: "approval-required",
+    }, dependencies);
+    return { log, reply };
+  }
+
+  test("a session grant is durable before the runtime sees it, so a lost receipt still keeps read only off that thread", async () => {
     const run = await acceptedRun("approval-required");
     expect(await threadHasSessionGrant(run.threadId)).toBe(false);
-    await recordProviderEvent({
-      id: `pe_${run.runId}_approval-9_approval_responded`,
-      runId: run.runId,
-      threadId: run.threadId,
-      provider: "t3",
-      eventType: "approval.responded",
-      nativeSessionId: runtimeThreadId({ runId: run.runId, threadId: run.threadId }),
-      payload: { requestId: "approval-9", decision: "accept" },
-    }, { required: true });
-    expect(await threadHasSessionGrant(run.threadId)).toBe(false);
-    await recordProviderEvent({
-      id: `pe_${run.runId}_approval-10_approval_responded`,
-      runId: run.runId,
-      threadId: run.threadId,
-      provider: "t3",
-      eventType: "approval.responded",
-      nativeSessionId: runtimeThreadId({ runId: run.runId, threadId: run.threadId }),
-      payload: { requestId: "approval-10", decision: "acceptForSession" },
-    }, { required: true });
+    const { log, reply } = grantHarness(run, { loseReceipt: true });
+    await expect(reply("acceptForSession")).rejects.toThrow("ledger unavailable");
+    // The intent landed before the grant was dispatched; the receipt never did.
+    expect(log).toEqual(["record:approval.responding", "dispatch:acceptForSession"]);
     expect(await threadHasSessionGrant(run.threadId)).toBe(true);
+    await expect(assertReadOnlyTurnAllowed({ threadId: run.threadId, permissionMode: "read-only", threadExists: true }))
+      .rejects.toThrow("remembers approvals");
+    // Other modes, and a thread the runtime has not created yet, are not held back by it.
+    await assertReadOnlyTurnAllowed({ threadId: run.threadId, permissionMode: "approval-required", threadExists: true });
+    await assertReadOnlyTurnAllowed({ threadId: run.threadId, permissionMode: "read-only", threadExists: false });
+  });
+
+  test("a confirmed session grant keeps read only off the thread; a plain accept does not", async () => {
+    const granted = await acceptedRun("approval-required");
+    const grant = grantHarness(granted, { loseReceipt: false });
+    await expect(grant.reply("acceptForSession")).resolves.toEqual({ alreadyAnswered: false });
+    expect(grant.log).toEqual(["record:approval.responding", "dispatch:acceptForSession", "record:approval.responded"]);
+    await expect(assertReadOnlyTurnAllowed({ threadId: granted.threadId, permissionMode: "read-only", threadExists: true }))
+      .rejects.toThrow("remembers approvals");
+
+    const plain = await acceptedRun("approval-required");
+    const once = grantHarness(plain, { loseReceipt: false });
+    await expect(once.reply("accept")).resolves.toEqual({ alreadyAnswered: false });
+    expect(once.log).toEqual(["dispatch:accept", "record:approval.responded"]);
+    expect(await threadHasSessionGrant(plain.threadId)).toBe(false);
+    await assertReadOnlyTurnAllowed({ threadId: plain.threadId, permissionMode: "read-only", threadExists: true });
   });
 });

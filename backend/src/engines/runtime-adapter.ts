@@ -35,7 +35,7 @@ import {
   type RuntimeThreadSnapshot,
 } from "./runtime-orchestration";
 import { configuredRuntimeMode, readOnlyRefusal, runtimeModeFor } from "./permission-mode";
-import { ensureRuntimeThreadMode } from "./runtime-thread-mode";
+import { assertReadOnlyTurnAllowed, ensureRuntimeThreadMode } from "./runtime-thread-mode";
 import { replyToRuntimeApproval, runtimeApprovalRequest } from "./runtime-approval";
 import { providerGatewayWired } from "../provider-gateway/sandbox-config";
 import { createSecretRedactor } from "../secrets/redact";
@@ -44,7 +44,7 @@ import {
   type SandboxHandle,
 } from "../sandboxes/provider";
 import { sandboxPlugin } from "../sandboxes/plugins";
-import { recordProviderEvent, threadHasSessionGrant } from "../runs/provider-events";
+import { recordProviderEvent } from "../runs/provider-events";
 import type { ProviderDriver } from "@useagent/agent-harness/control";
 import { sessionCapabilities } from "./capabilities";
 import {
@@ -551,12 +551,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         endShell?.();
         const threadId = runtimeThreadId(ctx);
         const threadExists = shell.threads.some((thread) => thread.id === threadId);
-        // A grant answered "always allow this session" outlives a mode change on
-        // the provider session, so a read-only turn cannot be enforced on a thread
-        // that holds one: it fails here, visibly, rather than writing.
-        if (threadExists && ctx.permissionMode === "read-only" && await threadHasSessionGrant(ctx.threadId ?? ctx.runId)) {
-          throw new Error("This thread remembers approvals for its session, so read only cannot be enforced on it. Start a new thread for read-only work.");
-        }
+        // A read-only turn never resumes a thread that may hold a session grant.
+        await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });
         if (engine === "opencode") {
           await reloadRetainedOpenCodeSession({
             sandbox,

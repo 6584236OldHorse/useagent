@@ -57,9 +57,17 @@ function record(value: unknown): Readonly<Record<string, unknown>> | null {
 export function approvalEventId(
   runId: string,
   requestId: string,
-  state: "requested" | "responded" | "resolved",
+  state: "requested" | "responding" | "responded" | "resolved",
 ): string {
   return `pe_${runId}_${requestId}_approval_${state}`;
+}
+
+/** What the reply path talks to; a test hands in fakes for the runtime and the ledger. */
+export interface RuntimeApprovalReplyDependencies {
+  readonly resolveSandbox: typeof resolveRuntimeApprovalSandbox;
+  readonly request: typeof requestRuntimeEnvironment;
+  readonly recordEvent: typeof recordProviderEvent;
+  readonly eventExists: typeof providerEventExists;
 }
 
 export function runtimeApprovalRequest(
@@ -128,14 +136,18 @@ export async function replyToRuntimeApproval(input: {
   readonly expectedSandbox?: ExpectedSandboxBinding | null;
   /** The run's permission policy: a read-only run never lets a command or file change through. */
   readonly permissionMode: PermissionMode;
-}): Promise<{ alreadyAnswered: boolean }> {
+}, dependencies: Partial<RuntimeApprovalReplyDependencies> = {}): Promise<{ alreadyAnswered: boolean }> {
+  const resolveSandbox = dependencies.resolveSandbox ?? resolveRuntimeApprovalSandbox;
+  const request = dependencies.request ?? requestRuntimeEnvironment;
+  const recordEvent = dependencies.recordEvent ?? recordProviderEvent;
+  const eventExists = dependencies.eventExists ?? providerEventExists;
   const respondedEventId = approvalEventId(input.runId, input.requestId, "responded");
-  if (await providerEventExists(respondedEventId)) return { alreadyAnswered: true };
+  if (await eventExists(respondedEventId)) return { alreadyAnswered: true };
 
   const decision = validateRuntimeApprovalDecision(input.decision);
-  const sandbox = await resolveRuntimeApprovalSandbox(input.threadId, input.expectedSandbox);
+  const sandbox = await resolveSandbox(input.threadId, input.expectedSandbox);
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(RUNTIME_APPROVAL_TIMEOUT_MS)]);
-  const snapshot = await requestRuntimeEnvironment<RuntimeThreadSnapshot>(
+  const snapshot = await request<RuntimeThreadSnapshot>(
     sandbox,
     {
       method: "GET",
@@ -143,15 +155,30 @@ export async function replyToRuntimeApproval(input: {
     },
     signal,
   );
-  const request = assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);
-  if (!approvalDecisionAllowed(input.permissionMode, request, decision)) {
+  const pending = assertRuntimeApprovalPending(snapshot, input.sessionId, input.requestId);
+  if (!approvalDecisionAllowed(input.permissionMode, pending, decision)) {
     throw new RuntimeApprovalError(
       "approval_refused_read_only",
       403,
       "this run is read-only: a request to run a command or change files can only be declined",
     );
   }
-  await requestRuntimeEnvironment(
+  if (decision === "acceptForSession") {
+    // A grant the runtime keeps for the whole session must be known to us before
+    // it can exist there: the intent is durable first, in its own write, and only
+    // then dispatched. Should the receipt below fail to persist, the intent still
+    // says a grant may stand, and a later read-only turn refuses the thread.
+    await recordEvent({
+      id: approvalEventId(input.runId, input.requestId, "responding"),
+      runId: input.runId,
+      threadId: input.threadId,
+      provider: "t3",
+      eventType: "approval.responding",
+      nativeSessionId: input.sessionId,
+      payload: { requestId: input.requestId, decision },
+    }, { required: true });
+  }
+  await request(
     sandbox,
     {
       method: "POST",
@@ -167,7 +194,7 @@ export async function replyToRuntimeApproval(input: {
     },
     signal,
   );
-  await recordProviderEvent({
+  await recordEvent({
     id: respondedEventId,
     runId: input.runId,
     threadId: input.threadId,
@@ -176,7 +203,7 @@ export async function replyToRuntimeApproval(input: {
     nativeSessionId: input.sessionId,
     payload: { requestId: input.requestId, decision },
   }, { critical: true });
-  if (!(await providerEventExists(respondedEventId))) {
+  if (!(await eventExists(respondedEventId))) {
     throw new RuntimeApprovalError(
       "approval_persist_failed",
       503,

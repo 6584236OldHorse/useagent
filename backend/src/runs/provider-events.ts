@@ -1,4 +1,4 @@
-import { and, eq, like, sql } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { db, type DbTx, type Executor } from "../db/client";
 import { providerEvents } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
@@ -223,9 +223,12 @@ async function highestSeq(runId: string, exec: Executor = db): Promise<number> {
  */
 /**
  * Whether any turn of this thread answered a native approval with "always allow
- * this session": the runtime keeps such a grant on the provider session, so a
- * later turn in a narrower mode could write without a new request. Read from
- * our own durable receipts (approval.responded), never from provider prose.
+ * this session", or set out to: the runtime keeps such a grant on the provider
+ * session, so a later turn in a narrower mode could write without a new
+ * request. Read from our own durable records only: the intent written before
+ * the grant is dispatched (approval.responding) and the receipt written after
+ * (approval.responded). An intent without a receipt is a grant whose outcome is
+ * uncertain, and counts.
  */
 export async function threadHasSessionGrant(threadId: string): Promise<boolean> {
   const [row] = await db
@@ -233,7 +236,7 @@ export async function threadHasSessionGrant(threadId: string): Promise<boolean> 
     .from(providerEvents)
     .where(and(
       eq(providerEvents.threadId, threadId),
-      eq(providerEvents.eventType, "approval.responded"),
+      inArray(providerEvents.eventType, ["approval.responding", "approval.responded"]),
       like(providerEvents.payload, '%"decision":"acceptForSession"%'),
     ))
     .limit(1);
