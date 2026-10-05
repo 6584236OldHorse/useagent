@@ -59,3 +59,43 @@ export function spendLoader(
     }
   };
 }
+
+export interface SpendReadTimers {
+  setTimeout: (fn: () => void, ms: number) => unknown;
+  clearTimeout: (handle: unknown) => void;
+}
+
+/**
+ * When a page's spend reads happen: one per page, taken once the org stream is open
+ * so no settlement can land unseen between the read and the stream (the same rule the
+ * sidebar's snapshot follows). If the stream is slow or blocked, the grace timer reads
+ * anyway and the open that follows reads again; every later open (a reconnect) reads
+ * again. Pure, so the sequence is testable.
+ */
+const HOST_TIMERS: SpendReadTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+export function scheduleSpendReads(
+  read: () => void,
+  graceMs: number,
+  timers: SpendReadTimers = HOST_TIMERS,
+): { streamOpened: () => void; stop: () => void } {
+  let grace: unknown = timers.setTimeout(() => {
+    grace = null;
+    read();
+  }, graceMs);
+  const cancelGrace = (): void => {
+    if (grace === null) return;
+    timers.clearTimeout(grace);
+    grace = null;
+  };
+  return {
+    streamOpened() {
+      cancelGrace();
+      read();
+    },
+    stop: cancelGrace,
+  };
+}

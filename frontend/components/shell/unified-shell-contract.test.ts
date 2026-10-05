@@ -166,7 +166,9 @@ describe("unified shell contract", () => {
     const projectMenu = read("./sidebar-project-menu.tsx");
     const composer = readFromFrontend("app/(workspace)/agent/new/new-task-composer.tsx");
 
-    expect(projects).toContain('backendFetch("/api/repos"');
+    // The project list still comes from GET /api/repos, through the page's shared request.
+    expect(projects).toContain("loadRepoList(");
+    expect(readFromFrontend("lib/repo-list.ts")).toContain('fetcher("/api/repos")');
     expect(projectMenu).toContain("encodeURIComponent(group.fullName");
     expect(composer).toContain("initialRepository");
     expect(projects).not.toContain("Growth Campaign");

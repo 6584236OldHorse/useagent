@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseSpend, spendLabel, spendLoader, type SpendSnapshot } from "./spend";
+import { parseSpend, scheduleSpendReads, spendLabel, spendLoader, type SpendSnapshot } from "./spend";
 
 describe("spend loader", () => {
   test("only the newest request may report, so an older response never undoes a newer figure", async () => {
@@ -41,5 +41,64 @@ describe("spend figures", () => {
     expect(parseSpend({ allowance: 100 })).toBeNull();
     expect(spendLabel({ spent: 12.345, allowance: 100, runs: 3 })).toBe("Spent $12.35 of $100");
     expect(spendLabel({ spent: 4, allowance: null, runs: 1 })).toBe("Spent $4.00");
+  });
+});
+
+describe("spend reads per page", () => {
+  function fakeTimers() {
+    const pending = new Map<number, () => void>();
+    let id = 0;
+    return {
+      host: {
+        setTimeout: (fn: () => void) => {
+          pending.set(++id, fn);
+          return id;
+        },
+        clearTimeout: (handle: unknown) => {
+          pending.delete(handle as number);
+        },
+      },
+      /** Fire every pending timer (the grace elapsing). */
+      elapse: () => {
+        for (const fn of [...pending.values()]) fn();
+        pending.clear();
+      },
+      pending: () => pending.size,
+    };
+  }
+
+  test("the stream's open takes the first read and cancels the grace: one read per page", () => {
+    const timers = fakeTimers();
+    let reads = 0;
+    const schedule = scheduleSpendReads(() => reads++, 1_500, timers.host);
+    expect(reads).toBe(0);
+    schedule.streamOpened();
+    expect(reads).toBe(1);
+    expect(timers.pending()).toBe(0);
+    timers.elapse();
+    expect(reads).toBe(1);
+  });
+
+  test("a slow stream: the grace reads, and the open that follows reads again", () => {
+    const timers = fakeTimers();
+    let reads = 0;
+    const schedule = scheduleSpendReads(() => reads++, 1_500, timers.host);
+    timers.elapse();
+    expect(reads).toBe(1);
+    schedule.streamOpened();
+    expect(reads).toBe(2);
+  });
+
+  test("a reconnect reads again, and stop cancels a pending grace", () => {
+    const timers = fakeTimers();
+    let reads = 0;
+    const schedule = scheduleSpendReads(() => reads++, 1_500, timers.host);
+    schedule.streamOpened();
+    schedule.streamOpened();
+    expect(reads).toBe(2);
+    const stopped = scheduleSpendReads(() => reads++, 1_500, timers.host);
+    stopped.stop();
+    timers.elapse();
+    expect(reads).toBe(2);
   });
 });

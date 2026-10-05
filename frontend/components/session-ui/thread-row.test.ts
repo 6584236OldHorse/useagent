@@ -120,7 +120,7 @@ describe("sidebar wiring contract", () => {
     // existing repository lane - no second runs fetch.
     expect(projects).toContain("useSidebarThreads");
     expect(projects).toContain("useOrgChanges");
-    expect(projects).toContain('backendFetch("/api/repos"');
+    expect(projects).toContain("loadRepoList(");
     expect(projects).toContain("groupThreadsByProject");
     expect(projects).toMatch(/>\s*Projects\s*</);
   });

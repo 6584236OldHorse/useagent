@@ -7,6 +7,7 @@ import type { BotState } from "@useagent/agent-client";
 import { botStatus } from "@/components/bots/bot-status";
 import { runTitle } from "@/components/chat/types";
 import { backendFetch } from "@/lib/backend-fetch";
+import { loadRepoList } from "@/lib/repo-list";
 import { relativeTime } from "@/utils/format";
 
 /** A skill the caller already has (new-task composer); else the hook fetches. */
@@ -71,22 +72,13 @@ export async function fetchBots(): Promise<BotItem[]> {
   }));
 }
 
+/** The page's shared repository list (one request per page); throws when it failed. */
 export async function fetchRepos(): Promise<RepoItem[]> {
-  const res = await backendFetch("/api/repos");
-  if (!res.ok) throw new Error(String(res.status));
-  const data = (await res.json()) as {
-    repos?: { full_name?: string; private?: boolean; default_branch?: string }[];
-  };
-  const repos = Array.isArray(data.repos) ? data.repos : [];
-  return repos
-    .filter((r): r is { full_name: string; private?: boolean; default_branch?: string } =>
-      typeof r.full_name === "string",
-    )
-    .map((r) => ({
-      full_name: r.full_name,
-      private: Boolean(r.private),
-      default_branch: typeof r.default_branch === "string" ? r.default_branch : null,
-    }));
+  return (await loadRepoList()).map((r) => ({
+    full_name: r.full_name,
+    private: Boolean(r.private),
+    default_branch: r.default_branch ?? null,
+  }));
 }
 
 export function repoTreeUrl(repo: string, revision: string | null, dir: string): string {

@@ -18,7 +18,7 @@ import { threadRowTimestamp } from "@/components/session-ui/thread-row";
 import type { ThreadRelationship } from "@useagent/agent-client";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import { useSession } from "@/lib/auth";
-import { backendFetch } from "@/lib/backend-fetch";
+import { loadRepoList } from "@/lib/repo-list";
 import { cx } from "@/utils/cx";
 import { relativeTimeShort } from "@/utils/format";
 import { SidebarSectionToggle } from "./sidebar-nav";
@@ -146,22 +146,13 @@ export function SidebarProjects() {
     }
   };
 
-  const loadProjects = useCallback(async (signal?: AbortSignal) => {
+  // The page's shared repository list on mount (the new-task picker reads the same
+  // request); the poll and a provider connection change read it fresh.
+  const loadProjects = useCallback(async (fresh = false) => {
     try {
-      const response = await backendFetch("/api/repos", { cache: "no-store", signal });
-      if (!response.ok) return;
-      const data = (await response.json()) as {
-        repos?: Array<{ full_name?: unknown; name?: unknown }>;
-      };
-      const repos = (data.repos ?? []).flatMap((repo): ProjectRepo[] => {
-        if (typeof repo.full_name !== "string" || repo.full_name.length === 0) return [];
-        return [
-          {
-            fullName: repo.full_name,
-            name:
-              typeof repo.name === "string" && repo.name.length > 0 ? repo.name : repo.full_name,
-          },
-        ];
+      const repos = (await loadRepoList(fresh)).flatMap((repo): ProjectRepo[] => {
+        if (repo.full_name.length === 0) return [];
+        return [{ fullName: repo.full_name, name: repo.name && repo.name.length > 0 ? repo.name : repo.full_name }];
       });
       // Dedupe BEFORE capping: upstream duplicates collapsed in the DOM (React
       // keys) while still counting toward "Show N more" (release-audit bug).
@@ -172,17 +163,15 @@ export function SidebarProjects() {
   }, []);
 
   useOrgChanges((change) => {
-    if (change.type === "provider_connection") void loadProjects();
+    if (change.type === "provider_connection") void loadProjects(true);
   });
 
   useEffect(() => {
-    const controller = new AbortController();
-    void loadProjects(controller.signal);
+    void loadProjects();
     const id = setInterval(() => {
-      void loadProjects(controller.signal);
+      void loadProjects(true);
     }, PROJECT_POLL_MS);
     return () => {
-      controller.abort();
       clearInterval(id);
     };
   }, [loadProjects]);
