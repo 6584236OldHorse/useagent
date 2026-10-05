@@ -246,9 +246,11 @@ export function nextProbeAtForResult(
   );
 }
 
-/** Failures every probe would share until an operator acts. */
+/** Failures every probe would share until an operator acts. A 429 is not one:
+ * on a free tier it is usually one model's provider throttling, and a key-wide
+ * throttle only costs the day's remaining probes, which the budget bounds. */
 export function laneWideFailure(errorCode: FreeModelProbeErrorCode | null): boolean {
-  return errorCode === "authentication_failed" || errorCode === "rate_limited";
+  return errorCode === "authentication_failed";
 }
 
 function sameLane(left: readonly string[], right: readonly string[]): boolean {

@@ -815,7 +815,7 @@ describe("free-model qualifier worker", () => {
     });
     const adopted: string[][] = [];
     const result = await runFreeModelQualifierTick({
-      driver: driver({ classification: "system_failure", latencyMs: 5, httpStatus: 429, errorCode: "rate_limited" }).driver,
+      driver: driver({ classification: "system_failure", latencyMs: 5, httpStatus: 401, errorCode: "authentication_failed" }).driver,
       repository,
       discover: async () => discovered([router.modelId], ["openrouter", "opencode"]),
       admission: openAdmission,
@@ -846,8 +846,7 @@ describe("free-model qualifier worker", () => {
   });
   test("one provider's outage or timeout keeps its model on retry without pausing the lane", async () => {
     expect(laneWideFailure("authentication_failed")).toBe(true);
-    expect(laneWideFailure("rate_limited")).toBe(true);
-    for (const code of ["provider_capacity", "timeout", "transport_error", "policy_rejected", null] as const) {
+    for (const code of ["rate_limited", "provider_capacity", "timeout", "transport_error", "policy_rejected", null] as const) {
       expect(laneWideFailure(code)).toBe(false);
     }
     const first = candidate("vendor/down:free");

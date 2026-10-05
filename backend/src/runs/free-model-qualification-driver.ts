@@ -143,13 +143,23 @@ export function classifyFailedQualificationRun(
   upstreamStatus: number | null = null,
 ): Exclude<FreeModelQualificationResult, { classification: "success" }> {
   const text = (summary ?? "").toLowerCase();
+  // A model the provider serves only to particular apps is that model's
+  // failure, whatever status came with it (OpenRouter says so with a 403).
+  const appRestricted = text.includes("hosted app") ||
+    text.includes("application restriction") ||
+    text.includes("not allowed for this app") ||
+    text.includes("application is not authorized") ||
+    text.includes("only available on");
+  if (appRestricted || upstreamStatus === 403) {
+    return { classification: "model_failure", latencyMs, httpStatus: upstreamStatus ?? statusFromSummary(text), errorCode: "hosted_app_restricted" };
+  }
   // What the provider actually answered outranks what the engine wrote about it:
   // a free tier that is busy (429) is not the model failing, and a slug the
   // provider no longer serves (404) is.
   if (upstreamStatus === 429) {
     return { classification: "system_failure", latencyMs, httpStatus: 429, errorCode: "rate_limited" };
   }
-  if (upstreamStatus === 401 || upstreamStatus === 402 || upstreamStatus === 403) {
+  if (upstreamStatus === 401 || upstreamStatus === 402) {
     return { classification: "system_failure", latencyMs, httpStatus: upstreamStatus, errorCode: "authentication_failed" };
   }
   if (upstreamStatus !== null && upstreamStatus >= 500) {
@@ -159,14 +169,6 @@ export function classifyFailedQualificationRun(
     return { classification: "model_failure", latencyMs, httpStatus: 404, errorCode: "invalid_response" };
   }
   const httpStatus = statusFromSummary(text);
-  if (
-    text.includes("hosted app") ||
-    text.includes("application restriction") ||
-    text.includes("not allowed for this app") ||
-    text.includes("application is not authorized")
-  ) {
-    return { classification: "model_failure", latencyMs, httpStatus, errorCode: "hosted_app_restricted" };
-  }
   if (httpStatus === 429) {
     return { classification: "system_failure", latencyMs, httpStatus, errorCode: "rate_limited" };
   }

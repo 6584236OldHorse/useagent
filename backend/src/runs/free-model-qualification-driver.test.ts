@@ -365,6 +365,11 @@ describe("a failed probe is classified by what the provider answered", () => {
     expect(classifyFailedQualificationRun(noProgress, 270_000)).toMatchObject({ classification: "model_failure", errorCode: "unknown" });
     expect(classifyFailedQualificationRun(noProgress, 270_000, 429)).toEqual({ classification: "system_failure", latencyMs: 270_000, httpStatus: 429, errorCode: "rate_limited" });
     expect(classifyFailedQualificationRun(noProgress, 270_000, 401)).toMatchObject({ classification: "system_failure", errorCode: "authentication_failed" });
+    // A model served only to particular apps is that model's failure, not the account's.
+    expect(classifyFailedQualificationRun("error: vendor/x:free is only available on agentic harnesses.", 12_000, 403))
+      .toMatchObject({ classification: "model_failure", errorCode: "hosted_app_restricted", httpStatus: 403 });
+    expect(classifyFailedQualificationRun("error: this model is not allowed for this app", 12_000, null))
+      .toMatchObject({ classification: "model_failure", errorCode: "hosted_app_restricted" });
     expect(classifyFailedQualificationRun(noProgress, 270_000, 502)).toMatchObject({ classification: "system_failure", errorCode: "provider_capacity" });
     // A slug the provider no longer serves is the model's failure, not the deployment's.
     expect(classifyFailedQualificationRun(noProgress, 17_000, 404)).toMatchObject({ classification: "model_failure", errorCode: "invalid_response" });
