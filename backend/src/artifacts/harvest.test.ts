@@ -41,7 +41,9 @@ describe("listing commands", () => {
   test("prunes every repository and recognizes the expanded deliverable formats", () => {
     const repositories = Array.from({ length: 70 }, (_, index) => `/root/work/repo-${index}`);
     const command = fileListCommand("/root/work", "1757000000.123456789", repositories);
-    expect(command).toContain("-newermt '@1757000000.123456789'");
+    // The inode change time, never the modification time: a preserved-mtime copy must be found.
+    expect(command).toContain("-newerct '@1757000000.123456789'");
+    expect(command).not.toContain("-newermt");
     expect(command).toContain("-name '.skynet-inputs'");
     expect(command).toContain("-path '/root/work/repo-69'");
     for (const extension of ["pdf", "txt", "json", "xml", "tar", "gz"]) {

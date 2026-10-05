@@ -68,7 +68,11 @@ export function repositoryListCommand(workspaceRoot: string): string {
   );
 }
 
-/** Find recognized deliverables newer than the sandbox-clock baseline. */
+/** Find recognized deliverables whose inode changed after the sandbox-clock
+ * baseline. The change time is used rather than the modification time: a copy
+ * or extraction that preserves the modification time (`cp -p`, `tar`,
+ * `rsync -a`) still changes the inode, and nothing in user space can set the
+ * change time, so a deliverable placed with an old mtime is still found. */
 export function fileListCommand(
   workspaceRoot: string,
   since: string,
@@ -80,7 +84,7 @@ export function fileListCommand(
   const prune = [pruneClause(PRUNED_DIRECTORIES), `-path ${shellQuote(`${workspaceRoot}/screenshots`)}`, ...repositories].join(" -o ");
   const names = DELIVERABLE_EXTENSIONS.map((ext) => `-iname ${shellQuote(`*.${ext}`)}`).join(" -o ");
   return boundedListing(
-    `find ${root} -xdev \\( ${prune} \\) -prune -o -type f -newermt ${shellQuote(`@${since}`)} ` +
+    `find ${root} -xdev \\( ${prune} \\) -prune -o -type f -newerct ${shellQuote(`@${since}`)} ` +
     `\\( ${names} \\) -printf '%s\\t%p\\0'`,
   );
 }
