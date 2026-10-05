@@ -1,0 +1,37 @@
+name: Claim an issue
+
+# Comment `/take` on an open issue to have it assigned to you: first come, first
+# served. Issues with a bounty label are assigned by a maintainer instead.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  take:
+    if: github.event.issue.pull_request == null && startsWith(github.event.comment.body, '/take')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const login = context.payload.comment.user.login;
+            const repo = context.repo;
+            const reply = (body) => github.rest.issues.createComment({ ...repo, issue_number: issue.number, body });
+            const open = `https://github.com/${repo.owner}/${repo.repo}/issues?q=is%3Aopen+no%3Aassignee+label%3Ahacktoberfest`;
+            if (issue.state !== "open") return;
+            if (issue.labels.some((label) => label.name.toLowerCase().startsWith("bounty"))) {
+              await reply(`@${login} this one has a bounty, so a maintainer picks who takes it. Tell us here how you would approach it.`);
+              return;
+            }
+            if (issue.assignees.some((assignee) => assignee.login === login)) return;
+            if (issue.assignees.length > 0) {
+              const taken = issue.assignees.map((assignee) => `@${assignee.login}`).join(", ");
+              await reply(`@${login} ${taken} already took this one. Here are the [open issues nobody has taken yet](${open}).`);
+              return;
+            }
+            await github.rest.issues.addAssignees({ ...repo, issue_number: issue.number, assignees: [login] });
+            await reply(`@${login} it's yours. If nothing is pushed within a week, the issue opens up again.`);
