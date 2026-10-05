@@ -70,6 +70,15 @@ describe("shared sandbox desktop", () => {
     const command = buildDesktopLaunchCommand();
 
     expect(command).toContain("Xorg :1 -noreset -nolisten tcp -ac");
+    // An earlier desktop, the boot's or a previous repair's, is stopped before anything starts.
+    const stop = command.indexOf('kill -TERM -- "-$old"');
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(command.indexOf("Xorg :1 -noreset"));
+    expect(command).toContain("pkill -x Xorg 2>/dev/null || true");
+    expect(command).toContain("for name in websockify x11vnc budgie-panel budgie-wm budgie-daemon pcmanfm gsd-xsettings dbus-launch; do pkill -x $name");
+    expect(command).toContain("$2 ~ /^(node|chrome|chromium)/ && /(cdp-relay\\.mjs|--remote-debugging-port=9222)/");
+    expect(command).toContain('echo $$ >"$HOME/.skynet/desktop.pid"');
+    expect(command).toContain("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true");
     expect(command).toContain('dbus-launch --exit-with-session "$HOME/.skynet/desktop-session.sh"');
     expect(command).toContain("budgie-wm >");
     expect(command).toContain("pcmanfm --desktop --profile useagent");
@@ -282,6 +291,38 @@ describe("shared sandbox desktop", () => {
       expect(commands.at(-1)).toContain("socket.create_connection(('127.0.0.1',5900),1)");
       expect(commands.at(-1)).toContain("/healthz");
     }
+  });
+
+  test("waits for a desktop the image is still booting instead of starting a second one", async () => {
+    let healthChecks = 0;
+    const launched: string[] = [];
+    const sandbox = sandboxFixture("sandbox-booting-desktop", {
+      executeCommand: async (command: string) => {
+        if (command.includes('printf "HOME=')) {
+          return {
+            exitCode: 0,
+            result: "HOME=/root\nBROWSER=/usr/bin/chromium\nMISSING=\nVNC=0\nRFB=0\nCDP=0\nCDP_RELAY=0\nSESSION=0\nMCP=0\nDESKTOP_BOOT=1\n",
+          };
+        }
+        if (command.includes("/vnc.html")) {
+          healthChecks += 1;
+          return { exitCode: healthChecks >= 2 ? 0 : 1, result: "" };
+        }
+        return { exitCode: 0, result: "" };
+      },
+      deleteSession: async () => {},
+      createSession: async () => {},
+      executeSessionCommand: async (_name: string, input: { command: string }) => {
+        launched.push(input.command);
+        return { cmdId: "desktop-command" };
+      },
+    });
+
+    await expect(
+      ensureSandboxDesktopView(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ available: true, browserExecutable: "/usr/bin/chromium" });
+    expect(launched).toEqual([]);
+    expect(healthChecks).toBe(2);
   });
 
   test("repairs when stale desktop sessions are already absent", async () => {

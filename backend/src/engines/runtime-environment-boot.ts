@@ -3,6 +3,7 @@
 // client module's pairing command, and that module imports runtime-environment.
 
 import type { SandboxRuntimeLayout } from "../sandboxes/provider";
+import { buildDesktopReadinessCommand, DESKTOP_BOOT_MARKER_NAME } from "./desktop-workstation";
 import { buildRuntimeEnvironmentAuthenticationCommand, RUNTIME_COOKIE_JAR } from "./runtime-environment-client";
 import {
   buildRuntimeEnvironmentLaunchCommand,
@@ -15,6 +16,11 @@ import {
 /** Where the native image installs the boot entrypoint. */
 export function runtimeEnvironmentBootPath(layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT): string {
   return `${layout.home}/.local/bin/useagent-sandbox-boot`;
+}
+
+/** Where the native image installs the desktop launcher the boot runs. */
+export function desktopLaunchPath(layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT): string {
+  return `${layout.home}/.local/bin/useagent-desktop-launch`;
 }
 
 /**
@@ -37,6 +43,7 @@ export function buildRuntimeEnvironmentBootScript(
   layout: SandboxRuntimeLayout = ROOT_RUNTIME_LAYOUT,
 ): string {
   const runtimeHome = `${layout.home}/.skynet/t3`;
+  const skynet = `${layout.home}/.skynet`;
   const shell = (script: string) => `sh -c ${quoteShell(script)}`;
   return [
     "#!/bin/sh",
@@ -45,6 +52,12 @@ export function buildRuntimeEnvironmentBootScript(
     `mkdir -p "${runtimeHome}"`,
     // The plane waits on this marker instead of restarting a runtime that is still coming up.
     `touch "${RUNTIME_BOOT_MARKER}"`,
+    // The desktop's relay credential exists before the plane can ask for it (the plane keeps a
+    // valid one), and a marker tells the plane a desktop boot is in progress.
+    `mkdir -p "${skynet}" && chmod 700 "${skynet}"`,
+    `[ -s "${skynet}/cdp-relay.token" ] || { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' >"${skynet}/cdp-relay.token"; chmod 600 "${skynet}/cdp-relay.token"; }`,
+    `rm -f "${skynet}/desktop.pid"`,
+    `touch "${skynet}/${DESKTOP_BOOT_MARKER_NAME}"`,
     // The runtime comes up in the background; the sandbox's own command (the
     // image's, or what the launcher passed) is the main process from the start,
     // so a launcher that probes its daemon is not kept waiting on the runtime.
@@ -58,6 +71,21 @@ export function buildRuntimeEnvironmentBootScript(
     `  rm -f "${RUNTIME_BOOT_MARKER}"`,
     `  ${shell(buildRuntimeEnvironmentAuthenticationCommand(layout))} >>"${runtimeHome}/boot.log" 2>&1 || true`,
     `  curl -sS -m 60 -b "${RUNTIME_COOKIE_JAR}" -H 'accept: application/json' -o /dev/null http://127.0.0.1:${RUNTIME_ENVIRONMENT_PORT}/api/orchestration/shell || true`,
+    // The desktop comes up after the runtime, off every run's path: the pane connects to a
+    // desktop that is already there instead of watching it start.
+    // Its own session and process group, so the plane's relaunch can stop it as one unit.
+    `  setsid "${desktopLaunchPath(layout)}" >"${skynet}/desktop-launch.log" 2>&1 </dev/null &`,
+    "  desktop=$!",
+    // The pid goes down at once: the plane treats the marker as live while this pid is.
+    `  echo "$desktop" >"${skynet}/desktop.pid"`,
+    "  i=0",
+    `  until ${shell(buildDesktopReadinessCommand())}; do`,
+    // A launcher that died leaves nothing to wait for: the marker goes and the plane repairs.
+    '    kill -0 "$desktop" 2>/dev/null || break',
+    '    i=$((i + 1)); [ "$i" -ge 600 ] && break',
+    "    sleep 0.1",
+    "  done",
+    `  rm -f "${skynet}/${DESKTOP_BOOT_MARKER_NAME}"`,
     `) >>"${runtimeHome}/boot.log" 2>&1 &`,
     '[ "$#" -gt 0 ] && exec "$@"',
     "exec sleep infinity",

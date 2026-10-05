@@ -159,6 +159,14 @@ ${desktopToolchainCommand(CUBE_LAYOUT)}
       "/home/user/.useagent/pi-runtime/manifest/package-lock.json",
     ]);
     expect(pi.command).toContain("/usr/local/bin/bun");
+    const desktop = steps.find((step) => step.name === "desktop")!;
+    expect(desktop.files.map((file) => file.path)).toEqual([
+      "/home/user/.local/bin/useagent-desktop-launch",
+      "/home/user/.skynet/cdp-relay.mjs",
+    ]);
+    expect(desktop.files[0]!.bytes.toString("utf8")).toContain("#!/bin/sh\n");
+    expect(desktop.files[0]!.bytes.toString("utf8")).toContain("Xorg :1 -noreset -nolisten tcp -ac");
+    expect(desktop.command).toContain("chmod 0755 '/home/user/.local/bin/useagent-desktop-launch'");
   });
 
   test("use sudo for the document toolchain only when the sandbox runs unprivileged", () => {
@@ -194,6 +202,8 @@ describe("native image Dockerfile", () => {
       "context/6-pi/package-lock.json",
       "context/6-pi.sh",
       "context/7-documents.sh",
+      "context/8-desktop/useagent-desktop-launch",
+      "context/8-desktop/cdp-relay.mjs",
       "context/8-desktop.sh",
     ]);
     // Every layer on top of the base: the workdir, the staged context, one RUN per step, the cleanup.
@@ -266,7 +276,7 @@ describe("applying the native image to a live sandbox", () => {
     expect(fake.commands.some((command) => command.includes("cat ") && command.includes("bun.part-0") && command.includes("bun.part-1"))).toBe(true);
     const stepCommands = fake.commands.filter((command) => command.startsWith("set -eu\nexport HOME="));
     expect(stepCommands).toHaveLength(9);
-    expect(fake.uploads.at(-1)!.path).toBe("/home/user/.useagent/pi-runtime/manifest/package-lock.json");
+    expect(fake.uploads.at(-1)!.path).toBe("/home/user/.skynet/cdp-relay.mjs");
   });
 
   test("names the failing step", async () => {
