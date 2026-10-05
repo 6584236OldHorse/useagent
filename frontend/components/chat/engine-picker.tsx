@@ -470,7 +470,7 @@ export function ModelPicker({
                       key={e.value}
                       type="button"
                       disabled={e.disabled}
-                      title={e.description}
+                      title={e.description ? `${e.label}: ${e.description}` : e.label}
                       onClick={() => {
                         if (e.disabled) return;
                         onChange(e.value);
