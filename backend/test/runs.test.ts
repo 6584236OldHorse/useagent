@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
-import { buildThreadPreamble, buildUnseenTurnsContext } from "../src/runs/repo";
+import { buildThreadPreamble, buildUnseenTurnsContext } from "../src/runs/thread-history";
 import { RUN_CREATE_MAX_BODY_BYTES, RUN_PROMPT_MAX_CHARS } from "../src/runs/run-create-policy";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { createOrgSession, fetchApi, json, readSse, waitFor } from "./helpers";

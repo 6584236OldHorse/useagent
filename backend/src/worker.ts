@@ -1,6 +1,7 @@
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
-import { buildThreadPreamble, buildUnseenTurnsContext, getRun, getThreadProviderSessionState, insertStep, markRunPromptDelivered, updateStepCode } from "./runs/repo";
+import { getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
+import { buildThreadPreamble, markRunPromptDelivered, threadHistoryForTurn, type ThreadHistory } from "./runs/thread-history";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
@@ -288,7 +289,7 @@ async function runWorker(runId: string): Promise<void> {
         end?.();
       }
     };
-    const [providerSessionState, recall, bootstrapContext, skillCatalogPage, resourceSnapshot, unseenTurnsContext] = await Promise.all([
+    const [providerSessionState, recall, history, skillCatalogPage, resourceSnapshot] = await Promise.all([
       providerSessionStatePromise,
       // Layered recall (new_mem_prompt.md 6.2): Tencent L0 (immediate ground
       // evidence, incl. explicit "remember X") + L1 (distilled) searched in
@@ -297,9 +298,7 @@ async function runWorker(runId: string): Promise<void> {
       timedContextOperation("worker.memory_recall", () =>
         plan ? recallScopedMemory(run.prompt, plan.readPools) : Promise.resolve(null),
       ),
-      timedContextOperation("worker.thread_preamble", () =>
-        run.parentRunId ? buildThreadPreamble(run.threadId, run.id) : Promise.resolve(""),
-      ),
+      timedContextOperation("worker.thread_preamble", () => threadHistoryForTurn(run)),
       timedContextOperation("worker.skill_catalog", async () => {
         const state = await providerSessionStatePromise;
         const engineSessionId = state.binding?.nativeSessionId ?? state.legacySessionId ?? undefined;
@@ -337,27 +336,17 @@ async function runWorker(runId: string): Promise<void> {
             })
           : Promise.resolve(null),
       ),
-      // A resumed native session holds only the turns that reached its engine;
-      // replay the thread's turns that failed before any engine ran. A fresh
-      // session gets them through bootstrapContext instead.
-      timedContextOperation("worker.unseen_turns", async () => {
-        const state = await providerSessionStatePromise;
-        return state.binding || state.legacySessionId
-          ? buildUnseenTurnsContext(run.threadId, run.id, run.engine)
-          : "";
-      }),
     ]);
     const providerSession = providerSessionState.binding ?? undefined;
     const engineSessionId = providerSession?.nativeSessionId ??
       providerSessionState.legacySessionId ?? undefined;
     const { turnContext, skillCatalogContext, resourceContext } = frameTurnContexts({ recall, skillCatalogPage, resourceSnapshot, botIdentity: bot.identity });
 
-    if (turnContext || bootstrapContext || unseenTurnsContext || skillContext || skillCatalogContext || resourceContext) {
+    if (turnContext || history.bootstrapContext || history.unseenTurnsContext || skillContext || skillCatalogContext || resourceContext) {
       console.log(
         `[worker] run ${runId} thread ${run.threadId} scope=${plan?.scope ?? "off"}: ` +
           `turnContext ${turnContext.length} (${recall?.items.length ?? 0} memory items, ` +
-          `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${bootstrapContext.length}` +
-          ` + unseenTurnsContext ${unseenTurnsContext.length}` +
+          `${recall?.latencyMs ?? 0}ms) + bootstrapContext ${history.bootstrapContext.length} + unseenTurnsContext ${history.unseenTurnsContext.length}` +
           ` + skillContext ${skillContext.length} chars` +
           ` + skillCatalogContext ${skillCatalogContext.length} chars` +
           ` + resourceContext ${resourceContext.length} chars`,
@@ -406,8 +395,7 @@ async function runWorker(runId: string): Promise<void> {
         runId,
         run.engine,
         run.prompt,
-        bootstrapContext,
-        unseenTurnsContext,
+        history,
         turnContext,
         plan !== null,
         resourceContext,
@@ -615,8 +603,7 @@ async function runEngine(
   runId: string,
   engineId: string,
   prompt: string,
-  bootstrapContext: string,
-  unseenTurnsContext: string,
+  history: ThreadHistory,
   turnContext: string,
   memoryEnabled: boolean,
   resourceContext: string,
@@ -715,8 +702,7 @@ async function runEngine(
   const ctx: EngineRunContext = {
     runId,
     prompt,
-    bootstrapContext,
-    unseenTurnsContext,
+    ...history,
     turnContext,
     memoryEnabled,
     resourceContext,
@@ -740,12 +726,7 @@ async function runEngine(
     commandProvider,
     commandCatalogRevision,
     saveProviderSession: createProviderSessionSaver(runId),
-    // Best-effort for the turn itself: a missing delivery stamp can only make a
-    // later turn repeat history, never lose it, so it must not fail a live turn.
-    markPromptDelivered: () =>
-      markRunPromptDelivered(runId).catch((err) =>
-        console.error(`[worker] failed to record prompt delivery for ${runId}:`, err),
-      ),
+    markPromptDelivered: () => markRunPromptDelivered(runId),
     signal,
     emit,
     // In-place step enrichment (same idx → SSE clients upsert): a tool call
