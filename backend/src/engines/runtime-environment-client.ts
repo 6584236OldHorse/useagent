@@ -17,7 +17,7 @@ import {
   buildNativeRuntimeArtifactProbe,
   nativeRuntimeExecutable,
 } from "./native-runtime-artifact";
-import { ORCHESTRATION_PROTOCOL_HEADER, ORCHESTRATION_PROTOCOL_VERSION } from "./runtime-v2-wire";
+import { recordRuntimeArtifactVerified, runtimeArtifactVerified } from "./runtime-artifact-verifications";
 
 const RUNTIME_AUTH_DIRECTORY = `${RUNTIME_ENVIRONMENT_HOME}/skynet-auth`;
 export const RUNTIME_COOKIE_JAR = `${RUNTIME_AUTH_DIRECTORY}/session.cookies`;
@@ -50,18 +50,21 @@ export function isRuntimeEnvironmentMissingSessionError(error: unknown): boolean
       (error.response?.code === "not_found" && error.response.reason === "thread_not_found"));
 }
 
-/** HTTP carries reads and project mutations only; commands go over the runtime socket. */
 export type RuntimeEnvironmentHttpPath =
+  | "/api/orchestration/snapshot"
   | "/api/orchestration/shell"
-  | `/api/orchestration/threads/${string}/bounded`
-  | "/api/projects/mutate";
+  | `/api/orchestration/threads/${string}`
+  | "/api/orchestration/dispatch";
 
-/** A read of one thread's recent window (its latest user turns within a byte
- *  budget), with every run, session and request record complete. */
+/** User turns a thread read returns: a run's own turn and its one continuation.
+ *  The latest turn and the session are thread-level and always included. */
+export const RUNTIME_THREAD_TURN_WINDOW = 2;
+
+/** A read of one thread's recent window, not its whole history. */
 export function runtimeThreadSnapshotRequest(threadId: string): RuntimeEnvironmentRequest {
   return {
     method: "GET",
-    path: `/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`,
+    path: `/api/orchestration/threads/${encodeURIComponent(threadId)}?turnLimit=${RUNTIME_THREAD_TURN_WINDOW}`,
   };
 }
 
@@ -82,22 +85,30 @@ const authenticationOperations = new Map<string | object, Promise<void>>();
 const validatedAccess = new Set<string>();
 const accessOperations = new Map<string, Promise<void>>();
 
+// The artifact probe is a corruption check, run once per sandbox and runtime
+// generation; the record lets a restarted backend skip it as this process would.
+const defaultArtifactVerifications = { verified: runtimeArtifactVerified, record: recordRuntimeArtifactVerified };
+let artifactVerifications = defaultArtifactVerifications;
+
+export function setRuntimeArtifactVerificationsForTest(store: typeof defaultArtifactVerifications | null): void {
+  artifactVerifications = store ?? defaultArtifactVerifications;
+}
+
 type RuntimeLoopbackPath =
   | RuntimeEnvironmentHttpPath
   | "/api/auth/session"
   | "/api/auth/browser-session"
-  | "/api/auth/websocket-ticket"
-  | "/.well-known/t3/environment";
+  | "/api/auth/websocket-ticket";
 
 function runtimeLoopbackUrl(path: RuntimeLoopbackPath): string {
   if (
     path !== "/api/auth/session" &&
     path !== "/api/auth/browser-session" &&
     path !== "/api/auth/websocket-ticket" &&
-    path !== "/.well-known/t3/environment" &&
+    path !== "/api/orchestration/snapshot" &&
     path !== "/api/orchestration/shell" &&
-    path !== "/api/projects/mutate" &&
-    !/^\/api\/orchestration\/threads\/[a-zA-Z0-9._~%-]+\/bounded$/.test(path)
+    path !== "/api/orchestration/dispatch" &&
+    !/^\/api\/orchestration\/threads\/[a-zA-Z0-9._~%-]+(\?turnLimit=[1-9][0-9]?)?$/.test(path)
   ) {
     throw new Error("invalid runtime loopback path");
   }
@@ -129,17 +140,6 @@ function sessionAssertionPipeline(): string {
     "node -e",
     `'let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const v=JSON.parse(s);if(v.authenticated!==true)process.exit(1)})'`,
   ].join(" ");
-}
-
-/** Fails unless the runtime speaks orchestration protocol 2: an older runtime
- *  would accept the plane's reads and refuse its commands, so it is never used. */
-export function buildRuntimeEnvironmentProtocolProbeCommand(): string {
-  return [
-    "set -eu",
-    `curl -fsS -m 5 -H 'accept: application/json' ${runtimeLoopbackUrl("/.well-known/t3/environment")} | node -e ${JSON.stringify(
-      `let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const v=JSON.parse(s);if(v.orchestrationProtocolVersion!==${ORCHESTRATION_PROTOCOL_VERSION})process.exit(1)})`,
-    )}`,
-  ].join("\n");
 }
 
 export function buildRuntimeEnvironmentSessionProbeCommand(): string {
@@ -201,7 +201,6 @@ export function buildRuntimeEnvironmentRequestCommand(request: RuntimeEnvironmen
     `-m ${request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS}`,
     `-b "${RUNTIME_COOKIE_JAR}"`,
     "-H 'accept: application/json'",
-    `-H '${ORCHESTRATION_PROTOCOL_HEADER}: ${ORCHESTRATION_PROTOCOL_VERSION}'`,
     `-w '\n${RUNTIME_HTTP_STATUS_MARKER}:%{http_code}'`,
   ];
   if (request.method === "POST") {
@@ -211,7 +210,7 @@ export function buildRuntimeEnvironmentRequestCommand(request: RuntimeEnvironmen
       `printf %s '${payload}' | base64 -d | ${curl.join(" ")} -H 'content-type: application/json' --data-binary @- '${runtimeLoopbackUrl(request.path)}'`,
     ].join("\n");
   }
-  // Quoted: a path is never interpolated bare into the shell.
+  // Quoted: a windowed thread read carries a query string.
   return ["set -eu", `${curl.join(" ")} '${runtimeLoopbackUrl(request.path)}'`].join("\n");
 }
 
@@ -222,12 +221,12 @@ export function buildRuntimeEnvironmentFirstAccessCommand(
     workdir: RUNTIME_ENVIRONMENT_WORKDIR,
     runsAsRoot: true,
   },
+  artifactVerified = false,
 ): string {
   return [
     "set -eu",
-    buildNativeRuntimeArtifactProbe(layout),
+    ...(artifactVerified ? [] : [buildNativeRuntimeArtifactProbe(layout)]),
     buildRuntimeEnvironmentReadinessCommand(),
-    buildRuntimeEnvironmentProtocolProbeCommand(),
     buildRuntimeEnvironmentSessionProbeCommand(),
     buildRuntimeEnvironmentRequestCommand(request),
   ].join("\n");
@@ -303,12 +302,6 @@ async function establishRuntimeEnvironmentAccess(
 ): Promise<void> {
   await ensureRuntimeEnvironment(sandbox, signal);
   await authenticateRuntimeEnvironment(sandbox, signal);
-  const protocol = await sandbox.process.executeCommand(
-    buildRuntimeEnvironmentProtocolProbeCommand(), undefined, undefined, 7,
-  );
-  if ((protocol.exitCode ?? 1) !== 0) {
-    throw new Error(`The provider runtime does not speak orchestration protocol ${ORCHESTRATION_PROTOCOL_VERSION}`);
-  }
 }
 
 async function ensureRuntimeEnvironmentAccess(
@@ -374,27 +367,35 @@ async function executeRuntimeEnvironmentFirstAccess(
           workdir: RUNTIME_ENVIRONMENT_WORKDIR,
           runsAsRoot: true,
         };
+    const artifactVerified = sandbox.id
+      ? await artifactVerifications.verified(sandbox.id, RUNTIME_GENERATION).catch(() => false)
+      : false;
     try {
       result = await sandbox.process.executeCommand(
-        buildRuntimeEnvironmentFirstAccessCommand(request, layout),
+        buildRuntimeEnvironmentFirstAccessCommand(request, layout, artifactVerified),
         undefined,
         undefined,
         (request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS) + 2,
       );
       const response = parseRuntimeEnvironmentResponse(result);
-      if (!runtimeEnvironmentRequestFailed(result, response)) {
+      if (
+        !runtimeEnvironmentRequestFailed(result, response) ||
+        isRuntimeEnvironmentMissingSessionError(runtimeEnvironmentRequestError(request, response))
+      ) {
         validatedAccess.add(key);
-      } else {
-        const error = runtimeEnvironmentRequestError(request, response);
-        if (isRuntimeEnvironmentMissingSessionError(error)) {
-          validatedAccess.add(key);
-          return;
-        }
       }
     } catch {
       // A transport failure takes the same fail-closed repair path as a probe failure.
     }
-    if (validatedAccess.has(key)) return;
+    if (validatedAccess.has(key)) {
+      // The command reached the runtime, so the probe it starts with passed.
+      if (!artifactVerified && sandbox.id) {
+        await artifactVerifications.record(sandbox.id, RUNTIME_GENERATION).catch((error: unknown) => {
+          console.warn("[runtime-environment] the artifact verification was not recorded", { sandboxId: sandbox.id, error });
+        });
+      }
+      return;
+    }
     result = null;
     await establishRuntimeEnvironmentAccess(sandbox, signal);
     validatedAccess.add(key);
