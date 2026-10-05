@@ -298,7 +298,18 @@ export type CanonicalEventBody =
       generation?: number;
     }
   | { kind: "mode.updated"; mode?: string; model?: string }
-  | { kind: "usage.updated"; inputTokens?: number; outputTokens?: number; costUsd?: number }
+  | {
+      kind: "usage.updated";
+      messageId?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      totalTokens?: number;
+      costUsd?: number;
+      /** The model's context window in tokens, when the runtime reports it. */
+      contextWindow?: number;
+    }
   | {
       kind: "context.marker";
       markerType: ContextMarkerKind;

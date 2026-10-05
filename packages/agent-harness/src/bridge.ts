@@ -51,9 +51,15 @@ type NativeBridgeFramePayload =
     }
   | {
       readonly kind: "usage.updated";
+      /** The assistant message the call produced; one usage row per call. */
+      readonly messageId?: string;
       readonly inputTokens?: number;
       readonly outputTokens?: number;
+      readonly cacheReadTokens?: number;
+      readonly cacheWriteTokens?: number;
+      readonly totalTokens?: number;
       readonly costUsd?: number;
+      readonly contextWindow?: number;
     }
   | {
       readonly kind: "child.started";

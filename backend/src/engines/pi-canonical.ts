@@ -47,14 +47,23 @@ function messageId(frame: Record<string, unknown>, fallback: string): string {
     : fallback);
 }
 
-function usageFrame(message: Record<string, unknown> | null): NativeBridgeFrameBody | null {
+function usageFrame(
+  message: Record<string, unknown> | null,
+  messageId: string,
+  contextWindow?: number,
+): NativeBridgeFrameBody | null {
   const usage = record(message?.usage);
   if (!usage) return null;
   return {
     kind: "usage.updated",
+    messageId,
     inputTokens: number(usage.input) ?? number(usage.inputTokens),
     outputTokens: number(usage.output) ?? number(usage.outputTokens),
-    costUsd: number(usage.cost) ?? number(usage.totalCost),
+    cacheReadTokens: number(usage.cacheRead),
+    cacheWriteTokens: number(usage.cacheWrite),
+    totalTokens: number(usage.totalTokens),
+    costUsd: number(usage.cost) ?? number(usage.totalCost) ?? number(record(usage.cost)?.total),
+    ...(contextWindow ? { contextWindow } : {}),
   };
 }
 
@@ -127,6 +136,8 @@ interface PiFrameState {
   activeMessageId: string;
   messageStarted: boolean;
   messageIndex: number;
+  /** Model context window reported by the session, attached to every usage frame. */
+  readonly contextWindow?: number;
 }
 
 const MAX_TRACKED_MESSAGE_IDS = 2_048;
@@ -282,7 +293,7 @@ function mapPiRpcFrame(frame: unknown, state: PiFrameState): readonly NativeBrid
           ? []
           : [{ kind: "message.authoritative", messageId: id, text: finalText } as const]),
         ...assistantToolCalls(message),
-        usageFrame(message),
+        usageFrame(message, id, state.contextWindow),
         assistantFailure(message),
         { kind: "message.completed", messageId: id },
       ].filter(Boolean) as NativeBridgeFrameBody[];
@@ -404,7 +415,7 @@ function mapPiRpcFrame(frame: unknown, state: PiFrameState): readonly NativeBrid
   }
 }
 
-export function createPiRpcFrameMapper(fallbackMessageId: string) {
+export function createPiRpcFrameMapper(fallbackMessageId: string, contextWindow?: number) {
   const state: PiFrameState = {
     fallbackMessageId,
     messageIdsByTimestamp: new Map(),
@@ -412,6 +423,7 @@ export function createPiRpcFrameMapper(fallbackMessageId: string) {
     activeMessageId: fallbackMessageId,
     messageStarted: false,
     messageIndex: 0,
+    ...(contextWindow ? { contextWindow } : {}),
   };
   const childStates = new Map<string, PiFrameState>();
   return (frame: unknown): readonly NativeBridgeFrameBody[] => {
@@ -428,6 +440,7 @@ export function createPiRpcFrameMapper(fallbackMessageId: string) {
         activeMessageId: `${fallbackMessageId}-child-${childId}`,
         messageStarted: false,
         messageIndex: 0,
+        ...(contextWindow ? { contextWindow } : {}),
       };
       childStates.set(childId, childState);
       const bodies = carryToolInputs(mapPiRpcFrame(childFrame, childState), childState).flatMap((body) => {

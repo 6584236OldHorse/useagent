@@ -50,6 +50,39 @@ export interface CodexChatGptStatus {
   requiresOpenaiAuth: boolean;
 }
 
+/** One rolling usage window of the ChatGPT subscription behind the Codex engine. */
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  /** Unix seconds when the window resets. */
+  resetsAt: number | null;
+}
+
+export interface CodexRateLimits {
+  planType: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+}
+
+function safeRateLimitWindow(value: unknown): CodexRateLimitWindow | null {
+  if (!isRecord(value) || typeof value.usedPercent !== "number") return null;
+  return {
+    usedPercent: value.usedPercent,
+    windowDurationMins:
+      typeof value.windowDurationMins === "number" ? value.windowDurationMins : null,
+    resetsAt: typeof value.resetsAt === "number" ? value.resetsAt : null,
+  };
+}
+
+export function safeCodexRateLimits(value: unknown): CodexRateLimits | null {
+  if (!isRecord(value)) return null;
+  return {
+    planType: typeof value.planType === "string" ? value.planType : null,
+    primary: safeRateLimitWindow(value.primary),
+    secondary: safeRateLimitWindow(value.secondary),
+  };
+}
+
 export interface ProviderConnectionView {
   provider: ProviderConnectionProvider;
   apiKey: ProviderConnectionMeta | null;

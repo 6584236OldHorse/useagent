@@ -36,7 +36,7 @@ import {
   composerAcceptsRunResources,
   type PendingQuestion,
 } from "@/components/chat/question-state";
-import { ReplyComposer } from "@/components/chat/reply-composer";
+import { ConversationComposer } from "@/components/chat/conversation-composer";
 import type { SlashCommand } from "@/components/chat/slash-command";
 import { type GatewayChildSession, SubagentsFold } from "@/components/chat/subagents-fold";
 import { buildTimeline, hasNarration } from "@/components/chat/timeline";
@@ -755,28 +755,22 @@ export const Conversation = memo(function Conversation({
         <MessageScrollerRail turns={renderedTurns} scrollRef={scrollRef} />
         <ScrollToEndPill scrollRef={scrollRef} />
       </div>
-      <ReplyComposer
-        engine={defaultEngine}
-        model={defaultModel}
-        memoryScope={defaultMemoryScope}
-        pending={pendingReply !== null}
+      <ConversationComposer
+        turns={turns}
+        defaultEngine={defaultEngine}
+        defaultModel={defaultModel}
+        defaultMemoryScope={defaultMemoryScope}
+        pendingReply={pendingReply}
         commands={commands}
         commandState={commandState}
         modelSelection={modelSelection}
-        locked={controlLocksComposer || composerLocked}
-        placeholder={
-          pendingApproval
-            ? "Respond to the approval above to continue…"
-            : pendingQuestion
-              ? composerCanAnswerQuestion
-                ? "Answer Agent’s question…"
-                : "Answer the question above to continue…"
-              : composerLocked
-                ? (composerLockedMessage ?? "Loading thread controls…")
-                : assistantIdentity
-                  ? `Message ${assistantIdentity.name}`
-                  : undefined
-        }
+        controlLocksComposer={controlLocksComposer}
+        composerLocked={composerLocked}
+        composerLockedMessage={composerLockedMessage}
+        pendingApproval={pendingApproval}
+        pendingQuestion={pendingQuestion}
+        composerCanAnswerQuestion={composerCanAnswerQuestion}
+        assistantIdentity={assistantIdentity}
         onReply={onReply}
         running={running}
         stopping={stopping}
@@ -785,14 +779,12 @@ export const Conversation = memo(function Conversation({
         runStartedAt={runStartedAt}
         threadError={threadError}
         onDismissThreadError={handleDismissThreadError}
-        notice={handoffNotice}
-        onDismissNotice={onDismissHandoffNotice}
+        handoffNotice={handoffNotice}
+        onDismissHandoffNotice={onDismissHandoffNotice}
         engineUnavailable={engineUnavailable}
         engineUnavailableMessage={engineUnavailableMessage}
-        draftKey={turns[0]?.run.id ?? null}
         prefill={prefill}
-        enableMentions={resourceMentions && composerAcceptsRunResources(pendingQuestion ?? null)}
-        enableUploads={composerAcceptsRunResources(pendingQuestion ?? null)}
+        resourceMentions={resourceMentions}
         repoRevisions={repoRevisions}
       />
     </div>

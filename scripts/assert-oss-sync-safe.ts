@@ -1,7 +1,10 @@
 /** Private Pro paths that must never enter the public OSS repository: the
- * production host lane, prod Terraform, internal planning notes, and the
- * workflows plus controller that drive the production promote. */
+ * production host lane, prod Terraform, internal planning notes, the
+ * workflows plus controller that drive the production promote, and the
+ * licensed BoardUI Pro components (tag `boardui-pro-begins` marks the first
+ * commit that uses them; the public replay stops before it). */
 export const OSS_SYNC_EXCLUDED_PREFIXES = [
+  "frontend/components/pro/",
   "deploy/hetzner/",
   "infra/terraform/prod/",
   "plan/",

@@ -24,6 +24,7 @@ const CODEX_APP_SERVER_ACCOUNT_METHODS = [
   "account/login/start",
   "account/login/cancel",
   "account/read",
+  "account/rateLimits/read",
   "account/logout",
 ] as const;
 const CODEX_APP_SERVER_ACCOUNT_METHOD_SET = new Set<string>(CODEX_APP_SERVER_ACCOUNT_METHODS);
@@ -138,6 +139,7 @@ const managedBroker = createManagedCodexChatGptBroker(managedClientPool);
 export const startManagedCodexChatGptLogin = managedBroker.start;
 export const cancelManagedCodexChatGptLogin = managedBroker.cancel;
 export const readManagedCodexChatGptStatus = managedBroker.readStatus;
+export const readManagedCodexRateLimits = managedBroker.readLimits;
 export const revokeManagedCodexChatGptLogin = managedBroker.revoke;
 
 export async function listManagedCodexModels(
@@ -169,5 +171,6 @@ export {
   type CodexChatGptRefreshRequest,
   type CodexChatGptRefreshResponse,
   type CodexChatGptStatus,
+  type CodexRateLimits,
   type ManagedCodexAppServerClient,
 } from "./codex-app-server-contracts";

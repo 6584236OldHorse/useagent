@@ -7,6 +7,7 @@ import {
   type CommandCatalogState,
 } from "@/components/chat/canonical-timeline";
 import { Composer, type ComposerSubmit } from "@/components/chat/composer";
+import type { ReactNode } from "react";
 import type { SlashCommand } from "@/components/chat/slash-command";
 export function ReplyComposer({
   engine,
@@ -35,6 +36,7 @@ export function ReplyComposer({
   enableMentions,
   enableUploads,
   repoRevisions,
+  status,
 }: {
   engine: EngineId;
   model: string;
@@ -67,6 +69,8 @@ export function ReplyComposer({
   enableMentions?: boolean;
   enableUploads?: boolean;
   repoRevisions?: Readonly<Record<string, string | null>>;
+  /** The status row under the pill (branch, project, agent, context meter). */
+  status?: ReactNode;
 }) {
   return (
     <div className="shrink-0 px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
@@ -102,6 +106,7 @@ export function ReplyComposer({
           draftKey={draftKey}
           prefill={prefill}
         />
+        {status}
       </div>
     </div>
   );

@@ -8,6 +8,8 @@ import {
   type ProviderConnectionProvider,
   safeCodexChatGptLogin,
   safeCodexChatGptStatus,
+  safeCodexRateLimits,
+  type CodexRateLimits,
   safeDeploymentProviders,
   safeEnabledSandboxEngines,
   safeProviderConnectionMeta,
@@ -108,6 +110,16 @@ export async function startCodexChatGptLogin(): Promise<CodexChatGptLogin> {
   const login = safeCodexChatGptLogin(data.login);
   if (!login) throw new Error("codex-chatgpt-start missing login");
   return login;
+}
+
+/** Null when no ChatGPT account is signed in for the current user. */
+export async function fetchCodexRateLimits(): Promise<CodexRateLimits | null> {
+  const res = await backendFetch("/api/provider-connections/openai/chatgpt-oauth/limits", {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`codex-rate-limits ${res.status}`);
+  const data = (await res.json()) as { limits?: unknown };
+  return safeCodexRateLimits(data.limits);
 }
 
 export async function fetchCodexChatGptStatus(): Promise<CodexChatGptStatus> {

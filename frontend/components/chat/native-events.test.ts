@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveChildFidelity,
+  deriveThreadContext,
   NATIVE_SCHEMA_VERSION,
   type NativeFrame,
   parseNativeFrame,
@@ -305,5 +306,54 @@ describe("deriveChildFidelity", () => {
       },
     ]);
     expect(fidelity.size).toBe(0);
+  });
+});
+
+describe("deriveThreadContext", () => {
+  const finish = (over: Record<string, unknown>) =>
+    parsed({ eventType: "part.step-finish", ...over });
+
+  test("reads the newest parent step-finish and skips children", () => {
+    const frames = [
+      finish({
+        eventId: "u1",
+        seq: 1,
+        native: { sessionId: "ses_root" },
+        payload: {
+          tokens: { input: 100, output: 20, cache: { read: 400, write: 10 } },
+          contextWindow: 1000,
+        },
+      }),
+      finish({
+        eventId: "u2",
+        seq: 2,
+        native: { sessionId: "ses_child" },
+        payload: { tokens: { input: 9_999, output: 1 } },
+      }),
+      finish({
+        eventId: "u3",
+        seq: 3,
+        native: { sessionId: "ses_other", parentSessionId: "ses_root" },
+        payload: { tokens: { input: 8_888, output: 1 } },
+      }),
+    ];
+    expect(deriveThreadContext(frames, new Set(["ses_child"]))).toEqual({
+      used: 530,
+      cached: 400,
+      window: 1000,
+    });
+  });
+
+  test("prefers a reported total and tolerates a missing window", () => {
+    const frames = [
+      finish({
+        eventId: "u1",
+        seq: 1,
+        native: { sessionId: "ses_root" },
+        payload: { tokens: { input: 1, output: 1, total: 700 } },
+      }),
+    ];
+    expect(deriveThreadContext(frames, new Set())).toEqual({ used: 700, cached: 0, window: null });
+    expect(deriveThreadContext([parsed({ eventType: "part.text" })], new Set())).toBeNull();
   });
 });

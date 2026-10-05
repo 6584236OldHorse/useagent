@@ -9,11 +9,13 @@ import {
   completeCodexChatGptAppServerLogin,
   cancelCodexChatGptAppServerLogin,
   readCodexChatGptAppServerStatus,
+  readCodexRateLimits,
   startCodexChatGptAccountLogin,
 } from "./codex-app-server-account";
 import type {
   CodexAppServerLoginStartResult,
   CodexChatGptStatus,
+  CodexRateLimits,
   ManagedCodexAppServerClient,
 } from "./codex-app-server-contracts";
 
@@ -57,6 +59,20 @@ export function createManagedCodexChatGptBroker(lifecycle: ManagedClientLifecycl
       const status = await readCodexChatGptAppServerStatus(appServer);
       await persistManagedAccount(input.scope, appServer, status.account, false);
       return status;
+    },
+    readLimits: async (input: {
+      scope: ProviderConnectionScope;
+      appServer?: ManagedCodexAppServerClient;
+    }): Promise<CodexRateLimits | null> => {
+      try {
+        const appServer = input.appServer ?? await lifecycle.get(input.scope);
+        return await readCodexRateLimits(appServer);
+      } catch (error) {
+        // A signed-out or unreachable account has no limits to show; the usage
+        // card hides rather than guessing.
+        console.warn("[codex] rate limits unavailable", error instanceof Error ? error.message : error);
+        return null;
+      }
     },
     revoke: async (input: {
       scope: ProviderConnectionScope;

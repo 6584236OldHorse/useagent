@@ -206,8 +206,8 @@ jobs:
   # useagent-pro versions the Hetzner lane so the application commit is also
   # the immutable ops identity. Keep its hermetic canaries, rollback harnesses,
   # strict TypeScript project, and shell syntax in the same required CI graph.
-  release-lane:
-    runs-on: ubuntu-latest
+  private-ops:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -218,8 +218,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-store-${{ runner.os }}-release-lane-${{ hashFiles('frontend/bun.lock', 'backend/bun.lock', 'packages/*/bun.lock') }}
-          restore-keys: bun-store-${{ runner.os }}-release-lane-
+          key: bun-store-${{ runner.os }}-private-ops-${{ hashFiles('frontend/bun.lock', 'backend/bun.lock', 'packages/*/bun.lock') }}
+          restore-keys: bun-store-${{ runner.os }}-private-ops-
       - run: bun install --frozen-lockfile
         working-directory: backend
       # Private model/runtime contracts import the frontend's advertised model
@@ -232,8 +232,14 @@ jobs:
           for p in packages/*/; do
             if [ -f "$p/package.json" ]; then (cd "$p" && bun install --frozen-lockfile); fi
           done
-      - name: Release lane contracts
-        run: bun test deploy/compose scripts/assert-oss-sync-safe.test.ts
+      - name: Private release contracts
+        run: bun test deploy/hetzner deploy/compose scripts/assert-oss-sync-safe.test.ts
+      - name: Private release TypeScript
+        run: frontend/node_modules/.bin/tsc --project deploy/hetzner/tsconfig.json --noEmit
+      - name: Private release shell syntax
+        run: |
+          find deploy/hetzner -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n deploy/hetzner/skynet-record-start deploy/hetzner/skynet-record-stop
 
   # ── Frontend: chat logic tests + a real production build ─────────────────────
   frontend:

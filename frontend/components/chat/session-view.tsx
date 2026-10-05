@@ -366,8 +366,8 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     ) => {
       // Native-question replies resume the blocked provider turn instead of enqueueing a run.
       if (activeQuestion && composerCanAnswerQuestion) {
-        if (attachmentIds.length > 0 || resources.length > 0 || botMentions.length > 0) {
-          throw new Error("You can't attach files or mention bots while answering a question");
+        if (command || attachmentIds.length > 0 || resources.length > 0 || botMentions.length > 0) {
+          throw new Error("You can't run commands, attach files or mention bots while answering a question");
         }
         const accepted = await submitQuestionAnswers(activeQuestion, [[text]]);
         if (!accepted) throw new Error("question reply failed");
