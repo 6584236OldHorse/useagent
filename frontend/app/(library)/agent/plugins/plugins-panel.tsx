@@ -12,7 +12,6 @@ import {
 import type { ComponentType } from "react";
 import { ConnectionStatusChip } from "@/app/(workspace)/settings/connection-status-chip";
 import { Chip } from "@/components/base/badges/chip";
-import { PROVIDER_NAMES } from "@/components/runners/runner-data";
 import { BackendUnreachable } from "@/components/shared/backend-unreachable";
 
 type IconComponent = ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
@@ -25,7 +24,6 @@ interface Capabilities {
 }
 
 interface ConfigResponse {
-  sandbox?: { provider?: "cube" | "daytona" | "box"; label?: string };
   capabilities?: Capabilities;
 }
 
@@ -125,9 +123,9 @@ export function PluginsPanel() {
         />
         <CapabilityRow
           icon={RiPlugLine}
-          name={`${config?.sandbox?.label ?? (config?.sandbox?.provider ? PROVIDER_NAMES[config.sandbox.provider] : undefined) ?? "Sandbox"} runtime`}
-          detail="Deployment-wide sandbox provider every run starts in"
-          enabled={Boolean(config?.sandbox?.provider)}
+          name="Cloud runtime"
+          detail="The sandboxes every run starts in"
+          enabled={Boolean(config)}
         />
         <CapabilityRow
           icon={RiToolsLine}

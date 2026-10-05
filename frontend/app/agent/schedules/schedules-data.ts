@@ -10,7 +10,7 @@ import type { DotTone } from "@/components/shared/status-dot";
 /** Legacy display metadata only. These ids must never become picker options. */
 const LEGACY_ENGINE_LABEL: Record<string, string> = {
   "claude-sdk": "Claude SDK",
-  daytona: "Daytona",
+  daytona: "Cloud",
   mock: "Mock",
   acp: "ACP",
 };

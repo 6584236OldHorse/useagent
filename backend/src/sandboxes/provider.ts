@@ -69,6 +69,13 @@ export function sandboxProviderLabel(kind: SandboxProviderKind, env: SandboxEnv 
   return host === "e2b.app" || host.endsWith(".e2b.app") ? "E2B" : label;
 }
 
+/** Text a member reads (a run's failure, a terminal notice) never names the
+ *  sandbox vendor; the operator's logs keep the original wording. "Box" is an
+ *  everyday word, so it is replaced only where it names the vendor. */
+export function withoutSandboxVendor(text: string): string {
+  return text.replace(/\b(?:Cube|Daytona|E2B)\b|\bBox(?= (?:sandbox|provider|API|snapshot|CLI|terminal)s?\b)/g, "Cloud");
+}
+
 export function sandboxProviderApiKey(env: SandboxEnv = process.env): string | undefined {
   return sandboxProviderApiKeyFor(sandboxProviderKind(env), env);
 }

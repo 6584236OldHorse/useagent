@@ -6,6 +6,7 @@ import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-ori
 import { getCustomerRunForOrg } from "./repo";
 import { resolvePreviewSandbox } from "./preview-proxy";
 import { errorMessage } from "../util/error-message";
+import { withoutSandboxVendor } from "../sandboxes/provider";
 import { createTerminalChunkDecoder } from "./terminal-decode";
 import { isSandboxTerminalUnavailableError } from "@useagent/sandbox-contract";
 import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } from "../sandboxes/binding";
@@ -14,7 +15,7 @@ import { getThreadExpectedSandbox, PersonalSandboxConnectionUnavailableError } f
 export const TERMINAL_UNAVAILABLE_NOTICE = "[UseAgent] terminal unavailable:";
 
 export function terminalFailureNotice(error: unknown): string {
-  const message = errorMessage(error);
+  const message = withoutSandboxVendor(errorMessage(error));
   if (error instanceof PersonalSandboxConnectionUnavailableError || isSandboxTerminalUnavailableError(error)) {
     return `\r\n\x1b[2m${TERMINAL_UNAVAILABLE_NOTICE} ${message}\x1b[0m\r\n`;
   }

@@ -165,3 +165,18 @@ describe("sandbox provider label", () => {
     expect(sandboxProviderLabel("box", {})).toBe(sandboxPlugin("box").label);
   });
 });
+
+test("text a member reads never names the sandbox vendor", async () => {
+  const { withoutSandboxVendor } = await import("./provider");
+  expect(withoutSandboxVendor("Cube sandbox cube-1 failed readiness after 2 attempts")).toBe(
+    "Cloud sandbox cube-1 failed readiness after 2 attempts",
+  );
+  expect(withoutSandboxVendor("Daytona has no default snapshot; E2B said 500")).toBe(
+    "Cloud has no default snapshot; Cloud said 500",
+  );
+  expect(withoutSandboxVendor("Box terminals need the Box CLI installed")).toBe(
+    "Cloud terminals need the Cloud CLI installed",
+  );
+  // An everyday "box" is not the vendor.
+  expect(withoutSandboxVendor("Tick the Box above the reply box")).toBe("Tick the Box above the reply box");
+});

@@ -1,3 +1,4 @@
+import { withoutSandboxVendor } from "./sandboxes/provider";
 import { markRunStarted, RunStoppedBeforeStartError } from "./runs/run-state";
 import { join } from "node:path";
 import { getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
@@ -756,7 +757,7 @@ async function runEngine(
     // error. Cancellation + timeout dominate; only the remaining engine errors
     // are classified. See src/engines/turn-failure-classification.ts.
     const failure = !cancelled && !timedOut && !compactTermination
-      ? classifyTurnFailure(err, redactFailureText) : null;
+      ? classifyTurnFailure(err, (text) => withoutSandboxVendor(redactFailureText(text))) : null;
     if (!cancelled && !compactTermination) {
       console.error(
         `[worker] engine ${engineId} run ${runId} failed:`,

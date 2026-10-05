@@ -30,7 +30,7 @@ export type RunLocationLabel = {
 };
 
 /** Where a run executes: the runner's machine for a local sandbox, "Cloud" for
- *  a hosted one, with the vendor on the title; null while nothing is recorded.
+ *  a hosted one, with the vendor on the title for an operator; null while nothing is recorded.
  *  Shared by the Details rail and the composer's status tab. */
 export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
   const [runners, setRunners] = useState<Runner[]>([]);
@@ -52,7 +52,7 @@ export function useRunLocationLabel(run: LocatedRun): RunLocationLabel | null {
     };
   }, [runnerId]);
   // A cloud run's vendor is what the deployment's provider points at (E2B or
-  // Cube for the E2B-protocol plugin), which only the config knows.
+  // Cube for the E2B-protocol plugin), which only an operator is told.
   const cloud = !machine && typeof sandboxProvider === "string";
   useEffect(() => {
     if (!cloud) return;
@@ -79,12 +79,13 @@ export function runLocationPresentation(
 ): RunLocationLabel {
   const { sandbox_id: sandboxId, sandbox_provider: sandboxProvider, run_location: runLocation } = run;
   const machine = runOnMachine(sandboxId, sandboxProvider, runLocation);
-  const names =
-    deployment && deployment.provider === sandboxProvider
-      ? { ...PROVIDER_NAMES, [deployment.provider]: deployment.label }
-      : PROVIDER_NAMES;
   const label = runnerLocationLabel(sandboxId, sandboxProvider, runners, runLocation);
-  const vendor = machine ? null : sandboxVendorLabel(sandboxProvider, names);
+  // The vendor is named only to an operator, the one account the deployment
+  // answered; everyone else reads "Cloud".
+  const vendor =
+    machine || !deployment
+      ? null
+      : sandboxVendorLabel(sandboxProvider, { ...PROVIDER_NAMES, [deployment.provider]: deployment.label });
   return {
     label,
     title: vendor ? `Runs on ${vendor}` : machine ? `Runs on ${label}` : "Runs in the cloud",

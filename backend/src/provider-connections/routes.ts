@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
 import {
@@ -20,7 +20,8 @@ import {
 } from "./service";
 import { type SandboxCredentialInput, isSandboxCredentialError } from "@useagent/sandbox-contract";
 import { sandboxPlugin } from "../sandboxes/plugins";
-import type { ComputerProviderKind } from "../sandboxes/binding";
+import { COMPUTER_PROVIDER_KINDS, type ComputerProviderKind } from "../sandboxes/binding";
+import { operatorOnly, requestFromOperator } from "../operator/access";
 import {
   isProviderConnectionAuthMethod,
   isProviderConnectionProvider,
@@ -75,6 +76,15 @@ export function createProviderConnectionsRoutes(input: {
 
   providerConnectionsRoutes.use("*", orgScope);
 
+  // Sandbox vendor accounts (Daytona, Box) are the operator's business: for
+  // anyone else those routes do not exist and the list leaves them out. A
+  // stored connection keeps running its owner's work either way.
+  const computerKinds: readonly string[] = COMPUTER_PROVIDER_KINDS;
+  const operatorOnlyComputers: MiddlewareHandler<AppEnv> = (c, next) =>
+    computerKinds.includes(c.req.param("provider") ?? "") ? operatorOnly(c, next) : next();
+  providerConnectionsRoutes.use("/:provider", operatorOnlyComputers);
+  providerConnectionsRoutes.use("/:provider/*", operatorOnlyComputers);
+
   function requireUserScope(c: Context<AppEnv>) {
     const userId = c.get("userId");
     if (!userId) return null;
@@ -85,7 +95,10 @@ export function createProviderConnectionsRoutes(input: {
     const scope = requireUserScope(c);
     if (!scope) return c.json({ error: "user_required" }, 403);
     const connections = await listCurrentUserProviderConnections(scope);
-    return c.json({ connections });
+    const operator = await requestFromOperator(c);
+    return c.json({
+      connections: operator ? connections : connections.filter((item) => !computerKinds.includes(item.provider)),
+    });
   });
 
   providerConnectionsRoutes.post("/openai/chatgpt-oauth/start", async (c) => {
