@@ -75,6 +75,8 @@ export function buildRuntimeEnvironmentBootScript(
     // Its own session and process group, so the plane's relaunch can stop it as one unit.
     `  setsid "${desktopLaunchPath(layout)}" >"${skynet}/desktop-launch.log" 2>&1 </dev/null &`,
     "  desktop=$!",
+    // The pid goes down at once: the plane treats the marker as live while this pid is.
+    `  echo "$desktop" >"${skynet}/desktop.pid"`,
     "  i=0",
     `  until ${shell(buildDesktopReadinessCommand())}; do`,
     // A launcher that died leaves nothing to wait for: the marker goes and the plane repairs.

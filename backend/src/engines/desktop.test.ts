@@ -78,7 +78,7 @@ describe("shared sandbox desktop", () => {
     expect(command).toContain("for name in websockify x11vnc budgie-panel budgie-wm budgie-daemon pcmanfm gsd-xsettings dbus-launch; do pkill -x $name");
     expect(command).toContain("$2 ~ /^(node|chrome|chromium)/ && /(cdp-relay\\.mjs|--remote-debugging-port=9222)/");
     expect(command).toContain('echo $$ >"$HOME/.skynet/desktop.pid"');
-    expect(command).toContain("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1");
+    expect(command).toContain("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true");
     expect(command).toContain('dbus-launch --exit-with-session "$HOME/.skynet/desktop-session.sh"');
     expect(command).toContain("budgie-wm >");
     expect(command).toContain("pcmanfm --desktop --profile useagent");

@@ -117,7 +117,7 @@ async function provisionSandboxDesktopView(
         `cdp=0; curl -fsS -m 3 -o /dev/null ${BROWSER_CDP_ENDPOINT}/json/version && cdp=1; ` +
         `cdp_relay=0; ${desktopCdpRelayProbeCommand()} && ${providerCdpRelayProbeCommand()} && cdp_relay=1; ` +
         `session=0; ${desktopSessionProbeCommand()} && session=1; ` +
-        `boot=0; pid=$(cat "$HOME/.skynet/desktop.pid" 2>/dev/null); [ -e "$HOME/.skynet/${DESKTOP_BOOT_MARKER_NAME}" ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && boot=1; ` +
+        `boot=0; pid=$(cat "$HOME/.skynet/desktop.pid" 2>/dev/null); [ -e "$HOME/.skynet/${DESKTOP_BOOT_MARKER_NAME}" ] && { [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null; } && boot=1; ` +
         'mcp=0; [ -x "$HOME/.local/bin/playwright-mcp" ] && mcp=1; ' +
         'printf "HOME=%s\\nBROWSER=%s\\nMISSING=%s\\nVNC=%s\\nRFB=%s\\nCDP=%s\\nCDP_RELAY=%s\\nSESSION=%s\\nMCP=%s\\nDESKTOP_BOOT=%s\\n" "$HOME" "$browser" "$missing" "$vnc" "$rfb" "$cdp" "$cdp_relay" "$session" "$mcp" "$boot"',
       undefined,

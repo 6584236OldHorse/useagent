@@ -38,6 +38,7 @@ describe("sandbox boot entrypoint", () => {
     expect(script).toContain('touch "/root/.skynet/desktop-boot"');
     expect(script).toContain('setsid "/root/.local/bin/useagent-desktop-launch" >"/root/.skynet/desktop-launch.log" 2>&1 </dev/null &');
     expect(script).toContain('kill -0 "$desktop" 2>/dev/null || break');
+    expect(script).toContain('echo "$desktop" >"/root/.skynet/desktop.pid"');
     expect(script).toContain(`until sh -c ${single(buildDesktopReadinessCommand())}; do`);
     expect(script).toContain('rm -f "/root/.skynet/desktop-boot"');
     expect(script.indexOf("useagent-desktop-launch")).toBeGreaterThan(script.indexOf("/api/orchestration/shell || true"));
