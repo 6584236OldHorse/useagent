@@ -14,7 +14,7 @@ import {
 import { autoUpdater } from "electron-updater";
 import { join } from "node:path";
 import { desktopChannels } from "./desktop-api";
-import { createRunnerController, type RunnerStatus } from "./runner";
+import { createRunnerController, stopRunnerBeforeQuit, type RunnerStatus } from "./runner";
 import { externalUrl, planeManifest, planeUrl, runnerToken, trustedIpcSender } from "./security";
 import { createTokenStore } from "./token-store";
 import { createDesktopWindow } from "./window";
@@ -84,10 +84,13 @@ async function startDesktop(): Promise<void> {
     quitting = true;
     if (quitAfterRunnerStops) return;
     event.preventDefault();
-    void runner.stop().finally(() => {
-      quitAfterRunnerStops = true;
-      app.quit();
-    });
+    void stopRunnerBeforeQuit(
+      () => runner.stop(),
+      () => {
+        quitAfterRunnerStops = true;
+        app.quit();
+      },
+    ).catch(() => { quitting = false; });
   });
 
   try {

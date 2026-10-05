@@ -18,6 +18,11 @@ export type RunnerOptions = {
 type RunnerChild = ChildProcessByStdio<null, Readable, Readable>;
 type SpawnRunner = typeof spawn;
 
+export async function stopRunnerBeforeQuit(stop: () => Promise<void>, quit: () => void): Promise<void> {
+  await stop();
+  quit();
+}
+
 const MAX_STATUS_LINE = 64 * 1024;
 const MAX_RESTART_DELAY = 30_000;
 const STABLE_UPTIME = 30_000;
@@ -81,6 +86,7 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
   let shouldRun = false;
   let restartAttempt = 0;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  let expectedStop: RunnerChild | undefined;
   let operations = Promise.resolve();
 
   const args = ["--plane", options.plane];
@@ -99,14 +105,15 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
         !["starting", "pulling", "online", "offline", "error"].includes(next.state ?? "") ||
         typeof next.detail !== "string" ||
         next.detail.includes(launchedToken) ||
-        typeof next.progress !== "number" ||
-        !Number.isFinite(next.progress) ||
-        next.progress < 0 ||
-        next.progress > 1
+        (next.progress !== undefined &&
+          (typeof next.progress !== "number" ||
+            !Number.isFinite(next.progress) ||
+            next.progress < 0 ||
+            next.progress > 1))
       ) {
         return setProtocolError();
       }
-      status = { state: next.state as RunnerStatus["state"], detail: next.detail, progress: next.progress };
+      status = { state: next.state as RunnerStatus["state"], detail: next.detail, progress: next.progress ?? 0 };
     } catch {
       setProtocolError();
     }
@@ -198,7 +205,11 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
       settled = true;
       clearTimeout(stableTimer);
       if (child !== spawned) return;
+      const stoppedAsRequested = expectedStop === spawned;
+      if (stoppedAsRequested) expectedStop = undefined;
       child = undefined;
+
+      if (stoppedAsRequested) return;
 
       if (code === 0) {
         shouldRun = false;
@@ -221,6 +232,7 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
 
     spawned.once("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") fail("Runner binary is missing. Reinstall the desktop app.");
+      else if (expectedStop === spawned) return;
       else finish(null);
     });
     spawned.once("close", (code) => finish(code));
@@ -235,16 +247,36 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
   function terminate(spawned: RunnerChild): Promise<void> {
     if (spawned.exitCode !== null) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      let timeout = setTimeout(() => {
-        if (!spawned.kill("SIGKILL")) return reject(new Error("Runner did not stop."));
-        timeout = setTimeout(() => reject(new Error("Runner did not stop.")), 1_000);
-      }, 5_000);
-      spawned.once("close", () => {
+      const failed = (): void => {
+        clearTimeout(timeout);
+        spawned.off("close", stopped);
+        reject(new Error("Runner did not stop."));
+      };
+      const stopped = (): void => {
         clearTimeout(timeout);
         resolve();
-      });
-      spawned.kill();
+      };
+      let timeout = setTimeout(() => {
+        if (!spawned.kill("SIGKILL")) return failed();
+        timeout = setTimeout(failed, 1_000);
+      }, 5_000);
+      spawned.once("close", stopped);
+      if (!spawned.kill()) failed();
     });
+  }
+
+  async function terminateCurrent(): Promise<void> {
+    const previous = child;
+    if (!previous) return;
+    expectedStop = previous;
+    try {
+      await terminate(previous);
+    } catch (error) {
+      if (expectedStop === previous) expectedStop = undefined;
+      throw error;
+    }
+    if (child === previous) child = undefined;
+    if (expectedStop === previous) expectedStop = undefined;
   }
 
   function enqueue(operation: () => Promise<void>): Promise<void> {
@@ -255,14 +287,12 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
 
   async function replace(nextToken: string): Promise<void> {
     if (!nextToken || nextToken.length > 8_192) throw new Error("Invalid runner token.");
+    cancelRestart();
+    await terminateCurrent();
     shouldRun = true;
     token = nextToken;
     restartAttempt = 0;
-    cancelRestart();
-    const previous = child;
-    child = undefined;
-    if (previous) await terminate(previous);
-    if (shouldRun && token === nextToken) launch();
+    launch();
   }
 
   return {
@@ -274,12 +304,10 @@ export function createRunnerController(options: RunnerOptions, spawnRunner: Spaw
     },
     stop(): Promise<void> {
       return enqueue(async () => {
+        cancelRestart();
+        await terminateCurrent();
         shouldRun = false;
         token = undefined;
-        cancelRestart();
-        const previous = child;
-        child = undefined;
-        if (previous) await terminate(previous);
         status = { state: "offline", detail: "Runner is stopped.", progress: 0 };
       });
     },

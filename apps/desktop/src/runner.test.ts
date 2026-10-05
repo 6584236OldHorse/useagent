@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { spawn, SpawnOptions } from "node:child_process";
-import { createRunnerController } from "./runner";
+import { createRunnerController, stopRunnerBeforeQuit } from "./runner";
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough();
@@ -10,11 +10,12 @@ class FakeChild extends EventEmitter {
   exitCode: number | null = null;
   killed = false;
   closeOnKill = true;
+  killResult = true;
 
   kill(): boolean {
     this.killed = true;
     if (this.closeOnKill) queueMicrotask(() => this.close(0));
-    return true;
+    return this.killResult;
   }
 
   close(code: number): void {
@@ -86,6 +87,14 @@ describe("runner controller", () => {
       progress: 0,
     });
     call.child.stdout.write("not json\n");
+    call.child.stdout.write('{"state":"online","detail":"Ready without progress"}\n');
+    expect(controller.getStatus()).toEqual({ state: "online", detail: "Ready without progress", progress: 0 });
+    call.child.stdout.write('{"state":"online","detail":"Bad progress","progress":"1"}\n');
+    expect(controller.getStatus()).toEqual({
+      state: "error",
+      detail: "Runner sent an invalid status update.",
+      progress: 0,
+    });
     call.child.stdout.write('{"state":"online","detail":"Ready","progress":1}\n');
     expect(controller.getStatus()).toEqual({ state: "online", detail: "Ready", progress: 1 });
     call.child.stdout.write(`${"x".repeat(65 * 1024)}\n`);
@@ -115,6 +124,29 @@ describe("runner controller", () => {
     expect(controller.getStatus().state).toBe("offline");
     await Bun.sleep(1_050);
     expect(fake.calls).toHaveLength(2);
+  });
+
+  test("failed termination blocks replacement and quit until a retry succeeds", async () => {
+    const fake = fakeSpawn();
+    const controller = createRunnerController({ binary: "/runner", plane: "https://plane.example" }, fake.spawnRunner);
+    await controller.start("first");
+    fake.calls[0]!.child.closeOnKill = false;
+    fake.calls[0]!.child.killResult = false;
+
+    await expect(controller.restart("second")).rejects.toThrow("Runner did not stop.");
+    expect(fake.calls).toHaveLength(1);
+
+    let quitCalled = false;
+    await expect(stopRunnerBeforeQuit(() => controller.stop(), () => { quitCalled = true; })).rejects.toThrow("Runner did not stop.");
+    expect(quitCalled).toBe(false);
+    expect(fake.calls).toHaveLength(1);
+
+    fake.calls[0]!.child.killResult = true;
+    fake.calls[0]!.child.closeOnKill = true;
+    await controller.restart("second");
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]!.options?.env?.USEAGENT_RUNNER_TOKEN).toBe("second");
+    await controller.stop();
   });
 
   test("restarts crashes with backoff", async () => {
