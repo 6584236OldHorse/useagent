@@ -1482,6 +1482,18 @@ describe("activityStep file and command payloads", () => {
     expect(step.code_json).toMatchObject({ output: "line one\nline two\nline three" });
   });
 
+  test("an opencode command still running shows no output, its detail being the tool title", () => {
+    const step = activityStep({
+      id: "cmd-opencode-running",
+      tone: "tool",
+      kind: "tool.updated",
+      summary: "Command run",
+      payload: { itemType: "command_execution", detail: "Running bun test", data: { toolCallId: "call-11", command: "bun test" } },
+      turnId: "turn",
+    }, undefined, "opencode");
+    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  });
+
   test("an unknown engine gets the captured text and nothing else", () => {
     const step = activityStep(completed("cmd-unknown", "Command run", {
       itemType: "command_execution",

@@ -73,15 +73,17 @@ function commandInput(input: unknown, item: Rec | null): unknown {
   return command ? { ...(data ?? {}), command } : input;
 }
 
-/** The captured output of a command item. Codex keeps it under `data.item`
- * (`aggregatedOutput`, or `result.content`) and Claude under
- * `data.rawOutput.content`; for both, the payload's `detail` is the command line
- * itself (`printf hello`, `Bash: printf hello`, cut at 180 characters), so it is
- * never output. OpenCode's `detail` is the real output and its `rawOutput` only a
- * one-line summary of it, so there the detail wins. An unknown engine gets the
- * captured text and nothing else. */
+/** The output of a command item. The runtime hands codex its result under
+ * `data.item` (`aggregatedOutput`, or `result.content`) and Claude its under
+ * `data.rawOutput.content`, both reduced by the runtime to a first-line preview
+ * (84 characters); for both, the payload's `detail` is the command line itself
+ * (`printf hello`, `Bash: printf hello`, cut at 180 characters), so it is never
+ * output. OpenCode's `detail` is the real output once the tool completed (while
+ * running it is the tool's title) and its `rawOutput` only a one-line summary,
+ * so there the completed detail wins. An unknown engine gets the preview only. */
 function commandOutput(
   engine: RuntimeEngineId | null,
+  activityKind: string,
   item: Rec | null,
   data: Rec | null,
   detail: string | undefined,
@@ -90,12 +92,14 @@ function commandOutput(
     ?? stringField(asRecord(item?.result), "content")
     ?? stringField(asRecord(data?.rawOutput), "content")
     ?? undefined;
-  return engine === "opencode" ? detail ?? captured : captured;
+  if (engine === "opencode" && activityKind === "tool.completed") return detail ?? captured;
+  return captured;
 }
 
 /** The step's `input` and `output` for a tool activity of the given item type. */
 export function runtimeStepIo(
   engine: RuntimeEngineId | null,
+  activityKind: string,
   itemType: string | null,
   projection: { readonly input: unknown; readonly item: Rec | null; readonly data: Rec | null },
   detail: string | undefined,
@@ -106,7 +110,7 @@ export function runtimeStepIo(
   if (itemType === "command_execution") {
     return {
       input: commandInput(projection.input, projection.item),
-      output: commandOutput(engine, projection.item, projection.data, detail),
+      output: commandOutput(engine, activityKind, projection.item, projection.data, detail),
     };
   }
   return { input: projection.input, output: detail };

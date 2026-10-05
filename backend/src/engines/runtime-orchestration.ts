@@ -595,7 +595,7 @@ export function activityStep(activity: RuntimeActivity, rootSessionId?: string, 
       ? runtimeAttributedChildParentSessionId(activity, payload, rootSessionId)
       : null;
     const tool = toolActivityName(itemType, projection.tool, isSubagent);
-    const { input, output } = runtimeStepIo(engine, itemType, projection, detail);
+    const { input, output } = runtimeStepIo(engine, activity.kind, itemType, projection, detail);
     return {
       kind: itemType === "file_change" ? "file" : isSubagent ? "task" : "command",
       label: toolActivityLabel(activity, projection, tool),
