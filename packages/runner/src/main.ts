@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { selectBackend } from "./backends/detect";
 import { machineCapacity } from "./capacity";
 import { EXIT, RUNNER_VERSION, USAGE, parseArgs, runnerIdFromToken, type RunCommand } from "./cli";
-import { ensureImage } from "./image";
 import { LinkClient, type LinkStop } from "./link";
 import { LoginStore } from "./logins";
 import { RunnerService } from "./service";
@@ -45,15 +44,24 @@ async function run(command: RunCommand): Promise<number> {
   const backend = chosen.backend;
   await mkdir(command.dataDir, { recursive: true, mode: 0o700 });
   const logins = new LoginStore(join(command.dataDir, "logins"));
+  let lastPullStep = -1;
   const service = new RunnerService({
     runnerId,
     backend,
     loginMounts: (requested) => logins.mounts(requested.filter((name) => command.shareLogins.includes(name))),
     onSandboxStopped: () => logins.syncBack().then(() => {}),
     maxSandboxes: command.maxSandboxes,
+    onImageProgress: (report) => {
+      if (report.state === "pulling") emitStatus({ state: "pulling", detail: report.detail, progress: report.progress });
+      else if (report.state === "ready") emitStatus({ state: "online", detail: command.planeUrl });
+      else emitStatus({ state: "error", detail: report.detail });
+      // The plane's record gets a line per tenth of the way and at the end, not one per layer.
+      const step = report.state === "pulling" ? Math.floor(report.progress * 10) : -1;
+      if (step !== lastPullStep) link.event("image.pull", report);
+      lastPullStep = step;
+    },
   });
   let available: string[] = await logins.available().then((names) => names.filter((n) => command.shareLogins.includes(n)));
-  let imageDigest: string | null = null;
   let sandboxes = 0;
   const refreshCounts = async () => {
     sandboxes = (await service.listOwned()).filter((c) => c.state === "running").length;
@@ -69,7 +77,7 @@ async function run(command: RunCommand): Promise<number> {
     platform: `${process.platform}-${process.arch}`,
     capacity: () => machineCapacity(sandboxes, command.maxSandboxes),
     logins: () => available,
-    imageDigest: () => imageDigest,
+    imageDigest: () => service.imageDigest,
     rpc: async (method, params) => {
       const result = await service.rpc(method, params);
       if (method === "sandbox.create" || method === "sandbox.delete" || method === "sandbox.start") await refreshCounts();
@@ -81,7 +89,7 @@ async function run(command: RunCommand): Promise<number> {
       // A login without a password means the plane serves the image and recognises this runner's own token.
       const image = frame.image.pull && !frame.image.pull.password ? { ...frame.image, pull: { ...frame.image.pull, password: token } } : frame.image;
       try {
-        imageDigest = await ensureImage(backend, image, (progress, detail) => emitStatus({ state: "pulling", detail, progress }), signal);
+        await service.ensureImage(image, signal);
       } catch (error) {
         emitStatus({ state: "error", detail: error instanceof Error ? error.message : String(error) });
         throw error;
@@ -98,7 +106,10 @@ async function run(command: RunCommand): Promise<number> {
       available = names.filter((n) => command.shareLogins.includes(n));
     });
   }, IDLE_SWEEP_MS);
-  const stop = () => link.stop("signal");
+  const stop = () => {
+    link.stop("signal");
+    service.stop();
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   try {

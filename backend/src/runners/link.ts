@@ -119,6 +119,11 @@ export function createRunnerLinkRoutes(deps: RunnerLinkDeps): Hono<AppEnv> {
               (error: unknown) => log(`[runners] heartbeat failed: ${error instanceof Error ? error.message : String(error)}`),
             );
           },
+          // What the machine reports about itself (an image pull's progress) goes on the plane's record, bounded: it is the runner's text.
+          onEvent: (frame) => {
+            if (!runner || !attached) return;
+            log(`[runners] ${runner.id} ${frame.kind}${frame.sandboxId ? ` ${frame.sandboxId}` : ""}: ${JSON.stringify(frame.detail) ?? ""}`.slice(0, 640));
+          },
         },
       );
       const handleHello = async (hello: HelloFrame) => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RpcError, StreamRefusedError, readAllFromStream } from "@useagent/runner-protocol";
-import { AUTOSTOP_LABEL, RUNNER_LABEL, RunnerService, SANDBOX_USER } from "../src/service";
+import { AUTOSTOP_LABEL, RUNNER_LABEL, RunnerService, SANDBOX_USER, type ServiceOptions } from "../src/service";
 import { FakeBackend, fakeHandle, pipe } from "./fake-backend";
 import { connectPair, decoder, encoder, settled } from "./pair";
 
@@ -42,11 +42,14 @@ describe("sandbox lifecycle", () => {
     expect(backend.calls.some((c) => c.startsWith("pull"))).toBe(false);
   });
 
-  test("create refuses an image that is not present at the expected digest", async () => {
+  test("create refuses an image the machine cannot bring to the expected digest", async () => {
     const backend = new FakeBackend();
     backend.images.set(IMAGE.ref, "sha256:" + "b".repeat(64));
+    // The create pulls the name again; the registry still serves the older digest, so nothing boots.
     const error = await service(backend).rpc("sandbox.create", createParams()).catch((e: unknown) => e);
-    expect((error as RpcError).code).toBe("refused");
+    expect((error as RpcError).code).toBe("image_missing");
+    expect(String(error)).toMatch(/could not be pulled on this machine/);
+    expect(backend.calls.filter((c) => c.startsWith("pull"))).toEqual([`pull ${IMAGE.ref}`]);
     expect(backend.containers.size).toBe(0);
   });
 
@@ -315,5 +318,109 @@ describe("streams", () => {
     expect(decoder.decode(await readAllFromStream(r))).toBe("file body");
     r.end();
     await settled();
+  });
+});
+
+describe("image on demand", () => {
+  const LOGIN = { registry: "app.example", username: "runner", password: "tok" };
+
+  function imageService(backend: FakeBackend, options: Pick<ServiceOptions, "onImageProgress" | "createPullWaitMs"> = {}) {
+    return new RunnerService({ runnerId: "rn1", backend, loginMounts: async () => ({ mounts: [], env: {} }), ...options });
+  }
+
+  test("a create whose image is missing pulls it with the welcomed login, then boots from it", async () => {
+    const backend = new FakeBackend();
+    const reports: string[] = [];
+    const svc = imageService(backend, { onImageProgress: (report) => reports.push(`${report.state} ${report.detail}`) });
+    // The welcome's pull brought an older digest under this name; the plane now asks for a newer one.
+    const older = "sha256:" + "b".repeat(64);
+    backend.images.set(IMAGE.ref, older);
+    expect(await svc.ensureImage({ ref: IMAGE.ref, digest: older, pull: LOGIN })).toBe(older);
+    expect(svc.imageDigest).toBe(older);
+    backend.pullYields.set(IMAGE.ref, IMAGE.digest);
+    const info = (await svc.rpc("sandbox.create", createParams())) as { state: string };
+    expect(info.state).toBe("running");
+    expect(backend.calls.filter((c) => c.startsWith("pull"))).toEqual([`pull ${IMAGE.ref} as runner@app.example`]);
+    expect(backend.passwords).toEqual(["tok"]);
+    expect(svc.imageDigest).toBe(IMAGE.digest);
+    expect(reports).toEqual(["ready image ready"]);
+  });
+
+  test("a create arriving during the welcome's pull joins it rather than starting a second one", async () => {
+    const backend = new FakeBackend();
+    backend.pullBlocks = true;
+    backend.pullYields.set(IMAGE.ref, IMAGE.digest);
+    const svc = imageService(backend);
+    const welcome = svc.ensureImage({ ...IMAGE, pull: LOGIN });
+    await settled();
+    const create = svc.rpc("sandbox.create", createParams());
+    await settled();
+    backend.releasePull!();
+    expect(await welcome).toBe(IMAGE.digest);
+    expect(((await create) as { state: string }).state).toBe("running");
+    expect(backend.calls.filter((c) => c.startsWith("pull"))).toEqual([`pull ${IMAGE.ref} as runner@app.example`]);
+  });
+
+  test("a create stops waiting at the bound while the pull goes on, and the next create finds the image", async () => {
+    const backend = new FakeBackend();
+    backend.pullBlocks = true;
+    backend.pullLines = ["layer 1/4 downloading"];
+    backend.pullYields.set(IMAGE.ref, IMAGE.digest);
+    const svc = imageService(backend, { createPullWaitMs: 30 });
+    const error = await svc.rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+    expect((error as RpcError).code).toBe("image_missing");
+    expect(String(error)).toMatch(/still downloading on this machine \(\d+%\) after 1 s/);
+    expect(backend.containers.size).toBe(0);
+    backend.releasePull!();
+    await settled();
+    expect(svc.imageDigest).toBe(IMAGE.digest);
+    expect(((await svc.rpc("sandbox.create", createParams())) as { state: string }).state).toBe("running");
+    expect(backend.calls.filter((c) => c.startsWith("pull")).length).toBe(1);
+  });
+
+  test("a pull that produces nothing within the wait is reported as stalled, with the keychain hint on a Mac", async () => {
+    for (const kind of ["docker", "apple"] as const) {
+      const backend = new FakeBackend();
+      backend.kind = kind;
+      backend.pullBlocks = true;
+      const svc = imageService(backend, { createPullWaitMs: 30 });
+      const error = await svc.rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+      expect((error as RpcError).code).toBe("image_pull_stalled");
+      expect(String(error)).toMatch(/made no progress in 1 s/);
+      expect(/keychain prompt/.test(String(error))).toBe(kind === "apple");
+      expect(backend.containers.size).toBe(0);
+      backend.releasePull!();
+      await settled();
+    }
+  });
+
+  test("a failed pull refuses the create with the engine's reason and leaves nothing behind", async () => {
+    const backend = new FakeBackend();
+    backend.pullFails = `docker pull ${IMAGE.ref} failed: unauthorized`;
+    const reports: string[] = [];
+    const svc = imageService(backend, { onImageProgress: (report) => reports.push(report.state) });
+    const error = await svc.rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+    expect((error as RpcError).code).toBe("image_missing");
+    expect(String(error)).toMatch(/could not be pulled on this machine: docker pull .* unauthorized/);
+    expect(reports).toEqual(["failed"]);
+    expect(backend.containers.size).toBe(0);
+    // A pull that yields another digest is the same refusal: a create never boots what the plane did not name.
+    const wrong = new FakeBackend();
+    wrong.pullYields.set(IMAGE.ref, "sha256:" + "c".repeat(64));
+    const mismatch = await imageService(wrong).rpc("sandbox.create", createParams()).catch((e: unknown) => e);
+    expect((mismatch as RpcError).code).toBe("image_missing");
+    expect(String(mismatch)).toMatch(/expects/);
+    expect(wrong.containers.size).toBe(0);
+  });
+
+  test("stop ends a pull under way", async () => {
+    const backend = new FakeBackend();
+    backend.pullBlocks = true;
+    const svc = imageService(backend);
+    const welcome = svc.ensureImage(IMAGE);
+    await settled();
+    svc.stop();
+    await expect(welcome).rejects.toThrow(/stopped/);
+    expect(backend.calls).toEqual([`pull ${IMAGE.ref} stopped`]);
   });
 });

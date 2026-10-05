@@ -59,6 +59,17 @@ export class RunnerOfflineError extends Error {
   }
 }
 
+/** The machine could not make the deployment's sandbox image present for a create; the message leads with what the person should do. */
+export class SandboxImageUnavailableError extends Error {
+  constructor(
+    readonly code: "image_missing" | "image_pull_stalled",
+    detail: string,
+  ) {
+    super(code === "image_pull_stalled" ? `Check the desktop app on the machine: ${detail}` : `Update the desktop app to get the new sandbox image: ${detail}`);
+    this.name = "SandboxImageUnavailableError";
+  }
+}
+
 function rpcCode(error: unknown): string | null {
   return typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string"
     ? (error as { code: string }).code
@@ -316,7 +327,17 @@ export class LocalProvider implements SandboxProvider {
       logins: this.config.logins,
       autoStopMinutes: options.autoStopInterval ?? 0,
     };
-    const info = await call(link, "sandbox.create", params, CREATE_TIMEOUT_MS);
+    let info: LocalSandboxInfo;
+    try {
+      info = await call(link, "sandbox.create", params, CREATE_TIMEOUT_MS);
+    } catch (error) {
+      const code = rpcCode(error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (code === "image_missing" || code === "image_pull_stalled") throw new SandboxImageUnavailableError(code, message);
+      // A runner from before on-demand pulls refuses a missing digest outright; the person's action is the same.
+      if (code === "refused" && /is not at digest .* on this machine/.test(message)) throw new SandboxImageUnavailableError("image_missing", message);
+      throw error;
+    }
     const handle = new LocalHandle(link, info.id, info, this.ports.labels);
     if (options.labels) await this.ports.labels?.write(handle.id, options.labels);
     return handle;
