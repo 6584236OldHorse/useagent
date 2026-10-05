@@ -57,6 +57,12 @@ describe("team roles", () => {
     );
   });
 
+  test("the owned account wins over whatever address Slack reports now", () => {
+    expect(decisionEmail({ email: "new@example.test", account: "old@example.test" }, "")).toBe(
+      "old@example.test",
+    );
+  });
+
   test("the invitation link points at the accept page on this origin", () => {
     expect(invitationHref("inv 1", "https://app.example.test")).toBe(
       "https://app.example.test/accept-invitation/inv%201",
