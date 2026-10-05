@@ -333,6 +333,10 @@ export interface SandboxLink {
   /** When the link was established; the plane's view of "connected since". */
   readonly enrolledAt: string;
   readonly online: boolean;
+  /** The image name the machine was told to pull, with its digest; a sandbox is
+   *  created under the same name, which may differ from the deployment's own
+   *  when the plane serves the image. Absent for a link that reported none. */
+  readonly image?: { readonly ref: string; readonly digest: string };
   /** One call over the link; `timeoutMs` bounds the wait for its answer. */
   call(method: string, params: unknown, options?: { readonly timeoutMs?: number }): Promise<unknown>;
   openStream(target: unknown): Promise<SandboxLinkStream>;

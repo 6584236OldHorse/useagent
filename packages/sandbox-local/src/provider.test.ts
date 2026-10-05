@@ -72,6 +72,18 @@ describe("local provider", () => {
     expect(provider.connectionFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  test("creates under the name the machine pulled, when the plane served the image", async () => {
+    const served = { ref: "app.example/useagenthq/sandbox:native-1", digest: IMAGE.digest };
+    const link = runner({ image: served });
+    const provider = new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([link]) });
+    await provider.create();
+    expect((link.calls[0]?.params as { image: unknown }).image).toEqual(served);
+    // A digest the deployment no longer names is not trusted: the deployment's own image goes, and the machine refuses it.
+    const stale = runner({ image: { ref: served.ref, digest: "sha256:" + "0".repeat(64) } });
+    await new LocalProvider(localProviderConfig(ENV, { runnerId: "rn1" }), { links: fakeLinkDirectory([stale]) }).create();
+    expect((stale.calls[0]?.params as { image: unknown }).image).toEqual(IMAGE);
+  });
+
   test("refuses to create without a runner, an image, or a connected runner", async () => {
     const directory = fakeLinkDirectory([runner({ online: false })]);
     await expect(new LocalProvider(localProviderConfig(ENV), { links: directory }).create()).rejects.toThrow(/no runner/);
