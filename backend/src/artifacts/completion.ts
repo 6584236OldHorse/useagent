@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db, type DbTx } from "../db/client";
 import { artifacts, finishedWorkObligations, runs } from "../db/schema";
 import { hasRunCancelIntent } from "../commands/cancel";
@@ -32,6 +32,7 @@ class LostPublicationClaim extends Error {}
 function outputGuard(run: Run, options: ArtifactCompletionOptions, signal: AbortSignal) {
   return async (tx: DbTx): Promise<void> => {
     signal.throwIfAborted();
+    await tx.execute(sql`select set_config('lock_timeout', '10000', true), set_config('statement_timeout', '10000', true)`);
     await lockFinishedWorkRun(run.id, tx);
     if (options.requiresClaim && (!options.publicationClaim || !await options.publicationClaim(tx))) {
       throw new LostPublicationClaim();
@@ -75,8 +76,13 @@ export async function completeRunOutputs(
   const delivered: ArtifactDescriptor[] = [];
   try {
     await db.transaction(guard);
-    const root = await resolveAttachedSandboxWorkspaceRoot(run as Run & { sandboxId: string });
-    const links = explicitOutputLinks(summary, root);
+    // A legacy text-only recovery needs no sandbox credentials. Resolve the
+    // attached root only when rendered local links actually need publication.
+    let links = explicitOutputLinks(summary, "/");
+    if (links.length > 0) {
+      const root = await resolveAttachedSandboxWorkspaceRoot(run as Run & { sandboxId: string });
+      links = explicitOutputLinks(summary, root);
+    }
     const explicitPaths = new Set(links.map((link) => link.path));
     const discovered = await discoverTurnOutputs(run, { signal });
     const paths = [...new Set([...explicitPaths, ...discovered.map((file) => file.path)])];
@@ -120,6 +126,7 @@ export async function completeRunOutputs(
           orgId: run.orgId!, userId: run.userId, runId: run.id, threadId: run.threadId,
           path, purpose: "deliverable", ...(obligation.targetArtifactId ? { updatesArtifactId: obligation.targetArtifactId } : {}),
         }, { signal, beforeCommit: guard, skipUnchangedRevision: true }));
+        signal.throwIfAborted();
         urls.set(path, {
           preview: absoluteArtifactUrl(published.artifact.preview_url),
           download: absoluteArtifactUrl(published.artifact.download_url),

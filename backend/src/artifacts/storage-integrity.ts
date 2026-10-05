@@ -25,7 +25,7 @@ export async function ensureStoredArtifactBytes(
     if (signal?.aborted) throw error;
   }
   signal?.throwIfAborted();
-  await artifactStorage().put(digest, bytes);
+  await awaitWithSignal(() => artifactStorage().put(digest, bytes), signal);
   signal?.throwIfAborted();
   await verifyStoredArtifactBytes(digest, bytes.byteLength, signal);
 }

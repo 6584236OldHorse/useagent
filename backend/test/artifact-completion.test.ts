@@ -5,6 +5,7 @@ import { renderArtifactExport } from "@useagent/artifact-formats";
 import { csvToWorkbook, migrateSlidesToDeck } from "@useagent/artifact-workspace";
 import type { SandboxProviderKind } from "@useagent/sandbox-contract";
 import { setOfficePreviewConverterForTest } from "../src/artifacts/office-preview";
+import * as artifactRepo from "../src/artifacts/repo";
 import { setArtifactStorageForTest, type ArtifactStorage } from "../src/artifacts/storage";
 import { recordOutputBaseline } from "../src/artifacts/harvest";
 import { acceptRunCancel } from "../src/commands/cancel";
@@ -401,6 +402,63 @@ describe("artifact completion", () => {
     expect((await listArtifacts(owner, runId)).body.artifacts).toHaveLength(1);
   });
 
+  test("advances one revision when identical changed-byte finalizers race", async () => {
+    const threadId = await createSandboxRun(owner);
+    const path = "/root/work/concurrent-revision.webm";
+    const initialBytes = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x01]);
+    const changedBytes = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x02]);
+    sandboxFiles.set(path, initialBytes);
+    await finalizeRun(threadId, "completed", `Ready: [Video](${path})`, 100);
+    const [prior] = await db.select().from(artifacts).where(and(
+      eq(artifacts.threadId, threadId),
+      eq(artifacts.sourcePath, path),
+    ));
+    if (!prior) throw new Error("prior artifact was not published");
+    const continuation = await createContinuationRun(owner, threadId);
+    sandboxFiles.set(path, changedBytes);
+
+    const original = artifactRepo.getArtifactForOrg;
+    let targetReads = 0;
+    let releaseReaders!: () => void;
+    const readersReady = new Promise<void>((resolve) => { releaseReaders = resolve; });
+    const targetRead = spyOn(artifactRepo, "getArtifactForOrg").mockImplementation(
+      async (...args: Parameters<typeof original>) => {
+        const record = await original(...args);
+        if (args[1] === prior.id && targetReads < 2) {
+          targetReads += 1;
+          if (targetReads === 2) releaseReaders();
+          await readersReady;
+        }
+        return record;
+      },
+    );
+    let results: Awaited<ReturnType<typeof finalizeRun>>[];
+    try {
+      results = await Promise.all([
+        finalizeRun(continuation, "completed", `Updated: [Video](${path})`, 100),
+        finalizeRun(continuation, "completed", `Updated: [Video](${path})`, 100),
+      ]);
+    } finally {
+      targetRead.mockRestore();
+    }
+
+    expect(targetReads).toBe(2);
+    expect(results.filter((result) => result.applied)).toHaveLength(1);
+    expect((await getRun(continuation))?.status).toBe("completed");
+    const rows = await db.select().from(artifacts).where(and(
+      eq(artifacts.threadId, threadId),
+      eq(artifacts.sourcePath, path),
+    ));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: prior.id,
+      workpieceRevision: prior.workpieceRevision + 1,
+      sha256: createHash("sha256").update(changedBytes).digest("hex"),
+    });
+    const content = await fetchApi(`/api/artifacts/${prior.id}/content`, { cookies: owner.cookies });
+    expect(Buffer.from(await content.arrayBuffer())).toEqual(changedBytes);
+  });
+
   test("does not read or publish linked files after a finalization claim is lost", async () => {
     const runId = await createSandboxRun(owner);
     sandboxFiles.set("/root/work/unclaimed.pdf", pdfBytes);
@@ -631,6 +689,8 @@ describe("artifact completion", () => {
     { name: "secret path", path: "/root/work/.env" },
     { name: "path traversal", path: "/root/work/../private.txt" },
     { name: "private inspection screenshot", path: "/root/work/screenshots/screenshot-1786558088313.png" },
+    { name: "renamed private inspection screenshot", path: "/root/work/screenshots/customer.png" },
+    { name: "nested private inspection screenshot", path: "/root/work/screenshots/nested/customer.png" },
     { name: "workspace symlink", path: "/root/work/symlink.pdf", resolved: "/etc/passwd" },
   ])("does not complete a download claim for a $name", async ({ path, resolved }) => {
     const runId = await createSandboxRun(owner);

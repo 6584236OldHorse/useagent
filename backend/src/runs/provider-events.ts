@@ -1,11 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db, type Executor } from "../db/client";
+import { db, type DbTx, type Executor } from "../db/client";
 import { providerEvents } from "../db/schema";
 import { makeNativeFrame, publishNativeFrame } from "./native-events";
 import { errorMessage } from "../util/error-message";
 import { noteCaptureLoss } from "./capture-loss";
 import { executionGraphEnabled } from "./execution-graph-switch";
 import { writeExecutionGraph } from "./execution-graph-writer";
+import { awaitWithSignal } from "../util/abortable-operation";
 
 export const PROVIDER_PAYLOAD_CAP_BYTES = 32 * 1_024;
 export const CHILD_TRANSCRIPT_PAYLOAD_CAP_BYTES = 512 * 1_024;
@@ -263,6 +264,10 @@ export function recordProviderEvent(
  */
 export function recordProviderEventIfAbsent(
   input: ProviderEventInput,
+  opts: {
+    readonly signal?: AbortSignal;
+    readonly beforeCommit?: (tx: DbTx) => Promise<void>;
+  } = {},
 ): Promise<boolean> {
   let seq = runSequencers.get(input.runId);
   if (!seq) {
@@ -270,7 +275,10 @@ export function recordProviderEventIfAbsent(
     runSequencers.set(input.runId, seq);
   }
   const entry = seq;
-  const attempt = entry.chain.then(() => persistAndPublishIfAbsent(input, entry));
+  const attempt = entry.chain.then(() => {
+    opts.signal?.throwIfAborted();
+    return persistAndPublishIfAbsent(input, entry, opts);
+  });
   const done = attempt.then(() => undefined).catch((err) => {
     console.error(
       `[provider-events] CRITICAL immutable capture failed (${input.eventType}):`,
@@ -283,21 +291,53 @@ export function recordProviderEventIfAbsent(
       runSequencers.delete(input.runId);
     }
   });
-  return attempt;
+  return opts.signal
+    ? awaitWithSignal(() => attempt, opts.signal)
+    : attempt;
 }
 
 async function persistAndPublishIfAbsent(
   input: ProviderEventInput,
   seq: RunSequencer,
+  opts: {
+    readonly signal?: AbortSignal;
+    readonly beforeCommit?: (tx: DbTx) => Promise<void>;
+  },
 ): Promise<boolean> {
-  if (seq.nextSeq === null) seq.nextSeq = (await highestSeq(input.runId)) + 1;
-  const assignedSeq = seq.nextSeq++;
+  const persist = (exec: Executor) => persistProviderEventIfAbsent(input, seq, exec, opts.signal);
+  const persisted = opts.signal || opts.beforeCommit
+    ? await db.transaction(async (tx) => {
+        opts.signal?.throwIfAborted();
+        await opts.beforeCommit?.(tx);
+        opts.signal?.throwIfAborted();
+        return persist(tx);
+      })
+    : await persist(db);
+  if (!persisted) return false;
 
-  let payload: string | null = null;
-  if (input.payload !== undefined) {
-    payload = serializeProviderPayload(input.payload, providerPayloadCapBytes(input));
+  if (executionGraphEnabled()) {
+    await writeExecutionGraph(input, persisted.assignedSeq);
   }
-  const inserted = await db
+  publishNativeFrame(input.runId, persisted.frame);
+  return true;
+}
+
+async function persistProviderEventIfAbsent(
+  input: ProviderEventInput,
+  seq: RunSequencer,
+  exec: Executor,
+  signal?: AbortSignal,
+): Promise<{
+  readonly assignedSeq: number;
+  readonly frame: ReturnType<typeof makeNativeFrame>;
+} | null> {
+  if (seq.nextSeq === null) seq.nextSeq = (await highestSeq(input.runId, exec)) + 1;
+  signal?.throwIfAborted();
+  const assignedSeq = seq.nextSeq++;
+  const payload = input.payload === undefined
+    ? null
+    : serializeProviderPayload(input.payload, providerPayloadCapBytes(input));
+  const inserted = await exec
     .insert(providerEvents)
     .values({
       id: input.id,
@@ -315,16 +355,11 @@ async function persistAndPublishIfAbsent(
     })
     .onConflictDoNothing({ target: providerEvents.id })
     .returning({ id: providerEvents.id });
-
-  if (inserted.length === 0) return false;
-
-  if (executionGraphEnabled()) {
-    await writeExecutionGraph(input, assignedSeq);
-  }
-
-  publishNativeFrame(
-    input.runId,
-    makeNativeFrame({
+  signal?.throwIfAborted();
+  if (inserted.length === 0) return null;
+  return {
+    assignedSeq,
+    frame: makeNativeFrame({
       eventId: input.id,
       seq: assignedSeq,
       provider: input.provider,
@@ -336,8 +371,7 @@ async function persistAndPublishIfAbsent(
       callId: input.nativeCallId ?? null,
       payloadText: payload,
     }),
-  );
-  return true;
+  };
 }
 
 /** Thrown by a fenced write whose fence no longer holds: the caller's claim on the run is

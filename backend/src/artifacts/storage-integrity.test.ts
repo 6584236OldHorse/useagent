@@ -21,4 +21,31 @@ describe("artifact storage integrity", () => {
       "artifact storage verification failed",
     );
   });
+
+  test("aborting a delayed put stops waiting and leaves only late content bytes", async () => {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    class DelayedStorage extends InMemoryArtifactStorage {
+      override async put(key: string, bytes: Uint8Array): Promise<void> {
+        markStarted();
+        await released;
+        return super.put(key, bytes);
+      }
+    }
+    const storage = new DelayedStorage();
+    setArtifactStorageForTest(storage);
+    const bytes = Buffer.from("late bytes");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const controller = new AbortController();
+    const pending = ensureStoredArtifactBytes(digest, bytes, controller.signal);
+    await started;
+
+    controller.abort(new Error("deadline"));
+    await expect(pending).rejects.toThrow("deadline");
+    release();
+    await Bun.sleep(0);
+    expect(storage.values.get(digest)).toEqual(bytes);
+  });
 });

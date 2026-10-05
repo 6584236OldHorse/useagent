@@ -32,51 +32,95 @@ describe("Markdown links", () => {
     expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
-  test("a sandbox path of any file type never becomes a link inside a session", () => {
-    for (const href of ["/root/work/notes.md", "/home/user/work/page.html", "out/chart.svg"]) {
+  test("renders unpublished local files as honest inert chips", () => {
+    for (const href of [
+      "/home/user/work/report.pdf",
+      "output/report.pdf",
+      "file:///Users/me/report.pdf",
+      "sandbox:/root/work/report.pdf",
+      "C:/Users/me/report.pdf",
+      "/root/work/notes.md",
+      "/home/user/work/page.html",
+      "out/chart.svg",
+    ]) {
       const html = renderToStaticMarkup(
         <WorkspaceOpenProvider value={() => {}}>
           <Markdown>{`[Report](${href})`}</Markdown>
         </WorkspaceOpenProvider>,
       );
-      expect(html).not.toContain("href=");
       expect(html).toContain("Report");
+      expect(html).toContain('title="Local file path - not published"');
+      expect(html).not.toContain("href=");
+      expect(html).not.toContain("Published under Session files");
     }
   });
 
-  test("a file: link loses its dead anchor and keeps its text", () => {
-    const html = renderToStaticMarkup(<Markdown>{"[Report](file:///root/work/a.pdf)"}</Markdown>);
-    expect(html).toContain("Report");
-    expect(html).not.toContain("<a");
-  });
-
-  test("renders a sandbox path as a named chip, never as a dead link", () => {
+  test("preserves formatted labels on inert local links", () => {
     const html = renderToStaticMarkup(
       <WorkspaceOpenProvider value={() => {}}>
-        <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>
+        <Markdown>{"[**Quarterly** report](output/report.pdf)"}</Markdown>
       </WorkspaceOpenProvider>,
     );
-    expect(html).toContain("Download the PDF");
+    expect(html).toContain("<strong>Quarterly</strong> report");
+    expect(html).not.toContain("[object Object]");
     expect(html).not.toContain("href=");
-    expect(html).toContain("workspace");
   });
 
-  test("a workspace path that is not a deliverable keeps its ordinary anchor, and formatted labels survive", () => {
-    expect(isSandboxPath("/root/work/data.json")).toBe(false);
-    expect(isSandboxPath("src/index.ts")).toBe(false);
+  test("renders local images as inert alt text without an image request", () => {
+    for (const src of [
+      "/Users/me/secret.png",
+      "output/secret.png",
+      "file:///Users/me/secret.png",
+      "sandbox:/root/work/secret.png",
+      "C:/Users/me/secret.png",
+    ]) {
+      const html = renderToStaticMarkup(
+        <WorkspaceOpenProvider value={() => {}}>
+          <Markdown>{`![Secret diagram](${src})`}</Markdown>
+        </WorkspaceOpenProvider>,
+      );
+      expect(html).toContain("Secret diagram");
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain('rel="preload"');
+      expect(html).not.toContain(src);
+    }
+  });
+
+  test("keeps HTTPS and canonical artifact images renderable", () => {
+    for (const src of ["https://cdn.example.com/chart.png", "/api/artifacts/a1/content"]) {
+      const html = renderToStaticMarkup(<Markdown>{`![Chart](${src})`}</Markdown>);
+      expect(html).toContain(`<img src="${src}"`);
+      expect(html).toContain('alt="Chart"');
+    }
+  });
+
+  test("keeps relative wiki links and images renderable outside a session", () => {
     const html = renderToStaticMarkup(
-      <WorkspaceOpenProvider value={() => {}}>
-        <Markdown>{"[**Quarterly notes**](output/notes.md)"}</Markdown>
-      </WorkspaceOpenProvider>,
+      <Markdown>{"[README](README.md)\n\n![Diagram](docs/diagram.svg)"}</Markdown>,
     );
-    expect(html).toContain("<strong>Quarterly notes</strong>");
-    expect(html).not.toContain("href=");
-    expect(html).not.toContain(">Open<");
-  });
-
-  test("outside a session, such as a wiki page, a relative file link stays a link", () => {
-    const html = renderToStaticMarkup(<Markdown>{"[README.md](README.md)"}</Markdown>);
     expect(html).toContain('href="README.md"');
+    expect(html).toContain('<img src="docs/diagram.svg"');
+  });
+
+  test("blocks explicit filesystem links and images outside a session", () => {
+    const link = renderToStaticMarkup(<Markdown>{"[Secret](file:///Users/me/secret.txt)"}</Markdown>);
+    const image = renderToStaticMarkup(
+      <Markdown>{"![Secret](sandbox:/root/work/secret.png)"}</Markdown>,
+    );
+    expect(link).toContain("Secret");
+    expect(link).not.toContain("href=");
+    expect(image).toContain("Secret");
+    expect(image).not.toContain("<img");
+    expect(image).not.toContain('rel="preload"');
+  });
+
+  test("keeps sanitizer-rejected schemes as inert text", () => {
+    for (const href of ["javascript:alert('nope')", "data:text/html,nope"]) {
+      const html = renderToStaticMarkup(<Markdown>{`[Open report](${href})`}</Markdown>);
+      expect(html).toContain("Open report");
+      expect(html).not.toContain("<a");
+      expect(html).not.toContain(href);
+    }
   });
 
   test("keeps ordinary links on the plain markdown link path", () => {

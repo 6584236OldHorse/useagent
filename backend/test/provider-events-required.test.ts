@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { captureLossForRun } from "../src/runs/capture-loss";
 import {
   CaptureFenceError,
+  drainProviderEvents,
   providerEventExists,
   recordProviderEvent,
   recordProviderEventIfAbsent,
@@ -179,6 +180,102 @@ test("immutable provider events fail required, repair on retry, and publish only
     const durable = await getNativeFramesSince(runId, -1);
     expect(durable).toHaveLength(1);
     expect(durable[0]?.payload).toEqual({ revision: 1 });
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("an aborted immutable event queued behind an earlier event never writes later", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({
+    id: runId,
+    prompt: "aborted queued immutable event",
+    model: "test-model",
+    engine: "mock",
+    orgId: DEV_ORG_ID,
+    userId: DEV_USER_ID,
+    parentRunId: null,
+    threadId: runId,
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const blocking = recordProviderEvent({
+    id: `${runId}:blocking`,
+    runId,
+    threadId: runId,
+    provider: "test",
+    eventType: "session.started",
+    payload: {},
+  }, {
+    fence: async () => {
+      markStarted();
+      await released;
+      return true;
+    },
+  });
+  await started;
+
+  const controller = new AbortController();
+  let fenceCalls = 0;
+  const eventId = `${runId}:artifact.created`;
+  const queued = recordProviderEventIfAbsent({
+    id: eventId,
+    runId,
+    threadId: runId,
+    provider: "skynet",
+    eventType: "artifact.created",
+    payload: {},
+  }, {
+    signal: controller.signal,
+    beforeCommit: async () => { fenceCalls++; },
+  });
+  controller.abort(new Error("publication deadline"));
+  await expect(queued).rejects.toThrow("publication deadline");
+
+  release();
+  await blocking;
+  await drainProviderEvents(runId);
+  expect(fenceCalls).toBe(0);
+  expect(await providerEventExists(eventId)).toBe(false);
+});
+
+test("a valid immutable event fence records and publishes the event once", async () => {
+  const runId = crypto.randomUUID();
+  await createRun({
+    id: runId,
+    prompt: "valid immutable event fence",
+    model: "test-model",
+    engine: "mock",
+    orgId: DEV_ORG_ID,
+    userId: DEV_USER_ID,
+    parentRunId: null,
+    threadId: runId,
+  });
+  const eventId = `${runId}:artifact.revised`;
+  const input: ProviderEventInput = {
+    id: eventId,
+    runId,
+    threadId: runId,
+    provider: "skynet",
+    eventType: "artifact.revised",
+    payload: { revision: 1 },
+  };
+  const seen: string[] = [];
+  const unsubscribe = subscribeNative(runId, (frame) => seen.push(frame.eventId));
+  let fenceCalls = 0;
+  const beforeCommit = async () => { fenceCalls++; };
+
+  try {
+    const results = await Promise.all([
+      recordProviderEventIfAbsent(input, { beforeCommit }),
+      recordProviderEventIfAbsent(input, { beforeCommit }),
+    ]);
+    expect(results.sort()).toEqual([false, true]);
+    expect(fenceCalls).toBe(2);
+    expect(await providerEventExists(eventId)).toBe(true);
+    expect(seen).toEqual([eventId]);
   } finally {
     unsubscribe();
   }

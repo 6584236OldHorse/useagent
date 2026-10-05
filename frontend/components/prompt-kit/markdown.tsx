@@ -5,7 +5,7 @@
 
 import { marked } from "marked";
 import { memo, useEffect, useId, useMemo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "@/components/ai/code-block";
@@ -165,24 +165,22 @@ function ArtifactMarkdownChip({
   );
 }
 
-/** Absolute roots a sandbox workspace or its home can live under. */
-const SANDBOX_ROOTS = /^\/(?:root|home|tmp|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
-/** File types a turn's workspace can hand over as durable outputs (the
- *  harvest's list); other paths, such as source files a wiki page cites,
- *  keep their ordinary anchor. */
-const DELIVERABLE_FILE =
-  /\.(?:pdf|docx?|xlsx?|pptx?|csv|md|html?|png|jpe?g|gif|webp|svg|mp4|webm|mp3|wav|zip)(?:[?#]|$)/i;
+/** Absolute roots a sandbox workspace or local host path can live under. */
+const SANDBOX_ROOTS =
+  /^\/(?:root|home|tmp|private|Users|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
 
-/** A link target that names a deliverable file inside the agent's workspace
- *  rather than a web resource: a file: URL, an absolute POSIX path under a
- *  sandbox root, or a bare relative path. Web URLs, protocol-relative links,
- *  our own routes and anchors are not. */
-export function isSandboxPath(url: string): boolean {
-  if (!DELIVERABLE_FILE.test(url)) return false;
-  if (/^file:/i.test(url)) return true;
+function isExplicitLocalPath(url: string): boolean {
+  if (/^(?:file|sandbox):/i.test(url)) return true;
+  if (/^[a-z]:[\\/]/i.test(url)) return true;
   if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false; // any other scheme
+  return url.startsWith("/") && SANDBOX_ROOTS.test(url);
+}
+
+export function isSandboxPath(url: string): boolean {
+  if (isExplicitLocalPath(url)) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false;
   if (url.startsWith("//") || url.startsWith("#") || url.startsWith("?")) return false;
-  if (url.startsWith("/")) return SANDBOX_ROOTS.test(url);
+  if (url.startsWith("/")) return false;
   return true; // a bare relative path such as output/report.pdf
 }
 
@@ -250,18 +248,20 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   td: function TdComponent({ children }) {
     return <td className="text-text-primary px-3 py-2 align-top">{children}</td>;
   },
+  img: function ImageComponent({ src, alt, node: _node, ...props }) {
+    const workspaceImages = useOpenWorkpiece() !== null;
+    if (!src || (workspaceImages && isSandboxPath(src))) return <span>{alt}</span>;
+    return <img src={src} alt={alt ?? ""} {...props} />;
+  },
   a: function AnchorComponent({ href, children }) {
     const url = typeof href === "string" ? href : "";
     const openWorkpiece = useOpenWorkpiece();
-    // A target the sanitizer removed (file:, data:, javascript:) is not a link
+    // A target the sanitizer removed (data:, javascript:) is not a link
     // anyone can open; the text stays, the dead anchor goes.
     if (!url) return <span>{children}</span>;
     // Artifact/media links render as dense source chips (type badge + label +
     // arrow), matching the retrieval-chip grammar; ordinary links stay links.
     const isArtifact = /\/(?:api|agent)\/artifacts\//.test(url);
-    // Workspace chips belong to a session surface (SessionView provides the
-    // workpiece opener); a wiki page or a document cites repository files by
-    // relative path, and those stay links.
     const workspaceLinks = openWorkpiece !== null;
     const label =
       typeof children === "string"
@@ -269,21 +269,21 @@ const INITIAL_COMPONENTS: Partial<Components> = {
         : Array.isArray(children)
           ? children.join("")
           : "Open";
-    // A workspace file cannot be opened from the browser, so the chip names
-    // it without pretending to be a link; whether it was harvested is for the
-    // Session files rail to say, so the chip claims nothing about that.
-    if (workspaceLinks && !isArtifact && isSandboxPath(url)) {
+    // A local filesystem path cannot be opened from the browser, whatever its
+    // file type, so name it without pretending it was published or is a link.
+    // Artifact routes, web URLs, protocol-relative links and anchors stay links.
+    if (!isArtifact && (isExplicitLocalPath(url) || (workspaceLinks && isSandboxPath(url)))) {
       return (
         <span
           data-chip
-          title="File in the agent's workspace"
+          title="Local file path - not published"
           className="mx-0.5 inline-flex translate-y-[-1px] items-center gap-1.5 rounded-full bg-background-secondary-default py-0.5 pl-1 pr-2 align-middle text-caption-1-medium text-text-primary"
         >
           <span
             aria-hidden
             className="flex size-4 items-center justify-center rounded-full bg-background-tertiary-default text-[9px] font-semibold leading-none text-text-secondary"
           >
-            {(url.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1] ?? "F").charAt(0).toUpperCase()}
+            {(url.match(/\.([a-z0-9]+)$/i)?.[1] ?? "F").charAt(0).toUpperCase()}
           </span>
           <span className="max-w-56 truncate">{children}</span>
         </span>
@@ -420,7 +420,13 @@ const MemoizedMarkdownBlock = memo(
     components?: Partial<Components>;
   }) {
     return (
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={components}
+        urlTransform={(url, key) =>
+          isExplicitLocalPath(url) ? (key === "href" ? url : "") : defaultUrlTransform(url)
+        }
+      >
         {content}
       </ReactMarkdown>
     );

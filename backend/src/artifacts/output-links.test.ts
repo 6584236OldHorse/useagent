@@ -45,12 +45,22 @@ describe("output links", () => {
 
   test("does not claim routes, remote URLs, protocol-relative URLs, anchors, or queries", () => {
     const markdown = [
-      "[api](/api/runs)", "[agent](/agent/x)", "[settings](/settings)",
+      "[home](/)", "[download](/download)", "[tasks](/tasks/1)", "[wiki](/wiki)", "[app](/normalapp/page)",
       "[remote](https://example.com/%2F)", "[protocol](//example.com/a)",
-      "[anchor](#part)", "[query](?page=2)", "[local](/var/output.txt)",
+      "[anchor](#part)", "[query](?page=2)", "[local](/var/output.txt)", "[invalid](/etc/passwd)",
     ].join("\n");
     expect(explicitOutputLinks(markdown, ROOT)).toEqual([
       { path: "/var/output.txt", image: false, href: "/var/output.txt" },
+      { path: "/etc/passwd", image: false, href: "/etc/passwd" },
+    ]);
+  });
+
+  test("recognizes attached custom roots without treating the legacy root probe as the homepage", () => {
+    expect(explicitOutputLinks("[home](/) [relative](output.any)", "/")).toEqual([
+      { path: "/output.any", image: false, href: "output.any" },
+    ]);
+    expect(explicitOutputLinks("[custom](/provider/tenant/output.any)", "/provider/tenant")).toEqual([
+      { path: "/provider/tenant/output.any", image: false, href: "/provider/tenant/output.any" },
     ]);
   });
 

@@ -73,6 +73,8 @@ describe("listing parsers", () => {
       "9\t/root/work/deep/repo/docs/design.md",
       "7\t/root/work/odd\tname.txt",
       "5\t/root/work/screenshots/screenshot-1786558088313.png",
+      "5\t/root/work/screenshots/customer.png",
+      "5\t/root/work/screenshots/nested/customer.png",
       "",
     ].join("\0"));
     expect(parseFileListing(listing, root, ["/root/work/deep/repo"])).toEqual([
@@ -117,6 +119,7 @@ describe("listing parsers", () => {
         "node_modules/dependency/package.json",
         ".useagent-inputs/user.pdf",
         "screenshots/screenshot-1786558088313.png",
+        "screenshots/customer.png",
       ]) writeFileSync(join(workspace, path), "x");
 
       const repositories = parseRepositoryListing(runListing(repositoryListCommand(workspace)), workspace);
@@ -126,6 +129,7 @@ describe("listing parsers", () => {
       expect(listing).not.toContain("nested/code.json");
       expect(listing).not.toContain("node_modules/dependency/package.json");
       expect(listing).not.toContain(".useagent-inputs/user.pdf");
+      expect(listing).not.toContain("screenshots/");
       const runtimeListing = listing.replaceAll(workspace, "/root/work");
       expect(parseFileListing(runtimeListing, "/root/work", ["/root/work/nested"]))
         .toEqual([{ path: "/root/work/report.pdf", size: 1 }]);

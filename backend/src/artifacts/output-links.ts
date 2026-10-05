@@ -3,6 +3,7 @@ import { posix } from "node:path";
 const MAX_MARKDOWN_BYTES = 256 * 1024;
 const MAX_OUTPUT_LINKS = 100;
 const MAX_LINK_MARKERS = 4096;
+const FILESYSTEM_ROOTS = /^\/(?:root|home|tmp|private|Users|workspace|mnt|opt|srv|app|var|work|etc|usr)(?:\/|$)/;
 
 export interface OutputLink {
   readonly path: string;
@@ -50,9 +51,13 @@ function outputPath(destination: string, workspaceRoot: string): string | null {
     if (/^[a-z][a-z\d+.-]*:/i.test(destination)
       || destination.startsWith("//")
       || destination.startsWith("#")
-      || destination.startsWith("?")
-      || /^\/(?:api|agent|settings)(?:\/|$)/.test(destination)) return null;
+      || destination.startsWith("?")) return null;
     path = decodePath(destination);
+    if (path.startsWith("/")) {
+      const root = posix.resolve(workspaceRoot);
+      const inWorkspace = root !== "/" && (path === root || path.startsWith(`${root}/`));
+      if (!inWorkspace && !FILESYSTEM_ROOTS.test(path)) return null;
+    }
     if (!path.startsWith("/")) path = posix.resolve(workspaceRoot, path);
   }
   if (!posix.isAbsolute(path) || path.length > 4096 || path.includes("\0")) {
