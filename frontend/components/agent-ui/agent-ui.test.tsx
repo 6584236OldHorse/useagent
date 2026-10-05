@@ -131,6 +131,11 @@ describe("agent UI accessibility contracts", () => {
     expect(html).toContain('data-testid="native-question-card"');
     expect(html).toContain("Agent needs your input");
     expect(html).toContain("What should the lab surface show?");
+    // The questionnaire labels each step with the question's header and offers Other.
+    expect(html).toContain(">Scope<");
+    expect(html).toContain("Show the registry and examples");
+    expect(html).toContain("Type a custom answer");
+    expect(html).toContain(">Continue<");
   });
 
   test("announces tool and subagent lifecycle state without provider-specific data", () => {

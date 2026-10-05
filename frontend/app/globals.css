@@ -2273,6 +2273,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-dropdown-item-hover-background:        color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
   --color-kbd-background:                        hsl(var(--neutral-400));
   --color-kbd-foreground:                        hsl(var(--neutral-100));
@@ -2370,6 +2372,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-dropdown-item-hover-background:        color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
   --color-kbd-background:                        hsl(var(--neutral-500)); /* #3c4260: the hint reads 5:1, one step lighter it was 4:1 */
   --color-kbd-foreground:                        hsl(var(--neutral-100));
@@ -2581,6 +2585,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
   --color-button-ghost-active:                   hsl(var(--blue-700));
@@ -2795,6 +2801,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
   --color-button-ghost-active:                   hsl(var(--blue-700));
@@ -3000,6 +3008,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
   --color-button-ghost-active:                   hsl(var(--blue-700));
@@ -3205,6 +3215,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
   --color-button-ghost-active:                   hsl(var(--blue-700));
@@ -3415,6 +3427,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-200));
   --color-agent-progress-ring:                   hsl(var(--neutral-700));
+  --color-questionnaire-key-background:          hsl(var(--neutral-100));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-200));
   --color-dropdown-item-hover-background:        hsl(var(--neutral-100));
   --color-kbd-background:                        hsl(var(--neutral-300));
   --color-kbd-foreground:                        hsl(var(--neutral-500));
@@ -3541,6 +3555,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-200));
   --color-agent-progress-ring:                   hsl(var(--neutral-700));
+  --color-questionnaire-key-background:          hsl(var(--neutral-100));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-200));
   --color-dropdown-item-hover-background:        hsl(var(--neutral-100));
   --color-kbd-background:                        hsl(var(--neutral-300));
   --color-kbd-foreground:                        hsl(var(--neutral-500));
@@ -3662,6 +3678,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
   --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
+  --color-questionnaire-key-background:          hsl(var(--neutral-400));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-300));
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
   --color-button-ghost-active:                   hsl(var(--blue-700));
@@ -3869,6 +3887,8 @@ html {
   --color-composer-panel-add-hover-background:   hsl(var(--neutral-200));
   --color-composer-panel-tile-border:            hsl(var(--neutral-950));
   --color-agent-progress-ring:                   hsl(var(--neutral-950));
+  --color-questionnaire-key-background:          hsl(var(--neutral-100));
+  --color-questionnaire-key-hover-background:    hsl(var(--neutral-200));
   --color-dropdown-item-hover-background:        hsl(var(--blue-200));
   --color-kbd-background:                        hsl(var(--neutral-0));
   --color-kbd-foreground:                        hsl(var(--neutral-950));
