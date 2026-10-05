@@ -3,7 +3,15 @@ import type { ThreadRelationship } from "@useagent/agent-client";
 import type { GatewayChildSession } from "@/components/chat/gateway-children";
 import type { NativeFrame } from "@/components/chat/native-events";
 import type { ApiStep, StepKind } from "@/components/chat/types";
-import { deriveRunningStatus, NEXT_STEP } from "./running-phase";
+import {
+  advanceLiveGrowth,
+  deriveRunningChildren,
+  deriveRunningStatus,
+  type LiveChannel,
+  NEXT_STEP,
+  NO_GROWTH,
+  type RunningTurn,
+} from "./running-phase";
 
 type Ids = Partial<NativeFrame["native"]>;
 function frame(seq: number, eventType: string, ids: Ids = {}, payload: unknown = { text: "x" }): NativeFrame {
@@ -11,7 +19,7 @@ function frame(seq: number, eventType: string, ids: Ids = {}, payload: unknown =
     schemaVersion: 1,
     eventId: `ev-${seq}`,
     seq,
-    provider: "opencode",
+    provider: eventType.startsWith("t3.") ? "t3" : "pi",
     eventType,
     native: {
       sessionId: ids.sessionId ?? "ses_root",
@@ -40,105 +48,139 @@ function step(idx: number, kind: StepKind, label: string, code: Record<string, u
 const bash = (idx: number, command: string, callID: string) =>
   step(idx, "command", command, { tool: "bash", input: { command }, native: { sessionID: "ses_root", callID } });
 
-function turn(over: { steps?: ApiStep[]; frames?: NativeFrame[]; liveText?: string; liveReasoning?: string } = {}) {
+function turn(over: { steps?: ApiStep[]; frames?: NativeFrame[]; liveText?: string; liveReasoning?: string } = {}): RunningTurn {
   return {
     steps: over.steps ?? [],
     liveText: over.liveText ?? "",
     liveReasoning: over.liveReasoning ?? "",
     executionSummary: null,
-    native: over.frames ? { nativeFrames: over.frames } : undefined,
+    native: over.frames ? { nativeFrames: over.frames, nativeCursor: over.frames.at(-1)?.seq ?? -1 } : undefined,
   };
 }
 
-describe("running phase from native part frames (every bridge emits the same grammar)", () => {
-  test("only reasoning streamed: Thinking", () => {
-    const status = deriveRunningStatus(turn({ frames: [frame(1, "part.step-start"), frame(2, "part.reasoning")] }));
-    expect(status.phase).toBe("thinking");
-    expect(status.label).toBe("Thinking");
-    expect(status.sentence).toBe(NEXT_STEP);
-    expect(status.toolCalls).toBe(0);
+/** The composer's two halves in one call. */
+function status(
+  t: RunningTurn,
+  latest: LiveChannel = null,
+  sessions: GatewayChildSession[] = [],
+  product: ThreadRelationship[] = [],
+) {
+  return deriveRunningStatus(t, deriveRunningChildren(t, sessions, product), latest);
+}
+
+describe("runtime adapters (claude, codex, opencode): t3 activity frames + text deltas", () => {
+  const steps = [bash(0, "bun run typecheck", "call-1"), bash(1, "git status", "call-2")];
+
+  test("an open tool names the work, matched to its row by call id", () => {
+    const s = status(turn({ steps, frames: [frame(1, "t3.activity.tool.completed", { callId: "call-2" }), frame(2, "t3.activity.tool.started", { callId: "call-1" })] }));
+    expect(s).toMatchObject({ phase: "working", label: "Working", sentence: "bun run typecheck", toolCalls: 2 });
   });
 
-  test("a tool is the newest activity: Working with the tool's plain label", () => {
-    const steps = [bash(0, "bun run typecheck", "call-1"), bash(1, "git status", "call-2")];
-    const status = deriveRunningStatus(
-      turn({ steps, frames: [frame(1, "part.reasoning"), frame(2, "part.tool", { callId: "call-2" })] }),
-    );
-    expect(status.phase).toBe("working");
-    expect(status.label).toBe("Working");
-    expect(status.sentence).toBe("git status");
-    expect(status.toolCalls).toBe(2);
+  test("a closed tool with nothing newer is Thinking; text that grew after it is writing", () => {
+    const t = turn({ steps, frames: [frame(1, "t3.activity.tool.completed", { callId: "call-2" })], liveText: "The fix" });
+    expect(status(t)).toMatchObject({ phase: "thinking", sentence: NEXT_STEP });
+    expect(status(t, "text")).toMatchObject({ phase: "working", sentence: "Writing the reply" });
   });
 
-  test("reasoning after the tools flips back to Thinking; answer text reads as writing", () => {
+  test("a stale answer never hides a tool that opened after it", () => {
+    const t = turn({ steps, frames: [frame(1, "t3.activity.tool.started", { callId: "call-2" })], liveText: "Let me check" });
+    expect(status(t, "text").sentence).toBe("git status");
+  });
+
+  test("a subagent task in flight delegates under its title and counts as running", () => {
+    const spawn = step(2, "task", "Verify checkout", { source: "t3", tool: "subagent", input: { description: "Verify checkout", prompt: "go" }, native: { sessionID: "agent-a", callID: "agent-a", childSessionID: "agent-a" } }, "subagent");
+    const task = (seq: number, kind: string, extra: Record<string, unknown> = {}) =>
+      frame(seq, `t3.activity.${kind}`, { callId: "agent-a" }, { id: `ev-${seq}`, kind, payload: { taskId: "agent-a", agentKind: "agent", ...extra } });
+    const live = status(turn({ steps: [...steps, spawn], frames: [task(1, "task.started"), task(2, "task.progress", { summary: "Running the suite" })] }));
+    expect(live).toMatchObject({ phase: "delegating", label: "Delegating Verify checkout", sentence: "Running the suite", agentsRunning: 1, agentsDone: 0 });
+    const done = status(turn({ steps: [...steps, spawn], frames: [task(1, "task.started"), task(2, "task.completed", { summary: "All green" })] }), "text");
+    expect(done).toMatchObject({ phase: "working", sentence: "Writing the reply", agentsRunning: 0, agentsDone: 1 });
+  });
+});
+
+describe("pi bridge: part frames for text, reasoning and tools", () => {
+  test("reasoning, then an open tool, then a completed tool and answer text", () => {
     const steps = [bash(0, "ls", "call-1")];
-    const thinking = deriveRunningStatus(
-      turn({ steps, frames: [frame(1, "part.tool.completed", { callId: "call-1" }), frame(2, "part.reasoning")] }),
-    );
-    expect(thinking.phase).toBe("thinking");
-    const writing = deriveRunningStatus(turn({ steps, frames: [frame(1, "part.tool.completed", { callId: "call-1" }), frame(2, "part.text")] }));
-    expect(writing.phase).toBe("working");
-    expect(writing.sentence).toBe("Writing the reply");
+    expect(status(turn({ frames: [frame(1, "part.step-start"), frame(2, "part.reasoning")] }))).toMatchObject({ phase: "thinking", toolCalls: 0 });
+    expect(status(turn({ steps, frames: [frame(1, "part.reasoning"), frame(2, "part.tool", { callId: "call-1" })] })).sentence).toBe("ls");
+    expect(status(turn({ steps, frames: [frame(1, "part.tool.completed", { callId: "call-1" }), frame(2, "part.text")] }))).toMatchObject({ phase: "working", sentence: "Writing the reply" });
+    expect(status(turn({ steps, frames: [frame(1, "part.tool.completed", { callId: "call-1" }), frame(2, "part.reasoning")] })).phase).toBe("thinking");
   });
 
-  test("a subagent's own frames never speak for the parent", () => {
-    const status = deriveRunningStatus(
+  test("a child's own frames never speak for the parent", () => {
+    const s = status(turn({ frames: [frame(1, "part.reasoning"), frame(2, "part.text", { sessionId: "ses_child", parentSessionId: "ses_root" })] }));
+    expect(s.phase).toBe("thinking");
+  });
+
+  test("a lifecycle row that names the root as its own parent does not make the root a child", () => {
+    const steps = [bash(0, "ls", "call-1")];
+    const s = status(
       turn({
+        steps,
         frames: [
-          frame(1, "part.reasoning"),
-          frame(2, "part.text", { sessionId: "ses_child", parentSessionId: "ses_root" }),
+          frame(1, "part.tool.completed", { callId: "call-1" }),
+          frame(2, "part.subtask.completed", { sessionId: "ses_root", parentSessionId: "ses_root", callId: "child-1" }),
+          frame(3, "part.text"),
         ],
       }),
     );
-    expect(status.phase).toBe("thinking");
+    expect(s).toMatchObject({ phase: "working", sentence: "Writing the reply" });
+  });
+
+  test("two announced calls: the open call's frame picks its own row by call id", () => {
+    const steps = [bash(0, "cat a.txt", "call-a"), bash(1, "cat b.txt", "call-b")];
+    const s = status(turn({ steps, frames: [frame(1, "part.tool", { callId: "call-b" }), frame(2, "part.tool", { callId: "call-a" })] }));
+    expect(s.sentence).toBe("cat a.txt");
   });
 });
 
-describe("running phase without frames (durable steps, then the delta channel)", () => {
-  test("the newest durable tool step names the work", () => {
-    const status = deriveRunningStatus(turn({ steps: [bash(0, "bun test", "call-1")] }));
-    expect(status).toMatchObject({ phase: "working", sentence: "bun test", toolCalls: 1 });
+describe("without frames: chat (steps + text deltas), then the delta channel alone", () => {
+  const context = step(0, "task", "Preparing chat context...", { phase: "retrieval" }, "chat");
+
+  test("the chat engine's context step is the work until the answer starts streaming", () => {
+    expect(status(turn({ steps: [context] }))).toMatchObject({ phase: "working", sentence: "Preparing chat context...", toolCalls: 0 });
+    expect(status(turn({ steps: [context], liveText: "The retry" }), "text")).toMatchObject({ phase: "working", sentence: "Writing the reply" });
   });
 
-  test("a reasoning step is Thinking and does not count as a tool call", () => {
-    const status = deriveRunningStatus(
-      turn({ steps: [bash(0, "ls", "call-1"), step(1, "task", "Considering the layout", { tool: "reasoning" }, "reasoning")] }),
-    );
-    expect(status).toMatchObject({ phase: "thinking", toolCalls: 1 });
+  test("the newest durable tool step names the work; a reasoning step is Thinking and no tool call", () => {
+    expect(status(turn({ steps: [bash(0, "bun test", "call-1")] }))).toMatchObject({ phase: "working", sentence: "bun test", toolCalls: 1 });
+    const reasoning = step(1, "task", "Considering the layout", { tool: "reasoning" }, "reasoning");
+    expect(status(turn({ steps: [bash(0, "ls", "call-1"), reasoning] }))).toMatchObject({ phase: "thinking", toolCalls: 1 });
   });
 
-  test("delta-only engines: live text is writing, live reasoning is thinking, nothing yet is starting up", () => {
-    expect(deriveRunningStatus(turn({ liveText: "The fix" })).sentence).toBe("Writing the reply");
-    expect(deriveRunningStatus(turn({ liveReasoning: "hmm" })).phase).toBe("thinking");
-    expect(deriveRunningStatus(turn())).toMatchObject({ phase: "working", sentence: "Starting up" });
+  test("delta-only: live text is writing, live reasoning is thinking, nothing yet is starting up", () => {
+    expect(status(turn({ liveText: "The fix" })).sentence).toBe("Writing the reply");
+    expect(status(turn({ liveReasoning: "hmm" })).phase).toBe("thinking");
+    expect(status(turn())).toMatchObject({ phase: "working", sentence: "Starting up" });
   });
 });
 
-describe("delegation", () => {
-  const spawn = (idx: number, description: string, callID: string) =>
-    step(idx, "task", `Subagent — ${description}`, { tool: "task", input: { description, prompt: "go" }, native: { sessionID: "ses_root", callID } }, "subagent");
+describe("live growth: which channel spoke last", () => {
+  test("text beats reasoning in one batch, a frames-only batch hands the word back, replays are idempotent", () => {
+    const first = advanceLiveGrowth(NO_GROWTH, "run-1", turn({ liveText: "a", liveReasoning: "r" }));
+    expect(first.latest).toBe("text");
+    const reasoning = advanceLiveGrowth(first, "run-1", turn({ liveText: "a", liveReasoning: "rr" }));
+    expect(reasoning.latest).toBe("reasoning");
+    const framed = advanceLiveGrowth(reasoning, "run-1", turn({ liveText: "a", liveReasoning: "rr", frames: [frame(1, "t3.activity.tool.completed")] }));
+    expect(framed.latest).toBeNull();
+    expect(advanceLiveGrowth(framed, "run-1", turn({ liveText: "a", liveReasoning: "rr", frames: [frame(1, "t3.activity.tool.completed")] }))).toEqual(framed);
+    // A new run starts its own record.
+    expect(advanceLiveGrowth(framed, "run-2", turn({ liveText: "z" })).latest).toBe("text");
+  });
+});
 
-  test("a live native child without a status frame is running, named by its objective", () => {
-    const status = deriveRunningStatus(turn({ steps: [spawn(0, "Verify checkout", "call-spawn")] }));
-    expect(status.phase).toBe("delegating");
-    expect(status.label).toBe("Delegating Verify checkout");
-    expect(status.agentsRunning).toBe(1);
-    expect(status.agentsDone).toBe(0);
+describe("delegation across the three child kinds", () => {
+  test("a queued gateway child neither runs nor delegates; a running one does; settled ones are done", () => {
+    const session = (over: Partial<GatewayChildSession>): GatewayChildSession => ({
+      id: "c1", prompt: "Summarize the wiki", engine: "claude", model: "m", status: "queued", summary: null, ...over,
+    });
+    const queued = status(turn({ liveReasoning: "x" }), null, [session({}), session({ id: "c2", status: "completed", summary: "Done." })]);
+    expect(queued).toMatchObject({ phase: "thinking", agentsRunning: 0, agentsDone: 1 });
+    const running = status(turn(), null, [session({ status: "running" })]);
+    expect(running).toMatchObject({ label: "Delegating Summarize the wiki", sentence: "Running", agentsRunning: 1 });
   });
 
-  test("a queued gateway child session delegates; settled children count as done", () => {
-    const sessions: GatewayChildSession[] = [
-      { id: "c1", prompt: "Summarize the wiki", engine: "claude", model: "m", status: "queued", summary: null },
-      { id: "c2", prompt: "Old one", engine: "claude", model: "m", status: "completed", summary: "Done." },
-    ];
-    const status = deriveRunningStatus(turn(), sessions);
-    expect(status.label).toBe("Delegating Summarize the wiki");
-    expect(status.sentence).toBe("Queued");
-    expect(status.agentsRunning).toBe(1);
-    expect(status.agentsDone).toBe(1);
-  });
-
-  test("a bot thread delegates under the bot's name; a finished product child is done, not delegating", () => {
+  test("a bot thread delegates under the bot's name; a finished product child is done", () => {
     const child = (over: Partial<ThreadRelationship>): ThreadRelationship => ({
       threadId: "t1",
       parentThreadId: "root",
@@ -161,10 +203,14 @@ describe("delegation", () => {
       ...over,
     });
     const bot = { id: "b", name: "Scout", handle: "scout" } as unknown as ThreadRelationship["bot"];
-    const running = deriveRunningStatus(turn(), [], [child({ bot })]);
-    expect(running.label).toBe("Delegating Scout");
-    const done = deriveRunningStatus(turn({ liveReasoning: "x" }), [], [child({ status: "completed", latestSummary: "ok" })]);
-    expect(done.phase).toBe("thinking");
-    expect(done.agentsDone).toBe(1);
+    expect(status(turn(), null, [], [child({ bot })]).label).toBe("Delegating Scout");
+    const done = status(turn({ liveReasoning: "x" }), null, [], [child({ status: "completed", latestSummary: "ok" })]);
+    expect(done).toMatchObject({ phase: "thinking", agentsDone: 1 });
+    expect(status(turn(), null, [], [child({ status: "queued" })])).toMatchObject({ phase: "working", agentsRunning: 0, agentsDone: 0 });
+  });
+
+  test("a live native child without a status frame is running, named by its objective", () => {
+    const spawn = step(0, "task", "Subagent: Verify checkout", { tool: "task", input: { description: "Verify checkout", prompt: "go" }, native: { sessionID: "ses_root", callID: "call-spawn" } }, "subagent");
+    expect(status(turn({ steps: [spawn] }))).toMatchObject({ phase: "delegating", label: "Delegating Verify checkout", agentsRunning: 1 });
   });
 });

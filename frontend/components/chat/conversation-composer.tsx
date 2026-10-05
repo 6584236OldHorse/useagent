@@ -1,7 +1,7 @@
 "use client";
 
 import type { ThreadRelationship } from "@useagent/agent-client";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { PendingApproval } from "@/components/chat/approval-state";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import type { ComposerSubmit } from "@/components/chat/composer";
@@ -18,7 +18,12 @@ import { cleanPrompt, type EngineId, type MemoryScope, modelLabel } from "@/comp
 import { ComposerStatusBar } from "@/components/pro/composer-status-bar";
 import { type QueuedMessage, QueuedMessages } from "@/components/pro/queued-messages";
 import { RunningFooter } from "@/components/pro/running-footer";
-import { deriveRunningStatus } from "@/components/pro/running-phase";
+import {
+  advanceLiveGrowth,
+  deriveRunningChildren,
+  deriveRunningStatus,
+  NO_GROWTH,
+} from "@/components/pro/running-phase";
 import { engineDisplayLabel } from "@/components/session-ui/provider-status-banner";
 
 /**
@@ -106,24 +111,46 @@ export function ConversationComposer({
 }) {
   const context = useMemo(() => latestThreadContext(turns), [turns]);
   const [compactFailure, setCompactFailure] = useState<string | null>(null);
-  // Turns the agent has not started: rows above the input, never transcript bubbles.
+  // Turns the agent has not started: rows above the input, never transcript
+  // bubbles. Positions count the WHOLE serial queue (a queued gateway child
+  // ahead of a reply is real wait); the rows show the person's own messages.
   const queued = useMemo<QueuedMessage[]>(() => {
-    const rows: QueuedMessage[] = turns
-      .filter((turn) => turn.status === "queued" && !turn.run.child_session)
-      .map((turn) => ({ id: turn.run.id, text: cleanPrompt(turn.run.prompt) }));
-    if (pendingReply !== null) rows.push({ id: "pending", text: pendingReply, pending: true });
+    const waiting = turns.filter((turn) => turn.status === "queued");
+    const rows = waiting.flatMap((turn, index): QueuedMessage[] =>
+      turn.run.child_session ? [] : [{ id: turn.run.id, position: index + 1, text: cleanPrompt(turn.run.prompt) }],
+    );
+    if (pendingReply !== null) {
+      rows.push({ id: "pending", position: waiting.length + 1, text: pendingReply, pending: true });
+    }
     return rows;
   }, [turns, pendingReply]);
   const runningTurn = running ? (turns.find((turn) => turn.status === "running") ?? null) : null;
-  const runningStatus = useMemo(() => {
-    if (!runningTurn) return null;
-    const id = runningTurn.run.id;
-    return deriveRunningStatus(
-      runningTurn,
-      turns.filter((t) => t.run.child_session === true && t.run.parent_run_id === id).map(toGatewayChildSession),
-      productChildren?.filter((child) => child.sourceRunId === id),
-    );
-  }, [runningTurn, turns, productChildren]);
+  const runId = runningTurn?.run.id ?? null;
+  // The running turn's gateway child sessions, identity-stable while their state holds.
+  const childTurns = turns.filter((t) => t.run.child_session === true && t.run.parent_run_id === runId);
+  const childSignature = childTurns.map((t) => `${t.run.id}:${t.status}:${t.summary ? 1 : 0}`).join("|");
+  // The signature names every input that matters, so the list only changes with it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const childSessions = useMemo(() => childTurns.map(toGatewayChildSession), [childSignature]);
+  const ownChildren = useMemo(
+    () => productChildren?.filter((child) => child.sourceRunId === runId) ?? [],
+    [productChildren, runId],
+  );
+  // Structural: recomputed when a step or a frame lands, not on a text delta.
+  const steps = runningTurn?.steps;
+  const frames = runningTurn?.native?.nativeFrames;
+  const canonical = runningTurn?.canonical;
+  const executionSummary = runningTurn?.executionSummary;
+  const children = useMemo(
+    () => (runningTurn ? deriveRunningChildren(runningTurn, childSessions, ownChildren) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runId, steps, frames, canonical, executionSummary, childSessions, ownChildren],
+  );
+  // Which live channel grew last decides writing versus thinking (a delta carries no seq).
+  const growth = useRef(NO_GROWTH);
+  if (runningTurn) growth.current = advanceLiveGrowth(growth.current, runningTurn.run.id, runningTurn);
+  const runningStatus =
+    runningTurn && children ? deriveRunningStatus(runningTurn, children, growth.current.latest) : null;
   const canCompact =
     !running &&
     pendingReply === null &&

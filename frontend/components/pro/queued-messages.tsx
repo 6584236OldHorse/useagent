@@ -13,6 +13,8 @@ import { useState } from "react";
 
 export interface QueuedMessage {
   readonly id: string;
+  /** 1-based place in the thread's whole serial queue (gateway children count). */
+  readonly position: number;
   readonly text: string;
   /** Still being accepted by the API (the optimistic reply): no actions yet. */
   readonly pending?: boolean;
@@ -20,12 +22,10 @@ export interface QueuedMessage {
 
 function Row({
   message,
-  position,
   onSendNow,
   onRemove,
 }: {
   message: QueuedMessage;
-  position: number;
   onSendNow?: () => void;
   onRemove?: (id: string) => Promise<void> | void;
 }) {
@@ -49,7 +49,7 @@ function Row({
       className="flex items-center gap-2 rounded-lg border border-border-button-default bg-background-secondary-default px-2.5 py-1.5 text-body-2-regular"
     >
       <span className="w-4 shrink-0 text-right font-mono text-caption-1-regular text-text-tertiary tabular-nums">
-        {position}
+        {message.position}
       </span>
       <span className="min-w-0 flex-1 truncate text-text-primary">{message.text}</span>
       {failed && <span className="shrink-0 text-caption-1-regular text-text-error-primary">Could not remove</span>}
@@ -66,7 +66,7 @@ function Row({
       {onRemove && !message.pending && (
         <button
           type="button"
-          aria-label={`Remove queued message ${position}`}
+          aria-label={`Remove queued message ${message.position}`}
           title="Remove from the queue"
           disabled={busy}
           onClick={() => void remove()}
@@ -94,12 +94,16 @@ export function QueuedMessages({
 }) {
   if (messages.length === 0) return null;
   return (
-    <ol data-session-ui="queued-messages" aria-label="Queued messages" className="mb-1.5 flex flex-col gap-1">
-      {messages.map((message, index) => (
+    // Bounded: a long queue scrolls inside its own box so the input below stays reachable.
+    <ol
+      data-session-ui="queued-messages"
+      aria-label="Queued messages"
+      className="scrollbar-slim mb-1.5 flex max-h-40 flex-col gap-1 overflow-y-auto"
+    >
+      {messages.map((message) => (
         <Row
           key={message.id}
           message={message}
-          position={index + 1}
           onSendNow={message.id === sendNowFor ? onSendNow : undefined}
           onRemove={onRemove}
         />

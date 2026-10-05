@@ -467,16 +467,16 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
     if (!runningTurn) setStopError(null);
   }, [runningTurn]);
 
-  // The durable cancel of one run: a queued run is failed before it starts (the
-  // queued row's Remove); a running run is signalled (Send now below).
-  const cancelRun = useCallback(async (runId: string) => {
-    const response = await backendFetch(`/api/runs/${runId}/cancel`, { method: "POST" });
-    if (!response.ok) throw new Error(`backend ${response.status}`);
+  // The durable cancel of one run. Remove asks for a queued run only: one that
+  // started between the click and the request answers 409 and is left alone.
+  const cancelRun = useCallback(async (runId: string, onlyQueued = false) => {
+    const response = await backendFetch(`/api/runs/${runId}/cancel${onlyQueued ? "?only=queued" : ""}`, { method: "POST" });
+    if (!response.ok && !(onlyQueued && response.status === 409)) throw new Error(`backend ${response.status}`);
   }, []);
+  const removeQueued = useCallback((runId: string) => cancelRun(runId, true), [cancelRun]);
   // Send-now steering (opencode's control, matched to our harness): cancel the
   // RUNNING turn; the per-thread command lane then auto-dispatches the head
   // queued turn immediately (FIFO promotion is already the lane's behavior).
-  // Only offered on the HEAD queued message so the queue order is preserved.
   const handleSendNow = useCallback(async () => {
     if (!runningTurn) return;
     setStopError(null);
@@ -741,7 +741,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
             gatewayApprovals={gatewayApprovals}
             onGatewayApprovalResolved={handleGatewayApprovalResolved}
             sendNowFor={runningTurn ? headQueuedId : null}
-            onSendNow={handleSendNow} onRemoveQueued={cancelRun}
+            onSendNow={handleSendNow} onRemoveQueued={removeQueued}
             running={runningTurn !== null}
             runStartedAt={runningTurn?.run.created_at ?? null}
             stopping={stopping}

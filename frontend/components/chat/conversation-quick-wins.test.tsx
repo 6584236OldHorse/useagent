@@ -155,6 +155,23 @@ test("queued turns wait as numbered rows above the composer, never as transcript
   expect(idle).not.toContain("Add context while this runs");
 });
 
+test("a queued spawned session ahead of a reply keeps the reply's honest place and its Send now", () => {
+  const child = makeTurn("run-child", "queued", [], "run-live");
+  child.run.child_session = true;
+  const reply = makeTurn("run-q1", "queued", [], "run-live");
+  reply.run.prompt = "after the child";
+  const html = render([makeTurn("run-live", "running", liveEvents()), child, reply], {
+    running: true,
+    sendNowFor: "run-child",
+    onSendNow: () => {},
+  });
+  // One visible row, numbered by the whole serial queue, and no Send now (the head is the child).
+  expect(html.match(/data-session-ui="queued-message"/g)).toHaveLength(1);
+  expect(html).toContain(">2<");
+  expect(html).not.toContain("Send now");
+  expect(html).not.toContain('data-run-id="run-child"');
+});
+
 test("the optimistic reply is the last queued row, not a transcript bubble", () => {
   const html = render([makeTurn("run-live", "running", liveEvents())], {
     running: true,
