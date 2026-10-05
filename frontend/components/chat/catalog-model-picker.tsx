@@ -22,6 +22,7 @@ import {
 } from "@/components/chat/types";
 import { engineMarkFor } from "@/components/foundations/icons/vendor-marks";
 import {
+  effortAfterPick,
   ModelPicker,
   type ModelPickerProvider,
   type ModelPickerRow,
@@ -136,10 +137,6 @@ export function CatalogModelPicker({
     useEnabledEngineConfig();
   const options = modelOptionsForEngine(engine, models[engine] ?? [], modelDetails[engine] ?? []);
   const { replacement, blocked } = reconcileSelectedModel(model, options, loaded);
-  useLayoutEffect(() => {
-    if (replacement && replacement !== model) onChange(replacement);
-    onAvailabilityChange?.(!blocked);
-  }, [model, blocked, onAvailabilityChange, onChange, replacement]);
   const refresh: ProviderRefresh = {
     refreshing,
     onRefresh: () => {
@@ -148,9 +145,18 @@ export function CatalogModelPicker({
       void refreshModels(model, engine).finally(() => setRefreshing(false));
     },
   };
+  const provider = engineProvider(engine, { models, modelDetails }, refresh);
+  useLayoutEffect(() => {
+    if (replacement && replacement !== model) {
+      onChange(replacement);
+      // The replacement row's level, so the chip and the sent value agree.
+      onReasoningEffortChange?.(effortAfterPick([provider], replacement, engine, reasoningEffort));
+    }
+    onAvailabilityChange?.(!blocked);
+  }, [blocked, engine, model, onAvailabilityChange, onChange, onReasoningEffortChange, provider, reasoningEffort, replacement]);
   return (
     <ModelPicker
-      providers={[engineProvider(engine, { models, modelDetails }, refresh)]}
+      providers={[provider]}
       value={model}
       providerId={engine}
       onChange={onChange}

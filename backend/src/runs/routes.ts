@@ -291,7 +291,7 @@ export async function handleRunCreate(
   const intent: RunCommandIntent = {
     prompt: finalPrompt,
     model: requestedModel,
-    reasoningEffort: typeof body.reasoning_effort === "string" ? body.reasoning_effort : null,
+    reasoningEffort: body.reasoning_effort == null ? null : String(body.reasoning_effort),
     engine: requestedEngine,
     parentRunId,
     requestedRepos,

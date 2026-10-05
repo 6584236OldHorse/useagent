@@ -86,6 +86,23 @@ describe("reasoning effort at the run-creation boundary", () => {
     expect(conflict.status).toBe(409);
   });
 
+  test("a keyed retry that adds a malformed effort is a payload mismatch, never the original run", async () => {
+    const s = await createOrgSession("effort-idem-malformed");
+    const key = uid("effort-key-malformed");
+    const body = { prompt: "keyed without effort", engine: "codex", model: "gpt-5.6-sol" };
+    const first = await createRun(body, s.cookies, { "Idempotency-Key": key });
+    expect(first.status).toBe(201);
+    // A number is not omission: it must not fingerprint like the accepted run,
+    // so the reused key answers the same 409 any changed payload gets.
+    const malformed = await createRun({ ...body, reasoning_effort: 42 }, s.cookies, { "Idempotency-Key": key });
+    expect(malformed.status).toBe(409);
+    expect(malformed.body.error).toBe("idempotency_key_reused");
+    // Unkeyed, the same value is the plain client error.
+    const unkeyed = await createRun({ ...body, reasoning_effort: 42 }, s.cookies);
+    expect(unkeyed.status).toBe(400);
+    expect(unkeyed.body.error).toBe("reasoning_effort_invalid");
+  });
+
   test("the capability manifest advertises the seam per model", async () => {
     const s = await createOrgSession("effort-manifest");
     const { status, body } = await json<{

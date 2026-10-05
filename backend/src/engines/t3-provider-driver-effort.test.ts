@@ -10,11 +10,15 @@ import { makeT3ProviderDriver } from "./t3-provider-driver";
 
 interface Dispatched {
   readonly type: string;
-  readonly modelSelection?: {
-    readonly instanceId: string;
-    readonly model: string;
-    readonly options: readonly { id: string; value: string }[];
-  };
+  readonly modelSelection: unknown;
+}
+
+/** The runtime request payload, narrowed by its `type`; the selection is
+ *  compared whole by the assertions. */
+function recorded(payload: Readonly<Record<string, unknown>> | undefined): Dispatched {
+  const type = payload?.type;
+  if (typeof type !== "string") throw new Error("dispatch payload without a type");
+  return { type, modelSelection: payload?.modelSelection };
 }
 
 function recordingDriver(engine: "codex" | "claude") {
@@ -27,7 +31,7 @@ function recordingDriver(engine: "codex" | "claude") {
         return { projects: [], threads: [] } as T;
       }
       if (request.method === "POST") {
-        dispatched.push(request.payload as unknown as Dispatched);
+        dispatched.push(recorded(request.payload));
         // The shell poll after each create sees the created row.
         return {} as T;
       }
@@ -80,9 +84,9 @@ describe("T3 driver reasoning effort dispatch", () => {
       input: { kind: "prompt", text: "again", model: "claude-opus-5" },
       metadata: { threadId: "thread-1" },
     });
-    expect(dispatched.map((command) => command.modelSelection?.options)).toEqual([
-      [{ id: "effort", value: "low" }],
-      [],
+    expect(dispatched.map((command) => command.modelSelection)).toEqual([
+      { instanceId: "claudeAgent", model: "claude-opus-5", options: [{ id: "effort", value: "low" }] },
+      { instanceId: "claudeAgent", model: "claude-opus-5", options: [] },
     ]);
   });
 });

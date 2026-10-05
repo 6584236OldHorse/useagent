@@ -720,7 +720,7 @@ export function Composer({
                   onChange={setModel}
                   onAvailabilityChange={setModelAvailable}
                   reasoningEffort={reasoningEffort}
-                  onReasoningEffortChange={setReasoningEffort}
+                  onReasoningEffortChange={(next) => setReasoningEffort(next || null)}
                 />
               )}
               {hero && (

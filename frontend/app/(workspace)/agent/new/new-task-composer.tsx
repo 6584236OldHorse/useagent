@@ -112,15 +112,15 @@ export function NewTaskComposer({
   const [refreshingModels, setRefreshingModels] = useState(false);
   const { refreshModels } = engineConfig;
   const refreshFreeModels = useCallback(
-    async (preserveModel: string) => {
+    async (preserveModel: string, target: EngineId) => {
       setRefreshingModels(true);
       try {
-        await refreshModels(preserveModel, engineId);
+        await refreshModels(preserveModel, target);
       } finally {
         setRefreshingModels(false);
       }
     },
-    [engineId, refreshModels],
+    [refreshModels],
   );
   // The rail: one entry per engine the server configured, each with its manifest
   // lineup. Readiness decorates an engine's title instead of hiding it.
@@ -130,7 +130,9 @@ export function NewTaskComposer({
         engineProvider(
           candidate.id,
           engineConfig,
-          { refreshing: refreshingModels, onRefresh: () => void refreshFreeModels(model) },
+          // Bound to the entry's own engine: browsing OpenCode's Free lane from a
+          // Codex selection refreshes the Free lane, not the Codex catalog.
+          { refreshing: refreshingModels, onRefresh: () => void refreshFreeModels(model, candidate.id) },
           engineRuntimeCaption(
             candidate.id,
             engineConfig.runtimes[candidate.id],
@@ -580,10 +582,9 @@ export function NewTaskComposer({
                     onChange={(nextModel, nextEngine) => {
                       setEngine(nextEngine);
                       setModel(nextModel);
-                      setReasoningEffort(null); // another model, its own levels and default
                     }}
                     effort={reasoningEffort}
-                    onEffortChange={setReasoningEffort}
+                    onEffortChange={(next) => setReasoningEffort(next || null)}
                     placement="bottom end"
                     className="h-8 min-w-0 max-w-[16rem] rounded-full px-2.5 text-caption-1-medium text-text-secondary"
                   />
