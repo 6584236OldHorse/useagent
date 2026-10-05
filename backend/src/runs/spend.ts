@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { spendAccounts, spendEntries, type SpendSource } from "../db/schema";
+import { providerEvents, spendAccounts, spendEntries, type SpendSource } from "../db/schema";
 
 // ---------------------------------------------------------------------------
 // Spend allowance. Every organisation member may spend SPEND_ALLOWANCE_USD
@@ -80,14 +80,24 @@ export async function accrueRunSpend(
   tx: Executor,
 ): Promise<void> {
   if (!run.orgId || !run.userId) return;
-  const [usage] = (await tx.execute(sql`
-    select coalesce(sum((payload::jsonb ->> 'cost')::numeric), 0)::float8 as cost,
-      coalesce(bool_or(payload::jsonb ->> 'costSource' = 'provider_generation'), false) as settled
-    from provider_events
-    where run_id = ${run.id} and event_type = 'part.step-finish'
-  `)) as unknown as Array<{ cost: number; settled: boolean }>;
-  const cost = Number(usage?.cost ?? 0);
-  const source: SpendSource = usage?.settled ? "provider_generation" : "step_finish";
+  const usage = await tx
+    .select({ payload: providerEvents.payload })
+    .from(providerEvents)
+    .where(and(eq(providerEvents.runId, run.id), eq(providerEvents.eventType, "part.step-finish")));
+  // Parsed here, not cast in SQL: a malformed usage payload must never keep a
+  // run from settling; it simply prices as zero.
+  let cost = 0;
+  let source: SpendSource = "step_finish";
+  for (const { payload } of usage) {
+    let parsed: { cost?: unknown; costSource?: unknown } | null = null;
+    try {
+      parsed = payload ? JSON.parse(payload) : null;
+    } catch {
+      parsed = null;
+    }
+    if (typeof parsed?.cost === "number" && Number.isFinite(parsed.cost)) cost += parsed.cost;
+    if (parsed?.costSource === "provider_generation") source = "provider_generation";
+  }
   const inserted = await tx
     .insert(spendEntries)
     .values({ runId: run.id, orgId: run.orgId, userId: run.userId, costUsd: cost, source })

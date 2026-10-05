@@ -69,6 +69,11 @@ describe("spend allowance", () => {
   test("settling a run charges the sum of its step-finish cost exactly once", async () => {
     const before = (await account())?.spent ?? 0;
     const run = await settledRun(`spend_${uid()}`, [{ cost: 0.0125 }, { cost: 0.02 }, {}]);
+    // A malformed usage payload prices as zero instead of blocking the settlement.
+    await db.insert(providerEvents).values({
+      id: `${run.id}-usage-bad`, runId: run.id, threadId: run.id, seq: 9, provider: "opencode",
+      eventType: "part.step-finish", payload: '{"cost": "not a number", "tokens": {',
+    });
     const first = await finalizeRun(run.id, "completed", "done", 10);
     expect(first.applied).toBe(true);
     const charged = await account();

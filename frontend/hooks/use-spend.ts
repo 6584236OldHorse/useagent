@@ -7,7 +7,7 @@ import { useOrgChanges } from "./use-org-changes";
 
 /**
  * The member's settled spend against their allowance, fetched on mount and
- * again on every org run change (a settling turn is what moves the figure).
+ * again whenever a run in the org settles (that is what moves the figure).
  * A transient failure keeps the last good snapshot; null until the first read.
  */
 export function useSpend(): SpendSnapshot | null {
@@ -25,7 +25,7 @@ export function useSpend(): SpendSnapshot | null {
   }, []);
 
   useOrgChanges((change) => {
-    if (change.type === "run") void load();
+    if (change.type === "run" && (change.action === "settled" || change.action === "cancelled")) void load();
   });
 
   useEffect(() => {
