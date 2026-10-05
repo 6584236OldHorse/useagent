@@ -203,7 +203,7 @@ export function watchSlackRun(opts: {
   // Race guard: the run may already be terminal before we subscribed.
   void getRun(runId).then((r) => {
     if (r && isTerminal(r.status)) finish();
-  });
+  }).catch((err) => console.warn(`[slack] watcher race check for run ${runId} failed; the end event still settles it:`, err));
 }
 
 const isTerminal = (s: RunStatus): boolean => s === "completed" || s === "failed";

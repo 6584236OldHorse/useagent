@@ -369,7 +369,10 @@ export async function unresolvedExecutionGraphObservationsForRun(
     .limit(input.limit);
 }
 
-export async function executionGraphSealBlockers(
+/** Observations a run could not place into its graph exactly: one still
+ *  unresolved, or one whose provider later changed its applied structure. Any
+ *  row here means the graph is incomplete. */
+export async function executionGraphGaps(
   orgId: string,
   runId: string,
   exec: Executor = db,
@@ -389,4 +392,26 @@ export async function executionGraphSealBlockers(
       .limit(1),
   ]);
   return [...new Map([...unresolved, ...mismatch].map((row) => [row.id, row])).values()];
+}
+
+/** At the run's terminal seal an unresolved observation can never resolve (its
+ *  parent frame was lost, or the child it names was spawned in an earlier
+ *  turn), so it is marked exhausted for that reason instead of blocking the
+ *  settlement. The pointer stays as the record of the gap. */
+export async function exhaustUnresolvedAtSeal(
+  orgId: string,
+  runId: string,
+  exec: Executor,
+): Promise<number> {
+  const exhausted = await exec
+    .update(executionGraphPendingObservations)
+    .set({ exhaustedAt: new Date(), exhaustionCode: "unresolved_at_seal" })
+    .where(and(
+      eq(executionGraphPendingObservations.orgId, orgId),
+      eq(executionGraphPendingObservations.runId, runId),
+      isNull(executionGraphPendingObservations.resolvedAt),
+      isNull(executionGraphPendingObservations.exhaustedAt),
+    ))
+    .returning({ id: executionGraphPendingObservations.id });
+  return exhausted.length;
 }

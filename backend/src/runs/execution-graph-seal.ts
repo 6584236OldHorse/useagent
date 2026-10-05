@@ -11,7 +11,8 @@ import { errorMessage } from "../util/error-message";
 import { advanceExecutionLifecycle } from "./execution-graph-repo";
 import { drainProviderEvents } from "./provider-events";
 import { auditExecutionGraphAtSeal } from "./execution-graph-writer";
-import { executionGraphSealBlockers } from "./execution-graph-pending-repo";
+import { executionGraphGaps, exhaustUnresolvedAtSeal } from "./execution-graph-pending-repo";
+import { isTransientDbError } from "../db/pg-errors";
 
 const TERMINAL_STATUSES = new Set<ExecutionStatus>(["completed", "failed", "cancelled"]);
 const SEAL_EVENT_REVISION = Number.MAX_SAFE_INTEGER;
@@ -117,6 +118,17 @@ function sealEventId(runId: string, watermark: number): string {
   return `execution-graph-seal:${runId}:${watermark}`;
 }
 
+/** A graph the seal could not close never blocks the run's settlement: the run
+ *  settles and the failure is logged. Only a transient database error is thrown,
+ *  for the finalizer's retry. */
+function absorbSealFailure(stage: string, runId: string, error: unknown): void {
+  if (isTransientDbError(error)) throw error;
+  console.error(`[execution-graph] ${stage} failed; the run settles with an incomplete graph`, {
+    runId: runId.slice(0, LOG_VALUE_CAP),
+    error: errorMessage(error).slice(0, LOG_VALUE_CAP),
+  });
+}
+
 export async function prepareExecutionGraphSeal(
   runId: string,
   drain: (id: string) => Promise<void> = drainProviderEvents,
@@ -125,15 +137,11 @@ export async function prepareExecutionGraphSeal(
   const [run] = await db.select({ orgId: runs.orgId }).from(runs).where(eq(runs.id, runId)).limit(1);
   if (!run?.orgId) return;
   // Persist reconstruction/mismatch evidence before the parent finalization
-  // transaction. READ can then fail closed without rolling that evidence back.
-  await db.transaction((tx) => auditExecutionGraphAtSeal(run.orgId!, runId, tx, {
-    failOnBlockers: false,
-  }));
-  const blockers = await executionGraphSealBlockers(run.orgId, runId);
-  if (blockers.length > 0) {
-    throw new Error(blockers.some((row) => row.structuralMismatchAt != null)
-      ? "execution_graph_structural_revision_mismatch"
-      : "execution_graph_pending_unresolved");
+  // transaction, so nothing that transaction does rolls that evidence back.
+  try {
+    await db.transaction((tx) => auditExecutionGraphAtSeal(run.orgId!, runId, tx));
+  } catch (error) {
+    absorbSealFailure("seal audit", runId, error);
   }
 }
 
@@ -143,6 +151,15 @@ export async function reconcileExecutionGraphAtSeal(
   exec: Executor,
 ): Promise<void> {
   await auditExecutionGraphAtSeal(input.orgId, input.runId, exec);
+  const exhaustedAtSeal = await exhaustUnresolvedAtSeal(input.orgId, input.runId, exec);
+  const gaps = await executionGraphGaps(input.orgId, input.runId, exec);
+  if (gaps.length > 0) {
+    console.warn("[execution-graph] run sealed with an incomplete graph", {
+      runId: input.runId.slice(0, LOG_VALUE_CAP),
+      exhaustedAtSeal,
+      structuralMismatch: gaps.some((row) => row.structuralMismatchAt != null),
+    });
+  }
   const executions = await exec
     .select()
     .from(agentExecutions)
@@ -283,15 +300,20 @@ interface SealPolicyOptions {
   readonly reconcile?: typeof reconcileExecutionGraphAtSeal;
 }
 
-/** Seal the graph inside the finalization transaction: a reconciliation failure rolls
- *  the finalization back, so a run never settles with a graph the seal could not close. */
+/** Seal the graph inside the finalization transaction, in a savepoint: a
+ *  reconciliation failure rolls back only the seal's own writes and the run
+ *  still settles (a transient database error still aborts the whole attempt). */
 export async function sealExecutionGraphAfterFinalizeTx(
   input: SealInput,
   tx: DbTx,
   options: SealPolicyOptions = {},
 ): Promise<void> {
   const reconcile = options.reconcile ?? reconcileExecutionGraphAtSeal;
-  await reconcile(input, tx);
+  try {
+    await tx.transaction((savepoint) => reconcile(input, savepoint));
+  } catch (error) {
+    absorbSealFailure("seal", input.runId, error);
+  }
 }
 
 export const executionGraphSealInternals = {

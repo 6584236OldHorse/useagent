@@ -55,6 +55,7 @@ import { COMPACT_STOPPED_WAITING_SUMMARY } from "../engines/runtime-compact-cont
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { drainProviderEvents } from "./provider-events";
 import { accrueRunSpend } from "./spend";
+import { withTransientDbRetry } from "../db/transient-retry";
 
 /** Providers whose runs project native events and/or `steps` into the canonical lane.
  *  Native engines plus historical ACP rows, which can still finish canonicalization
@@ -449,7 +450,17 @@ export async function finalizeRun(
   return commitRunFinalization(runId, outputs.status, outputs.summary, durationMs, options, outputs.artifactIds);
 }
 
-async function commitRunFinalization(
+/** A transient database failure anywhere in the settlement (a dropped
+ *  connection, a deadlock) is retried with a bounded backoff instead of leaving
+ *  the run non-terminal: every step is idempotent and the transaction commits
+ *  whole or not at all, so a repeat converges on the same terminal row. */
+function commitRunFinalization(
+  ...args: Parameters<typeof commitRunFinalizationAttempt>
+): Promise<FinalizeRunResult> {
+  return withTransientDbRetry(`finalize run ${args[0]}`, () => commitRunFinalizationAttempt(...args));
+}
+
+async function commitRunFinalizationAttempt(
   runId: string,
   status: RunStatus,
   summary: string,

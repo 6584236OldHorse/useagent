@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { db } from "../src/db/client";
 import {
@@ -18,6 +18,7 @@ import {
   getExecutionGraphForRun,
   recordNativeChildSpawn,
 } from "../src/runs/execution-graph-repo";
+import { executionGraphGaps } from "../src/runs/execution-graph-pending-repo";
 import { finalizeRun } from "../src/runs/finalize";
 import { completeRun, createRun, getRun } from "../src/runs/repo";
 import "./helpers";
@@ -439,37 +440,65 @@ describe("execution graph terminal seal", () => {
     });
   });
 
-  test("an audit reconstruction failure fails the seal closed instead of being swallowed", async () => {
+  test("an audit reconstruction failure is logged and never blocks the run's settlement", async () => {
     const runId = await freshRun();
     await t3Event({ runId, seq: 1, id: `${runId}:root`, eventType: "session.started", nativeSessionId: "root" });
     await prepareExecutionGraphSeal(runId, async () => {}); // reconstructs the root execution
     // The stored execution's identity drifts from what the provider events say; the audit
-    // must surface the conflict through the strict core, never through the fail-open writer.
+    // still surfaces the conflict through the strict core, and the seal logs it.
     await db.update(agentExecutions).set({ provider: "opencode" }).where(eq(agentExecutions.runId, runId));
-    await expect(prepareExecutionGraphSeal(runId, async () => {}))
-      .rejects.toThrow("execution_source_key_identity_conflict");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    let reported = false;
+    try {
+      await prepareExecutionGraphSeal(runId, async () => {});
+      expect(await finalizeRun(runId, "completed", "settles anyway", 1))
+        .toMatchObject({ applied: true, status: "completed" });
+      reported = logged.mock.calls.some(([, detail]) =>
+        String((detail as { error?: string } | undefined)?.error).includes("execution_source_key_identity_conflict"));
+    } finally {
+      logged.mockRestore();
+    }
+    expect(reported).toBe(true);
+    expect(await getRun(runId)).toMatchObject({ status: "completed", summary: "settles anyway" });
   });
 
-  test("a seal failure rolls the finalization back", async () => {
+  test("a seal failure rolls back only the seal's writes and the run still settles", async () => {
     const readRun = await freshRun();
     const readPrompt = (await getRun(readRun))!.prompt;
-    await expect(db.transaction(async (tx) => {
-      expect(await completeRun(readRun, "completed", "read-parent", 1, tx)).toBe(true);
-      await sealExecutionGraphAfterFinalizeTx(
-        { orgId: ORG, runId: readRun, status: "completed" },
-        tx,
-        {
-          reconcile: async (_input, outer) => {
-            await outer.update(runs).set({ prompt: "read-leak" }).where(eq(runs.id, readRun));
-            throw new Error("read boom");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await db.transaction(async (tx) => {
+        expect(await completeRun(readRun, "completed", "read-parent", 1, tx)).toBe(true);
+        await sealExecutionGraphAfterFinalizeTx(
+          { orgId: ORG, runId: readRun, status: "completed" },
+          tx,
+          {
+            reconcile: async (_input, outer) => {
+              await outer.update(runs).set({ prompt: "read-leak" }).where(eq(runs.id, readRun));
+              throw new Error("read boom");
+            },
           },
-        },
+        );
+      });
+    } finally {
+      logged.mockRestore();
+    }
+    expect(await getRun(readRun)).toMatchObject({ status: "completed", summary: "read-parent", prompt: readPrompt });
+
+    // A transient database error is not absorbed: the attempt rolls back whole for the finalizer's retry.
+    const transientRun = await freshRun();
+    await expect(db.transaction(async (tx) => {
+      await completeRun(transientRun, "completed", "transient", 1, tx);
+      await sealExecutionGraphAfterFinalizeTx(
+        { orgId: ORG, runId: transientRun, status: "completed" },
+        tx,
+        { reconcile: async () => { throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); } },
       );
-    })).rejects.toThrow("read boom");
-    expect(await getRun(readRun)).toMatchObject({ status: "queued", summary: null, prompt: readPrompt });
+    })).rejects.toThrow("deadlock detected");
+    expect(await getRun(transientRun)).toMatchObject({ status: "queued", summary: null });
   });
 
-  test("unresolved late ancestry fails the finalization closed", async () => {
+  test("unresolved or exhausted late ancestry settles the run with the gap sealed as degraded", async () => {
     const seedUnresolved = async () => {
       const runId = await freshRun();
       await t3Event({
@@ -499,12 +528,38 @@ describe("execution graph terminal seal", () => {
       return runId;
     };
 
+    const pointerFor = async (runId: string) => (await db.select().from(executionGraphPendingObservations).where(
+      eq(executionGraphPendingObservations.runId, runId),
+    ))[0];
+    const finalizeDegraded = async (runId: string) => {
+      const warned = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(await finalizeRun(runId, "completed", "settles degraded", 1))
+          .toMatchObject({ applied: true, status: "completed" });
+        return warned.mock.calls.some(([message]) => String(message).includes("incomplete graph"));
+      } finally {
+        warned.mockRestore();
+      }
+    };
+
     const readRun = await seedUnresolved();
     process.env.EXECUTION_GRAPH_ROLLOUT = "read";
-    await expect(finalizeRun(readRun, "completed", "must roll back", 1))
-      .rejects.toThrow("execution_graph_pending_unresolved");
-    expect(await getRun(readRun)).toMatchObject({ status: "queued", summary: null });
+    expect(await finalizeDegraded(readRun)).toBe(true);
+    expect(await getRun(readRun)).toMatchObject({ status: "completed", summary: "settles degraded" });
+    const pointer = await pointerFor(readRun);
+    expect(pointer).toMatchObject({ resolvedAt: null, exhaustionCode: "unresolved_at_seal" });
+    expect(pointer?.exhaustedAt).toBeInstanceOf(Date);
+    expect(await executionGraphGaps(ORG, readRun)).toHaveLength(1);
 
+    // An observation whose recovery budget ran out before the seal keeps its own reason.
+    const exhaustedRun = await seedUnresolved();
+    await prepareExecutionGraphSeal(exhaustedRun, async () => {});
+    await db.update(executionGraphPendingObservations)
+      .set({ exhaustedAt: new Date(), exhaustionCode: "attempt_budget_exhausted" })
+      .where(eq(executionGraphPendingObservations.runId, exhaustedRun));
+    expect(await finalizeDegraded(exhaustedRun)).toBe(true);
+    expect(await getRun(exhaustedRun)).toMatchObject({ status: "completed" });
+    expect(await pointerFor(exhaustedRun)).toMatchObject({ resolvedAt: null, exhaustionCode: "attempt_budget_exhausted" });
   });
 
   test("READ seal reconstructs missing pointers and exact nested graph from provider truth", async () => {
@@ -564,7 +619,7 @@ describe("execution graph terminal seal", () => {
     ]);
   });
 
-  test("persists structural mismatch evidence and blocks READ without rewriting applied ancestry", async () => {
+  test("persists structural mismatch evidence without rewriting applied ancestry or blocking settlement", async () => {
     const runId = await freshRun();
     await t3Event({
       runId,
@@ -604,8 +659,7 @@ describe("execution graph terminal seal", () => {
         },
       }),
     }).where(eq(providerEvents.id, childEventId));
-    await expect(prepareExecutionGraphSeal(runId, async () => {}))
-      .rejects.toThrow("execution_graph_structural_revision_mismatch");
+    await prepareExecutionGraphSeal(runId, async () => {});
 
     const [pointer] = await db.select().from(executionGraphPendingObservations).where(
       eq(executionGraphPendingObservations.providerEventId, childEventId),
@@ -618,6 +672,15 @@ describe("execution graph terminal seal", () => {
     const after = await getExecutionGraphForRun(ORG, runId);
     expect(after?.executions.find((row) => row.nativeSessionId === "child")?.nativeParentSessionId)
       .toBe("root");
+    const warned = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await finalizeRun(runId, "completed", "settles", 1)).toMatchObject({ applied: true });
+    } finally {
+      warned.mockRestore();
+    }
+    expect(await executionGraphGaps(ORG, runId)).toEqual([
+      expect.objectContaining({ providerEventId: childEventId, structuralMismatchCode: "applied_structure_changed" }),
+    ]);
   });
 
   test("malformed and non-task payloads are ignored", () => {

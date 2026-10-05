@@ -150,10 +150,13 @@ import { configureProductChildPump } from "./runs/child-session-pump";
 import { assertThreadRelationshipConfig, productChildThreadsEnabled, threadRelationshipsEnabled } from "./runs/thread-relationship-switch";
 import { repairEligiblePublicRootThreadRelationships } from "./runs/thread-relationship-repo";
 import { artifactStorageHealth, assertArtifactStorageWritable } from "./artifacts/storage";
+import { installProcessFaultHandlers } from "./process-faults";
 
 // Acquire the per-database singleton before ANY shared-state mutation. In strict
 // production mode an unavailable/contended lock fails boot closed, so a duplicate
 // process cannot migrate or recover another backend's database first.
+// Only as the process entry: suites import this module in-process and keep bun test's own reporting.
+if (import.meta.main) installProcessFaultHandlers();
 assertThreadRelationshipConfig();
 const singleBackendHeld = await enforceSingleBackend();
 // Artifact bytes must be writable before any run can publish; a missing mount
