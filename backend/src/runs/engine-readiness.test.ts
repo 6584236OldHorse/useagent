@@ -221,8 +221,8 @@ describe("engine readiness advertisement", () => {
       "deepseek/deepseek-v4-flash",
       "google/gemini-3.7-flash",
       "minimax/minimax-m3:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
       "dots-studio/dots-3-note-preview:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
     ]);
   });
 
