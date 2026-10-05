@@ -198,8 +198,18 @@ async function mintInstallationAccessToken(
     },
   );
   if (!tokRes.ok) {
+    // 422 is GitHub refusing the requested scope: the App itself (or its
+    // installation) does not hold one of the permissions in the request body.
+    // Name it, so a failed publication reads as an App setting to change rather
+    // than a transient error.
+    const requested = requestBody && typeof requestBody.permissions === "object" && requestBody.permissions
+      ? Object.entries(requestBody.permissions as Record<string, string>).map(([k, v]) => `${k}:${v}`).join(", ")
+      : null;
+    const hint = tokRes.status === 422 && requested
+      ? `; the App or its installation lacks one of the requested permissions (${requested}), grant them in the App settings and accept the update on the installation`
+      : "";
     throw new Error(
-      `GitHub App token mint failed for installation ${installationId}: HTTP ${tokRes.status}`,
+      `GitHub App token mint failed for installation ${installationId}: HTTP ${tokRes.status}${hint}`,
     );
   }
   const payload = (await tokRes.json()) as { token?: string; expires_at?: string };
