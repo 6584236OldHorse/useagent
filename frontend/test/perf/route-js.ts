@@ -24,8 +24,9 @@ function size(url: string): { raw: number; gzip: number } {
   const known = sizeOf.get(url);
   if (known) return known;
   const path = join(dist, url.replace(/^\/_next\//, ""));
-  const bytes = existsSync(path) ? readFileSync(path) : null;
-  const measured = bytes ? { raw: statSync(path).size, gzip: gzipSync(bytes).length } : { raw: 0, gzip: 0 };
+  if (!existsSync(path)) throw new Error(`chunk named by a manifest is missing from the build: ${path}`);
+  const bytes = readFileSync(path);
+  const measured = { raw: statSync(path).size, gzip: gzipSync(bytes).length };
   sizeOf.set(url, measured);
   return measured;
 }

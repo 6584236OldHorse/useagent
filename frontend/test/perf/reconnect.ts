@@ -17,19 +17,19 @@ for (let i = 0; i < runs; i++) {
   await cdp.send("Network.enable");
   const streams: { id: string; url: string; encoded: number; decoded: number; started: number; last: number; chunks: number }[] = [];
   cdp.on("Network.responseReceived", (e) => {
-    if (/thread-events/.test(e.response.url)) streams.push({ id: e.requestId, url: e.response.url, encoded: 0, decoded: 0, started: e.timestamp, last: e.timestamp, chunks: 0 });
+    if (/thread-events/.test(e.response.url)) streams.push({ id: e.requestId, url: e.response.url, encoded: 0, decoded: 0, started: Date.now(), last: Date.now(), chunks: 0 });
   });
   cdp.on("Network.dataReceived", (e) => {
     const s = streams.find((x) => x.id === e.requestId);
     if (!s) return;
-    s.encoded += e.encodedDataLength; s.decoded += e.dataLength; s.last = e.timestamp; s.chunks++;
+    s.encoded += e.encodedDataLength; s.decoded += e.dataLength; s.last = Date.now(); s.chunks++;
   });
   const quiet = async () => {
     const start = Date.now();
     for (;;) {
       await page.waitForTimeout(250);
       const open = streams.at(-1);
-      if (open && Date.now() / 1000 - open.last > 1.5) return;
+      if (open && Date.now() - open.last > 1500) return;
       if (Date.now() - start > 30_000) return;
     }
   };
@@ -38,14 +38,16 @@ for (let i = 0; i < runs; i++) {
   await page.click(`a[href="/session/${b}"]`);
   await page.waitForURL(`**/session/${b}`);
   await quiet();
+  const beforeReturn = streams.length;
   await page.click(`a[href="/session/${a}"]`);
   await page.waitForURL(`**/session/${a}`);
   await quiet();
   const toA = streams.filter((s) => s.url.includes(`/runs/${a}/`));
   const first = toA[0];
-  const back = toA.at(-1);
-  if (!first || !back) { console.log(`run ${i + 1}: no thread-events connection to A observed`); await context.close(); continue; }
-  const row = { first: Math.round(first.decoded / 1024), back: Math.round(back.decoded / 1024), backMs: Math.round((back.last - back.started) * 1000), backFrames: back.chunks };
+  // The return is a connection to A opened after the return click, never the first one again.
+  const back = streams.slice(beforeReturn).find((s) => s.url.includes(`/runs/${a}/`));
+  if (!first || !back) { console.log(`run ${i + 1}: no new thread-events connection to A after the return (${toA.length} seen); discard`); await context.close(); continue; }
+  const row = { first: Math.round(first.decoded / 1024), back: Math.round(back.decoded / 1024), backMs: back.last - back.started, backFrames: back.chunks };
   rows.push(row);
   console.log(`run ${i + 1}: first open ${row.first}K, return ${row.back}K in ${row.backMs}ms (${toA.length} connections to A; return url ${new URL(back.url).search.slice(0, 120)})`);
   await context.close();

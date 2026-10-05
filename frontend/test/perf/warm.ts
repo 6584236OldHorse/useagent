@@ -13,7 +13,7 @@ await cdp.send("Network.enable");
 type Req = { url: string; encoded: number; at: number; cached: boolean; kind: string };
 const reqs: Req[] = [];
 const pending = new Map<string, { url: string; kind: string; at: number }>();
-cdp.on("Network.requestWillBeSent", (e) => pending.set(e.requestId, { url: e.request.url, kind: e.type ?? "", at: e.timestamp }));
+cdp.on("Network.requestWillBeSent", (e) => pending.set(e.requestId, { url: e.request.url, kind: e.type ?? "", at: Date.now() }));
 cdp.on("Network.responseReceived", (e) => {
   const p = pending.get(e.requestId);
   if (p && e.response.fromDiskCache) reqs.push({ url: p.url, encoded: 0, at: p.at, cached: true, kind: p.kind });
@@ -38,7 +38,7 @@ const atLoad = reqs.length;
 for (let quietSince = Date.now(); Date.now() - quietSince < 3000 && Date.now() - loadedAt < 40_000; ) {
   await page.waitForTimeout(250);
   const last = reqs.at(-1)?.at ?? 0;
-  if (reqs.length > 0 && Date.now() / 1000 - last < 3) quietSince = Date.now();
+  if (reqs.length > 0 && Date.now() - last < 3000) quietSince = Date.now();
 }
 const after = reqs.slice(atLoad);
 const warmJs = after.filter(isJs);

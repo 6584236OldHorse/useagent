@@ -45,14 +45,14 @@ for (let i = 0; i < runs; i++) {
     requestUrls.set(e.requestId, e.request.url);
   });
   cdp.on("Network.responseReceived", (e) => {
-    if (/thread-events/.test(e.response.url)) sseBytes.set(e.requestId, { url: e.response.url, encoded: 0, decoded: 0, started: e.timestamp, last: e.timestamp, done: false });
+    if (/thread-events/.test(e.response.url)) sseBytes.set(e.requestId, { url: e.response.url, encoded: 0, decoded: 0, started: Date.now(), last: Date.now(), done: false });
   });
   cdp.on("Network.dataReceived", (e) => {
     const s = sseBytes.get(e.requestId);
     if (!s) return;
     s.encoded += e.encodedDataLength;
     s.decoded += e.dataLength;
-    s.last = e.timestamp;
+    s.last = Date.now();
   });
   const api: { method: string; url: string; status: number; bytes: number }[] = [];
   page.on("response", async (response) => {
@@ -71,7 +71,7 @@ for (let i = 0; i < runs; i++) {
   for (;;) {
     await page.waitForTimeout(250);
     const streams = [...sseBytes.values()];
-    const quiet = streams.length > 0 && streams.every((s) => (Date.now() / 1000 - s.last) > 1.5);
+    const quiet = streams.length > 0 && streams.every((s) => Date.now() - s.last > 1500);
     if (quiet || Date.now() - settleStart > 20_000) break;
   }
   const wall = Date.now() - t0;
@@ -86,7 +86,7 @@ for (let i = 0; i < runs; i++) {
   const sse = [...sseBytes.values()];
   const sseEncoded = sse.reduce((a, s) => a + s.encoded, 0);
   const sseDecoded = sse.reduce((a, s) => a + s.decoded, 0);
-  const sseMs = sse.length ? Math.round(Math.max(...sse.map((s) => (s.last - s.started) * 1000))) : 0;
+  const sseMs = sse.length ? Math.max(...sse.map((s) => s.last - s.started)) : 0;
   const counts = new Map<string, number>();
   for (const r of api) { const k = `${r.method} ${r.url.replace(/\?.*$/, "")}`; counts.set(k, (counts.get(k) ?? 0) + 1); }
   const dupes = [...counts].filter(([, n]) => n > 1).map(([k, n]) => `${k} x${n}`);
