@@ -73,7 +73,7 @@ export function ChatTabStrip({
       aria-label="Open chats"
       data-testid="chat-tabs"
       onKeyDown={onKeyDown}
-      className="flex h-10 shrink-0 items-center gap-2 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="flex h-12 shrink-0 items-center gap-2 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {tabs.map((tab) => {
         const active = tab.id === activeId;

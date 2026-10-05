@@ -10,7 +10,7 @@ import {
 } from "@remixicon/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type { RunResourceSelection } from "@useagent/agent-client/wire";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Agent, AgentChip, ChooseAgentPopover } from "@/components/chat/agent-command";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import { ChatModelMenu, type ChatModelOption } from "@/components/chat/chat-model-menu";
@@ -35,7 +35,8 @@ import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt
 import { BackgroundStatusPill } from "@/components/session-ui/background-status-pill";
 import { engineDisplayLabel, ProviderStatusBanner } from "@/components/session-ui/provider-status-banner";
 import { ThreadErrorBanner } from "@/components/session-ui/thread-error-banner";
-import { ComposerAddButton, ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
 import { composerPlaceholder, getComposerAction } from "@/components/chat/composer-model";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { cx as cn } from "@/utils/cx";
@@ -155,6 +156,9 @@ export type ComposerProps = {
    *  "Ask agent to redo"); the text replaces the current draft so the user can send
    *  or edit it. Absent leaves the composer fully user-driven. */
   prefill?: { readonly text: string; readonly nonce: number } | null;
+  /** The status tab hanging off the card's top edge (where the run executes,
+   *  branch, project, engine, context meter). Compact composers only. */
+  tab?: ReactNode;
 };
 
 /**
@@ -203,6 +207,7 @@ export function Composer({
   engineUnavailableMessage,
   draftKey,
   prefill,
+  tab,
 }: ComposerProps) {
   // Draft restore is a lazy initializer so SSR (no window) and draft-less
   // composers stay on the empty string with zero effect churn.
@@ -397,6 +402,7 @@ export function Composer({
       // trimmed text) so a command's argument bytes reach the backend EXACTLY as typed - the
       // backend rebuilds `/name <args>` verbatim from this intent. The backend re-validates.
       const intent = commands ? parseCommandIntent(raw, commands) : null;
+      const sent = runUploads.readyIds; // the uploads this send carries; later ones stay
       // The chat model picker (when present) owns the model; else the internal state.
       await onSubmit(
         text,
@@ -407,12 +413,12 @@ export function Composer({
         // removed from the toolbar); the run still reads/writes that pool.
         defaultMemoryScope,
         intent,
-        runUploads.readyIds,
+        sent,
         mentionsToRunResources(mentions.mentions),
         mentionedBotIds(mentions.mentions),
       );
       retry.current = null; // accepted — drop the retry key
-      runUploads.clearAccepted();
+      runUploads.clearAccepted(sent);
       mentions.clear(); // accepted — drop the chips (their text tokens already sent)
     } catch (error) {
       // Never silently swallow: restore the draft and show an explicit failed
@@ -440,7 +446,7 @@ export function Composer({
       ref={rootRef}
       className={cn("relative w-full", className)}
       // Files dropped on the card or pasted into the field become attachments.
-      {...(enableUploads ? attachmentIntake(runUploads.addFiles) : {})}
+      {...(enableUploads ? attachmentIntake(runUploads.addFiles, !busy) : {})}
     >
       {showAgentPopover && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-full">
@@ -544,6 +550,7 @@ export function Composer({
         </div>
       )}
 
+      {tab}
       {/* No overflow-hidden here: the engine-picker popover opens upward past
           the card edge and must not be clipped. */}
       <div
@@ -589,25 +596,15 @@ export function Composer({
             "cursor-text rounded-none border-0 bg-transparent shadow-none",
             hero
               ? "p-3 md:p-4"
-              : "@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
+              : "grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2",
           )}
         >
-          {/* The "+" add-context button sits FIRST in the DOM so keyboard focus
-              travels + -> textarea -> send, matching the visual left-to-right
-              order in the compact grid (col-start-1 pins it to the left cell). */}
-          {enableUploads ? (
-            <ComposerAddButton
-              aria-label="Add context"
-              open={addMenuOpen}
-              onToggle={() => setAddMenuOpen((o) => !o)}
-              className="col-start-1 row-start-1 @max-[26rem]:row-start-2"
-            />
-          ) : null}
           <div
             className={cn(
               "flex items-start gap-1.5 px-1",
               // A narrow composer (the split pane) stacks: the input takes the whole first row, the controls the second.
-              !hero && "col-start-2 row-start-1 min-w-0 items-center @max-[26rem]:col-span-3 @max-[26rem]:col-start-1",
+              // Compact: the field takes the whole first row; the controls are the footer row.
+              !hero && "col-span-3 col-start-1 row-start-1 min-w-0 items-center",
             )}
           >
             {command && (
@@ -656,6 +653,18 @@ export function Composer({
               )}
             />
           </div>
+
+          {/* Compact footer: the "+" at the left (in the DOM after the field, so Tab
+              order follows the visual order), the permission chip's slot beside it
+              (column 2), the model and send at the right. */}
+          {enableUploads ? (
+            <ComposerAddButton
+              aria-label="Add context"
+              open={addMenuOpen}
+              onToggle={() => setAddMenuOpen((o) => !o)}
+              className="col-start-1 row-start-2"
+            />
+          ) : null}
 
           {/* px-1 matches the text row above so the +/send controls left/right-align
               with the placeholder (was px-0.5 → a 2px asymmetry). */}
@@ -713,7 +722,7 @@ export function Composer({
             <div
               className={cn(
                 "ml-auto flex items-center gap-1.5",
-                !hero && "col-start-3 row-start-1 @max-[26rem]:row-start-2",
+                !hero && "col-start-3 row-start-2",
               )}
             >
               {/* One engine now — the meaningful per-message choice is the MODEL. */}

@@ -520,14 +520,14 @@ export function SessionSample() {
 
             <Surface
               id="composer-status"
-              title="Reply composer with its status row"
+              title="Reply composer with its status tab"
               owner="reply-composer · composer-status-bar"
             >
               <p className="text-caption-1-regular text-text-tertiary">
-                The round add button at the left opens the attach menu. The status row
-                under the input card (branch, project, engine and the context meter)
-                keeps the card&rsquo;s inset, so the ring chip ends where the send
-                button ends.
+                The status tab hangs off the card&rsquo;s top edge: where the run
+                executes, then the branch and the project, with the engine and the
+                context meter at the right. The round add button at the left of the
+                footer opens the attach menu.
               </p>
               <div
                 data-testid="composer-status-sample"
@@ -542,6 +542,7 @@ export function SessionSample() {
                   onReply={() => {}}
                   status={
                     <ComposerStatusBar
+                      run={{ sandbox_id: "sbx-7f3a", sandbox_provider: "daytona" }}
                       branch="rl-staging"
                       project="gateway"
                       agent="Codex"

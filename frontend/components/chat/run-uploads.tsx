@@ -2,7 +2,7 @@
 
 import type { ClipboardEvent, DragEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { backendFetch } from "@/lib/backend-fetch";
+import { backendFetch, backendUpload } from "@/lib/backend-fetch";
 
 /** What a composer tile shows for a file: the thumbnail for an image, one typed
  *  icon for the rest, the paperclip when the file is none of the known kinds. */
@@ -24,6 +24,8 @@ export type RunUpload = {
   readonly kind: AttachmentKind;
   /** Object URL of a picked image, the tile's thumbnail; released with the tile. */
   readonly previewUrl: string | null;
+  /** Bytes sent so far, 0 to 100: the tile's ring while the upload is in flight. */
+  readonly progress: number;
 };
 
 type UploadResponse = {
@@ -67,39 +69,54 @@ export function releasePreview(upload: Pick<RunUpload, "previewUrl">) {
   if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
 }
 
+/** The uploads left once the ones a send carried are gone. */
+export function withoutSent(uploads: readonly RunUpload[], sent: readonly string[]): RunUpload[] {
+  return uploads.filter((upload) => !(upload.id && sent.includes(upload.id)));
+}
+
 type FileSource = FileList | readonly File[];
 
 /**
  * Drop and paste handlers for a composer surface: dropped files and pasted
  * files (a screenshot on the clipboard) join the uploads. A text paste and a
- * drag that carries no files pass through untouched.
+ * drag that carries no files pass through untouched. A file drop is claimed
+ * even while `accepting` is off (a send in flight), because the browser's
+ * default for one is to open the file; it just adds nothing then.
  */
-export function attachmentIntake(addFiles: (files: FileSource) => unknown) {
+export function attachmentIntake(addFiles: (files: FileSource) => unknown, accepting = true) {
   return {
     onDragOver(event: Pick<DragEvent, "preventDefault" | "dataTransfer">) {
-      if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      if (!event.dataTransfer.types.includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = accepting ? "copy" : "none";
     },
     onDrop(event: Pick<DragEvent, "preventDefault" | "dataTransfer">) {
       if (event.dataTransfer.files.length === 0) return;
       event.preventDefault();
-      void addFiles(event.dataTransfer.files);
+      if (accepting) void addFiles(event.dataTransfer.files);
     },
     onPaste(event: Pick<ClipboardEvent, "preventDefault" | "clipboardData">) {
       if (event.clipboardData.files.length === 0) return;
       event.preventDefault();
-      void addFiles(event.clipboardData.files);
+      if (accepting) void addFiles(event.clipboardData.files);
     },
   };
 }
 
 export function useRunUploads() {
   const [uploads, setUploads] = useState<RunUpload[]>([]);
-  // Thumbnails still held when the composer unmounts (a thread switch) are released with it.
+  // The committed list, for the callbacks that run after an await and for the
+  // thumbnails still held when the composer unmounts (a thread switch).
   const live = useRef<readonly RunUpload[]>([]);
   useEffect(() => {
     live.current = uploads;
   }, [uploads]);
   useEffect(() => () => live.current.forEach(releasePreview), []);
+
+  const patch = (localId: string, change: Partial<RunUpload>) =>
+    setUploads((current) =>
+      current.map((upload) => (upload.localId === localId ? { ...upload, ...change } : upload)),
+    );
 
   const addFiles = async (files: FileSource) => {
     const available = Math.max(0, MAX_FILES - uploads.length);
@@ -114,6 +131,7 @@ export function useRunUploads() {
         status: "uploading" as const,
         kind,
         previewUrl: kind === "image" ? URL.createObjectURL(file) : null,
+        progress: 0,
         file,
       };
     });
@@ -123,24 +141,16 @@ export function useRunUploads() {
         try {
           const form = new FormData();
           form.set("file", file);
-          const response = await backendFetch("/api/uploads", { method: "POST", body: form });
+          const response = await backendUpload("/api/uploads", form, (progress) =>
+            patch(item.localId, { progress }),
+          );
           if (!response.ok) throw new Error(`upload failed (${response.status})`);
           const body = (await response.json()) as UploadResponse;
           const uploadId = body.upload?.id;
           if (typeof uploadId !== "string") throw new Error("upload id missing");
-          setUploads((current) =>
-            current.map((upload) =>
-              upload.localId === item.localId
-                ? { ...upload, id: uploadId, status: "ready" }
-                : upload,
-            ),
-          );
+          patch(item.localId, { id: uploadId, status: "ready", progress: 100 });
         } catch {
-          setUploads((current) =>
-            current.map((upload) =>
-              upload.localId === item.localId ? { ...upload, status: "error" } : upload,
-            ),
-          );
+          patch(item.localId, { status: "error" });
         }
       }),
     );
@@ -162,9 +172,12 @@ export function useRunUploads() {
     blocked: uploads.some((upload) => upload.status !== "ready"),
     addFiles,
     remove,
-    clearAccepted: () => {
-      uploads.forEach(releasePreview);
-      setUploads([]);
+    /** Drops the uploads a send carried; anything added since stays for the next message. */
+    clearAccepted: (sent: readonly string[]) => {
+      for (const upload of live.current) {
+        if (upload.id && sent.includes(upload.id)) releasePreview(upload);
+      }
+      setUploads((current) => withoutSent(current, sent));
     },
   };
 }

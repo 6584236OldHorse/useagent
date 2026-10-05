@@ -2197,6 +2197,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-dropdown-item-hover-background:        color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
   --color-kbd-background:                        hsl(var(--neutral-400));
@@ -2290,6 +2294,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-dropdown-item-hover-background:        color-mix(in srgb, hsl(var(--neutral-400)) 60%, transparent);
   --color-kbd-background:                        hsl(var(--neutral-500)); /* #3c4260: the hint reads 5:1, one step lighter it was 4:1 */
@@ -2497,6 +2505,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
@@ -2707,6 +2719,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
@@ -2908,6 +2924,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
@@ -3109,6 +3129,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));
@@ -3315,6 +3339,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-0));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-100));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-200));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-200));
+  --color-composer-panel-add-background:         hsl(var(--neutral-200));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-200));
   --color-agent-progress-ring:                   hsl(var(--neutral-700));
   --color-dropdown-item-hover-background:        hsl(var(--neutral-100));
   --color-kbd-background:                        hsl(var(--neutral-300));
@@ -3437,6 +3465,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-0));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-100));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-200));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-200));
+  --color-composer-panel-add-background:         hsl(var(--neutral-200));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-200));
   --color-agent-progress-ring:                   hsl(var(--neutral-700));
   --color-dropdown-item-hover-background:        hsl(var(--neutral-100));
   --color-kbd-background:                        hsl(var(--neutral-300));
@@ -3554,6 +3586,10 @@ html {
   --color-theme-toggle-sidebar-selected-background: hsl(var(--neutral-400));
   --color-ai-chat-composer-add-background:       hsl(var(--neutral-400));
   --color-ai-chat-composer-add-hover-background: hsl(var(--neutral-300));
+  --color-composer-panel-tab-background:         hsl(var(--neutral-700) / 0.5);
+  --color-composer-panel-add-background:         hsl(var(--neutral-400));
+  --color-composer-panel-add-hover-background:   hsl(var(--neutral-300));
+  --color-composer-panel-tile-border:            hsl(var(--neutral-400));
   --color-agent-progress-ring:                   color-mix(in srgb, hsl(var(--neutral-0)) 50%, transparent);
   --color-button-ghost-background:               hsl(var(--blue-900));
   --color-button-ghost-hover:                    hsl(var(--blue-800));

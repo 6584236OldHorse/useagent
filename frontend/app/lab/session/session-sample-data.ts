@@ -623,6 +623,7 @@ const sampleUpload = (
   status: "ready",
   kind,
   previewUrl: null,
+  progress: 100,
   ...over,
 });
 
@@ -630,7 +631,7 @@ const sampleUpload = (
  *  past the eight the row shows before folding the rest behind a count. */
 export const sampleUploads: readonly RunUpload[] = [
   sampleUpload("u1", "current-429.png", "image", { previewUrl: SAMPLE_THUMBNAIL }),
-  sampleUpload("u2", "har-capture.json", "code", { id: null, sizeBytes: 210_400, status: "uploading" }),
+  sampleUpload("u2", "har-capture.json", "code", { id: null, sizeBytes: 210_400, status: "uploading", progress: 42 }),
   sampleUpload("u3", "trace.zip", "file", { id: null, sizeBytes: 1_400_000, status: "error" }),
   sampleUpload("u4", "rate-limits.xlsx", "spreadsheet"),
   sampleUpload("u5", "rollout-plan.pptx", "presentation"),

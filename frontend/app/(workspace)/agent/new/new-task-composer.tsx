@@ -45,7 +45,8 @@ import { PermissionModeChip } from "@/components/pro/permission-mode-chip";
 import { AgentThinking } from "@/components/application/agent-thinking/agent-thinking";
 import { ComposerLoader } from "@/components/application/composer-loader/composer-loader";
 import { Button } from "@/components/base/buttons/button";
-import { ComposerAddButton, ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAttachmentRow } from "@/components/pro/composer-attachments";
+import { ComposerAddButton } from "@/components/pro/composer-panel/composer-panel";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
 import { backendFetch } from "@/lib/backend-fetch";
 import {
@@ -514,7 +515,7 @@ export function NewTaskComposer({
             }}
           />
           {/* Files dropped on the card or pasted into the field become attachments. */}
-          <div className="relative" ref={composerRef} {...attachmentIntake(runUploads.addFiles)}>
+          <div className="relative" ref={composerRef} {...attachmentIntake(runUploads.addFiles, !submitting)}>
             {cmdActive && (
               <div className="absolute left-0 top-full z-30 mt-2 w-full">
                 <SlashCommandPopover

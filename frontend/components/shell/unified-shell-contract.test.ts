@@ -327,9 +327,13 @@ describe("unified shell contract", () => {
     const promptInput = readFromFrontend("components/prompt-kit/prompt-input.tsx");
 
     expect(composer).toContain("maxHeight={180}");
+    // Two rows: the field spans the first, the footer (add button, permission
+    // slot, model, send) is the second, at every width.
     expect(composer).toContain(
-      '"@container grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
+      '"grid h-fit grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 p-2"',
     );
+    expect(composer).toContain('"col-span-3 col-start-1 row-start-1 min-w-0 items-center"');
+    expect(composer).toContain('"col-start-3 row-start-2"');
     expect(composer).toContain(
       'hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6"',
     );

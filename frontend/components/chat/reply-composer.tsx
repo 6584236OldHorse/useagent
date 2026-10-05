@@ -72,7 +72,8 @@ export function ReplyComposer({
   repoRevisions?: Readonly<Record<string, string | null>>;
   /** Rendered above the input card (the running footer, the queued rows). */
   lead?: ReactNode;
-  /** The status row under the pill (branch, project, agent, context meter). */
+  /** The status tab on the input card's top edge (where the run executes,
+   *  branch, project, engine, context meter). */
   status?: ReactNode;
 }) {
   return (
@@ -109,8 +110,8 @@ export function ReplyComposer({
           engineUnavailableMessage={engineUnavailableMessage}
           draftKey={draftKey}
           prefill={prefill}
+          tab={status}
         />
-        {status && <div className="mt-2">{status}</div>}
       </div>
     </div>
   );

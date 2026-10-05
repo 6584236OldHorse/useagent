@@ -256,6 +256,7 @@ export function ConversationComposer({
       }
       status={
         <ComposerStatusBar
+          run={turns.at(-1)?.run ?? null}
           branch={first?.[1] ?? null}
           project={first?.[0]?.split("/").at(-1) ?? null}
           permission={
