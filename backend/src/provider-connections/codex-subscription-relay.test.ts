@@ -1123,9 +1123,16 @@ describe("Codex relay sessions across runs", () => {
     expect(await refused).toMatchObject({ code: 1008 });
     expect(children[0]!.received.some((frame) => frame.includes('"id":3'))).toBe(false);
 
+    // Between runs the capability opens nothing, and spawns nothing here.
+    await eventually(() => expect(session.connected).toBe(false));
+    const betweenRuns = new WebSocket(session.url);
+    const betweenRunsClosed = socketClosed(betweenRuns);
+    await opened(betweenRuns).catch(() => {});
+    expect((await betweenRunsClosed).code).toBe(1008);
+    expect(spawned).toBe(1);
+
     session.activate({ runId: "run-2", model: "gpt-5.6-luna", toolGatewayBearer: "bearer-two" });
     expect(await headers()).toEqual({ Authorization: "Bearer bearer-two" });
-    await eventually(() => expect(session.connected).toBe(false));
     const second = await opened(session.url);
     sockets.push(second);
     await initializeRelay(second, children[1]!, 1);

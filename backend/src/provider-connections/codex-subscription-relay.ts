@@ -301,8 +301,10 @@ codexSubscriptionRelayRoutes.get(
     const key = capabilityKey(token);
     const session = sessions.get(key);
     const browserOrigin = context.req.header("origin");
+    // A session takes a connection only while it serves a run: between runs
+    // the capability opens nothing, not even an app-server on this host.
     const accepted = Boolean(
-      session && !session.closed && !browserOrigin && !session.live &&
+      session && !session.closed && !browserOrigin && !session.live && session.run &&
         (session.reusable || session.connections === 0) &&
         (session.connections > 0 || session.expiresAt > dependencies.now()),
     );
@@ -316,9 +318,11 @@ codexSubscriptionRelayRoutes.get(
         ? "unknown-capability"
         : browserOrigin
           ? "rejected-browser-origin"
-          : session.live || session.connections > 0
+          : session.live || (!session.reusable && session.connections > 0)
             ? "rejected-consumed"
-            : "rejected-expired";
+            : !session.run
+              ? "rejected-between-runs"
+              : "rejected-expired";
     console.log(`[codex-relay] capability ${validation}${session ? ` run=${runLabel()}` : ""}`);
     if (session && browserOrigin) closeSession(key, session);
     if (session && accepted) {
