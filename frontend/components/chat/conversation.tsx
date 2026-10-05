@@ -51,6 +51,7 @@ import {
   turnNodesFromSteps,
   withTransientLiveReasoning,
 } from "@/components/chat/turn-trace-model";
+import { TurnSender } from "@/components/chat/turn-sender";
 import { TurnWindow } from "@/components/chat/turn-window";
 import { CaptureDegradedNote, FailedNote } from "@/components/chat/turn-notices";
 import { useChildSteps } from "@/components/chat/use-child-steps";
@@ -290,6 +291,7 @@ const TurnBlock = memo(function TurnBlock({
       data-run-id={windowOwnsRunMarker ? undefined : run.id}
     >
       <div className="space-y-2">
+        <TurnSender connector={run.connector} />
         <UserBubble>{cleanPrompt(run.prompt)}</UserBubble>
         <InboundAttachments uploads={run.uploads} />
         <HandoffReceipts receipts={handoffs} />

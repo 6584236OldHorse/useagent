@@ -4,6 +4,7 @@ import {
   MEMORY_SCOPES,
   type EngineId,
   type MemoryScope,
+  type RunConnector,
   type RunStatus,
   type StepKind,
 } from "@useagent/agent-client/wire";
@@ -140,6 +141,12 @@ export const runs = pgTable(
     // unattended product execution without discarding the creator's user id.
     // Public callers can never set this field.
     origin: text("origin"),
+    // The connector a turn arrived through when it was not typed in the product
+    // (Slack today): the sender's display name and avatar as the channel showed
+    // them at ingress plus the message permalink, so the web can render who
+    // spoke and link back. Stamped once after acceptance (the lookup still owed
+    // waits in slack_identity_lookups meanwhile); null for product turns.
+    connector: jsonb("connector").$type<RunConnector>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

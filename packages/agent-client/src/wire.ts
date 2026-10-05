@@ -166,6 +166,17 @@ export interface RunUpload {
   readonly created_at: string;
 }
 
+/** Where a turn arrived from when it was not typed in the product: the connector
+ *  (`slack`), the sender's display name and avatar as that channel showed them at
+ *  ingress (fetched server-side, never by the browser), and the message's
+ *  permalink there. Null or absent for turns typed in the product. */
+export interface RunConnector {
+  readonly source: string;
+  readonly sender_name: string | null;
+  readonly sender_avatar_url: string | null;
+  readonly permalink: string | null;
+}
+
 // ── Runs + steps (GET /api/runs, GET /api/runs/:id?thread=1) ──────────────────
 
 export interface ApiStep {
@@ -224,6 +235,9 @@ export interface ApiRun {
   /** Inbound attachments the user sent with this turn, claimed by the run. [] =
    *  none. Rendered on the user's bubble; bytes via `/api/uploads/:id/content`. */
   uploads: RunUpload[];
+  /** The connector this turn arrived through, when it was not typed in the
+   *  product. Tolerant: an older backend omits it. */
+  connector?: RunConnector | null;
   created_at: string;
   updated_at: string;
   steps: ApiStep[];
@@ -250,6 +264,7 @@ type ApiRunSummaryBase = Pick<
   | "repo"
   | "repos"
   | "repo_specs"
+  | "connector"
   | "created_at"
   | "updated_at"
 >;
@@ -363,6 +378,28 @@ function decodeRunUpload(value: unknown): RunUpload | null {
     content_type: record.content_type,
     size_bytes: record.size_bytes,
     created_at: record.created_at,
+  };
+}
+
+/** Decode the OPTIONAL connector on a run row: absent, null, or malformed reads
+ *  as "typed in the product" rather than failing the whole row. */
+function decodeRunConnector(value: unknown): RunConnector | null {
+  const record = asRecord(value);
+  if (
+    !record ||
+    typeof record.source !== "string" ||
+    record.source.length === 0 ||
+    !isNullableString(record.sender_name) ||
+    !isNullableString(record.sender_avatar_url) ||
+    !isNullableString(record.permalink)
+  ) {
+    return null;
+  }
+  return {
+    source: record.source,
+    sender_name: record.sender_name,
+    sender_avatar_url: record.sender_avatar_url,
+    permalink: record.permalink,
   };
 }
 
@@ -488,6 +525,7 @@ function decodeApiRunSummaryBase(value: unknown): ApiRunSummaryBase | null {
     repo: record.repo,
     repos: record.repos,
     repo_specs: repoSpecs as RepoRef[],
+    connector: decodeRunConnector(record.connector),
     created_at: record.created_at,
     updated_at: record.updated_at,
   };

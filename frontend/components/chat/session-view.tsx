@@ -74,6 +74,7 @@ import { useReplyCommandCatalog } from "@/components/chat/use-reply-command-cata
 import { useWindowedThread } from "@/components/chat/use-windowed-thread";
 import type { ApiThreadOutlineTurn } from "@/components/chat/windowed-thread";
 import { runGitRefs, GitChips } from "@/components/session-ui/git-chip";
+import { OriginLink } from "@/components/session-ui/origin-link";
 import { Button } from "@/components/base/buttons/button";
 import { CloseButton } from "@/components/base/buttons/close-button";
 import { RunLocation } from "@/components/runners/run-location";
@@ -672,10 +673,9 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
                 relationship={threadFamily.relationship}
                 parent={threadFamily.parent}
               />
-              {/* The thread's git identity: repos (+ chosen branch) come from the
-                  ROOT run's durable wire row - repos are inherited across a thread,
-                  so the SSR-provided root is authoritative for the page lifetime. */}
+              {/* Git identity and origin are thread-level: both read the ROOT run's durable wire row. */}
               <GitChips refs={runGitRefs(root)} />
+              <OriginLink connector={snapshot.byId.get(root.id)?.run.connector ?? root.connector} />
               <RunLocation run={newest} />
             </div>
             <div className="flex items-center gap-2 sm:gap-3">

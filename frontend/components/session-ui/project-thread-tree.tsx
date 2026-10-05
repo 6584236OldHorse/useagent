@@ -16,12 +16,13 @@ import {
   RiFolderOpenLine,
   RiPushpinLine,
 } from "@remixicon/react";
-import type { RunStatus } from "@useagent/agent-client/wire";
+import type { RunConnector, RunStatus } from "@useagent/agent-client/wire";
 import type { ProductThreadStatus } from "@useagent/agent-client";
 import Link from "next/link";
 import type { DragEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type NativeAgentRow, NativeAgentRows } from "@/components/session-ui/native-agent-rows";
+import { OriginLink } from "@/components/session-ui/origin-link";
 import { StatusDot } from "@/components/shared/status-dot";
 import { THREAD_DRAG_TYPE } from "@/components/shell/sidebar-bookmarks-store";
 import { threadStatusPresentation } from "@/components/shell/thread-discovery";
@@ -39,6 +40,8 @@ export interface ProjectThread {
   isSelected?: boolean;
   engine?: string;
   model?: string;
+  /** The connector the thread arrived through, when it was not started here. */
+  origin?: RunConnector | null;
   children?: ProjectThread[];
   nativeChildren?: { rows: readonly NativeAgentRow[]; overflow: number } | null;
 }
@@ -137,6 +140,7 @@ function ThreadItem({
       >
         {thread.label}
       </Link>
+      <OriginLink connector={thread.origin} />
       <span className="shrink-0 text-caption-1-medium whitespace-nowrap tabular-nums text-text-tertiary">
         {thread.time}
       </span>
@@ -273,9 +277,15 @@ export function ProjectThreadList({
     rows?.[Math.max(0, Math.min(index, (rows.length ?? 1) - 1))]?.focus();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    // A row's own buttons (the pin) keep their native activation: Enter or
-    // Space on one must not open the thread instead.
-    if (event.target !== event.currentTarget && (event.target as HTMLElement).closest("button")) return;
+    // A row's own controls keep their native activation: Enter or Space on a
+    // button (the pin) or on a focused inner link (the origin mark) must not
+    // open the thread instead.
+    if (
+      event.target !== event.currentTarget &&
+      ((event.target as HTMLElement).closest("button") || event.key === "Enter" || event.key === " ")
+    ) {
+      return;
+    }
     const rows = [...(treeRef.current?.querySelectorAll<HTMLElement>("[data-thread-tree-id]") ?? [])];
     const index = rows.indexOf(event.currentTarget);
     const id = event.currentTarget.dataset.threadTreeId ?? "";

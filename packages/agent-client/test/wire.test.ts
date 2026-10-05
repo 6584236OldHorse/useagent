@@ -36,6 +36,7 @@ const summary = {
   repo: null,
   repos: [],
   repo_specs: [],
+  connector: null,
   created_at: "2026-08-24T00:00:00.000Z",
   updated_at: "2026-08-24T00:00:00.000Z",
   latest_run_id: "run-2",
@@ -57,6 +58,7 @@ const run = {
   repo: summary.repo,
   repos: summary.repos,
   repo_specs: summary.repo_specs,
+  connector: summary.connector,
   created_at: summary.created_at,
   updated_at: summary.updated_at,
   org_id: "org-1",
@@ -96,6 +98,22 @@ describe("run/step wire boundary decoders", () => {
     } satisfies ApiRunLifecycle;
     expect(decodeApiRunLifecycle(lifecycle)).toEqual(lifecycle);
     expect(decodeApiRunLifecycle({ ...lifecycle, cancelled: undefined })).toBeNull();
+  });
+
+  test("decodes the connector a turn arrived through and never drops a row over it", () => {
+    const connector = {
+      source: "slack",
+      sender_name: "Sundar",
+      sender_avatar_url: "https://avatars.example/sundar-192.png",
+      permalink: "https://example.slack.com/archives/C1/p1700000000000100",
+    };
+    expect(decodeApiRun({ ...run, connector })?.connector).toEqual(connector);
+    expect(decodeApiRunSummary({ ...summary, connector })?.connector).toEqual(connector);
+    const { connector: _absent, ...older } = run;
+    expect(decodeApiRun(older)?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: { source: "" } })?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: { source: "slack", sender_name: 7 } })?.connector).toBeNull();
+    expect(decodeApiRun({ ...run, connector: "slack" })?.id).toBe(run.id);
   });
 
   test("synthesizes latest projection fields for legacy compact run rows", () => {

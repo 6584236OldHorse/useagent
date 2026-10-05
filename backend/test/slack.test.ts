@@ -1107,23 +1107,32 @@ describe("slack event → run", () => {
     const channel = `C${uid("ch")}`;
     profiles.set("U-CACHED", { name: "Cached Person", email: null, image: null });
     const crowd = Array.from({ length: 10 }, (_, i) => `<@U-CROWD${i}-${marker}>`).join(" ");
+    // The sender's own identity resolves once per team and user (only a profile
+    // Slack returned is remembered): a first message warms it, so the counts
+    // below are mention lookups only.
+    profiles.set("U-HUMAN", { name: "Human", email: null, image: null });
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> warm ${marker}`, ts: `${uid("ts")}.1` }),
+    );
+    await waitFor(async () => (await findRunByPrompt(`warm ${marker}`))?.connector?.sender_name ?? null);
     const before = userInfoCalls;
     await postSlack(
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> ${crowd} count ${marker}`, ts: `${uid("ts")}.1` }),
     );
-    await waitFor(async () => findRunByPrompt(`count ${marker}`));
+    await waitFor(async () => (await findRunByPrompt(`count ${marker}`))?.connector ?? null);
     expect(userInfoCalls - before).toBe(8); // ten strangers, eight lookups, none named
 
     const cached = userInfoCalls;
     await postSlack(
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> <@U-CACHED> again ${marker}`, ts: `${uid("ts")}.1` }),
     );
-    await waitFor(async () => findRunByPrompt(`@Cached Person again ${marker}`));
+    await waitFor(async () => (await findRunByPrompt(`@Cached Person again ${marker}`))?.connector ?? null);
     await postSlack(
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> <@U-CACHED> third ${marker}`, ts: `${uid("ts")}.1` }),
     );
-    await waitFor(async () => findRunByPrompt(`@Cached Person third ${marker}`));
+    await waitFor(async () => (await findRunByPrompt(`@Cached Person third ${marker}`))?.connector ?? null);
     expect(userInfoCalls - cached).toBe(1); // one lookup serves every later mention
+    profiles.delete("U-HUMAN");
   });
 
   test("duplicate delivery (same channel:ts) creates only one run", async () => {
