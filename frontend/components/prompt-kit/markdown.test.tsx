@@ -15,6 +15,15 @@ describe("Markdown links", () => {
     expect(html).toContain("rounded-full");
   });
 
+  test("renders a sandbox path as a named chip, never as a dead link", () => {
+    const html = renderToStaticMarkup(
+      <Markdown>{"[Download the PDF](/home/user/work/report.pdf)"}</Markdown>,
+    );
+    expect(html).toContain("Download the PDF");
+    expect(html).not.toContain("href=");
+    expect(html).toContain("Session files");
+  });
+
   test("keeps ordinary links on the plain markdown link path", () => {
     const html = renderToStaticMarkup(
       <Markdown>{"[Documentation](https://useagent.org/docs/)"}</Markdown>,

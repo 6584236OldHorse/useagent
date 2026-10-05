@@ -33,6 +33,11 @@ describe("toSlackMrkdwn — required cases", () => {
     expect(toSlackMrkdwn("1. first\n2. second")).toBe("1. first\n2. second"); // ordered left alone
   });
 
+  test("a link to a sandbox path keeps only its label (the file arrives as an upload)", () => {
+    expect(toSlackMrkdwn("[Download the PDF](/home/user/work/report.pdf)")).toBe("Download the PDF");
+    expect(toSlackMrkdwn("[Docs](https://useagent.org/docs)")).toBe("<https://useagent.org/docs|Docs>");
+  });
+
   test("`code` spans pass through untouched", () => {
     expect(toSlackMrkdwn("run `git **status**` now")).toBe("run `git **status**` now");
     expect(toSlackMrkdwn("`echo hi` and text")).toBe("`echo hi` and text");

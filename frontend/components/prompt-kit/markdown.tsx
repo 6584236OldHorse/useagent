@@ -245,6 +245,26 @@ const INITIAL_COMPONENTS: Partial<Components> = {
           : Array.isArray(children)
             ? children.join("")
             : "Open";
+      // A sandbox path (no scheme, not one of our routes) cannot be opened from
+      // the browser; the file itself is published under Session files, so the
+      // chip names it without pretending to be a link.
+      if (!isArtifact && !/^(?:https?:\/\/|mailto:|blob:|data:)/i.test(url)) {
+        return (
+          <span
+            data-chip
+            title="Published under Session files"
+            className="mx-0.5 inline-flex translate-y-[-1px] items-center gap-1.5 rounded-full bg-background-secondary-default py-0.5 pl-1 pr-2 align-middle text-caption-1-medium text-text-primary"
+          >
+            <span
+              aria-hidden
+              className="flex size-4 items-center justify-center rounded-full bg-background-tertiary-default text-[9px] font-semibold leading-none text-text-secondary"
+            >
+              {ext.charAt(0)}
+            </span>
+            <span className="max-w-56 truncate">{label}</span>
+          </span>
+        );
+      }
       const tone =
         ext === "PDF"
           ? "bg-red-500"
