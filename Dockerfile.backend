@@ -37,6 +37,8 @@ COPY packages/sandbox-contract/package.json ./packages/sandbox-contract/
 COPY packages/sandbox-daytona/package.json ./packages/sandbox-daytona/
 COPY packages/sandbox-cube/package.json ./packages/sandbox-cube/
 COPY packages/sandbox-box/package.json ./packages/sandbox-box/
+COPY packages/runner-protocol/package.json ./packages/runner-protocol/
+COPY packages/sandbox-local/package.json ./packages/sandbox-local/
 
 WORKDIR /app/backend
 RUN bun install --frozen-lockfile --production
@@ -75,6 +77,8 @@ COPY packages/sandbox-contract ./packages/sandbox-contract
 COPY packages/sandbox-daytona ./packages/sandbox-daytona
 COPY packages/sandbox-cube ./packages/sandbox-cube
 COPY packages/sandbox-box ./packages/sandbox-box
+COPY packages/runner-protocol ./packages/runner-protocol
+COPY packages/sandbox-local ./packages/sandbox-local
 
 RUN set -eux; \
     asset_dir=/app/backend/runtime-assets; \

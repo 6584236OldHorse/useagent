@@ -41,6 +41,10 @@ import {
 import { pumpThread, signalCancel } from "./worker";
 import { handleRunCreate, runsRoutes } from "./runs/routes";
 import { terminalRoutes } from "./runs/terminal";
+import { runnerLinkRoutes } from "./runners/link";
+import { runnerRoutes } from "./runners/routes";
+import { runnerConfigBlock } from "./runners/policy";
+import { runnerRegistry } from "./runners/registry";
 import { schedulesRoutes } from "./schedules/routes";
 import { startScheduler } from "./schedules/scheduler";
 import { startCaptureDelivery } from "./memory/capture-outbox";
@@ -197,6 +201,12 @@ await seedDev();
 // non-terminal admissions BEFORE recovery re-pumps threads — so a re-dispatched
 // run mints a fresh lease and the queue never double-counts a dead reservation.
 const fleetBoot = await reconcileFleetOnBoot();
+// Enrolled machines are known from boot (offline until they say hello) so a
+// recorded local sandbox resolves to its runner; the sweeper retires links
+// whose heartbeats stopped.
+const knownRunners = await runnerRegistry.load();
+if (knownRunners > 0) console.log(`[boot] ${knownRunners} enrolled runner${knownRunners === 1 ? "" : "s"} known`);
+runnerRegistry.startSweeper();
 if (
   fleetBoot.releasedLeases > 0 ||
   fleetBoot.resetAdmissions > 0 ||
@@ -311,6 +321,11 @@ app.route("/api/internal/gateway-approval/consume", internalGatewayApprovalRoute
 app.route("/api/internal/gateway-approval-requests", internalApprovalRequestRoutes);
 app.route("/api/internal/github-operations", internalGithubRoutes);
 app.route("/api/internal/codex-relay", codexSubscriptionRelayRoutes);
+// A developer's machine as a sandbox provider: the runner's outbound link
+// (runner-token authenticated, see runners/link.ts) and the org-scoped
+// enrolment, listing and policy routes.
+app.route("/api/internal/runners", runnerLinkRoutes);
+app.route("/api/runners", runnerRoutes);
 app.route("/api/threads", threadRelationshipRoutes);
 // Loopback-only operator dispatch bridge (see runs/operator-routes.ts): lets
 // the release-lane parity canary run turns IN THIS PROCESS so the codex relay
@@ -358,6 +373,8 @@ app.get("/api/config", (c) => {
     models,
     configuredModels,
     sandbox: { provider: sandboxProviderKind(), userComputers: userComputersEnabled() },
+    // What a runner must speak and boot to lend this deployment a machine.
+    runner: runnerConfigBlock(),
     // Per model provider: served from this deployment's own key (a name, never a value).
     providers: deploymentProvidedProviders(),
     // The product tool families a gateway process advertises follow this

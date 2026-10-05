@@ -58,6 +58,9 @@ const PUBLIC_API_PREFIXES = [
   // Operator dispatch bridge: dedicated-secret authenticated, verifies Bun's
   // socket peer is loopback, and rejects proxy-origin headers.
   "/api/internal/operator/",
+  // A runner's link authenticates with the runner token it was enrolled with
+  // (runners/link.ts); the socket is refused before any frame otherwise.
+  "/api/internal/runners/",
 ];
 
 /** True when `path` authenticates itself (or is public) and must NOT be forced

@@ -9,6 +9,7 @@ import { type DaytonaApiConfig, daytonaApiConfig as daytonaApiConfigFor } from "
 import { buildRuntimeIdentityPreflightCommand } from "../engines/runtime-environment";
 import { SANDBOX_PROVIDER_KINDS, isSandboxProviderKind, sandboxPlugin } from "./plugins";
 import { dbSandboxLabelStore } from "./sandbox-labels";
+import { runnerRegistry } from "../runners/registry";
 
 // The provider-neutral sandbox contract lives in @useagent/sandbox-contract and
 // every vendor is a plugin package (see ./plugins). This module is the
@@ -45,8 +46,9 @@ export function sandboxRuntimeLayout(kind: SandboxProviderKind): SandboxRuntimeL
 
 export function sandboxProviderKind(env: SandboxEnv = process.env): SandboxProviderKind {
   const value = env.SANDBOX_PROVIDER?.trim().toLowerCase() || "daytona";
-  if (!isSandboxProviderKind(value)) {
-    throw new Error(`SANDBOX_PROVIDER must be ${SANDBOX_PROVIDER_KINDS.join(", ")}`);
+  // A machine is chosen per run from the runners a user enrolled; it is never the deployment's default.
+  if (!isSandboxProviderKind(value) || value === "local") {
+    throw new Error(`SANDBOX_PROVIDER must be ${SANDBOX_PROVIDER_KINDS.filter((kind) => kind !== "local").join(", ")}`);
   }
   return value;
 }
@@ -96,6 +98,7 @@ export function sandboxTemplate(templateEnv: string, env: SandboxEnv = process.e
 export function sandboxProviderPorts(kind: SandboxProviderKind): SandboxProviderPorts {
   return {
     labels: dbSandboxLabelStore(kind),
+    links: runnerRegistry.directory,
     identityPreflightCommand: buildRuntimeIdentityPreflightCommand(sandboxRuntimeLayout(kind)),
   };
 }
