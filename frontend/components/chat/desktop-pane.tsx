@@ -3,26 +3,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentScreen } from "@/components/ai/agent-screen";
 import { Button } from "@/components/base/buttons/button";
-import {
-  DESKTOP_CONNECT_POLL_INTERVAL,
-  isDesktopFrameConnected,
-  watchDesktopFrameConnected,
-} from "./desktop-frame-connection";
+import { desktopFrameConnection } from "./desktop-frame-connection";
 import { desktopFrameInteractive, desktopScreenStatus } from "./desktop-screen-state";
 
+/** The session entry; the backend redirects it to a capability view and points
+ *  noVNC's socket `path` at that view (backend runs/desktop-proxy.ts). */
 export function buildDesktopFrameSrc(threadId: string): string {
   const params = new URLSearchParams({
     autoconnect: "true",
     resize: "scale",
     reconnect: "true",
     reconnect_delay: "500",
-    // The Cube template's legacy noVNC builds `ws(s)://host/` + path, while
-    // current noVNC resolves path relative to vnc.html. This traversal-safe
-    // relative form normalizes to the same root route in both implementations.
-    path: `../../../api/desktop-proxy/${threadId}/websockify`,
   });
   return `/api/desktop-proxy/${threadId}/vnc.html?${params.toString()}`;
 }
+
+/** Sandbox-served noVNC runs in an opaque origin: no app cookies, storage or
+ *  same-origin API access. Never add allow-same-origin (it would undo all of
+ *  that); matches the CSP the backend sends with every preview response. */
+export const DESKTOP_FRAME_SANDBOX = "allow-scripts allow-forms allow-popups allow-downloads";
 
 /** First retry delay for the Desktop readiness probe (ms). */
 export const DESKTOP_PROBE_MIN_DELAY = 250;
@@ -52,51 +51,18 @@ export function nextDesktopProbeDelay(previous: number | null): number {
   return Math.min(Math.ceil(previous * 1.5), DESKTOP_PROBE_MAX_DELAY);
 }
 
-/** Minimal structural slice of the frame's Document the focus guard needs. */
-export interface DesktopFocusGuardDoc {
-  addEventListener(type: "focusin", listener: () => void, capture: boolean): void;
-  removeEventListener(type: "focusin", listener: () => void, capture: boolean): void;
-}
+/** Poll cadence for the focus-steal watchdog (ms). */
+export const DESKTOP_FOCUS_WATCHDOG_INTERVAL = 250;
 
 /**
  * noVNC's full client focuses its canvas once the RFB connection settles
  * (app/ui.js calls rfb.focus() on connect). That happens AFTER iframe load -
  * the websocket handshake is async - so the one-shot onLoad blur cannot stop
  * it, and the first keystrokes meant for the composer land in the VNC pane.
- * While the pane is only being watched (input not captured), bounce any focus
- * that lands inside the frame straight back to the app. The pane captures
- * keys only after an explicit click into it. Returns a cleanup function.
- */
-export function guardDesktopFocusSteal({
-  innerDoc,
-  isCaptured,
-  restoreFocus,
-}: {
-  innerDoc: DesktopFocusGuardDoc | null;
-  isCaptured: () => boolean;
-  restoreFocus: () => void;
-}): () => void {
-  if (!innerDoc) return () => {};
-  const bounce = () => {
-    if (isCaptured()) return;
-    restoreFocus();
-  };
-  innerDoc.addEventListener("focusin", bounce, true);
-  return () => innerDoc.removeEventListener("focusin", bounce, true);
-}
-
-/** Poll cadence for the cross-origin focus-steal watchdog (ms). */
-export const DESKTOP_FOCUS_WATCHDOG_INTERVAL = 250;
-
-/**
- * Cross-origin fallback for {@link guardDesktopFocusSteal}. noVNC calls
- * rfb.focus() asynchronously after the RFB connection settles, moving keyboard
- * focus onto the iframe ELEMENT without a user gesture. When the browser treats
- * the `/api/desktop-proxy` iframe as cross-origin the guard's inner document is
- * unreachable, but `document.activeElement === frame` (the iframe element itself)
- * stays observable from the outer page. A steal should be released only while the
- * pane is being watched (input not captured) - once the user clicks to control,
- * the keyboard SHOULD go to the desktop.
+ * The sandboxed frame's document is unreachable, but the steal lands the iframe
+ * ELEMENT as `document.activeElement`, which the outer page can observe. A steal
+ * should be released only while the pane is being watched (input not captured) -
+ * once the user clicks to control, the keyboard SHOULD go to the desktop.
  */
 export function shouldReleaseStolenFocus({
   activeElement,
@@ -152,12 +118,13 @@ function restoreOuterFocus(previous: HTMLElement | null, frame: HTMLIFrameElemen
 /**
  * The "Desktop" tab: a live view of the conversation's sandbox GUI (multi-repo),
  * via noVNC. The sandbox runtime keeps Xorg + Budgie + x11vnc + noVNC alive on
- * :6080; we iframe noVNC's own `vnc.html` served THROUGH the same-origin
+ * :6080; we iframe noVNC's own `vnc.html` served THROUGH the
  * `/api/desktop-proxy/<threadId>` bridge (backend injects the provider preview
  * token on both the static app and the RFB WebSocket — see backend
- * runs/desktop-proxy.ts). `path` points noVNC's socket back at that same bridge
- * so the token never reaches the browser; `autoconnect` opens it on load and
- * `resize=scale` fits the remote screen to the pane.
+ * runs/desktop-proxy.ts), sandboxed into an opaque origin. The bridge points
+ * noVNC's socket back at itself so the token never reaches the browser;
+ * `autoconnect` opens it on load and `resize=scale` fits the remote screen to
+ * the pane.
  *
  * The tab is always present. Before a sandbox exists, or while a retained
  * sandbox's desktop service is being repaired, probe the authenticated proxy
@@ -178,8 +145,10 @@ export function DesktopPane({
 }) {
   const [ready, setReady] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  // vnc.html has loaded AND noVNC reports its RFB session up (see the poll below).
+  // vnc.html has loaded AND noVNC reports its RFB session up (see the listener below).
   const [frameConnected, setFrameConnected] = useState(false);
+  // Bumped to reload the frame through the session entry (a fresh capability).
+  const [frameKey, setFrameKey] = useState(0);
   const [inputCaptured, setInputCaptured] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [status, setStatus] = useState("No active sandbox. Send a message to start one.");
@@ -248,8 +217,7 @@ export function DesktopPane({
     try {
       frameRef.current?.contentWindow?.blur();
     } catch {
-      // The desktop proxy is normally same-origin. If a browser treats it as
-      // cross-origin, disabling pointer events still prevents re-capture.
+      // Disabling pointer events still prevents re-capture.
     }
   }, []);
 
@@ -307,33 +275,15 @@ export function DesktopPane({
       lastOuterFocusRef.current = target;
     };
     window.addEventListener("focusin", rememberOuterFocus, true);
-
-    let innerDoc: DesktopFocusGuardDoc | null = null;
-    try {
-      innerDoc = frameRef.current?.contentDocument ?? null;
-    } catch {
-      // The desktop proxy is normally same-origin. If a browser treats it as
-      // cross-origin, tabIndex=-1 + pointer-events none still block capture.
-    }
-    const releaseGuard = guardDesktopFocusSteal({
-      innerDoc,
-      isCaptured: () => inputCapturedRef.current,
-      restoreFocus: () => restoreOuterFocus(lastOuterFocusRef.current, frameRef.current),
-    });
-
-    return () => {
-      window.removeEventListener("focusin", rememberOuterFocus, true);
-      releaseGuard();
-    };
+    return () => window.removeEventListener("focusin", rememberOuterFocus, true);
   }, [loaded]);
 
-  // Cross-origin fallback for the same-origin guard above. When the proxy iframe
-  // is treated as cross-origin its inner document is unreachable, so the guard's
-  // focusin listener never sees noVNC's async rfb.focus() steal. The steal still
-  // lands the iframe ELEMENT as document.activeElement (observable cross-origin),
-  // so while the pane is only being watched, poll for it - and re-check on window
-  // focus changes - then bounce it back to the composer. Stops at the explicit
-  // capture click, which SHOULD route the keyboard to the desktop.
+  // The sandboxed frame's inner document is unreachable, so noVNC's async
+  // rfb.focus() steal is seen as the iframe ELEMENT becoming
+  // document.activeElement: while the pane is only being watched, poll for it -
+  // and re-check on window focus changes - then bounce it back to the composer.
+  // Stops at the explicit capture click, which SHOULD route the keyboard to the
+  // desktop.
   useEffect(() => {
     if (!loaded || inputCaptured) return;
     return watchDesktopFocusSteal({
@@ -360,21 +310,27 @@ export function DesktopPane({
   }, [loaded, inputCaptured]);
 
   // The iframe's load event fires when vnc.html has parsed, seconds before the
-  // RFB WebSocket session is up, while the frame still shows noVNC's own
-  // "Connecting...". noVNC then stamps noVNC_connected on its document, so poll
-  // the same-origin frame for it (stopping once seen, or on unmount/reload) and
-  // hold the card on Loading until a desktop is actually on screen.
+  // RFB WebSocket session is up, so hold the card on Loading until the frame
+  // reports a desktop on screen. A session that drops after that reloads the
+  // frame through the session entry: the view's short-lived capability may
+  // have expired, and noVNC's own reconnect would retry it forever.
   useEffect(() => {
-    if (!loaded) return;
-    return watchDesktopFrameConnected({
-      check: () => isDesktopFrameConnected(frameRef.current?.contentDocument ?? null),
-      onConnected: () => setFrameConnected(true),
-      schedule: (tick) => {
-        const id = window.setInterval(tick, DESKTOP_CONNECT_POLL_INTERVAL);
-        return () => window.clearInterval(id);
-      },
-    });
-  }, [loaded]);
+    let connectedOnce = false;
+    const onMessage = (event: MessageEvent) => {
+      const connected = desktopFrameConnection(event, frameRef.current?.contentWindow);
+      if (connected === null) return;
+      setFrameConnected(connected);
+      if (connected) {
+        connectedOnce = true;
+      } else if (connectedOnce) {
+        connectedOnce = false;
+        setLoaded(false);
+        setFrameKey((key) => key + 1);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [src]);
 
   const connected = ready && loaded && frameConnected;
   const frameInteractive = desktopFrameInteractive({ loaded, captured: inputCaptured });
@@ -405,10 +361,12 @@ export function DesktopPane({
         screen={
           ready ? (
             <iframe
+              key={frameKey}
               ref={frameRef}
               data-testid="desktop-frame"
               title="Sandbox desktop"
               src={src}
+              sandbox={DESKTOP_FRAME_SANDBOX}
               tabIndex={-1}
               onLoad={(event) => {
                 setLoaded(true);

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { Hono } from "hono";
 import type { AppEnv } from "../http";
 import {
@@ -8,7 +8,8 @@ import {
   type PortProxyDeps,
 } from "./port-proxy";
 import { portProxyUrl } from "./port-proxy-url";
-import type { PreviewEndpoint } from "./preview-proxy";
+import { PREVIEW_SANDBOX_POLICY, type PreviewEndpoint } from "./preview-proxy";
+import { previewViewPrefix } from "./preview-capability";
 
 interface Upstream {
   readonly url: string;
@@ -54,17 +55,28 @@ function harness(overrides: Partial<PortProxyDeps> & {
   };
   const app = new Hono<AppEnv>();
   app.route("/api/port-proxy", createPortProxyRoutes(deps, async (c, next) => {
-    c.set("orgId", "org-a");
-    c.set("userId", "user-a");
+    // Stands in for the session (orgScope is a no-op once a capability resolved the org).
+    if (!c.get("orgId")) {
+      c.set("orgId", "org-a");
+      c.set("userId", "user-a");
+    }
     await next();
   }));
-  return { app, calls, resolves };
+  // A browser follows the session entry's redirect into the capability view.
+  const open = async (path: string, init?: RequestInit) => {
+    const entry = await app.request(path, init);
+    expect(entry.status).toBe(307);
+    const view = entry.headers.get("location") ?? "";
+    expect(view).toMatch(/^\/api\/port-proxy\/thread-1\/view\/v1\.[^/]+/);
+    return app.request(view, init);
+  };
+  return { app, calls, resolves, open };
 }
 
 describe("port proxy", () => {
   test("maps the product path onto the served port with the preview credential injected", async () => {
-    const { app, calls, resolves } = harness();
-    const res = await app.request("/api/port-proxy/thread-1/8080/assets/app.js?v=2", {
+    const { open, calls, resolves } = harness();
+    const res = await open("/api/port-proxy/thread-1/8080/assets/app.js?v=2", {
       headers: { cookie: "session=browser", accept: "text/javascript" },
     });
     expect(res.status).toBe(200);
@@ -79,8 +91,8 @@ describe("port proxy", () => {
   });
 
   test("the port root and request bodies pass through", async () => {
-    const { app, calls } = harness();
-    const res = await app.request("/api/port-proxy/thread-1/3000/", {
+    const { open, calls } = harness();
+    const res = await open("/api/port-proxy/thread-1/3000/", {
       method: "POST",
       body: JSON.stringify({ hello: "world" }),
       headers: { "content-type": "application/json" },
@@ -94,8 +106,8 @@ describe("port proxy", () => {
   });
 
   test("a bare thread/port serves the root (the frontend rewrite drops the trailing slash)", async () => {
-    const { app, calls } = harness();
-    const res = await app.request("/api/port-proxy/thread-1/8080?tab=1");
+    const { open, calls } = harness();
+    const res = await open("/api/port-proxy/thread-1/8080?tab=1");
     expect(res.status).toBe(200);
     expect(calls[0]!.url).toBe("http://box-1.preview.internal:8080/?tab=1");
   });
@@ -110,10 +122,10 @@ describe("port proxy", () => {
   });
 
   test("a thread with no sandbox yet says so", async () => {
-    const { app } = harness({
+    const { open } = harness({
       resolveEndpoint: async () => { throw new Error("no-sandbox"); },
     });
-    const res = await app.request("/api/port-proxy/thread-1/8080/");
+    const res = await open("/api/port-proxy/thread-1/8080/");
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "no live sandbox for this conversation yet - send a message first",
@@ -124,7 +136,7 @@ describe("port proxy", () => {
     const expectedSandbox = { version: 1 as const, sandboxId: "box-1", provider: "box" as const,
       credential: "env" as const, ownerOrgId: "org-a", ownerUserId: null, credentialGeneration: "a".repeat(64) };
     const bindings: unknown[] = [];
-    const { app, calls, resolves } = harness({
+    const { open, calls, resolves } = harness({
       threadBinding: async () => ({ expectedSandbox }),
       resolveEndpoint: async (threadId, port, force = false, binding) => {
         bindings.push(binding);
@@ -133,7 +145,7 @@ describe("port proxy", () => {
       },
       answer: () => new Response("bad gateway", { status: 502 }),
     });
-    const res = await app.request("/api/port-proxy/thread-1/8080/");
+    const res = await open("/api/port-proxy/thread-1/8080/");
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({
       error: "nothing is listening on port 8080 in this conversation's sandbox",
@@ -147,9 +159,62 @@ describe("port proxy", () => {
     const { app } = harness({
       answer: () => new Response(null, { status: 302, headers: { location: "/login?next=%2F" } }),
     });
-    const res = await app.request("/api/port-proxy/thread-1/8080/admin");
+    const entry = await app.request("/api/port-proxy/thread-1/8080/admin");
+    const view = new URL(entry.headers.get("location") ?? "", "http://localhost").pathname.replace(/\/admin$/, "");
+    const res = await app.request(`${view}/admin`);
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/api/port-proxy/thread-1/8080/login?next=%2F");
+    expect(res.headers.get("location")).toBe(`${view}/login?next=%2F`);
+  });
+
+  test("served bytes run sandboxed: opaque origin, no sniffing, CORS for the page's own modules", async () => {
+    const { open } = harness({
+      answer: () => new Response("<script>fetch('/api/api-keys')</script>", {
+        headers: {
+          "content-type": "text/html",
+          "content-security-policy": "sandbox allow-scripts allow-same-origin",
+        },
+      }),
+    });
+    const res = await open("/api/port-proxy/thread-1/8080/");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(PREVIEW_SANDBOX_POLICY);
+    expect(PREVIEW_SANDBOX_POLICY).not.toContain("allow-same-origin");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  test("the view refuses a missing, foreign, mismatched or expired capability", async () => {
+    const { app, calls } = harness();
+    const grant = { orgId: "org-a", userId: "user-a", threadId: "thread-1", port: 8080 };
+    const portView = previewViewPrefix("/api/port-proxy", { ...grant, kind: "port" });
+    const otherThread = previewViewPrefix("/api/port-proxy", { ...grant, threadId: "thread-2", kind: "port" })
+      .replace("/thread-2/", "/thread-1/");
+    const desktopKind = previewViewPrefix("/api/port-proxy", { ...grant, kind: "desktop" });
+    const tampered = portView.replace(/\.([^.]+)$/, (_, signature: string) => `.${signature.slice(1)}A`);
+    for (const view of ["/api/port-proxy/thread-1/view/not-a-capability", otherThread, desktopKind, tampered]) {
+      const res = await app.request(`${view}/`, { headers: { cookie: "better-auth.session_token=browser" } });
+      expect(res.status).toBe(401);
+    }
+    setSystemTime(new Date(Date.now() + 11 * 60_000));
+    try {
+      expect((await app.request(`${portView}/app.js`)).status).toBe(401);
+      // A reload re-enters through the session route for a fresh view.
+      const reload = await app.request(`${portView}/page?x=1`, { headers: { "sec-fetch-mode": "navigate" } });
+      expect(reload.status).toBe(302);
+      expect(reload.headers.get("location")).toBe("/api/port-proxy/thread-1/8080/page?x=1");
+    } finally {
+      setSystemTime();
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a capability from another org reaches only that org's threads", async () => {
+    const { app, calls } = harness();
+    const view = previewViewPrefix("/api/port-proxy", {
+      orgId: "org-b", userId: "user-b", threadId: "thread-1", port: 8080, kind: "port",
+    });
+    expect((await app.request(`${view}/`)).status).toBe(404);
+    expect(calls).toHaveLength(0);
   });
 
   test("helpers", () => {

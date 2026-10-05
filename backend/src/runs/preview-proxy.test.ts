@@ -5,7 +5,7 @@ import { runs } from "../db/schema";
 import { forgetLiveThreadSandbox, rememberLiveThreadSandbox } from "../engines/sandbox-runtime";
 import * as sandboxProviders from "../sandboxes/provider";
 import { getThreadExpectedSandbox, sandboxBindingExpectation, ExpectedSandboxMismatchError } from "../sandboxes/binding";
-import { buildForwardHeaders, buildProxyResponse, invalidatePreviewEndpoint, resolvePreviewEndpoint, resolvePreviewSandbox } from "./preview-proxy";
+import { buildForwardHeaders, buildProxyResponse, invalidatePreviewEndpoint, PREVIEW_SANDBOX_POLICY, resolvePreviewEndpoint, resolvePreviewSandbox } from "./preview-proxy";
 
 test("a fenced live turn bypasses root-run handle and endpoint caches before any remote work", async () => {
   const threadId = crypto.randomUUID();
@@ -97,6 +97,8 @@ describe("preview proxy forward headers", () => {
       expect(response.headers.get(name)).toBeNull();
     }
     expect(response.headers.get("x-preview-app")).toBe("preserved");
+    expect(response.headers.get("content-security-policy")).toBe(PREVIEW_SANDBOX_POLICY);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("cache-control")).toBe("no-cache, no-transform");
     expect(response.headers.get("x-accel-buffering")).toBe("no");
     expect(await response.text()).toBe("data: preview\n\n");

@@ -48,7 +48,7 @@ function runnerBinary(): string {
 }
 
 function trusted(event: IpcMainInvokeEvent | IpcMainEvent, origin: string): void {
-  if (!trustedIpcSender(event.senderFrame?.url ?? "", event.senderFrame === event.sender.mainFrame, origin)) {
+  if (!trustedIpcSender(event.senderFrame?.url ?? "", event.senderFrame === mainWindow?.webContents.mainFrame, origin)) {
     throw new Error("Unauthorized desktop request.");
   }
 }

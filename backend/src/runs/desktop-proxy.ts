@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import { upgradeWebSocket } from "hono/bun";
 import type { AppEnv } from "../http";
 import { orgScope } from "../middleware/org";
-import { requireBrowserWebSocketOrigin } from "../security/browser-websocket-origin";
 import { getRunForOrg } from "./repo";
+import { previewCapabilityScope, previewViewPrefix } from "./preview-capability";
 import {
   buildForwardHeaders,
   buildProxyResponse,
@@ -21,15 +21,19 @@ import { watchThreadSandbox } from "../engines/sandbox-runtime";
 import type { ExpectedSandboxBinding } from "../sandboxes/expected-binding";
 
 // ---------------------------------------------------------------------------
-// DESKTOP PROXY — same-origin bridge to the noVNC GUI running INSIDE a thread's
+// DESKTOP PROXY — bridge to the noVNC GUI running INSIDE a thread's
 // sandbox ("watch the agent's screen"). The useAgent-agent snapshot
 // ships Xorg :1 + Budgie + x11vnc :5900 (no password) + noVNC/websockify on :6080.
 //
-//   browser (iframe) → GET /api/desktop-proxy/<threadId>/vnc.html?…&path=<self>/websockify
+//   browser (iframe) → GET /api/desktop-proxy/<threadId>/vnc.html?…   (session)
+//                     → ensure the desktop is up, mint a preview capability and
+//                       redirect to /api/desktop-proxy/<threadId>/view/<cap>/vnc.html
+//                       with noVNC's socket `path` pointed at the same view.
 //                     → HTTP proxy: resolve the thread's :6080 preview endpoint,
 //                       inject x-daytona-preview-token, forward noVNC's static
-//                       app (html/js/css) verbatim.
-//   noVNC canvas WS   → ws  /api/desktop-proxy/<threadId>/websockify
+//                       app (html/js/css) under a CSP sandbox (opaque origin,
+//                       see preview-capability.ts).
+//   noVNC canvas WS   → ws  /api/desktop-proxy/<threadId>/view/<cap>/websockify
 //                     → WS bridge (below): open an upstream WS to the sandbox's
 //                       websockify with the preview token as a header — browsers
 //                       can't set that header, and noVNC rebuilds its socket URL
@@ -96,14 +100,16 @@ async function ensureDesktopPreview(threadId: string, expectedSandbox?: Expected
 }
 
 export const desktopProxyRoutes = new Hono<AppEnv>();
+desktopProxyRoutes.use("*", previewCapabilityScope);
 desktopProxyRoutes.use("*", orgScope);
 
 // ── WebSocket: browser noVNC ⇄ (this bridge) ⇄ sandbox websockify ───────────
 // Registered BEFORE the HTTP catch-all so a genuine upgrade is handled here; a
 // plain GET to the same path falls through (upgradeWebSocket calls next()).
+// The opaque-origin page sends `Origin: null` and no cookie: the capability in
+// the path (previewCapabilityScope) is the only authorization.
 desktopProxyRoutes.get(
-  "/:threadId/websockify",
-  requireBrowserWebSocketOrigin,
+  "/:threadId/view/:capability/websockify",
   upgradeWebSocket((c) => {
     // Capture params NOW — context reads inside async ws callbacks are unreliable.
     const threadId = c.req.param("threadId") ?? "";
@@ -228,14 +234,45 @@ export function withoutClientControlBar(html: string): string {
   return html.includes("</head>") ? html.replace("</head>", `${style}</head>`) : html;
 }
 
+/** The sandboxed page cannot use web storage (noVNC keeps its settings there)
+ *  and the pane cannot read its document, so this runs first in vnc.html: an
+ *  in-memory storage stand-in, and a message to the embedding pane whenever
+ *  noVNC's connected marker changes. */
+const FRAME_BRIDGE = `<script>(() => {
+for (const name of ["localStorage", "sessionStorage"]) {
+  try { void window[name].length; } catch {
+    const items = new Map();
+    Object.defineProperty(window, name, { configurable: true, value: {
+      get length() { return items.size; },
+      key: (index) => [...items.keys()][index] ?? null,
+      getItem: (key) => items.get(String(key)) ?? null,
+      setItem: (key, value) => { items.set(String(key), String(value)); },
+      removeItem: (key) => { items.delete(String(key)); },
+      clear: () => { items.clear(); },
+    } });
+  }
+}
+let reported;
+new MutationObserver(() => {
+  const connected = document.documentElement.classList.contains("noVNC_connected");
+  if (connected === reported) return;
+  reported = connected;
+  parent.postMessage({ desktopConnected: connected }, location.origin);
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+})();</script>`;
+
+export function withFrameBridge(html: string): string {
+  return html.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${FRAME_BRIDGE}`);
+}
+
 async function servedClientPage(upstream: Response): Promise<Response> {
   if (upstream.status !== 200 || !(upstream.headers.get("content-type") ?? "").includes("text/html")) return upstream;
   const headers = new Headers(upstream.headers);
   headers.delete("content-length");
-  return new Response(withoutClientControlBar(await upstream.text()), { status: upstream.status, headers });
+  return new Response(withFrameBridge(withoutClientControlBar(await upstream.text())), { status: upstream.status, headers });
 }
 
-desktopProxyRoutes.all("/:threadId/*", async (c) => {
+desktopProxyRoutes.all("/:threadId/view/:capability/*", async (c) => {
   const threadId = c.req.param("threadId") ?? "";
   const orgId = c.get("orgId");
 
@@ -245,24 +282,9 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
   }
 
   const url = new URL(c.req.url);
-  const prefix = `/api/desktop-proxy/${threadId}`;
+  const prefix = `/api/desktop-proxy/${threadId}/view/${c.req.param("capability") ?? ""}`;
   const subpath = url.pathname.slice(prefix.length) || "/";
   const expectedSandbox = run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId);
-
-  // React uses /ready as its lifecycle probe. Keep direct vnc.html loads as a
-  // fallback lifecycle boundary for non-React clients and old open tabs,
-  // without repeating Daytona health checks for every noVNC JS/CSS asset.
-  if (subpath === "/vnc.html") {
-    try {
-      await ensureDesktopPreview(threadId, expectedSandbox);
-    } catch (err) {
-      const message = errorMessage(err);
-      if (message === "no-sandbox") {
-        return c.json({ error: "no live sandbox for this conversation yet - send a message first" }, 409);
-      }
-      return c.json({ error: `desktop proxy failed: ${message}` }, 502);
-    }
-  }
 
   const method = c.req.method;
   const body =
@@ -316,4 +338,43 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
     }
     return c.json({ error: `desktop proxy failed: ${msg}` }, 502);
   }
+});
+
+// Session entry: every product URL (the pane's vnc.html, an old tab's asset)
+// re-enters through a freshly minted view. vnc.html is also the lifecycle
+// boundary for clients that skip /ready, so it is repaired before the redirect.
+desktopProxyRoutes.all("/:threadId/*", async (c) => {
+  const threadId = c.req.param("threadId") ?? "";
+  const orgId = c.get("orgId");
+
+  const run = await getRunForOrg(orgId, threadId);
+  if (!run) {
+    return c.json({ error: "thread not found" }, 404);
+  }
+
+  const url = new URL(c.req.url);
+  const subpath = url.pathname.slice(`/api/desktop-proxy/${threadId}`.length) || "/";
+  if (subpath === "/vnc.html") {
+    try {
+      await ensureDesktopPreview(threadId, run.expectedSandbox ?? await getThreadExpectedSandbox(orgId, threadId));
+    } catch (err) {
+      const message = errorMessage(err);
+      if (message === "no-sandbox") {
+        return c.json({ error: "no live sandbox for this conversation yet - send a message first" }, 409);
+      }
+      return c.json({ error: `desktop proxy failed: ${message}` }, 502);
+    }
+  }
+
+  const view = previewViewPrefix("/api/desktop-proxy", {
+    orgId, userId: c.get("userId"), threadId, port: DESKTOP_PORT, kind: "desktop",
+  });
+  const target = new URL(`${view}${subpath}${url.search}`, url);
+  // noVNC opens its socket from `path`. Current noVNC resolves it relative to
+  // vnc.html, a legacy client concatenates `ws(s)://host/` + path; the
+  // traversal form lands on the same view in both.
+  if (subpath === "/vnc.html") {
+    target.searchParams.set("path", `${"../".repeat(view.split("/").length - 1)}${view.slice(1)}/websockify`);
+  }
+  return c.redirect(`${target.pathname}${target.search}`, 307);
 });

@@ -56,6 +56,12 @@ function scriptNonce(headers: ResponseHeaders): string | undefined {
   return nonces.size === 1 ? [...nonces][0] : undefined;
 }
 
+/** A subframe (sandbox-served desktop or preview content) never shares the
+ *  plane's origin, so it cannot reach the preload bridge through
+ *  `parent.useagentDesktop`, whatever the server sends. Chromium's PDF viewer
+ *  refuses sandboxed frames, and a PDF document runs no page script. */
+const SANDBOXED_FRAME = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+
 export function desktopContentPolicy(
   resourceType: string,
   statusCode: number,
@@ -63,6 +69,12 @@ export function desktopContentPolicy(
   packaged: boolean,
 ): { policy: string; block: boolean } {
   const base = `object-src 'none'; base-uri 'self'`;
+  if (
+    resourceType === "subFrame" &&
+    !headerValues(headers, "content-type").some(value => /^\s*application\/pdf\s*(?:;|$)/i.test(value))
+  ) {
+    return { policy: `${base}; ${SANDBOXED_FRAME}`, block: false };
+  }
   if (resourceType !== "mainFrame") return { policy: base, block: false };
   const framed = `${base}; frame-ancestors 'none'`;
   if (statusCode >= 300 && statusCode < 400) return { policy: framed, block: false };

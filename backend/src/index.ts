@@ -32,6 +32,7 @@ import { createOperatorRoutes } from "./runs/operator-routes";
 import { reposRoutes } from "./github/routes";
 import { pullsRoutes } from "./github/pulls-routes";
 import { desktopProxyRoutes } from "./runs/desktop-proxy";
+import { parsePreviewViewPath } from "./runs/preview-capability";
 import { fleetRoutes } from "./runs/fleet-routes";
 import { spendRoutes } from "./runs/spend-routes";
 import { spendAllowanceDefaultUsd } from "./runs/spend";
@@ -270,17 +271,16 @@ if (learningReset > 0)
 const app = new Hono<AppEnv>();
 
 // CORS for the frontend, with credentials so cookie sessions flow when the
-// browser calls the backend directly (the Next dev proxy is same-origin).
-app.use(
-  "/api/*",
-  cors({
-    origin: env.FRONTEND_ORIGIN,
-    credentials: true,
-    allowHeaders: ["Content-Type", "Authorization", "x-useagent-client-release", "x-skynet-client-release"],
-    exposeHeaders: ["x-useagent-release-fingerprint", "x-useagent-api-compat", "x-skynet-release-fingerprint", "x-skynet-api-compat"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  }),
-);
+// browser calls the backend directly (the Next dev proxy is same-origin). A
+// sandbox preview view answers its opaque-origin page itself (preview-capability.ts).
+const frontendCors = cors({
+  origin: env.FRONTEND_ORIGIN,
+  credentials: true,
+  allowHeaders: ["Content-Type", "Authorization", "x-useagent-client-release", "x-skynet-client-release"],
+  exposeHeaders: ["x-useagent-release-fingerprint", "x-useagent-api-compat", "x-skynet-release-fingerprint", "x-skynet-api-compat"],
+  allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+});
+app.use("/api/*", (c, next) => (parsePreviewViewPath(c.req.path) ? next() : frontendCors(c, next)));
 
 app.use("/api/*", async (c, next) => {
   const release = currentReleaseFingerprint();
