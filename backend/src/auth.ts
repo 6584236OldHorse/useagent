@@ -1,3 +1,4 @@
+import { electron } from "@better-auth/electron";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
@@ -36,7 +37,7 @@ export function createAuthServer() {
         }
       : {},
     account: { accountLinking: { requireLocalEmailVerified: false } },
-    plugins: [organization()],
+    plugins: [organization(), electron()],
     trustedOrigins: betterAuthTrustedOrigins(),
     databaseHooks: {
       user: {

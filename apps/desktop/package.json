@@ -1,0 +1,26 @@
+{
+  "name": "@useagent/desktop",
+  "version": "0.0.5",
+  "description": "Thin desktop shell for a hosted useAgent control plane",
+  "author": "useAgent",
+  "private": true,
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "bun build src/main.ts --target=node --format=cjs --external electron --external electron-updater --outfile=dist/main.cjs && bun build src/preload.ts --target=node --format=cjs --external electron --outfile=dist/preload.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "package:dev": "bun run build && USEAGENT_DESKTOP_DEV_PACKAGE=1 CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.cjs --mac dir --arm64",
+    "package:mac": "bun run build && electron-builder --config electron-builder.config.cjs --mac dmg zip --arm64 --x64"
+  },
+  "dependencies": {
+    "@better-auth/electron": "1.6.25",
+    "better-auth": "1.6.25",
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.3"
+  }
+}

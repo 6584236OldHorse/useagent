@@ -3,6 +3,7 @@
 import { ThemeProvider } from "next-themes";
 
 import { SubagentPane } from "@/components/chat/subagent-pane";
+import { DesktopTitlebar } from "@/components/shell/desktop-titlebar";
 
 /**
  * Client-side provider stack. Kept as a leaf so the root layout stays a
@@ -32,6 +33,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         "slate",
       ]}
     >
+      <DesktopTitlebar />
       {children}
       <SubagentPane />
     </ThemeProvider>

@@ -23,6 +23,8 @@ env:
 jobs:
   build:
     name: Build and publish runner binaries
+    # The desktop build trusts runner-* prereleases, so only main may publish one; a dispatch from any other ref is skipped.
+    if: github.ref == 'refs/heads/main'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
@@ -47,15 +49,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="runner-${GITHUB_SHA::9}"
+          checksums="$(cd packages/runner/dist && sha256sum useagent-runner-*)"
+          # The desktop build verifies its runner against these lines, so they live in the notes, not only the summary.
           gh release create "$tag" packages/runner/dist/useagent-runner-* \
             --prerelease \
             --title "Runner $tag" \
-            --notes "Per-machine runner built from ${GITHUB_SHA} by workflow run ${GITHUB_RUN_ID}. Assets carry the names in the runner contract; verify a download against the checksums in the run summary." \
+            --notes "$(printf 'Per-machine runner built from %s by workflow run %s. Assets carry the names in the runner contract; verify a download against these checksums.\n\n```\n%s\n```' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$checksums")" \
             --target "$GITHUB_SHA"
           {
             echo "## Runner binaries $tag"
             echo
             echo '```'
-            (cd packages/runner/dist && sha256sum useagent-runner-*)
+            echo "$checksums"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

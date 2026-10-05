@@ -45,24 +45,28 @@ export function selfSignupEnabled(
   return runtimeDevModeEnabled(source);
 }
 
-/** Browser origins allowed to submit Better Auth requests. The two primary
- * origins remain implicit; additional rollout/alias hosts are explicit and
- * validated instead of being hard-coded into auth policy. */
+/** Origins allowed to submit Better Auth requests. Browser aliases remain
+ * explicit; the packaged desktop protocol is the only custom scheme. */
 export function betterAuthTrustedOrigins(
   source: Record<string, string | undefined> = process.env,
 ): string[] {
   const candidates = [
     source.FRONTEND_ORIGIN ?? DEFAULT_FRONTEND_ORIGIN,
     source.BETTER_AUTH_URL ?? "http://localhost:3201",
+    "useagent:/",
     ...(source.BETTER_AUTH_TRUSTED_ORIGINS ?? "").split(","),
   ];
   const origins = new Set<string>();
   for (const candidate of candidates) {
     const value = candidate.trim();
     if (!value) continue;
+    if (value === "useagent:/") {
+      origins.add(value);
+      continue;
+    }
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new Error("BETTER_AUTH_TRUSTED_ORIGINS accepts only HTTP(S) origins");
+      throw new Error("BETTER_AUTH_TRUSTED_ORIGINS accepts only HTTP(S) origins and the UseAgent desktop scheme");
     }
     origins.add(url.origin);
   }

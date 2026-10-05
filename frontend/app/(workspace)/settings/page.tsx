@@ -42,7 +42,9 @@ function Section({
   return (
     <section
       id={id}
-      style={{ scrollMarginTop: `${SETTINGS_ACTIVATION_RATIO * 100}vh` }}
+      style={{
+        scrollMarginTop: `var(--settings-anchor-offset, ${SETTINGS_ACTIVATION_RATIO * 100}vh)`,
+      }}
     >
       <div className="rounded-2xl border border-border-button-default bg-background-primary-default p-5 shadow-sm">
         <div className="mb-4 flex flex-col gap-0.5">

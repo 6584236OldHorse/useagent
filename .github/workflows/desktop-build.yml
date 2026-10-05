@@ -1,0 +1,119 @@
+name: Desktop build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Product release tag to build; its commit must already be on main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.3.14"
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+
+jobs:
+  provenance:
+    name: Verify release provenance
+    # Runner prereleases share the release event; they are not desktop products.
+    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'runner-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the release tag to a commit on main
+        id: resolve
+        shell: bash
+        run: |
+          commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$commit" origin/main
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: provenance
+    runs-on: macos-14
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.provenance.outputs.commit }}
+
+      - name: Verify exact release checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${{ needs.provenance.outputs.commit }}"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: bun install --frozen-lockfile
+
+      # The runner ships inside the signed package, so it is compiled from this
+      # verified checkout rather than fetched from a release asset.
+      - name: Build the matching runner
+        shell: bash
+        env:
+          RUNNER_ASSET: useagent-runner-darwin-${{ matrix.arch }}
+        run: |
+          (cd packages/runner-protocol && bun install --frozen-lockfile)
+          (cd packages/runner && bun install --frozen-lockfile && bun run build "darwin-${{ matrix.arch }}")
+          mkdir -p apps/desktop/resources/runner
+          cp "packages/runner/dist/$RUNNER_ASSET" apps/desktop/resources/runner/
+          expected_arch="${{ matrix.arch }}"
+          test "$expected_arch" != x64 || expected_arch=x86_64
+          lipo -archs "apps/desktop/resources/runner/$RUNNER_ASSET" | tr ' ' '\n' | grep -Fx "$expected_arch"
+          chmod 755 "apps/desktop/resources/runner/$RUNNER_ASSET"
+
+      - name: Validate desktop shell
+        working-directory: apps/desktop
+        run: bun run typecheck && bun test
+
+      - name: Build signed and notarized packages
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}"
+          done
+          bun run build
+          bunx electron-builder \
+            --config electron-builder.config.cjs \
+            --mac dmg zip \
+            --${{ matrix.arch }} \
+            --publish never
+
+      - name: Upload desktop packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: UseAgent-${{ github.run_id }}-darwin-${{ matrix.arch }}
+          path: |
+            apps/desktop/dist/packages/UseAgent-*-darwin-${{ matrix.arch }}.dmg
+            apps/desktop/dist/packages/UseAgent-*-darwin-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 30

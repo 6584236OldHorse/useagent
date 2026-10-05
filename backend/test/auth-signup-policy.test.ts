@@ -23,7 +23,7 @@ describe("Better Auth trusted origins", () => {
         BETTER_AUTH_URL: "https://app.useagent.org",
         BETTER_AUTH_TRUSTED_ORIGINS: "https://skynet.meow.gs, https://app.useagent.org/",
       }),
-    ).toEqual(["https://app.useagent.org", "https://skynet.meow.gs"]);
+    ).toEqual(["https://app.useagent.org", "useagent:/", "https://skynet.meow.gs"]);
   });
 
   test("rejects non-HTTP origins", () => {
@@ -33,6 +33,6 @@ describe("Better Auth trusted origins", () => {
         BETTER_AUTH_URL: "https://app.useagent.org",
         BETTER_AUTH_TRUSTED_ORIGINS: "javascript:alert(1)",
       }),
-    ).toThrow("accepts only HTTP(S) origins");
+    ).toThrow("accepts only HTTP(S) origins and the UseAgent desktop scheme");
   });
 });

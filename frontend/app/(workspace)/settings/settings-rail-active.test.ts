@@ -3,6 +3,7 @@ import {
   activeSectionIndex,
   SETTINGS_ACTIVATION_RATIO,
   SETTINGS_SCROLL_TAIL_RATIO,
+  settingsAnchorOffset,
 } from "./settings-rail-active";
 
 // The settings page measured on production at 1440x900: section top edges at
@@ -61,7 +62,32 @@ describe("settings rail scroll-spy", () => {
   test("mid-page a section takes over once its top reaches the upper 30% band", () => {
     const secretsOnTheLine = TOPS_AT_REST[SECRETS] - VIEWPORT_HEIGHT * 0.3;
     expect(activeSectionIndex(scrolledTo(secretsOnTheLine))).toBe(SECRETS);
-    expect(activeSectionIndex(scrolledTo(secretsOnTheLine - 1))).toBe(INFRASTRUCTURE);
+    expect(activeSectionIndex(scrolledTo(secretsOnTheLine - 2))).toBe(INFRASTRUCTURE);
+  });
+
+  test("anchor offset uses the scroll root height instead of the outer viewport", () => {
+    // Electron at 960px high: the title bar and shell leave a 916px <main>.
+    const outerViewportHeight = 960;
+    const scrollRootHeight = 916;
+    const oldOuterViewportMargin = outerViewportHeight * SETTINGS_ACTIVATION_RATIO;
+    const anchoredWith = (margin: number) =>
+      activeSectionIndex({
+        sectionTops: TOPS_AT_REST.map((top) => top - (TOPS_AT_REST[INFRASTRUCTURE] - margin)),
+        viewportHeight: scrollRootHeight,
+      });
+
+    expect(anchoredWith(oldOuterViewportMargin)).toBe(3);
+    expect(anchoredWith(settingsAnchorOffset(scrollRootHeight))).toBe(INFRASTRUCTURE);
+  });
+
+  test("subpixel anchor rounding does not revert the clicked section", () => {
+    const line = settingsAnchorOffset(916);
+    expect(
+      activeSectionIndex({
+        sectionTops: [-300, -10, line - 20, line - 5, line + 0.09375, line + 400],
+        viewportHeight: 916,
+      }),
+    ).toBe(INFRASTRUCTURE);
   });
 
   test("the first section is active at rest and whenever nothing has crossed the line", () => {

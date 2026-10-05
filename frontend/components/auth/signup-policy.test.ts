@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { ReactElement } from "react";
+import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import { cloneElement, createElement, type ReactElement } from "react";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
 
 import LoginPage from "@/app/login/[[...login]]/page";
 import { AuthForm } from "@/app/login/auth-form";
 import SignupPage from "@/app/signup/[[...signup]]/page";
+
+const router = { push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} } as unknown as AppRouterInstance;
+const renderToStaticMarkup = (node: ReactElement) =>
+  renderMarkup(createElement(AppRouterContext.Provider, { value: router }, node));
 
 describe("self-service signup UI policy", () => {
   test("redirects public signup to login", () => {
@@ -21,5 +27,20 @@ describe("self-service signup UI policy", () => {
       searchParams: Promise.resolve({ redirect_url: "//attacker.example/path" }),
     })) as ReactElement<{ callbackURL: string }>;
     expect(external.props.callbackURL).toBe("/");
+  });
+
+  test("the real login page swaps the browser form for the frozen desktop control", async () => {
+    const page = (await LoginPage({ searchParams: Promise.resolve({}) })) as ReactElement<{
+      initialDesktopBridge?: { platform: "darwin"; openExternal(url: string): void } | null;
+    }>;
+    const browser = renderToStaticMarkup(cloneElement(page, { initialDesktopBridge: null }));
+    const desktop = renderToStaticMarkup(cloneElement(page, {
+      initialDesktopBridge: { platform: "darwin", openExternal() {} },
+    }));
+
+    expect(browser).toContain("Welcome back");
+    expect(browser).not.toContain("Continue in browser");
+    expect(desktop).toContain("Continue in browser");
+    expect(desktop).not.toContain("Welcome back");
   });
 });

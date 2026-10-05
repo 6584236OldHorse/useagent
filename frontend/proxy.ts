@@ -21,6 +21,7 @@ function routeResponse(request: NextRequest): NextResponse | null {
 
 function isPublicPage(pathname: string): boolean {
   return (
+    pathname === "/desktop-auth" ||
     pathname === "/login" ||
     pathname.startsWith("/login/") ||
     pathname === "/signup" ||

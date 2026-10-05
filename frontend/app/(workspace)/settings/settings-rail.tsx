@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { cx } from "@/utils/cx";
-import { activeSectionIndex } from "./settings-rail-active";
+import { activeSectionIndex, settingsAnchorOffset } from "./settings-rail-active";
 
 /**
  * Sticky left section rail for the settings page. Anchor links jump to each
@@ -46,9 +46,12 @@ export function SettingsRail({ className }: { className?: string }) {
     const box = scroller ?? document.documentElement;
     const measure = () => {
       const origin = scroller ? scroller.getBoundingClientRect().top : 0;
+      const viewportHeight = box.clientHeight;
+      const anchorOffset = `${settingsAnchorOffset(viewportHeight)}px`;
+      box.style.setProperty("--settings-anchor-offset", anchorOffset);
       const index = activeSectionIndex({
         sectionTops: els.map((el) => el.getBoundingClientRect().top - origin),
-        viewportHeight: box.clientHeight,
+        viewportHeight,
       });
       setActive(els[index].id);
     };

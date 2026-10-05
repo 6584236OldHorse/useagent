@@ -26,12 +26,18 @@ describe("unified shell contract", () => {
     const { appShell } = shellSources();
 
     expect(appShell).toContain("<SidebarProvider");
-    expect(appShell).toContain("h-dvh overflow-hidden bg-sidebar");
+    expect(appShell).toContain(
+      "h-[calc(100dvh-var(--desktop-titlebar-height,0px))] min-h-0 overflow-hidden bg-sidebar",
+    );
     expect(appShell).toContain("<SidebarInset");
     expect(appShell).toContain("md:peer-data-[variant=inset]:mt-0");
     expect(appShell).toContain("md:peer-data-[variant=inset]:rounded-t-none");
     expect(appShell).not.toContain("rounded-2xl");
     expect(appShell).not.toContain("shadow-regular");
+  });
+
+  test("mounts native window chrome in the global provider stack", () => {
+    expect(readFromFrontend("app/providers.tsx")).toContain("<DesktopTitlebar />");
   });
 
   test("shares one AppShell thread snapshot across the rail, the panel, and the page", () => {
