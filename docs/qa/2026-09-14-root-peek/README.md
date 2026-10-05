@@ -2,7 +2,7 @@
 
 ## Live reproduction
 
-Reload All threads, find the QA controls-only root conversation, and choose Peek run. The deployed pane calls the root a Subagent and offers Pass instructions down. `before.png` captures the current live reproduction.
+Reload All threads, find the QA controls-only root conversation, and choose Peek run. The deployed pane calls the root a Subagent and offers Pass instructions down. The before and after screenshots live on pull request #349.
 
 Ordinary replies also have `parent_run_id`; that field does not prove that a run is a gateway child. The authoritative discriminator is decoded `child_session === true`.
 
@@ -15,7 +15,7 @@ Ordinary replies also have `parent_run_id`; that field does not prove that a run
 - Six rendering/selection tests pass; pinned TypeScript 5.9 full-root check, targeted lint, full frontend lint and production build pass. The existing route-chunks filesystem tracing warning remains unchanged.
 - Independent code review APPROVE and architecture CLEAR. Post-review cleanup shares the identical footer wrapper and introduces no behavior change or dependency.
 
-`after-dark.png` and `after-light.png` show the actual patched LoadedPane component rendered with production CSS and synthetic root/child data in Chrome. The isolated fixture uses a fallback font and no hydration/backend. These screenshots prove the visual classification and control split, not a deployed navigation or pass-down test. The temporary generator was removed; generated HTML evidence is retained in the QA directory.
+The after screenshots on the pull request show the patched LoadedPane component rendered with production CSS and synthetic root/child data in Chrome. The isolated fixture uses a fallback font and no hydration/backend. They prove the visual classification and control split, not a deployed navigation or pass-down test.
 
 ## Bundle measurement
 
