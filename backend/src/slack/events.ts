@@ -14,7 +14,7 @@
  *  - channel `message` thread reply → only if we already root that thread.
  *  - anything else                  → ignored (no channel-wide chatter).
  */
-import { env, slackConfig } from "../env";
+import { slackConfig } from "../env";
 import { runs, type MemoryScope, type RunStatus } from "../db/schema";
 import { db } from "../db/client";
 import { getRunForOrg } from "../runs/repo";
@@ -26,19 +26,18 @@ import {
 } from "../commands";
 import { pumpThread } from "../worker";
 import { stageInboundSlackFiles, type SlackInboundFileMeta } from "./inbound-files";
-import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread } from "./repo";
+import { createSlackRunResponse, findOrAdoptSlackThread, linkSlackThread, slackThreadCardBase } from "./repo";
 import { watchSlackRun } from "./watcher";
 import {
   enqueueAddReactionTx,
+  enqueuePostCardTx,
   enqueuePostMessage,
-  enqueueSessionStatusTx,
-  enqueueStartStreamTx,
   enqueueThreadStatusTx,
+  enqueueUpdateCardTx,
   kickSlackOutbox,
 } from "./outbox";
-import { buildRunCard, deriveTitle, sessionUrl } from "./card";
-import { parseRepoRef } from "../github/repo-ref";
-import { directMessageChannel, openingStreamChunks } from "./streaming";
+import { buildRunCard, stripMentions } from "./card";
+import { WORKING_PHRASES } from "./streaming";
 import { enqueueSlackTerminalDeliveryForRunTx } from "../runs/finalize";
 import { eq } from "drizzle-orm";
 import { defaultModelForEngine, isModelAllowedForEngine } from "../runs/model-policy";
@@ -57,7 +56,7 @@ import {
 } from "../resources/run-intake";
 import { resolveSlackBotTokenForWorkspace } from "../integrations/slack-token-resolver";
 import { requestSlackAccess } from "./access-requests";
-import { resolveSlackClient } from "./client";
+import { resolveSlackClient, type SlackClient } from "./client";
 
 /** Compatibility no-op: ingress dedupe now lives in the durable Slack inbox. */
 export function resetSlackDeduperForTest(): void {
@@ -96,52 +95,40 @@ async function healSlackRunDelivery(input: {
         run.summary ?? "",
       )) || kickSlack;
     } else {
-      const title = deriveTitle(run.prompt);
-      const card = buildRunCard({
-        title,
-        phase: "queued",
-        model: run.model,
-        repoSpecs: run.repos.map(parseRepoRef),
-        webUrl: sessionUrl(env.FRONTEND_ORIGIN, run.threadId),
+      // The thread's ONE card: its first turn posts it (a later turn that
+      // finds no card posts it too), and a follow-up turn sets it spinning
+      // again. Every turn's answer is its own message under the card.
+      const base = await slackThreadCardBase(run.threadId, run.orgId, tx);
+      const card = base ? buildRunCard({ ...base, status: "in_progress" }) : null;
+      const target = { orgId: run.orgId, teamId: input.teamId, channel: input.channel, threadTs: input.threadTs, rootRunId: run.threadId };
+      const cardPosted = card !== null && await enqueuePostCardTx(tx, {
+        idempotencyKey: `slack-card:${input.teamId}:${run.threadId}`,
+        ...target,
+        blocks: card.blocks,
+        text: card.text,
       });
-      const statusCreated = await enqueueSessionStatusTx(tx, {
-        idempotencyKey: `slack-status:start:${input.teamId}:${input.runId}`,
+      const cardSpinning = card !== null && run.id !== run.threadId && (await enqueueUpdateCardTx(tx, {
+        idempotencyKey: `slack-card:turn:${input.teamId}:${input.runId}`,
+        ...target,
+        runId: input.runId,
+        blocks: card.blocks,
+        text: card.text,
+        live: true,
+      }));
+      // The working shimmer, a calm phrase Slack rotates, on every thread; it
+      // is the one status family this thread uses (Slack maps it onto the
+      // session status itself).
+      const shimmerCreated = await enqueueThreadStatusTx(tx, {
+        idempotencyKey: `slack-thread-status:start:${input.teamId}:${input.runId}`,
         orgId: run.orgId,
         teamId: input.teamId,
         channel: input.channel,
         threadTs: input.threadTs,
         runId: input.runId,
-        status: "processing",
+        status: WORKING_PHRASES[0],
+        loadingMessages: WORKING_PHRASES,
       });
-      const streamCreated = await enqueueStartStreamTx(tx, {
-        idempotencyKey: `slack-stream:start:${input.teamId}:${input.runId}`,
-        orgId: run.orgId,
-        teamId: input.teamId,
-        channel: input.channel,
-        threadTs: input.threadTs,
-        runId: input.runId,
-        taskDisplayMode: "timeline",
-        chunks: openingStreamChunks(title),
-        recipientTeamId: input.teamId,
-        recipientUserId: input.slackUserId,
-        fallbackBlocks: card.blocks,
-        fallbackText: card.text,
-      });
-      kickSlack = kickSlack || statusCreated || streamCreated;
-      // Free-text shimmer while the run works - documented for DM assistant
-      // threads only, so channel threads keep the enum session status above.
-      if (directMessageChannel(input.channel)) {
-        const shimmerCreated = await enqueueThreadStatusTx(tx, {
-          idempotencyKey: `slack-thread-status:start:${input.teamId}:${input.runId}`,
-          orgId: run.orgId,
-          teamId: input.teamId,
-          channel: input.channel,
-          threadTs: input.threadTs,
-          runId: input.runId,
-          status: "is thinking...",
-        });
-        kickSlack = kickSlack || shimmerCreated;
-      }
+      kickSlack = kickSlack || cardPosted || cardSpinning || shimmerCreated;
     }
 
     const reactionCreated = await enqueueAddReactionTx(tx, {
@@ -187,11 +174,50 @@ function botUserIdOf(body: SlackEnvelope): string {
   return body.authorizations?.[0]?.user_id ?? "";
 }
 
-/** Strip the bot's own mention token(s) and collapse whitespace. */
-function cleanPrompt(text: string, botUserId: string): string {
-  let t = text;
-  if (botUserId) t = t.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ");
+/** Lookups one message may spend naming the people it mentions. */
+const MENTION_LOOKUPS = 8;
+// ponytail: process-local name cache keyed by team and user, wiped past a
+// thousand entries; a shared store only matters once several backends serve
+// Slack.
+const mentionNames = new Map<string, string>();
+
+/** The display name behind a user mention, or null when Slack cannot say. */
+async function mentionName(client: SlackClient, teamId: string, userId: string): Promise<string | null> {
+  const key = `${teamId}:${userId}`;
+  const cached = mentionNames.get(key);
+  if (cached) return cached;
+  const name = (await client.userInfo?.({ user: userId }))?.name;
+  if (!name || name === userId) return null;
+  if (mentionNames.size >= 1000) mentionNames.clear();
+  mentionNames.set(key, name);
+  return name;
+}
+
+/** The message without the bot's own mention, whitespace collapsed: the
+ *  STABLE ingress text. Replays of one event fingerprint this, never the
+ *  resolved prompt, so a name lookup that fails or changes between deliveries
+ *  can never turn an identical event into a payload mismatch. */
+function ingressText(text: string, botUserId: string): string {
+  const t = botUserId ? text.replace(new RegExp(`<@${botUserId}(\\|[^>]*)?>`, "g"), " ") : text;
   return t.replace(/\s+/g, " ").trim();
+}
+
+/** Name the people mentioned (`<@U…>` becomes `@Display Name`, so neither the
+ *  model nor a reader sees a raw id), render the rest of the mention markup,
+ *  and collapse whitespace. Bounded and fail-soft: an unnamed mention keeps
+ *  its label or disappears. */
+async function cleanPrompt(
+  text: string,
+  name: (userId: string) => Promise<string | null>,
+): Promise<string> {
+  let t = text;
+  const ids = [...new Set([...t.matchAll(/<@([^>|]+)>/g)].map((m) => m[1]!))].slice(0, MENTION_LOOKUPS);
+  const names = new Map(await Promise.all(ids.map(async (id) => [id, await name(id).catch(() => null)] as const)));
+  t = t.replace(/<@([^>|]+)>/g, (token, id: string) => {
+    const known = names.get(id);
+    return known ? `@${known}` : token;
+  });
+  return stripMentions(t).replace(/\s+/g, " ").trim();
 }
 
 /** Pure transport-envelope gates that never need tenant identity or mutation. */
@@ -318,6 +344,7 @@ export async function handleSlackEvent(
     config,
   });
   if (!botToken) return { status: "retryable_unavailable", reason: "bot_token_unavailable" };
+  const client = resolveSlackClient({ apiUrl: config.apiUrl, botToken });
 
   // A message threads under its thread root (replies) or under itself (top-level).
   const slackThreadTs = threadTs ?? ts;
@@ -343,7 +370,7 @@ export async function handleSlackEvent(
       slackUserId: event.user,
       orgId,
       messageTs: ts,
-      client: resolveSlackClient({ apiUrl: config.apiUrl, botToken }),
+      client,
     });
     if (verdict !== "denied") {
       await enqueuePostMessage({
@@ -368,14 +395,19 @@ export async function handleSlackEvent(
   const durableKey = `slack-event:${teamId}:${channel}:${ts}`;
   const files = Array.isArray(event.files) ? event.files : [];
 
-  let prompt = cleanPrompt(rawText, botUserId);
-  if (!prompt) {
+  // Two prompts from one message: the STABLE one (bot mention stripped,
+  // mention markup left as Slack sent it) is what replays fingerprint, exactly
+  // as rows accepted before names were resolved were fingerprinted; the run
+  // itself gets the names resolved.
+  let stablePrompt = ingressText(rawText, botUserId);
+  let prompt = (await cleanPrompt(stablePrompt, (id) => mentionName(client, teamId, id))) || stablePrompt;
+  if (!stablePrompt) {
     // A files-only message still runs (the attachments ARE the request); an
     // empty message with no attached files stays a no-op.
     if (files.length === 0) {
       return { status: "permanent_noop", reason: "empty_message" };
     }
-    prompt = "Review the attached files.";
+    stablePrompt = prompt = "Review the attached files.";
   }
 
   // Threading: an existing Slack thread → reply under its root run (inherits the
@@ -430,6 +462,7 @@ export async function handleSlackEvent(
   // a supported provider capability); engine switches only start NEW threads -
   // an existing thread's engine owns its native session state.
   const { directives, rest } = parseSlackDirectives(prompt);
+  const stableRest = parseSlackDirectives(stablePrompt).rest;
   const guide = (text: string) =>
     enqueuePostMessage({
       idempotencyKey: `slack-directive:${teamId}:${channel}:${ts}`,
@@ -440,8 +473,10 @@ export async function handleSlackEvent(
       threadTs: slackThreadTs,
     });
   if (directives.engine || directives.model) {
-    if (rest) prompt = rest;
-    else if (files.length === 0) {
+    if (rest) {
+      prompt = rest;
+      stablePrompt = stableRest || stablePrompt;
+    } else if (files.length === 0) {
       await guide("Include your request in the same message as the directive, e.g. `model:sol summarize this thread`.");
       return { status: "permanent_noop", reason: "directive_without_prompt" };
     }
@@ -482,7 +517,11 @@ export async function handleSlackEvent(
     ]),
   );
   const intent: RunCommandIntent = {
-    prompt,
+    // The intent carries the processed prompt with names UNRESOLVED (the
+    // directives applied, the attachment default applied): identical events
+    // fingerprint identically whatever users.info answers on a replay, and
+    // rows accepted before names were resolved replay unchanged.
+    prompt: stablePrompt,
     model,
     engine,
     parentRunId,
@@ -690,6 +729,6 @@ export async function handleSlackEvent(
 
   await pumpThread(threadId);
 
-  watchSlackRun({ runId, rootRunId: threadId, orgId, teamId, channel, threadTs: slackThreadTs });
+  watchSlackRun({ runId, rootRunId: threadId, orgId, teamId, channel, threadTs: slackThreadTs, slackUserId: event.user });
   return { status: "accepted", runId };
 }

@@ -19,7 +19,14 @@ export type PostMessagePayload = {
   readonly text?: string;
   readonly threadTs?: string;
   readonly runId?: string;
-  readonly messageRole?: "user_mirror";
+  /** `user_mirror`: the web author's turn mirrored ahead of the bot's result.
+   *  `reply_tail`: the part of an answer past what its streamed message holds,
+   *  posted after that message closed (`part` orders the tails). */
+  readonly messageRole?: "user_mirror" | "reply_tail";
+  readonly part?: number;
+  /** A row that must reach a terminal outbox state first (the same run's user
+   *  mirror before its result, the closed stream before its answer's tail). */
+  readonly waitForIdempotencyKey?: string;
 };
 
 export type AddReactionPayload = {
@@ -53,33 +60,39 @@ export type UploadFilePayload = {
   readonly size: number;
 };
 
-/** Post the Block Kit RUN CARD into a thread and persist its message ts on
- *  slack_threads so later updates target it. `rootRunId` keys the thread row the
- *  ts is stored on; `text` is the plain-text notification/fallback string. */
+/** Post the thread CARD (Block Kit) into a Slack thread and persist its message
+ *  ts on slack_threads. One card per thread: delivery skips a thread that
+ *  already has one. `rootRunId` keys the thread row the ts is stored on;
+ *  `text` is the plain-text notification string. */
 export type PostCardPayload = {
   readonly orgId: string;
   readonly teamId: string;
   readonly channel: string;
   readonly threadTs: string;
-  readonly runId: string;
+  readonly rootRunId: string;
   readonly blocks: readonly unknown[];
   readonly text: string;
 };
 
-/** Advance the run card IN PLACE (chat.update) to its final state. The card ts is
- *  resolved from slack_threads at delivery (it may not exist yet at enqueue). When
- *  no card ts is found or the update fails permanently, the delivery falls back to
- *  posting the answer as CHUNKED plain messages so the reply is NEVER lost. */
+/** Advance the thread card IN PLACE (chat.update). The card ts is resolved from
+ *  slack_threads at delivery; a thread without a card (the post never landed,
+ *  the card was deleted) gets it posted instead. `live` marks a progress
+ *  revision of `runId`, dropped once that run is terminal - the terminal
+ *  revision carries the settled state. */
 export type UpdateCardPayload = {
   readonly orgId: string;
   readonly teamId: string;
   readonly channel: string;
   readonly threadTs: string;
+  readonly rootRunId: string;
   readonly runId: string;
   readonly blocks: readonly unknown[];
   readonly text: string;
-  /** The full answer, chunked - the plain-text fallback when no card ts exists. */
-  readonly fallbackChunks: readonly string[];
+  readonly live?: boolean;
+  /** Thread-wide ordering of card revisions (strictly increasing at enqueue):
+   *  delivery applies a revision only if it is newer than the card's, except
+   *  that a turn's terminal revision always settles its own live one. */
+  readonly revision?: number;
 };
 
 export type SetSessionStatusPayload = {
@@ -91,8 +104,8 @@ export type SetSessionStatusPayload = {
   readonly status: SlackSessionStatus;
 };
 
-/** Free-text working status on a DM assistant thread (native shimmer). An
- *  empty `status` clears it. */
+/** Free-text working status on a thread (native shimmer), rotating through
+ *  `loadingMessages` when given. An empty `status` clears it. */
 export type SetThreadStatusPayload = {
   readonly orgId: string;
   readonly teamId: string;
@@ -100,6 +113,7 @@ export type SetThreadStatusPayload = {
   readonly threadTs: string;
   readonly runId: string;
   readonly status: string;
+  readonly loadingMessages?: readonly string[];
 };
 
 export type StartStreamPayload = {
@@ -113,8 +127,10 @@ export type StartStreamPayload = {
   /** Slack requires the recipient identity when streaming into a channel. */
   readonly recipientTeamId?: string;
   readonly recipientUserId?: string;
-  /** Fallback Block Kit card used when native streaming is unavailable. */
-  readonly fallbackBlocks: readonly unknown[];
+  /** The plain message posted instead when native streaming is unavailable
+   *  (later appends and the stop update it in place). Legacy rows carried
+   *  Block Kit blocks for it. */
+  readonly fallbackBlocks?: readonly unknown[];
   readonly fallbackText: string;
 };
 
@@ -132,8 +148,8 @@ export type AppendStreamPayload = {
    *  batch older than the newest one already delivered for the run, so a
    *  retried batch never restores stale card state. */
   readonly cardSeq?: number;
-  /** Fallback card update used when a stream append is permanently unsupported. */
-  readonly fallbackBlocks: readonly unknown[];
+  /** The text the fallback message shows instead (the narration so far). */
+  readonly fallbackBlocks?: readonly unknown[];
   readonly fallbackText: string;
 };
 
@@ -143,7 +159,8 @@ export type StopStreamPayload = {
   readonly channel: string;
   readonly threadTs: string;
   readonly runId: string;
-  /** Terminal task/plan closures (no reply markdown - see narration fields). */
+  /** Extra closing chunks (none today: the card carries the state; legacy
+   *  rows closed task rows here). The reply markdown travels separately. */
   readonly chunks: readonly SlackStreamChunk[];
   /** The full narration the stream body should contain; delivery appends only
    *  the tail past the accepted offset (streamed_chars). */
@@ -151,14 +168,20 @@ export type StopStreamPayload = {
   /** Markdown appended after the narration tail (the reply when nothing was
    *  streamed, the failure line, or the re-stated reply when truncated). */
   readonly closingMarkdown?: string;
-  /** Blocks closing the NATIVE stream (chrome card - the body carries the reply). */
-  readonly blocks: readonly unknown[];
+  /** Blocks under the closed NATIVE stream (none today; legacy rows carried a card). */
+  readonly blocks?: readonly unknown[];
   readonly text: string;
   /** Full final card (with the answer) for the chat.update card fallback path.
    *  Legacy rows omit it; delivery falls back to `blocks`. */
   readonly fallbackBlocks?: readonly unknown[];
-  /** The full answer, chunked - plain-text fallback when no stream/card update works. */
-  readonly fallbackChunks: readonly string[];
+  /** The plain answer, chunked, when a row carries it (legacy rows, and a row
+   *  whose fallback posting was cut short); otherwise derived at delivery from
+   *  the markdown head. */
+  readonly fallbackChunks?: readonly string[];
+  /** Written by delivery with the cursor: the answer's first message is on
+   *  screen (the plain stand-in rewritten in place, or a chunk posted), so a
+   *  retry posts the remaining chunks after it and rewrites nothing. */
+  readonly fallbackHeadPlaced?: boolean;
   /** A same-run user mirror that must reach a terminal outbox state before the
    * result is eligible, so retries cannot put the result first. */
   readonly waitForIdempotencyKey?: string;

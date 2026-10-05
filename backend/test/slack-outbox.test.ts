@@ -8,7 +8,9 @@ import { setSlackClientForTest, type DeliveryResult, type SlackClient } from "..
 import { enqueue } from "../src/slack/outbox/repo";
 import { createRun, setRunStatus } from "../src/runs/repo";
 import { createSlackRunResponse, findSlackRunResponse, linkSlackThread } from "../src/slack/repo";
-import { openingStreamChunks } from "../src/slack/streaming";
+import { markdownChunksFor } from "../src/slack/streaming";
+import { getSlackCardTsByRoot } from "../src/slack/repo";
+import { slackOutbox } from "../src/db/schema";
 import {
   enqueuePostMessage,
   backfillSlackOutboxOrgScope,
@@ -43,7 +45,7 @@ interface Recorder {
     chunks?: readonly unknown[];
   }>;
   statuses: Array<{ channel: string; threadTs: string; status: "processing" | "active" }>;
-  threadStatuses: Array<{ channel: string; threadTs: string; status: string }>;
+  threadStatuses: Array<{ channel: string; threadTs: string; status: string; loadingMessages?: readonly string[] }>;
 }
 
 /** A recording client whose delivery result is fixed for this test. */
@@ -221,7 +223,7 @@ describe("durable slack outbox", () => {
           channel,
           threadTs,
           runId,
-          chunks: openingStreamChunks("done"),
+          chunks: markdownChunksFor("done"),
           blocks: [],
           text: "result",
           fallbackChunks: ["result"],
@@ -278,7 +280,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -319,7 +321,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -353,7 +355,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -517,7 +519,7 @@ describe("durable slack outbox", () => {
           channel,
           threadTs,
           runId,
-          chunks: openingStreamChunks("done"),
+          chunks: markdownChunksFor("done"),
           blocks: [],
           text: "final answer",
           fallbackChunks: ["final answer"],
@@ -670,7 +672,7 @@ describe("native slack streaming outbox", () => {
         threadTs,
         runId,
         taskDisplayMode: "timeline",
-        chunks: openingStreamChunks("Queued"),
+        chunks: markdownChunksFor("Queued"),
         recipientTeamId: teamId,
         recipientUserId: "U-ASKER",
         fallbackBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Queued" } }],
@@ -685,8 +687,11 @@ describe("native slack streaming outbox", () => {
     expect(rec.streams[0]?.taskDisplayMode).toBe("timeline");
     expect(rec.streams[0]?.recipientTeamId).toBe(teamId);
     expect(rec.streams[0]?.recipientUserId).toBe("U-ASKER");
-    expect(rec.streams[0]?.chunks).toEqual(openingStreamChunks("Queued"));
-    expect((await findSlackRunResponse(runId))?.nativeStreamTs).toBe("stream.1");
+    expect(rec.streams[0]?.chunks).toEqual(markdownChunksFor("Queued"));
+    const response = await findSlackRunResponse(runId);
+    expect(response?.nativeStreamTs).toBe("stream.1");
+    // The opening markdown is narration: the offset fence starts after it.
+    expect(response?.streamedChars).toBe("Queued".length);
   });
 
   test("append_stream targets the stored ts and NORMALIZES pre-migration chunk shapes", async () => {
@@ -776,7 +781,7 @@ describe("native slack streaming outbox", () => {
     ]);
   });
 
-  test("a transient start_stream API error still falls back ONCE to the card", async () => {
+  test("a transient start_stream API error still falls back ONCE to a plain message", async () => {
     const { runId, teamId, channel, threadTs } = await linkedSlackRun();
     const key = uid("stream-transient-start");
     await enqueue({
@@ -789,8 +794,7 @@ describe("native slack streaming outbox", () => {
         threadTs,
         runId,
         taskDisplayMode: "timeline",
-        chunks: openingStreamChunks("Queued"),
-        fallbackBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Queued" } }],
+        chunks: markdownChunksFor("Queued"),
         fallbackText: "Queued",
       },
     });
@@ -800,20 +804,21 @@ describe("native slack streaming outbox", () => {
     const row = await getSlackOutbox(key);
     expect(row?.state).toBe("delivered"); // one attempt, no retry storm
     expect(row?.attemptCount).toBe(0);
-    expect(rec.posted).toHaveLength(1);
+    // The fallback is the opening text as a plain message: no card chrome.
+    expect(rec.posted).toEqual([{ channel, text: "Queued", threadTs }]);
     const response = await findSlackRunResponse(runId);
     expect(response?.nativeStreamTs).toBeNull();
     expect(response?.fallbackMessageTs).toBe("stream.1");
   });
 
-  test("set_thread_status delivers free text and the empty-string clear", async () => {
+  test("set_thread_status delivers the calm phrases and the empty-string clear", async () => {
     const { runId, teamId, channel, threadTs } = await linkedSlackRun();
     const setKey = uid("thread-status-set");
     const clearKey = uid("thread-status-clear");
     await enqueue({
       kind: "set_thread_status",
       idempotencyKey: setKey,
-      payload: { orgId: ORG, teamId, channel, threadTs, runId, status: "is working: cloning repo" },
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] },
     });
     await enqueue({
       kind: "set_thread_status",
@@ -828,7 +833,7 @@ describe("native slack streaming outbox", () => {
     expect(rec.threadStatuses.filter((entry) => (
       entry.channel === channel && entry.threadTs === threadTs
     ))).toEqual([
-      { channel, threadTs, status: "is working: cloning repo" },
+      { channel, threadTs, status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] },
       { channel, threadTs, status: "" },
     ]);
   });
@@ -968,7 +973,7 @@ describe("native slack streaming outbox", () => {
     await enqueue({
       kind: "append_stream",
       idempotencyKey: uid("late-append"),
-      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: openingStreamChunks("late"), fallbackBlocks: [], fallbackText: "late" },
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: markdownChunksFor("late"), fallbackBlocks: [], fallbackText: "late" },
     });
     await enqueue({
       kind: "set_thread_status",
@@ -982,5 +987,206 @@ describe("native slack streaming outbox", () => {
     expect(rec.statuses).toHaveLength(0);
     expect(rec.streams).toHaveLength(0);
     expect(rec.threadStatuses).toEqual([{ channel: "D1", threadTs, status: "" }]);
+  });
+
+  test("a stop with nothing to close but a long answer fits the outbox: the fallback chunks shed, nothing throws", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const key = uid("stop-long-fallback");
+    const fallbackChunks = Array.from({ length: 15 }, (_, i) => `${i}`.padEnd(3_900, "x"));
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: key,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", text: "head", fallbackChunks },
+    });
+    const row = await getSlackOutbox(key);
+    expect(row).not.toBeNull();
+    expect(row!.payload.length).toBeLessThanOrEqual(48_000);
+    const stored = JSON.parse(row!.payload) as { fallbackChunks: string[] };
+    expect(stored.fallbackChunks.length).toBeGreaterThan(0);
+    expect(stored.fallbackChunks.length).toBeLessThan(15);
+    expect(stored.fallbackChunks.at(-1)).toContain("truncated");
+  });
+
+  test("a replayed opening neither starts a second stream nor counts its text twice", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const key = uid("stream-replay");
+    await enqueue({
+      kind: "start_stream",
+      idempotencyKey: key,
+      payload: { orgId: ORG, channel, teamId, threadTs, runId, taskDisplayMode: "timeline", chunks: markdownChunksFor("Hello "), fallbackText: "Hello " },
+    });
+    const rec = recorder(() => ({ ok: true }));
+    await processDue(rec.client);
+    expect(rec.streams.filter((s) => s.op === "start")).toHaveLength(1);
+    expect((await findSlackRunResponse(runId))?.streamedChars).toBe(6);
+    // A crash between Slack accepting the opening and the row being marked
+    // delivered replays the row.
+    await db.update(slackOutbox).set({ state: "pending", nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, key));
+    await processDue(rec.client);
+    expect((await getSlackOutbox(key))?.state).toBe("delivered");
+    expect(rec.streams.filter((s) => s.op === "start")).toHaveLength(1);
+    const response = await findSlackRunResponse(runId);
+    expect(response?.nativeStreamTs).toBe("stream.1");
+    expect(response?.streamedChars).toBe(6);
+  });
+
+  test("card revisions apply only when newer, except a turn's own terminal revision settling its late live one", async () => {
+    process.env.SLACK_CARD_PACE_MS = "0";
+    try {
+      const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+      const card = (status: string, output?: string) => ({
+        blocks: [{ type: "task_card", task_id: "thread", title: "t", status, ...(output ? { output } : {}) }],
+        text: "t",
+      });
+      const base = { orgId: ORG, teamId, channel, threadTs, rootRunId: runId };
+      await enqueue({ kind: "post_card", idempotencyKey: uid("card-post"), payload: { ...base, ...card("in_progress") } });
+      const rec = recorder(() => ({ ok: true }));
+      await processDue(rec.client);
+      // Turn B's live revision lands first.
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-live"), payload: { ...base, runId: "turn-b", revision: 20, live: true, ...card("in_progress", "Ran a command") } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(1);
+      // Turn A's delayed terminal revision is older: the shared card keeps B's state.
+      const aFinal = uid("card-a-final");
+      await enqueue({ kind: "update_card", idempotencyKey: aFinal, payload: { ...base, runId: "turn-a", revision: 10, ...card("complete") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(aFinal))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(1);
+      expect((await getSlackCardTsByRoot(runId))?.cardRevision).toBe(20);
+      // B's own terminal revision, enqueued before its late live one, still settles the card.
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-final"), payload: { ...base, runId: "turn-b", revision: 15, ...card("complete") } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(2);
+      const thread = await getSlackCardTsByRoot(runId);
+      expect(thread?.cardRevision).toBe(20); // the high-water mark never falls
+      expect(thread?.cardAppliedRevision).toBe(15); // the card shows B's terminal state
+      expect(thread?.cardRevisionRunId).toBe("turn-b");
+      // A replay of that terminal row (its update persisted, the row not yet
+      // acknowledged) is already applied: no redelivery, no pacing bypass.
+      const replay = uid("card-b-final-replay");
+      await enqueue({ kind: "update_card", idempotencyKey: replay, payload: { ...base, runId: "turn-b", revision: 15, ...card("complete") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(replay))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(2);
+      // The high-water mark stayed at 20 while the applied identity is 15/B:
+      // an older turn's delayed revision is still superseded, even after the
+      // card had to be reposted.
+      expect(thread?.cardRevision).toBe(20);
+      expect(thread?.cardAppliedRevision).toBe(15);
+      rec.client.updateMessage = async () => ({ ok: false, class: "permanent", message: "message_not_found" });
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-b-repost"), payload: { ...base, runId: "turn-b", revision: 25, ...card("complete") } });
+      await processDue(rec.client);
+      expect(rec.posted).toHaveLength(2); // the card, then its repost
+      const stale = uid("card-a-stale");
+      await enqueue({ kind: "update_card", idempotencyKey: stale, payload: { ...base, runId: "turn-a", revision: 18, live: true, ...card("in_progress", "Ran a command") } });
+      await processDue(rec.client);
+      expect((await getSlackOutbox(stale))?.state).toBe("delivered");
+      expect(rec.posted).toHaveLength(2);
+      expect(rec.updates).toHaveLength(2);
+    } finally {
+      delete process.env.SLACK_CARD_PACE_MS;
+    }
+  });
+
+  test("card revisions are paced: one within the window waits its turn without spending an attempt", async () => {
+    process.env.SLACK_CARD_PACE_MS = "400";
+    try {
+      const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+      const blocks = [{ type: "task_card", task_id: "thread", title: "t", status: "in_progress" }];
+      const base = { orgId: ORG, teamId, channel, threadTs, rootRunId: runId, blocks, text: "t" };
+      await enqueue({ kind: "post_card", idempotencyKey: uid("card-post"), payload: base });
+      const rec = recorder(() => ({ ok: true }));
+      await processDue(rec.client);
+      await new Promise((r) => setTimeout(r, 450));
+      await enqueue({ kind: "update_card", idempotencyKey: uid("card-r1"), payload: { ...base, runId, revision: 1, live: true } });
+      await processDue(rec.client);
+      expect(rec.updates).toHaveLength(1);
+      const second = uid("card-r2");
+      await enqueue({ kind: "update_card", idempotencyKey: second, payload: { ...base, runId, revision: 2, live: true } });
+      await processDue(rec.client);
+      const paced = await getSlackOutbox(second);
+      expect(paced?.state).toBe("pending");
+      expect(paced?.attemptCount).toBe(0);
+      expect(paced?.lastError).toBe("card_paced");
+      expect(rec.updates).toHaveLength(1);
+      await new Promise((r) => setTimeout(r, 450));
+      await processDue(rec.client);
+      expect((await getSlackOutbox(second))?.state).toBe("delivered");
+      expect(rec.updates).toHaveLength(2);
+    } finally {
+      delete process.env.SLACK_CARD_PACE_MS;
+    }
+  });
+
+  test("an answer's tails post in order: a tail waits for the tail before it, not only for the closed stream", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    const stopKey = uid("tail-stop");
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: stopKey,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", closingMarkdown: "head", text: "head", fallbackChunks: ["head"] },
+    });
+    const tail0 = uid("tail-0");
+    const tail1 = uid("tail-1");
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail0,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail zero"], messageRole: "reply_tail", part: 0, waitForIdempotencyKey: stopKey },
+    });
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail1,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail one"], messageRole: "reply_tail", part: 1, waitForIdempotencyKey: tail0 },
+    });
+    // The head posts; tail zero fails once, transiently.
+    const rec = recorder(() => ({ ok: true }));
+    const post = rec.client.postMessage;
+    rec.client.postMessage = async (m) => (m.text === "tail zero" && !rec.posted.some((p) => p.text === "tail zero")
+      ? (rec.posted.push(m), { ok: false, class: "transient", message: "internal_error" })
+      : post(m));
+    await processDue(rec.client);
+    expect(rec.posted.map((m) => m.text)).toEqual(["head", "tail zero"]);
+    expect((await getSlackOutbox(tail0))?.state).toBe("pending");
+    // Tail one waited on tail zero instead of overtaking it.
+    expect((await getSlackOutbox(tail1))?.state).toBe("pending");
+    // Both rows come due (the deferral is a short wait): tail zero retries first.
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail0));
+    await processDue(rec.client);
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail1));
+    await processDue(rec.client);
+    expect(rec.posted.map((m) => m.text)).toEqual(["head", "tail zero", "tail zero", "tail one"]);
+    expect((await getSlackOutbox(tail1))?.state).toBe("delivered");
+  });
+
+  test("a dead head dead-letters the reply tails behind it instead of posting fragments", async () => {
+    const { runId, teamId, channel, threadTs } = await linkedSlackRun();
+    // A stop row that can never deliver (no text): it dead-letters at once.
+    const stopKey = uid("dead-stop");
+    await enqueue({
+      kind: "stop_stream",
+      idempotencyKey: stopKey,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: [], narrationText: "", closingMarkdown: "" },
+    });
+    const tail0 = uid("dead-tail-0");
+    const tail1 = uid("dead-tail-1");
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail0,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail zero"], messageRole: "reply_tail", part: 0, waitForIdempotencyKey: stopKey },
+    });
+    await enqueue({
+      kind: "post_message",
+      idempotencyKey: tail1,
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: ["tail one"], messageRole: "reply_tail", part: 1, waitForIdempotencyKey: tail0 },
+    });
+    const rec = recorder(() => ({ ok: true }));
+    await processDue(rec.client);
+    await db.update(slackOutbox).set({ nextAttemptAt: new Date(0) }).where(eq(slackOutbox.idempotencyKey, tail1));
+    await processDue(rec.client);
+    expect((await getSlackOutbox(stopKey))?.state).toBe("dead");
+    expect((await getSlackOutbox(tail0))?.state).toBe("dead");
+    expect((await getSlackOutbox(tail0))?.lastError).toBe("reply_tail_predecessor_dead");
+    expect((await getSlackOutbox(tail1))?.state).toBe("dead");
+    expect(rec.posted).toHaveLength(0);
   });
 });

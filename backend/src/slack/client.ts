@@ -78,12 +78,15 @@ export interface SlackClient {
     status: SlackSessionStatus;
   }): Promise<DeliveryResult>;
   /** Free-text working status on an assistant thread (assistant.threads.setStatus):
-   * renders as "<App> <status>" with the native shimmer. An empty status clears
-   * it. Documented for DM assistant threads only. */
+   * renders as "<App> <status>" with the native shimmer, rotating through
+   * `loadingMessages` when given. An empty status clears it. Slack's
+   * compatibility bridge maps a non-empty status to a processing session and
+   * "" to active, so this is the ONE status family a thread uses. */
   setThreadStatus(args: {
     channel: string;
     threadTs: string;
     status: string;
+    loadingMessages?: readonly string[];
   }): Promise<DeliveryResult>;
   /** Start a Slack-native streaming reply. Blocks are intentionally not
    * accepted here; Slack only allows blocks at stopStream. The recipient ids
@@ -125,6 +128,8 @@ const PERMANENT_ERRORS = new Set([
   "not_authed",
   "restricted_action",
   "invalid_arguments",
+  // The message is gone (a deleted card): only a fresh post can recover.
+  "message_not_found",
   // AI-app surfaces: these signal the feature/surface is unavailable or the
   // stream can no longer be written - a retry will never succeed.
   "feature_disabled",
@@ -191,7 +196,7 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
       call("chat.postMessage", {
         channel,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
         ...(threadTs ? { thread_ts: threadTs } : {}),
         unfurl_links: false,
         unfurl_media: false,
@@ -201,7 +206,7 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         ts,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     addReaction: ({ channel, timestamp, name }) =>
       call("reactions.add", { channel, timestamp, name }),
@@ -212,12 +217,17 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         });
         const data = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          user?: { real_name?: string; name?: string; profile?: { email?: string; image_192?: string; image_72?: string } };
+          user?: {
+            real_name?: string;
+            name?: string;
+            profile?: { display_name?: string; email?: string; image_192?: string; image_72?: string };
+          };
         };
         if (!data.ok || !data.user) return null;
         const profile = data.user.profile ?? {};
+        // The name a member chose to be shown as, then the full name, then the handle.
         return {
-          name: data.user.real_name?.trim() || data.user.name?.trim() || user,
+          name: profile.display_name?.trim() || data.user.real_name?.trim() || data.user.name?.trim() || user,
           email: profile.email?.trim().toLowerCase() || null,
           image: profile.image_192 ?? profile.image_72 ?? null,
         };
@@ -231,11 +241,12 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         thread_ts: threadTs,
         status,
       }),
-    setThreadStatus: ({ channel, threadTs, status }) =>
+    setThreadStatus: ({ channel, threadTs, status, loadingMessages }) =>
       call("assistant.threads.setStatus", {
         channel_id: channel,
         thread_ts: threadTs,
         status,
+        ...(status && loadingMessages?.length ? { loading_messages: loadingMessages } : {}),
       }),
     startStream: ({ channel, threadTs, taskDisplayMode, chunks, recipientTeamId, recipientUserId }) =>
       call("chat.startStream", {
@@ -258,8 +269,8 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         thread_ts: threadTs,
         ts: messageTs,
-        chunks,
-        ...(blocks ? { blocks } : {}),
+        ...(chunks.length ? { chunks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     uploadFile: async ({ channel, threadTs, filename, title, initialComment, bytes }) => {
       const auth = `Bearer ${config.botToken}`;

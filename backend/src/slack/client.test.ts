@@ -92,4 +92,67 @@ describe("Slack streaming wire contract", () => {
       },
     ]);
   });
+
+  test("the thread status carries the calm phrases as loading_messages; a clear sends none", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    await client.setThreadStatus({ channel: "C123", threadTs: "1.1", status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] });
+    await client.setThreadStatus({ channel: "C123", threadTs: "1.1", status: "", loadingMessages: ["Working on it"] });
+    expect(requests.map((r) => r.url)).toEqual([
+      "https://slack.test/api/assistant.threads.setStatus",
+      "https://slack.test/api/assistant.threads.setStatus",
+    ]);
+    expect(requests[0]!.body).toEqual({
+      channel_id: "C123",
+      thread_ts: "1.1",
+      status: "Working on it",
+      loading_messages: ["Working on it", "Nearly there"],
+    });
+    expect(requests[1]!.body).toEqual({ channel_id: "C123", thread_ts: "1.1", status: "" });
+  });
+
+  test("a bare stop and an empty blocks array send neither field", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    await client.stopStream({ channel: "C123", threadTs: "1.1", messageTs: "1.2", chunks: [], blocks: [] });
+    await client.postMessage({ channel: "C123", text: "hi", threadTs: "1.1", blocks: [] });
+    expect(requests[0]!.body).toEqual({ channel: "C123", thread_ts: "1.1", ts: "1.2" });
+    expect("blocks" in requests[1]!.body).toBe(false);
+  });
+
+  test("a deleted message is a permanent failure, so a card revision posts fresh instead of retrying", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ ok: false, error: "message_not_found" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    expect(await client.updateMessage({ channel: "C123", ts: "1.1", text: "t" })).toEqual({
+      ok: false,
+      class: "permanent",
+      message: "message_not_found",
+    });
+  });
+
+  test("a member is named by the display name they chose, then the full name, then the handle", async () => {
+    let user: Record<string, unknown> = { real_name: "Alex Legal", name: "alegal", profile: { display_name: "Lex" } };
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ ok: true, user }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("Lex");
+    user = { real_name: "Alex Legal", name: "alegal", profile: { display_name: "  " } };
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("Alex Legal");
+    user = { name: "alegal", profile: {} };
+    expect((await client.userInfo!({ user: "U1" }))?.name).toBe("alegal");
+  });
 });

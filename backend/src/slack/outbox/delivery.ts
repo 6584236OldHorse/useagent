@@ -2,6 +2,8 @@ import type { SlackConfig } from "../../env";
 import { resolveSlackClient, type DeliveryResult, type SlackClient } from "../client";
 import { assertNever } from "../../util/exhaustive";
 import { readStagedBytes } from "../upload-staging";
+import { chunkSlackText } from "../chunk";
+import { toSlackMrkdwn } from "../mrkdwn";
 import { getArtifact } from "../../artifacts/repo";
 import { artifactStorage } from "../../artifacts/storage";
 import { recordProviderEvent } from "../../runs/provider-events";
@@ -15,6 +17,7 @@ import {
   setSlackNativeStream,
   noteSlackCardRevisions,
 } from "../repo";
+import { cardPaceWaitMs, deliverPostCard, deliverUpdateCard } from "./card-delivery";
 import type { ProcessResult, SlackDeliveryOutcome, SlackErrorClass } from "./types";
 import {
   markdownChunksFor,
@@ -70,15 +73,26 @@ async function postFallbackChunks(
   channel: string,
   threadTs: string,
   fallbackChunks: readonly string[],
+  /** The answer's first message is already on screen (the plain stand-in
+   *  rewritten in place with the head): nothing left to post is success. */
+  headPlaced = false,
 ): Promise<DeliveryResult> {
   if (fallbackChunks.length === 0) {
-    return { ok: false, class: "permanent", message: "invalid_payload" };
+    return headPlaced ? { ok: true } : { ok: false, class: "permanent", message: "invalid_payload" };
   }
   for (let i = 0; i < fallbackChunks.length; i++) {
     const res = await client.postMessage({ channel, text: fallbackChunks[i]!, threadTs });
     if (!res.ok) {
-      if (i > 0) {
-        await updatePayload(row.id, JSON.stringify({ ...payload, fallbackChunks: fallbackChunks.slice(i) }));
+      // Once Slack holds part of the answer, the cursor replaces the stored
+      // markdown head it was derived from (a retrying row never grows past
+      // what it held at enqueue) and marks the head placed: the retry posts
+      // the remaining chunks after what landed and rewrites nothing.
+      if (i > 0 || headPlaced) {
+        const { narrationText: _narration, closingMarkdown: _closing, ...rest } = payload;
+        await updatePayload(
+          row.id,
+          JSON.stringify({ ...rest, fallbackChunks: fallbackChunks.slice(i), fallbackHeadPlaced: true }),
+        );
       }
       return res;
     }
@@ -105,7 +119,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
   // this fence, a backoff or restart can re-open the spinner/stream after the
   // terminal stop row already settled the Slack surface.
   const staleLiveRow =
-    row.kind === "post_card" ||
+    (row.kind === "update_card" && p.live === true) ||
     row.kind === "start_stream" ||
     row.kind === "append_stream" ||
     (row.kind === "set_session_status" && p.status === "processing") ||
@@ -201,56 +215,10 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         bytes,
       });
     }
-    case "post_card": {
-      const teamId = string("teamId");
-      const channel = string("channel");
-      const threadTs = string("threadTs");
-      const runId = string("runId") ?? string("rootRunId");
-      const text = string("text");
-      const blocks = Array.isArray(p.blocks) ? p.blocks : undefined;
-      if (!teamId || !channel || !threadTs || !runId || !text) {
-        return { ok: false, class: "permanent", message: "invalid_payload" };
-      }
-      const res = await client.postMessage({ channel, text, threadTs, blocks });
-      // Persist the card ts so later updates target the SAME message. A crash
-      // between the post and this write redelivers the row (at-least-once): the
-      // idempotency key already bounds it, and a re-post is a benign duplicate
-      // card - the update path still finds a ts on the healed row next time.
-      if (res.ok && res.ts) {
-        await createSlackRunResponse({ runId, teamId, channel, threadTs });
-        await setSlackFallbackMessageTs(runId, res.ts);
-      }
-      return res;
-    }
-    case "update_card": {
-      const teamId = string("teamId");
-      const channel = string("channel");
-      const threadTs = string("threadTs");
-      const runId = string("runId") ?? string("rootRunId");
-      const text = string("text");
-      const blocks = Array.isArray(p.blocks) ? p.blocks : undefined;
-      // The plain-text fallback (chunked) - posted when there is no card to update.
-      const fallbackChunks = Array.isArray(p.fallbackChunks)
-        ? p.fallbackChunks.filter((c): c is string => typeof c === "string" && c.length > 0)
-        : [];
-      if (!teamId || !channel || !threadTs || !runId || !text) {
-        return { ok: false, class: "permanent", message: "invalid_payload" };
-      }
-      // Resolve the card ts written by the post_card row. When it exists, advance
-      // the card in place; a transient/rate-limited failure retries the whole row.
-      const response = await findSlackRunResponse(runId);
-      if (response?.fallbackMessageTs) {
-        const res = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text, blocks });
-        // chat.update succeeded, or failed transiently (retry the row) - but a
-        // PERMANENT update failure (card deleted, message not found) must not
-        // strand the answer: fall through to posting it as a fresh reply below.
-        if (res.ok || res.class !== "permanent") return res;
-      }
-      // No card ts (post never landed) or the card is gone: post the answer as a
-      // fresh CHUNKED reply so the answer is NEVER lost. Cursor-resumes like
-      // post_message so a mid-sequence retry does not re-post delivered chunks.
-      return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks);
-    }
+    case "post_card":
+      return deliverPostCard(client, p);
+    case "update_card":
+      return deliverUpdateCard(client, p);
     case "set_session_status": {
       const teamId = string("teamId");
       const channel = string("channel");
@@ -267,10 +235,13 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const threadTs = string("threadTs");
       // The empty string is meaningful: it CLEARS the shimmer.
       const status = typeof p.status === "string" ? p.status : undefined;
+      const loadingMessages = Array.isArray(p.loadingMessages)
+        ? p.loadingMessages.filter((m): m is string => typeof m === "string" && m.length > 0)
+        : undefined;
       if (!teamId || !channel || !threadTs || status === undefined) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
-      return client.setThreadStatus({ channel, threadTs, status });
+      return client.setThreadStatus({ channel, threadTs, status, loadingMessages });
     }
     case "start_stream": {
       const teamId = string("teamId");
@@ -285,6 +256,11 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
       await createSlackRunResponse({ runId, teamId, channel, threadTs });
+      // A replay of an opening Slack already holds (a crash between the
+      // opening and marking this row delivered) must neither open a second
+      // stream nor count the opening twice.
+      const opened = await findSlackRunResponse(runId);
+      if (opened?.nativeStreamTs || opened?.fallbackMessageTs) return { ok: true };
       const stream = await client.startStream({
         channel,
         threadTs,
@@ -294,13 +270,21 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         recipientUserId: string("recipientUserId"),
       });
       if (stream.ok && stream.ts) {
-        await setSlackNativeStream(runId, stream.ts, mode);
+        // The opening markdown is narration too: the ts and its char count
+        // land in one write, so the appends' offset fence and the stop's tail
+        // arithmetic start after it whatever happens next.
+        await setSlackNativeStream(
+          runId,
+          stream.ts,
+          mode,
+          chunks.reduce((n, c) => (c.type === "markdown_text" ? n + c.text.length : n), 0),
+        );
         return stream;
       }
       if (!stream.ok && stream.class === "rate_limited") return stream;
       // ANY other stream outcome (feature off, restricted workspace, invalid,
-      // missing ts) falls back ONCE to the Block Kit card for this run - the
-      // stream ts stays null so every later row rides the card path too.
+      // missing ts) falls back ONCE to a plain message for this run - the
+      // stream ts stays null so every later row updates that message instead.
       const fallback = await client.postMessage({ channel, threadTs, text: fallbackText, blocks: fallbackBlocks });
       if (fallback.ok && fallback.ts) await setSlackFallbackMessageTs(runId, fallback.ts);
       return fallback;
@@ -388,10 +372,13 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       // Full final card (with the answer) for the card-update path; legacy rows
       // carried a single blocks set for both paths.
       const cardBlocks = Array.isArray(p.fallbackBlocks) ? p.fallbackBlocks : blocks;
+      // The plain (mrkdwn) form of the head is derived here from the one stored
+      // markdown copy, so the row never carries the answer twice; a legacy
+      // row, or a row whose fallback posting was cut short, carries its own.
       const fallbackChunks = Array.isArray(p.fallbackChunks)
         ? p.fallbackChunks.filter((c): c is string => typeof c === "string" && c.length > 0)
-        : [];
-      if (!teamId || !channel || !threadTs || !runId || !text || chunks.length === 0 || !blocks) {
+        : chunkSlackText(toSlackMrkdwn(narrationText + closingMarkdown));
+      if (!teamId || !channel || !threadTs || !runId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
       const response = await findSlackRunResponse(runId);
@@ -410,9 +397,20 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
         if (stopped.ok || stopped.class === "rate_limited") return stopped;
         await disableSlackNativeStream(runId);
       }
-      if (response?.fallbackMessageTs) {
-        const updated = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text, blocks: cardBlocks });
-        if (updated.ok || updated.class !== "permanent") return updated;
+      // The plain stand-in (posted when the stream would not open, holding
+      // the narration it accepted since) becomes the answer's first message:
+      // rewritten in place with the first chunk, the rest posted after it, so
+      // a long answer reads once and in order. A retry of a posting cut short
+      // never rewrites it (fallbackHeadPlaced): it resumes at the failed chunk.
+      if (response?.fallbackMessageTs && p.fallbackHeadPlaced !== true) {
+        const updated = await client.updateMessage({
+          channel,
+          ts: response.fallbackMessageTs,
+          text: fallbackChunks[0] ?? text,
+          blocks: cardBlocks,
+        });
+        if (updated.ok) return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks.slice(1), true);
+        if (updated.class !== "permanent") return updated;
       }
       return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks);
     }
@@ -533,15 +531,18 @@ async function deliverOne(
 ): Promise<SlackDeliveryOutcome> {
   let waitForIdempotencyKey: string | null = null;
   let dependencyRunId: string | null = null;
+  let replyTail = false;
   try {
     const payload = JSON.parse(row.payload) as {
       waitForIdempotencyKey?: unknown;
       runId?: unknown;
+      messageRole?: unknown;
     };
     waitForIdempotencyKey = typeof payload.waitForIdempotencyKey === "string"
       ? payload.waitForIdempotencyKey
       : null;
     dependencyRunId = typeof payload.runId === "string" ? payload.runId : null;
+    replyTail = row.kind === "post_message" && payload.messageRole === "reply_tail";
   } catch {
     // The normal attempt path classifies invalid payloads permanently.
   }
@@ -560,11 +561,14 @@ async function deliverOne(
         runId?: unknown;
         messageRole?: unknown;
       };
+      // The same run's user mirror before its result; an answer's tail after
+      // the closed stream and after the tail before it.
       validDependency =
-        dependency.kind === "post_message" &&
-        payload.messageRole === "user_mirror" &&
         typeof payload.runId === "string" &&
-        payload.runId === dependencyRunId;
+        payload.runId === dependencyRunId &&
+        ((dependency.kind === "post_message" &&
+          (payload.messageRole === "user_mirror" || payload.messageRole === "reply_tail")) ||
+          dependency.kind === "stop_stream");
     } catch {
       validDependency = false;
     }
@@ -578,6 +582,22 @@ async function deliverOne(
     if (dependency.state === "pending" || dependency.state === "delivering") {
       const nextAttemptAt = new Date(Date.now() + 250);
       await deferForDependency(row.id, nextAttemptAt);
+      return { status: "retry", errorClass: "transient", nextAttemptAt };
+    }
+    // A reply's tail needs its head (the closed stream, the tail before it)
+    // DELIVERED, or the thread would show a fragment with nothing above it:
+    // a dead predecessor dead-letters the rest of the chain. The user mirror
+    // keeps failing open: a result must never wait on a mirror that died.
+    if (replyTail && dependency.state === "dead") {
+      await deadLetter(row, { errorClass: "permanent", lastError: "reply_tail_predecessor_dead" });
+      return { status: "dead", errorClass: "permanent" };
+    }
+  }
+  if (row.kind === "update_card") {
+    const wait = await cardPaceWaitMs(row);
+    if (wait > 0) {
+      const nextAttemptAt = new Date(Date.now() + wait);
+      await deferForDependency(row.id, nextAttemptAt, "card_paced");
       return { status: "retry", errorClass: "transient", nextAttemptAt };
     }
   }
