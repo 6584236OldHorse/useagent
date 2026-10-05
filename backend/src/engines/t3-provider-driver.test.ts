@@ -558,7 +558,7 @@ describe("T3 provider drivers", () => {
         {
           id: "pe_run-2_t3_child-terminal:started",
           eventType: "t3.activity.task.started",
-          sessionId: "child-session-1",
+          sessionId: "sa-1",
           parentSessionId: THREAD,
         },
         {
@@ -566,8 +566,8 @@ describe("T3 provider drivers", () => {
           runScopedId: true,
           provider: "t3",
           eventType: "t3.activity.task.completed",
-          sessionId: "child-session-1",
-          callId: "child-session-1",
+          sessionId: "sa-1",
+          callId: "sa-1",
         },
       ],
     });

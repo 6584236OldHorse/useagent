@@ -112,16 +112,16 @@ describe("protocol 2 thread view", () => {
     expect((step.code_json as { input: Record<string, unknown> }).input).toMatchObject({ file_path: "src/a.ts" });
   });
 
-  test("a subagent is a task lifecycle owned by its child thread", () => {
+  test("a subagent is a task lifecycle owned by its record", () => {
     const view = runtimeThreadView(v2Snapshot(1, v2Projection({
       subagents: [{ id: "sa-1", runId: "r1", childThreadId: "child-1", status: "running", prompt: "look", title: "Explorer", result: null, updatedAt: "x", model: "m" }],
       turnItems: [v2Item({ id: "si-1", type: "subagent", runId: "r1", status: "running", subagentId: "sa-1", childThreadId: "child-1", prompt: "look" })],
     })));
     expect(view.thread.activities.map((entry) => entry.kind)).toEqual(["task.started", "task.progress"]);
     const activity = view.thread.activities[1]!;
-    expect(activity.payload).toMatchObject({ taskId: "child-1", agentKind: "agent", title: "Explorer", childSessionId: "child-1" });
+    expect(activity.payload).toMatchObject({ taskId: "sa-1", agentKind: "agent", title: "Explorer", childSessionId: "sa-1" });
     const event = runtimeActivityProviderEvent(ctx, "skynet-thread-thread-1", activity, redact);
-    expect(event).toMatchObject({ eventType: "t3.activity.task.progress", nativeSessionId: "child-1", nativeCallId: "child-1" });
+    expect(event).toMatchObject({ eventType: "t3.activity.task.progress", nativeSessionId: "sa-1", nativeCallId: "sa-1" });
     // The runtime's own record rides along, untouched.
     expect(activity.payload).toMatchObject({ v2: { id: "si-1", type: "subagent", subagentId: "sa-1" } });
   });
@@ -215,7 +215,7 @@ describe("protocol 2 thread view", () => {
 
   test("message context and attachments never ride along, and an oversized record keeps only its identity", () => {
     const message = v2Message({ id: "c-msg", text: "y".repeat(5_000), context: { files: ["secret.env"] }, attachments: [{ id: "f1" }] } as never);
-    const [childMessage] = runtimeChildThreadActivities(v2Snapshot(1, v2Projection({ messages: [message] }, "child")), "parent");
+    const [childMessage] = runtimeChildThreadActivities(v2Snapshot(1, v2Projection({ messages: [message] }, "child")), "parent", "sa-1");
     const record = (recordedRuntimeActivity(childMessage!, redact).payload as { v2: Record<string, unknown> }).v2;
     expect(record).not.toHaveProperty("context");
     expect(record).not.toHaveProperty("attachments");

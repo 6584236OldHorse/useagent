@@ -11,7 +11,7 @@ import type { SandboxHandle } from "../sandboxes/provider";
 import type { SecretRedactor } from "../secrets/redact";
 import { followRuntimeThread } from "./runtime-event-stream";
 import { runtimeActivityProviderEvent, runtimeActivityRevision } from "./runtime-orchestration";
-import { runtimeChildThreadActivities } from "./runtime-v2-view";
+import { runtimeChildThreadActivities, v2SubagentChildId } from "./runtime-v2-view";
 import type { V2Projection } from "./runtime-v2-wire";
 import type { EngineRunContext } from "./types";
 
@@ -43,7 +43,8 @@ export function createChildThreadFollower(input: {
   const revisions = new Map<string, string>();
   let closed = false;
 
-  const start = (childThreadId: string) => {
+  /** Follows a subagent's own thread, recording its work under the subagent's child id. */
+  const start = (childThreadId: string, childId: string) => {
     const controller = new AbortController();
     const signal = AbortSignal.any([input.signal, controller.signal]);
     const done = follow({
@@ -51,7 +52,7 @@ export function createChildThreadFollower(input: {
       threadId: childThreadId,
       signal,
       applySnapshot: async (_view, source) => {
-        for (const activity of runtimeChildThreadActivities(source, input.parentThreadId)) {
+        for (const activity of runtimeChildThreadActivities(source, input.parentThreadId, childId)) {
           const revision = runtimeActivityRevision(activity);
           if (revisions.get(activity.id) === revision) continue;
           revisions.set(activity.id, revision);
@@ -78,7 +79,7 @@ export function createChildThreadFollower(input: {
       if (closed) return;
       for (const item of projection.turnItems) {
         const childThreadId = typeof item.childThreadId === "string" ? item.childThreadId.trim() : "";
-        if (item.type === "subagent" && childThreadId && !children.has(childThreadId)) start(childThreadId);
+        if (item.type === "subagent" && childThreadId && !children.has(childThreadId)) start(childThreadId, v2SubagentChildId(item));
       }
     },
     async close() {

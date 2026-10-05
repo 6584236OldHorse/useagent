@@ -17,13 +17,15 @@ import { v2Item, v2Message, v2Projection, v2Snapshot } from "./runtime-v2.test-s
 
 const PARENT = "skynet-thread-thread-1";
 const CHILD = "child-thread-1";
+/** The subagent's record id: its child id from its first revision on. */
+const SUBAGENT = "sa-1";
 const ctx = { runId: "run-1", threadId: "thread-1" };
 const redact = createSecretRedactor([]);
 
 const child = (overrides: Parameters<typeof v2Projection>[0] = {}) => v2Snapshot(5, v2Projection(overrides, CHILD));
-const subagent = (status: string) => v2Snapshot(4, v2Projection({
-  subagents: [{ id: "sa-1", runId: "r1", childThreadId: CHILD, status, prompt: "look around", title: "Explorer", result: null, updatedAt: "x" }],
-  turnItems: [v2Item({ id: "si-1", type: "subagent", runId: "r1", status, subagentId: "sa-1", childThreadId: CHILD, prompt: "look around" })],
+const subagent = (status: string, childThreadId: string | null = CHILD) => v2Snapshot(4, v2Projection({
+  subagents: [{ id: SUBAGENT, runId: "r1", childThreadId, status, prompt: "look around", title: "Explorer", result: null, updatedAt: "x" }],
+  turnItems: [v2Item({ id: "si-1", type: "subagent", runId: "r1", status, subagentId: SUBAGENT, childThreadId, prompt: "look around" })],
 }));
 
 /** The ledger rows a list of activities becomes, as frames the canonical translator reads. */
@@ -42,22 +44,32 @@ describe("subagent threads", () => {
     expect(running.map((activity) => activity.kind)).toEqual(["task.started", "task.progress"]);
     const started = runtimeActivityProviderEvent(ctx, PARENT, running[0]!, redact);
     expect(started).toMatchObject({
-      eventType: "t3.activity.task.started", nativeSessionId: CHILD, nativeParentSessionId: PARENT, nativeCallId: CHILD,
+      eventType: "t3.activity.task.started", nativeSessionId: SUBAGENT, nativeParentSessionId: PARENT, nativeCallId: SUBAGENT,
     });
     const done = runtimeThreadView(subagent("interrupted")).thread.activities;
     expect(done[1]).toMatchObject({ kind: "task.completed", payload: { status: "cancelled", v2: expect.objectContaining({ type: "subagent", status: "interrupted" }) } });
+  });
+
+  test("a subagent keeps its identity when its own thread appears on a later revision", () => {
+    // Recorded live: a subagent's first revisions carry no child thread yet.
+    const identity = (snapshot: ReturnType<typeof subagent>) => runtimeThreadView(snapshot).thread.activities
+      .map((activity) => runtimeActivityProviderEvent(ctx, PARENT, activity, redact))
+      .map((event) => [event.id, event.nativeSessionId, event.nativeCallId]);
+    const before = identity(subagent("running", null));
+    expect(before[0]).toEqual([expect.stringContaining("si-1:started"), SUBAGENT, SUBAGENT]);
+    expect(identity(subagent("running"))).toEqual(before);
   });
 
   test("a child's tools and messages are owned by the child and stay off the parent's step timeline", () => {
     const activities = runtimeChildThreadActivities(child({
       turnItems: [v2Item({ id: "c-tool", type: "command_execution", status: "completed", input: "ls" })],
       messages: [v2Message({ id: "c-msg", text: "Found it", streaming: false }), v2Message({ id: "c-user", role: "user", text: "look around" })],
-    }), PARENT);
+    }), PARENT, SUBAGENT);
     expect(activities.map((activity) => activity.kind)).toEqual(["tool.completed", "child.message.completed"]);
     for (const activity of activities) {
       expect(shouldProjectRuntimeActivity(activity, activities)).toBe(false);
       const event = runtimeActivityProviderEvent(ctx, PARENT, activity, redact);
-      expect(event).toMatchObject({ nativeSessionId: CHILD, nativeParentSessionId: PARENT });
+      expect(event).toMatchObject({ nativeSessionId: SUBAGENT, nativeParentSessionId: PARENT });
     }
     const message = runtimeActivityProviderEvent(ctx, PARENT, activities[1]!, redact);
     expect(message).toMatchObject({ eventType: "t3.activity.child.message.completed", nativeMessageId: "c-msg" });
@@ -70,16 +82,16 @@ describe("subagent threads", () => {
     const childEvents = runtimeChildThreadActivities(child({
       turnItems: [v2Item({ id: "c-tool", type: "command_execution", status: "completed", input: "ls" })],
       messages: [v2Message({ id: "c-msg", text: "Found it" })],
-    }), PARENT).map((activity) => runtimeActivityProviderEvent(ctx, PARENT, activity, redact));
+    }), PARENT, SUBAGENT).map((activity) => runtimeActivityProviderEvent(ctx, PARENT, activity, redact));
     const canonical = translateOpenCode(frames([...parentEvents, ...childEvents]), { ...ctx, engine: "claude" }).events;
     expect(canonical.filter((event) => event.kind === "child.started")).toEqual([
-      expect.objectContaining({ childId: CHILD, identity: expect.objectContaining({ nativeSessionId: CHILD, nativeParentSessionId: PARENT }) }),
+      expect.objectContaining({ childId: SUBAGENT, identity: expect.objectContaining({ nativeSessionId: SUBAGENT, nativeParentSessionId: PARENT }) }),
     ]);
     expect(canonical.find((event) => event.kind === "tool.completed")).toMatchObject({
-      toolCallId: "c-tool", identity: { nativeSessionId: CHILD },
+      toolCallId: "c-tool", identity: { nativeSessionId: SUBAGENT },
     });
     expect(canonical.find((event) => event.kind === "message.delta")).toMatchObject({
-      messageId: "c-msg", text: "Found it", identity: { nativeSessionId: CHILD },
+      messageId: "c-msg", text: "Found it", identity: { nativeSessionId: SUBAGENT },
     });
   });
 

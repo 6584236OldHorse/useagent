@@ -270,9 +270,13 @@ const SUBAGENT_STATUS: Readonly<Record<string, string>> = {
   completed: "completed", failed: "failed", cancelled: "cancelled", interrupted: "cancelled",
 };
 
-/** The child id a subagent is known by everywhere: its own runtime thread, else its record. */
+/**
+ * The child id a subagent is known by everywhere: its record, which it has from
+ * its first revision. Its own runtime thread comes later, and an id that changed
+ * between revisions would change the subagent's place in the execution graph.
+ */
 export function v2SubagentChildId(item: V2TurnItem): string {
-  return text(item.childThreadId) ?? text(item.subagentId) ?? item.id;
+  return text(item.subagentId) ?? item.id;
 }
 
 /** A subagent's start (which opens its execution) and its current phase, owned by its child thread. */
@@ -354,8 +358,7 @@ const CHILD_ITEM_TYPES = new Set(["command_execution", "file_change", "file_sear
  * them by their child session). Approvals and questions a subagent raises
  * arrive on the parent thread, so they are not read here.
  */
-export function runtimeChildThreadActivities(snapshot: V2ThreadSnapshot, parentThreadId: string): RuntimeActivity[] {
-  const childId = snapshot.projection.thread.id;
+export function runtimeChildThreadActivities(snapshot: V2ThreadSnapshot, parentThreadId: string, childId: string): RuntimeActivity[] {
   const owner = { timelineBypass: true, childSessionId: childId, agentId: childId, parentAgentId: parentThreadId };
   const items = snapshot.projection.turnItems
     .filter((item) => CHILD_ITEM_TYPES.has(item.type))
