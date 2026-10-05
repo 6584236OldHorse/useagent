@@ -95,6 +95,19 @@ function typeCommand(text: string, delayMs: number): string {
     `xdotool key --clearmodifiers ctrl+v && sleep 0.3; else ${keystrokes}; fi`;
 }
 
+/** Open a URL on a desktop that has no browser relay (a provider-native desktop): through the
+ *  address bar of the visible browser window, or a fresh browser when none is open. */
+export function addressBarNavigateCommand(url: string, browserExecutable: string | null): string {
+  const safeUrl = url.replaceAll("'", "%27");
+  const browser = browserExecutable
+    ? `'${browserExecutable}'`
+    : '"$(command -v google-chrome 2>/dev/null || command -v chromium 2>/dev/null || command -v chromium-browser 2>/dev/null)"';
+  return `win=$(xdotool search --onlyvisible --class chrom 2>/dev/null | tail -n 1); ` +
+    `if [ -n "$win" ]; then xdotool windowactivate --sync "$win" && xdotool key --clearmodifiers ctrl+l && sleep 0.2 && ` +
+    `${typeCommand(safeUrl, 10)} && xdotool key --clearmodifiers Return; ` +
+    `else (setsid ${browser} '${safeUrl}' >/dev/null 2>&1 &) && sleep 2; fi`;
+}
+
 function cubeSequenceCommand(action: ComputerSequenceAction): string {
   switch (action.action) {
     case "click": {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import sharp from "sharp";
 import type { ArtifactDescriptor } from "../../artifacts/repo";
 import { type ComputerSequenceAction, describeSequenceFailure, sequenceBatches } from "./computer-use-tools";
+import { addressBarNavigateCommand } from "./computer-use-shell";
 import type { SandboxHandle } from "../../sandboxes/provider";
 import { setSandboxArtifactPublisherForTest } from "./artifact-tools";
 import {
@@ -493,6 +494,19 @@ describe("computer-use gateway tools", () => {
       text: "modifiers must contain only ctrl, alt, shift, or cmd",
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("navigate without a browser relay", () => {
+  test("a provider-native desktop opens the URL through the address bar or a fresh browser", () => {
+    const command = addressBarNavigateCommand("https://x.com/a'b?q=1", "/usr/bin/google-chrome");
+    expect(command).toContain("xdotool search --onlyvisible --class chrom");
+    expect(command).toContain("xdotool key --clearmodifiers ctrl+l");
+    expect(command).toContain("xdotool type --clearmodifiers");
+    expect(command).toContain("xdotool key --clearmodifiers Return");
+    expect(command).toContain("(setsid '/usr/bin/google-chrome' 'https://x.com/a%27b?q=1' >/dev/null 2>&1 &)");
+    expect(command).not.toContain("a'b");
+    expect(addressBarNavigateCommand("https://x.com/", null)).toContain("command -v google-chrome");
   });
 });
 
