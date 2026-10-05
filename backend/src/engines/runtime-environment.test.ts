@@ -12,12 +12,14 @@ import {
 import {
   buildRuntimeEnvironmentLaunchCommand,
   buildRuntimeEnvironmentReadinessCommand,
+  runtimeEnvironmentFlags,
   buildRuntimeIdentityPreflightCommand,
   ensureRuntimeEnvironment,
   restartRuntimeEnvironment,
   prewarmRuntimeEnvironment,
   RUNTIME_CUBE_WARM_POOL_NAME,
   RUNTIME_ENVIRONMENT_PORT,
+  buildRuntimeEnvironmentBootingProbe,
   RUNTIME_GENERATION,
   RUNTIME_GENERATION_LABEL,
   runtimeFirstActivityTimeoutMs,
@@ -49,6 +51,8 @@ function runtimeSandbox(
         if (args[0].includes("# native-runtime-verified")) return { exitCode: 0, result: "" };
         if (args[0].startsWith("curl -fsS -m 3 -o /dev/null")) return { exitCode: 1, result: "" };
         if (args[0].includes("[t]3 serve") && !id.includes("restart")) return { exitCode: 0, result: "" };
+        // No boot in progress unless the test says so.
+        if (args[0] === buildRuntimeEnvironmentBootingProbe() && !id.includes("booting")) return { exitCode: 1, result: "" };
         return process.executeCommand(...args);
       },
     },
@@ -281,6 +285,77 @@ describe("T3 Cube environment", () => {
     expect(probes).toBe(2);
   });
 
+  test("waits for the image's boot entrypoint instead of restarting a runtime still coming up", async () => {
+    const launched: string[] = [];
+    const created: string[] = [];
+    let probes = 0;
+    const sandbox = runtimeSandbox("cube-t3-booting", {
+      executeCommand: async (command: string) => {
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: 0, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: probes++ < 2 ? 1 : 0, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+      createSession: async (name: string) => created.push(name),
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(
+      ensureRuntimeEnvironment(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ sandboxId: "cube-t3-booting", port: RUNTIME_ENVIRONMENT_PORT });
+    expect(probes).toBe(3);
+    expect(launched).toEqual([]);
+    expect(created).toEqual([]);
+  });
+
+  test("restarts when the boot marker disappears and the runtime is still down", async () => {
+    const launched: string[] = [];
+    let readiness = 0;
+    let markerChecks = 0;
+    const sandbox = runtimeSandbox("cube-t3-booting-gave-up", {
+      executeCommand: async (command: string) => {
+        // The boot script gives up after its wait and removes the marker on the second look.
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: markerChecks++ === 0 ? 0 : 1, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: readiness++ < 3 ? 1 : 0, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(
+      ensureRuntimeEnvironment(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ sandboxId: "cube-t3-booting-gave-up" });
+    expect(launched).toHaveLength(1);
+    expect(markerChecks).toBe(2);
+  });
+
+  test("a boot wait that is aborted fails closed before any restart", async () => {
+    const launched: string[] = [];
+    const controller = new AbortController();
+    const sandbox = runtimeSandbox("cube-t3-booting-aborted", {
+      executeCommand: async (command: string) => {
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: 0, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) {
+          controller.abort();
+          return { exitCode: 1, result: "" };
+        }
+        return { exitCode: 0, result: "" };
+      },
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(ensureRuntimeEnvironment(sandbox, controller.signal)).rejects.toThrow("Provider runtime start aborted");
+    expect(launched).toEqual([]);
+  });
+
   test("derives a non-root launch layout from the sandbox provider handle", async () => {
     const launched: string[] = [];
     let probes = 0;
@@ -401,5 +476,17 @@ describe("T3 Cube environment", () => {
 
     await prewarmRuntimeEnvironment(sandbox, new AbortController().signal, {});
     expect(calls).toBe(0);
+  });
+});
+
+describe("runtime flags marker", () => {
+  test("the launch records the flags it started with and readiness checks the plane still wants them", () => {
+    expect(runtimeEnvironmentFlags({})).toBe("child-forwarding=off");
+    expect(runtimeEnvironmentFlags({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toBe("child-forwarding=on");
+    expect(buildRuntimeEnvironmentLaunchCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain(
+      `printf '%s\\n' "child-forwarding=on" > "/root/.skynet/t3/.useagent-runtime-flags"`,
+    );
+    expect(buildRuntimeEnvironmentReadinessCommand({})).toContain('.useagent-runtime-flags" 2>/dev/null)" = "child-forwarding=off"');
+    expect(buildRuntimeEnvironmentReadinessCommand({ RUNTIME_CODEX_CHILD_EVENT_FORWARDING: "1" })).toContain('= "child-forwarding=on"');
   });
 });

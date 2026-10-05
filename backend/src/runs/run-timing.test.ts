@@ -54,6 +54,7 @@ describe("run-timing ledger", () => {
     ]);
     expect(Object.values(RUN_TIMING_OUTCOMES).toSorted()).toEqual([
       "aborted",
+      "booted",
       "disabled",
       "failure",
       "hit",
