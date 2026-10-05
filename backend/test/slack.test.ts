@@ -2946,6 +2946,37 @@ describe("slack workspace identity (fail closed)", () => {
     expect(decide.status).toBe(403);
   });
 
+  test("an invitation the address already holds is the one the sender gets, and admission settles it with its role", async () => {
+    const client = { userInfo: async () => null } as unknown as SlackClient;
+    const listed = () => json<{ requests: Array<{ id: string; name: string }> }>("/api/team/access-requests");
+    // Typed path: an admin invitation A for the address exists; the Slack request links to A, no second link.
+    const linkedEmail = `${uid("linked")}@example.test`;
+    const a = crypto.randomUUID();
+    await db.execute(sql`insert into invitation (id, organization_id, email, role, status, expires_at, inviter_id) values (${a}, ${DEV_ORG_ID}, ${linkedEmail}, 'admin', 'pending', now() + interval '1 day', ${DEV_USER_ID})`);
+    const linked = `U-${uid("linked")}`;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: linked, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client })).toBe("asked");
+    const linkedRequest = (await listed()).body.requests.find((r) => r.name === linked)!;
+    const invited = await json<{ status: string }>(`/api/team/access-requests/${linkedRequest.id}/allow`, { method: "POST", body: { email: linkedEmail } });
+    expect(invited.body.status).toBe("invited");
+    const [row] = await db.execute(sql`select invitation_id from slack_access_requests where id = ${linkedRequest.id}`);
+    expect((row as { invitation_id: string }).invitation_id).toBe(a);
+    expect(await db.execute(sql`select 1 from invitation where organization_id = ${DEV_ORG_ID} and email = ${linkedEmail} and status = 'pending'`)).toHaveLength(1);
+    // Direct admission: Slack vouched for the address; the pending admin invitation is settled and its role applied.
+    const vouchedEmail = `${uid("vouched")}@example.test`;
+    const b = crypto.randomUUID();
+    await db.execute(sql`insert into invitation (id, organization_id, email, role, status, expires_at, inviter_id) values (${b}, ${DEV_ORG_ID}, ${vouchedEmail}, 'admin', 'pending', now() + interval '1 day', ${DEV_USER_ID})`);
+    const vouched = `U-${uid("vouched")}`;
+    const vouching = { userInfo: async () => ({ name: "Vouched", email: vouchedEmail, image: null }) } as unknown as SlackClient;
+    expect(await requestSlackAccess({ teamId: TEAM, slackUserId: vouched, orgId: DEV_ORG_ID, messageTs: `${uid("ts")}.1`, client: vouching })).toBe("asked");
+    const vouchedRequest = (await listed()).body.requests.find((r) => r.name === "Vouched")!;
+    const allowed = await json<{ status: string }>(`/api/team/access-requests/${vouchedRequest.id}/allow`, { method: "POST", body: {} });
+    expect(allowed.body.status).toBe("allowed");
+    const [inv] = await db.execute(sql`select status from invitation where id = ${b}`);
+    expect((inv as { status: string }).status).toBe("accepted");
+    const [membership] = await db.execute(sql`select m.role from member m join "user" u on u.id = m.user_id where u.email = ${vouchedEmail} and m.organization_id = ${DEV_ORG_ID}`);
+    expect((membership as { role: string }).role).toBe("admin");
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;

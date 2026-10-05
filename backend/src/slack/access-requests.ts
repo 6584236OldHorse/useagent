@@ -311,6 +311,17 @@ export async function decideAccessRequest(input: {
       // sender when the address's owner accepts it on the web.
       if (!typed) return "email_required";
       if (!typedCanSignIn) return "no_way_in";
+      // An invitation this address already holds here is the one to accept:
+      // a second one would leave the first stranded once the person is a member.
+      const [open] = await tx
+        .select({ id: invitation.id })
+        .from(invitation)
+        .where(and(eq(invitation.organizationId, input.orgId), eq(invitation.email, typed), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+        .limit(1);
+      if (open) {
+        await tx.update(slackAccessRequests).set({ status: "invited", invitationId: open.id, ...decided }).where(eq(slackAccessRequests.id, row.id));
+        return "invited";
+      }
       invited = { id: crypto.randomUUID(), email: typed, expiresAt: new Date(Date.now() + INVITATION_EXPIRES_IN_SECONDS * 1000) };
       await tx.insert(invitation).values({ ...invited, organizationId: input.orgId, role: "member", status: "pending", inviterId: input.decidedBy.id });
       // The typed address stays on the invitation; the request keeps only what
@@ -446,6 +457,8 @@ async function admit(tx: Executor, input: { orgId: string; teamId: string; slack
  *  re-admission is announced again. */
 async function bind(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }, decision: string): Promise<void> {
   await upsertSlackUser({ teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, userId: input.userId }, tx);
+  // The person is a member now: any other invitation this address still holds here is settled, a promised higher role applied.
+  await settleInvitationsFor(tx, input.orgId, input.userId);
   await enqueuePostMessageTx(tx, {
     idempotencyKey: `slack-access-allowed:${decision}`,
     orgId: input.orgId,
@@ -453,6 +466,33 @@ async function bind(tx: Executor, input: { orgId: string; teamId: string; slackU
     channel: input.slackUserId,
     text: "You are in. Mention me again and I will get to work.",
   });
+}
+
+const RANK: Record<string, number> = { member: 0, admin: 1, owner: 2 };
+const strongest = (value: string | null | undefined) =>
+  roles(value).reduce((best, role) => ((RANK[role] ?? -1) > (RANK[best] ?? -1) ? role : best), "member");
+
+/** Other live invitations the address holds here once the person is a member:
+ *  marked accepted, and a promised higher role applied rather than left in a
+ *  link nobody can accept any more. */
+async function settleInvitationsFor(tx: Executor, orgId: string, userId: string): Promise<void> {
+  const [account] = await tx.select({ email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
+  if (!account) return;
+  const open = await tx
+    .select({ id: invitation.id, role: invitation.role })
+    .from(invitation)
+    .where(and(eq(invitation.organizationId, orgId), eq(invitation.email, account.email.toLowerCase()), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())));
+  if (!open.length) return;
+  const [membership] = await tx
+    .select({ id: member.id, role: member.role })
+    .from(member)
+    .where(and(eq(member.organizationId, orgId), eq(member.userId, userId)))
+    .limit(1);
+  const promised = open.map((row) => strongest(row.role)).reduce((best, role) => (RANK[role]! > RANK[best]! ? role : best), "member");
+  if (membership && RANK[promised]! > RANK[strongest(membership.role)]!) {
+    await tx.update(member).set({ role: promised }).where(eq(member.id, membership.id));
+  }
+  for (const row of open) await tx.update(invitation).set({ status: "accepted" }).where(eq(invitation.id, row.id));
 }
 
 type Request = typeof slackAccessRequests.$inferSelect;

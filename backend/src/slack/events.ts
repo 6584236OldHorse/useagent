@@ -358,7 +358,7 @@ export async function handleSlackEvent(
             : verdict === "already_in"
               ? "You are in now. Send that again and I will get to work."
               : verdict === "invited"
-                ? "An admin has sent you an invitation by email. Accept it on the web, then mention me again."
+                ? "An admin has invited you. Ask them for the invitation link, or find it in your email, accept it on the web, and then mention me again."
                 : "Still waiting for an admin to let you in. Mention me again once they have.",
       });
     }
