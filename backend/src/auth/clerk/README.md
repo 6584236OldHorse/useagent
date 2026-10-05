@@ -18,8 +18,7 @@ tenancy model. Existing Better Auth cookies are not accepted in Clerk mode.
   identity secret at runtime, not the backend's other credentials.
 
 The supplied development instance is intentional. Its development badge and
-service limits remain; changing instances later also requires migrating identity
-bindings, not merely assuming another instance has the same user IDs.
+service limits remain.
 
 ## Migration
 

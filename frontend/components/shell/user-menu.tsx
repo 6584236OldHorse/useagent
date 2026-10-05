@@ -1,6 +1,6 @@
 "use client";
 
-import { OrganizationSwitcher } from "@clerk/nextjs";
+import { OrganizationSwitcher, useAuth } from "@clerk/nextjs";
 import { RiApps2Line, RiLoginBoxLine, RiLogoutBoxRLine, RiSettings3Line } from "@remixicon/react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState } from "react";
@@ -13,7 +13,7 @@ import {
   DropdownMenuItem,
   DropdownTrigger,
 } from "@/components/base/dropdown/dropdown";
-import { signOut, useSession } from "@/lib/auth";
+import { invalidateSession, signOut, useSession } from "@/lib/auth";
 import { legacyAuthEnabled } from "@/lib/auth-mode";
 
 /**
@@ -22,27 +22,59 @@ import { legacyAuthEnabled } from "@/lib/auth-mode";
  * the backend-normalized session from lib/auth.ts. Theme switching lives in
  * the shell ThemeMenu, not here.
  */
-export function UserMenu({
-  trigger,
-}: {
+interface UserMenuProps {
   /** A custom trigger (the sidebar footer card) instead of the bare avatar. */
   trigger?: ReactNode;
-} = {}) {
+}
+
+export function UserMenu(props: UserMenuProps = {}) {
+  return legacyAuthEnabled ? <UserMenuView {...props} /> : <ManagedUserMenu {...props} />;
+}
+
+function ManagedUserMenu({ trigger }: UserMenuProps) {
+  const { isLoaded, signOut: endSession, userId } = useAuth();
+  return (
+    <UserMenuView
+      trigger={trigger}
+      providerLoaded={isLoaded}
+      providerUserId={userId}
+      onSignOut={async () => {
+        await endSession();
+        invalidateSession();
+      }}
+    />
+  );
+}
+
+function UserMenuView({
+  trigger,
+  providerLoaded,
+  providerUserId,
+  onSignOut = signOut,
+}: UserMenuProps & {
+  providerLoaded?: boolean;
+  providerUserId?: string | null;
+  onSignOut?: () => Promise<void>;
+}) {
   const router = useRouter();
   const { session } = useSession();
   const [open, setOpen] = useState(false);
+  const managed = providerLoaded !== undefined;
+  const signedIn = managed ? providerLoaded && Boolean(providerUserId) : session !== null;
+  const showSignOut = managed ? !providerLoaded || signedIn : signedIn;
+  const signOutDisabled = managed && (!providerLoaded || !signedIn);
 
-  // Managed pages are protected by the identity middleware. Keep recovery controls
-  // available when the provider session exists but local workspace access is denied.
-  const signedIn = session !== null || !legacyAuthEnabled;
-  const name = session?.user.name?.trim() || session?.user.email || (signedIn ? "Account" : "Guest");
-  const email = session?.user.email ?? (signedIn ? "Workspace session unavailable" : "Not signed in");
+  const name =
+    session?.user.name?.trim() || session?.user.email || (showSignOut ? "Account" : "Guest");
+  const email =
+    session?.user.email ?? (showSignOut ? "Workspace session unavailable" : "Not signed in");
   const image = session?.user.image ?? null;
   const initial = (name.charAt(0) || "?").toUpperCase();
 
   async function handleSignOut() {
+    if (signOutDisabled) return;
     setOpen(false);
-    await signOut();
+    await onSignOut();
     router.push("/login");
     router.refresh();
   }
@@ -85,7 +117,7 @@ export function UserMenu({
                 <p className="truncate text-caption-1-regular text-text-secondary">{email}</p>
               </div>
             </div>
-            {signedIn && !legacyAuthEnabled ? (
+            {managed && signedIn ? (
               <OrganizationSwitcher
                 appearance={{
                   elements: {
@@ -110,8 +142,13 @@ export function UserMenu({
           <span className="min-w-0 flex-1 truncate text-body-2-medium">Apps</span>
           <Badge className="bg-badge-new-background text-badge-new-text">New</Badge>
         </DropdownMenuItem>
-        {signedIn ? (
-          <DropdownMenuItem id="sign-out" textValue="Log out" onAction={() => void handleSignOut()}>
+        {showSignOut ? (
+          <DropdownMenuItem
+            id="sign-out"
+            textValue="Log out"
+            isDisabled={signOutDisabled}
+            onAction={() => void handleSignOut()}
+          >
             <RiLogoutBoxRLine
               className="size-5 shrink-0 text-foreground-icon-secondary"
               aria-hidden

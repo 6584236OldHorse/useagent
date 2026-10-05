@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ClerkProvider } from "@clerk/nextjs";
 import { RiBook3Line } from "@remixicon/react";
 import {
   AppRouterContext,
@@ -23,16 +24,20 @@ const router = {
   prefetch() {},
 } as unknown as AppRouterInstance;
 
+const TEST_PUBLISHABLE_KEY = "pk_test_Y2xlcmsudGVzdCQ";
+
 function renderCollapsed(node: ReactNode): string {
   return renderToStaticMarkup(
     <AppRouterContext.Provider value={router}>
-      <PathnameContext.Provider value="/artifacts">
-        <TooltipProvider>
-          <SidebarThreadsProvider>
-            <SidebarProvider defaultOpen={false}>{node}</SidebarProvider>
-          </SidebarThreadsProvider>
-        </TooltipProvider>
-      </PathnameContext.Provider>
+      <ClerkProvider publishableKey={TEST_PUBLISHABLE_KEY}>
+        <PathnameContext.Provider value="/artifacts">
+          <TooltipProvider>
+            <SidebarThreadsProvider>
+              <SidebarProvider defaultOpen={false}>{node}</SidebarProvider>
+            </SidebarThreadsProvider>
+          </TooltipProvider>
+        </PathnameContext.Provider>
+      </ClerkProvider>
     </AppRouterContext.Provider>,
   );
 }
