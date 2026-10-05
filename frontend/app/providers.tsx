@@ -14,9 +14,10 @@ import { DesktopTitlebar } from "@/components/shell/desktop-titlebar";
  * `SubagentPane` is the single global instance of the subagent viewing pane -
  * a portal-based slide-over any surface can open via `openSubagentPane(runId)`.
  */
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({ children, nonce }: { children: React.ReactNode; nonce?: string }) {
   return (
     <ThemeProvider
+      nonce={nonce}
       attribute="class"
       defaultTheme="dark"
       enableSystem={false}

@@ -5,19 +5,51 @@ import { NextRequest } from "next/server";
 import { config, proxy } from "./proxy";
 
 describe("authentication proxy", () => {
-  test("excludes only the exact public download page from authentication", () => {
+  test("keeps the exact download page public while applying its script policy", () => {
     expect(
       unstable_doesMiddlewareMatch({
         config,
         url: "https://useagent.example.com/download",
       }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(proxy(new NextRequest("https://useagent.example.com/download")).headers.get("x-middleware-next")).toBe("1");
+    expect(proxy(new NextRequest("https://useagent.example.com/download-private")).status).toBe(307);
     expect(
       unstable_doesMiddlewareMatch({
         config,
         url: "https://useagent.example.com/download-private",
       }),
     ).toBe(true);
+  });
+
+  test("uses fresh server nonces for HTML without changing prefetch or RSC caching", () => {
+    const request = () => new NextRequest("https://useagent.example.com/login", {
+      headers: { "x-nonce": "attacker", "content-security-policy": "script-src 'unsafe-inline'" },
+    });
+    const first = proxy(request());
+    const second = proxy(request());
+    const policy = first.headers.get("content-security-policy");
+    const nonce = policy?.match(/'nonce-([^']+)'/)?.[1];
+    expect(nonce).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+    expect(policy).toContain("'strict-dynamic' 'wasm-unsafe-eval'");
+    expect(policy).not.toContain("'unsafe-inline'");
+    expect(policy).not.toContain("'unsafe-eval'");
+    expect(first.headers.get("x-middleware-request-x-nonce")).toBe(nonce);
+    expect(first.headers.get("x-middleware-request-content-security-policy")).toBe(policy);
+    expect(second.headers.get("content-security-policy")).not.toBe(policy);
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    for (const header of [{ rsc: "1" }, { "next-router-prefetch": "1" }, { purpose: "prefetch" }]) {
+      const response = proxy(new NextRequest("https://useagent.example.com/login", {
+        headers: { ...header, "x-nonce": "attacker", "content-security-policy": "script-src 'unsafe-inline'" },
+      }));
+      expect(response.headers.get("content-security-policy")).toBeNull();
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(response.headers.get("x-middleware-request-x-nonce")).toBeNull();
+      expect(proxy(new NextRequest("https://useagent.example.com/settings", { headers: header })).status).toBe(307);
+    }
+    for (const path of ["/api/runs", "/_next/static/chunks/app.js", "/_next/image?url=icon.png"]) {
+      expect(unstable_doesMiddlewareMatch({ config, url: `https://useagent.example.com${path}` })).toBe(false);
+    }
   });
 
   test("opens only the development preview escape hatch", () => {

@@ -3,9 +3,12 @@ import { join } from "node:path";
 import { authScope } from "./auth-storage";
 import { desktopContentPolicy, externalUrl, trustedIpcSender, trustedNavigation } from "./security";
 
+const securityErrorUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'"><title>Security policy required</title><h1>Cannot open useAgent securely</h1><p>This server did not provide the required desktop security policy. Update the server and restart useAgent.</p>`)}`;
+
 /** The window owns browser policy; it never reads credentials or starts processes. */
 export function createDesktopWindow(plane: URL): BrowserWindow {
   const browserSession = session.fromPartition(`persist:useagent-${authScope(plane.origin)}`);
+  let blockedMainFrameUrl: string | undefined;
   const localPermissions = new Set(["local-network", "local-network-access", "loopback-network"]);
   const allowPermission = (permission: string, origin: string) =>
     plane.protocol === "http:" && localPermissions.has(permission) && trustedIpcSender(origin, true, plane.origin);
@@ -17,7 +20,14 @@ export function createDesktopWindow(plane: URL): BrowserWindow {
   browserSession.webRequest.onHeadersReceived({ urls: [`${plane.origin}/*`] }, (details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     const name = Object.keys(responseHeaders).find(key => key.toLowerCase() === "content-security-policy") ?? "Content-Security-Policy";
-    responseHeaders[name] = [...(responseHeaders[name] ?? []), desktopContentPolicy(details.resourceType)];
+    const contentPolicy = desktopContentPolicy(details.resourceType, details.statusCode, responseHeaders, app.isPackaged);
+    if (contentPolicy.block) {
+      blockedMainFrameUrl = details.url;
+      callback({ cancel: true });
+      return;
+    }
+    if (details.resourceType === "mainFrame") blockedMainFrameUrl = undefined;
+    responseHeaders[name] = [...(responseHeaders[name] ?? []), contentPolicy.policy];
     callback({ responseHeaders });
   });
   const window = new BrowserWindow({
@@ -32,8 +42,13 @@ export function createDesktopWindow(plane: URL): BrowserWindow {
     },
   });
   window.webContents.on("will-attach-webview", event => event.preventDefault());
+  window.webContents.on("did-fail-load", (_event, _code, _description, url, mainFrame) => {
+    if (!mainFrame || url !== blockedMainFrameUrl) return;
+    blockedMainFrameUrl = undefined;
+    void window.loadURL(securityErrorUrl).catch(() => undefined);
+  });
   window.webContents.on("will-navigate", (event, url) => {
-    if (!trustedNavigation(url, plane.origin)) event.preventDefault();
+    if (url !== securityErrorUrl && !trustedNavigation(url, plane.origin)) event.preventDefault();
   });
   window.webContents.on("will-redirect", (event, url) => {
     if (!trustedNavigation(url, plane.origin)) event.preventDefault();

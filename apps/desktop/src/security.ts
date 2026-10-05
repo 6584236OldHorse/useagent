@@ -33,8 +33,49 @@ export function trustedNavigation(value: string, origin: string): boolean {
   }
 }
 
-export function desktopContentPolicy(resourceType: string): string {
-  return `object-src 'none'; base-uri 'self'${resourceType === "mainFrame" ? "; frame-ancestors 'none'" : ""}`;
+type ResponseHeaders = Readonly<Record<string, readonly string[] | undefined>>;
+
+function headerValues(headers: ResponseHeaders, name: string): readonly string[] {
+  return Object.entries(headers).flatMap(([key, values]) => key.toLowerCase() === name ? values ?? [] : []);
+}
+
+function scriptNonce(headers: ResponseHeaders): string | undefined {
+  const nonces = new Set<string>();
+  for (const policy of headerValues(headers, "content-security-policy")) {
+    for (const directive of policy.split(";")) {
+      const [name, ...sources] = directive.trim().split(/\s+/);
+      if (name?.toLowerCase() !== "script-src") continue;
+      for (const source of sources) {
+        if (!source.startsWith("'nonce-")) continue;
+        const match = /^'nonce-([A-Za-z0-9+/_-]{16,256}={0,2})'$/.exec(source);
+        if (!match) return undefined;
+        nonces.add(match[1]!);
+      }
+    }
+  }
+  return nonces.size === 1 ? [...nonces][0] : undefined;
+}
+
+export function desktopContentPolicy(
+  resourceType: string,
+  statusCode: number,
+  headers: ResponseHeaders,
+  packaged: boolean,
+): { policy: string; block: boolean } {
+  const base = `object-src 'none'; base-uri 'self'`;
+  if (resourceType !== "mainFrame") return { policy: base, block: false };
+  const framed = `${base}; frame-ancestors 'none'`;
+  if (statusCode >= 300 && statusCode < 400) return { policy: framed, block: false };
+  const html = headerValues(headers, "content-type")
+    .some(value => /^\s*(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/i.test(value));
+  if (!html) return { policy: `${framed}; script-src 'none'`, block: false };
+  const nonce = scriptNonce(headers);
+  if (!nonce) return { policy: `${framed}; script-src 'none'`, block: true };
+  const development = packaged ? "" : " 'unsafe-eval'";
+  return {
+    policy: `${framed}; script-src 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'${development}`,
+    block: false,
+  };
 }
 
 export function externalUrl(value: unknown): string {
