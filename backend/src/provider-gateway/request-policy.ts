@@ -17,9 +17,27 @@ const OPENROUTER_REQUEST_FIELDS = new Set([
   "model", "messages", "stream", "stream_options", "max_tokens", "max_completion_tokens",
   "temperature", "top_p", "top_k", "min_p", "top_a", "frequency_penalty", "presence_penalty",
   "repetition_penalty", "seed", "stop", "n", "logit_bias", "logprobs", "top_logprobs",
-  "response_format", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "usage",
-  "user", "provider", "transforms", "prediction", "verbosity", "metadata",
+  "response_format", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "reasoning_effort",
+  "usage", "user", "provider", "transforms", "prediction", "verbosity", "metadata",
 ]);
+
+/** Message parts a model reads itself. A file part (a PDF) makes OpenRouter
+ * run a paid document parser when the model cannot read it natively, billed
+ * beside a ":free" model, so it is refused. */
+const OPENROUTER_CONTENT_PARTS = new Set(["text", "image_url", "input_audio"]);
+
+function openRouterMessagesAllowed(messages: unknown): boolean {
+  if (!Array.isArray(messages)) return false;
+  for (const message of messages) {
+    const content = message && typeof message === "object" ? (message as { content?: unknown }).content : undefined;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const type = part && typeof part === "object" ? (part as { type?: unknown }).type : undefined;
+      if (typeof type !== "string" || !OPENROUTER_CONTENT_PARTS.has(type)) return false;
+    }
+  }
+  return true;
+}
 
 function openRouterRequestAllowed(body: Record<string, unknown>): boolean {
   for (const field of Object.keys(body)) {
@@ -32,7 +50,7 @@ function openRouterRequestAllowed(body: Record<string, unknown>): boolean {
       if (type !== "function") return false;
     }
   }
-  return true;
+  return body.messages === undefined || openRouterMessagesAllowed(body.messages);
 }
 
 function requestModelMatchesRun(run: GatewayRun, requested: unknown): boolean {

@@ -143,11 +143,19 @@ describe("provider request body policy", () => {
       transforms: ["middle-out"],
     };
     expect(applyProviderBodyPolicy(freeRun, JSON.stringify(plain), "max_tokens", 100, "openrouter").ok).toBe(true);
+    // Parts a model reads itself pass; a file part would buy a paid document parser.
+    expect(applyProviderBodyPolicy(freeRun, JSON.stringify({
+      ...plain,
+      reasoning_effort: "low",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] }],
+    }), "max_tokens", 100, "openrouter").ok).toBe(true);
     for (const extra of [
       { plugins: [{ id: "web", engine: "exa" }] },
       { tools: [{ type: "openrouter:advisor", parameters: { model: "openai/gpt-4o" } }], tool_choice: "required" },
       { web_search_options: { search_context_size: "high" } },
       { tools: "not-a-list" },
+      { messages: [{ role: "user", content: [{ type: "file", file: { filename: "d.pdf", file_data: "https://example.com/d.pdf" } }] }] },
+      { messages: "not-a-list" },
     ]) {
       expect(applyProviderBodyPolicy(freeRun, JSON.stringify({ ...plain, ...extra }), "max_tokens", 100, "openrouter"))
         .toEqual({ ok: false, error: "request_not_allowed" });
