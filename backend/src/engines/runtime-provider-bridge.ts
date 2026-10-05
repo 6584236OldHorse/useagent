@@ -12,10 +12,7 @@ import {
   prepareProviderGatewaySandbox,
   providerGatewayEnv,
 } from "../provider-gateway/sandbox-config";
-import {
-  getCodexSubscriptionRuntimeSelection,
-  type CodexSubscriptionRuntimeSelection,
-} from "../provider-connections/service";
+import { getCodexSubscriptionRuntimeSelection, type CodexSubscriptionRuntimeSelection } from "../provider-connections/service";
 import { engineAuthMode } from "../runs/engine-auth-mode";
 import type { EngineRunContext } from "./types";
 import type { SandboxBinding } from "../sandboxes/binding";
@@ -25,10 +22,7 @@ import {
   RUNTIME_ENVIRONMENT_WORKDIR,
   runtimeEnvironmentEnabled,
 } from "./runtime-environment";
-import {
-  prepareCodexSubscription,
-  type CodexSubscriptionLease,
-} from "./codex-subscription-runtime";
+import { prepareCodexSubscription, type CodexSubscriptionLease } from "./codex-subscription-runtime";
 import {
   buildSandboxBunProbeCommand,
   ensureSandboxBun,
@@ -39,6 +33,7 @@ import {
   buildAttachmentTreeAccessCommand,
   buildRootTraversalAccessCommand,
 } from "./runtime-user-permissions";
+import { buildCodexProviderConfigUpdateScript, codexProviderConfig, codexProviderConfigurationRevision, codexProviderConfigPendingPath, readPendingCodexProviderConfigurationRevision } from "./runtime-codex-plan-config";
 export { openCodeModelLimitsChanged } from "./opencode-model-limit-refresh";
 
 const RUNTIME_SETTINGS_PATH = `${RUNTIME_ENVIRONMENT_HOME}/userdata/settings.json`;
@@ -122,13 +117,14 @@ function runtimeBridgeLayout(sandbox: Pick<SandboxHandle, "providerKind">): Sand
 // gateway capabilities are refreshed separately on every turn. Remember the
 // completed stable bootstrap per live sandbox so warm revalidation can combine
 // the Bun and provider identity checks in one shell round trip.
-const bootstrapStates = new Map<string | object, Map<string, Promise<void>>>();
+const bootstrapStates = new Map<string | object, Map<string, Promise<string | null>>>();
 
 type RuntimeEngineId = Extract<EngineId, "codex" | "claude" | "opencode">;
 
 export interface RuntimeProviderBridgeLease extends CodexSubscriptionLease {
   readonly authPath: CodexBridgeAuthPath | null;
   readonly readiness: RuntimeProviderReadiness | null;
+  readonly pendingProviderConfigurationRevision: string | null;
   readonly modelLimitsChanged: boolean;
   readonly modelLimitsRevision: string | null;
   readonly modelLimitsChangedAt: string | null;
@@ -146,6 +142,7 @@ const NOOP_PROVIDER_BRIDGE_LEASE: RuntimeProviderBridgeLease = {
   authEpoch: null,
   hasCurrentEpochThreadBinding: false,
   readiness: null,
+  pendingProviderConfigurationRevision: null,
   modelLimitsChanged: false,
   modelLimitsRevision: null,
   modelLimitsChangedAt: null,
@@ -158,6 +155,7 @@ const CODEX_GATEWAY_BRIDGE_LEASE: RuntimeProviderBridgeLease = {
   authEpoch: null,
   hasCurrentEpochThreadBinding: false,
   readiness: null,
+  pendingProviderConfigurationRevision: null,
   modelLimitsChanged: false,
   modelLimitsRevision: null,
   modelLimitsChangedAt: null,
@@ -244,14 +242,7 @@ export function buildRuntimeProviderBootstrapCommand(
   ].join(";");
 
   const providerConfig = engine === "codex"
-    ? {
-        enabled: true,
-        binaryPath: nativeBinary,
-        homePath: "~/.codex",
-        shadowHomePath: "",
-        launchArgs: "",
-        customModels: [],
-      }
+    ? codexProviderConfig(layout)
     : engine === "opencode"
       ? {
           enabled: true,
@@ -261,6 +252,12 @@ export function buildRuntimeProviderBootstrapCommand(
           customModels: [],
         }
       : null;
+  const providerConfigurationRevision = engine === "codex"
+    ? codexProviderConfigurationRevision(layout)
+    : null;
+  const updateProviderConfig = engine === "codex"
+    ? buildCodexProviderConfigUpdateScript()
+    : 'const fs=require("node:fs");const path=process.argv[1];const patch=JSON.parse(Buffer.from(process.env.PATCH_B64,"base64").toString("utf8"));let current={};try{current=JSON.parse(fs.readFileSync(path,"utf8"))}catch{};current.providers={...(current.providers??{}),[patch.provider]:patch.config};const tmp=path+".tmp";fs.writeFileSync(tmp,JSON.stringify(current));fs.chmodSync(tmp,0o600);fs.renameSync(tmp,path)';
 
   const installAndVerify = engine === "claude" ? [
     `NATIVE_PREFIX=${JSON.stringify(prefix)}`,
@@ -325,7 +322,7 @@ export function buildRuntimeProviderBootstrapCommand(
       `SETTINGS="${RUNTIME_SETTINGS_PATH}"`,
       'install -d -m 700 "$(dirname "$SETTINGS")"',
       `export PATCH_B64='${encode(JSON.stringify(settingsPatch))}'`,
-      `node -e 'const fs=require("node:fs");const path=process.argv[1];const patch=JSON.parse(Buffer.from(process.env.PATCH_B64,"base64").toString("utf8"));let current={};try{current=JSON.parse(fs.readFileSync(path,"utf8"))}catch{};current.providers={...(current.providers??{}),[patch.provider]:patch.config};const tmp=path+".tmp";fs.writeFileSync(tmp,JSON.stringify(current));fs.chmodSync(tmp,0o600);fs.renameSync(tmp,path)' "$SETTINGS"`,
+      `node -e ${JSON.stringify(updateProviderConfig)} "$SETTINGS" ${JSON.stringify(codexProviderConfigPendingPath())} ${JSON.stringify(providerConfigurationRevision ?? "")}`,
     ].join("\n");
   }
 
@@ -516,7 +513,8 @@ async function ensureRuntimeProviderBootstrap(
   command: string,
   layout: SandboxRuntimeLayout,
   signal: AbortSignal,
-): Promise<void> {
+  pendingRevision: string | null,
+): Promise<string | null> {
   const key: string | object = sandbox.id || sandbox;
   let sandboxStates = bootstrapStates.get(key);
   if (!sandboxStates) {
@@ -540,7 +538,14 @@ async function ensureRuntimeProviderBootstrap(
       .executeCommand(validationCommand, undefined, undefined, 10)
       .catch(() => null);
     signal.throwIfAborted();
-    if (validation?.exitCode === 0) return;
+    if (validation?.exitCode === 0) {
+      if (!pendingRevision) return null;
+      return await readPendingCodexProviderConfigurationRevision(
+        sandbox,
+        signal,
+        pendingRevision,
+      );
+    }
 
     // The sandbox or retained filesystem changed after bootstrap. Evict only
     // this command's completed memo so the full exact Bun repair runs and
@@ -569,10 +574,13 @@ async function ensureRuntimeProviderBootstrap(
         `the native ${engine} runtime bootstrap failed${safeDiagnostic ? `: ${safeDiagnostic}` : ""}`,
       );
     }
+    return pendingRevision
+      ? await readPendingCodexProviderConfigurationRevision(sandbox, signal, pendingRevision)
+      : null;
   })();
   sandboxStates.set(command, operation);
   try {
-    await operation;
+    return await operation;
   } catch (error) {
     if (sandboxStates.get(command) === operation) sandboxStates.delete(command);
     if (sandboxStates.size === 0) bootstrapStates.delete(key);
@@ -587,14 +595,21 @@ async function ensureSelectedRuntimeProviderBootstrap(
   layout: SandboxRuntimeLayout,
   signal: AbortSignal,
   credential: ModelCredentialSource = "plane",
-): Promise<void> {
+): Promise<string | null> {
   const command = buildRuntimeProviderBootstrapCommand(
     engine,
     claudeEnvironment,
     layout,
     credential,
   );
-  await ensureRuntimeProviderBootstrap(sandbox, engine, command, layout, signal);
+  return await ensureRuntimeProviderBootstrap(
+    sandbox,
+    engine,
+    command,
+    layout,
+    signal,
+    engine === "codex" ? codexProviderConfigurationRevision(layout) : null,
+  );
 }
 
 /** Install and verify one selected native provider, including its stable T3
@@ -603,10 +618,10 @@ export async function prepareStableRuntimeProvider(
   sandbox: SandboxHandle,
   ctx: EngineRunContext,
   engine: RuntimeEngineId,
-): Promise<void> {
+): Promise<string | null> {
   const layout = runtimeBridgeLayout(sandbox);
   const claudeEnvironment = engine === "claude" ? providerGatewayEnv(ctx, "claude") : {};
-  await ensureSelectedRuntimeProviderBootstrap(
+  return await ensureSelectedRuntimeProviderBootstrap(
     sandbox,
     engine,
     claudeEnvironment,
@@ -670,6 +685,7 @@ export async function prepareRuntimeProviderBridge(
   workdir: string,
   stableProviderPrepared = false,
   binding?: Pick<SandboxBinding, "kind" | "logins">,
+  stableProviderPendingRevision: string | null = null,
 ): Promise<RuntimeProviderBridgeLease> {
   const layout = runtimeBridgeLayout(sandbox);
   // A sandbox on the user's own machine may carry the engine's login; then the
@@ -677,15 +693,17 @@ export async function prepareRuntimeProviderBridge(
   const login = binding ? await sandboxLogin(sandbox, binding, engine) : null;
   if (login) {
     const loginEnvironment = login.engine === "claude" ? claudeLoginEnvironment() : {};
-    await ensureSelectedRuntimeProviderBootstrap(sandbox, login.engine, loginEnvironment, layout, AbortSignal.timeout(180_000), "sandbox-login");
+    const loginProviderPendingRevision = await ensureSelectedRuntimeProviderBootstrap(sandbox, login.engine, loginEnvironment, layout, AbortSignal.timeout(180_000), "sandbox-login");
+    const pendingProviderConfigurationRevision =
+      stableProviderPendingRevision ?? loginProviderPendingRevision;
     await installSandboxLogin(sandbox, ctx, login, layout);
     if (login.engine === "claude") await prepareClaudeRuntimeAccess(sandbox, workdir);
-    return { ...NOOP_PROVIDER_BRIDGE_LEASE, readiness: login.engine === "claude" ? claudeProviderReadiness(loginEnvironment) : null };
+    return { ...NOOP_PROVIDER_BRIDGE_LEASE, pendingProviderConfigurationRevision, readiness: login.engine === "claude" ? claudeProviderReadiness(loginEnvironment) : null };
   }
   const claudeEnvironment = engine === "claude" ? providerGatewayEnv(ctx, "claude") : {};
-  if (!stableProviderPrepared) {
-    await prepareStableRuntimeProvider(sandbox, ctx, engine);
-  }
+  const pendingProviderConfigurationRevision = stableProviderPrepared
+    ? stableProviderPendingRevision
+    : await prepareStableRuntimeProvider(sandbox, ctx, engine);
 
   if (engine === "opencode") {
     const modelLimitRefresh = await prepareOpenCodeGateway(sandbox, ctx);
@@ -694,6 +712,7 @@ export async function prepareRuntimeProviderBridge(
       authEpoch: null,
       hasCurrentEpochThreadBinding: false,
       readiness: null,
+      pendingProviderConfigurationRevision,
       modelLimitsChanged: modelLimitRefresh.changed,
       modelLimitsRevision: modelLimitRefresh.revision,
       modelLimitsChangedAt: modelLimitRefresh.changedAt,
@@ -719,6 +738,7 @@ export async function prepareRuntimeProviderBridge(
         authEpoch: lease.authEpoch,
         hasCurrentEpochThreadBinding: lease.hasCurrentEpochThreadBinding,
         readiness: null,
+        pendingProviderConfigurationRevision,
         modelLimitsChanged: false,
         modelLimitsRevision: null,
         modelLimitsChangedAt: null,
@@ -736,6 +756,7 @@ export async function prepareRuntimeProviderBridge(
       authEpoch: null,
       hasCurrentEpochThreadBinding: false,
       readiness: claudeProviderReadiness(claudeEnvironment),
+      pendingProviderConfigurationRevision,
       modelLimitsChanged: false,
       modelLimitsRevision: null,
       modelLimitsChangedAt: null,
@@ -743,7 +764,9 @@ export async function prepareRuntimeProviderBridge(
       async close() {},
     };
   }
-  return engine === "codex" ? CODEX_GATEWAY_BRIDGE_LEASE : NOOP_PROVIDER_BRIDGE_LEASE;
+  return engine === "codex"
+    ? { ...CODEX_GATEWAY_BRIDGE_LEASE, pendingProviderConfigurationRevision }
+    : { ...NOOP_PROVIDER_BRIDGE_LEASE, pendingProviderConfigurationRevision };
 }
 
 /** Install stable provider driver paths before a warm runtime server starts. No

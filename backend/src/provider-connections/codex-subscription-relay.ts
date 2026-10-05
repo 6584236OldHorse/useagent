@@ -25,6 +25,7 @@ import { importCodexNativeOutput } from "./codex-native-output-import";
 
 const DEFAULT_CAPABILITY_TTL_MS = 2 * 60_000;
 const RELAY_PATH_PREFIX = "/api/internal/codex-relay/";
+const CODEX_PLAN_TOOL_OVERRIDE = "tools.update_plan.enabled=true";
 
 export interface CodexSubscriptionRelayBinding {
   readonly orgId: string;
@@ -81,22 +82,30 @@ interface RelayDependencies {
 
 const grants = new Map<string, RelayGrant>();
 
+export function codexSubscriptionAppServerArgs(
+  toolGateway: ToolGatewayCapabilityDescriptor | null,
+): string[] {
+  return [
+    "app-server",
+    "--stdio",
+    "-c",
+    CODEX_PLAN_TOOL_OVERRIDE,
+    ...(toolGateway
+      ? [
+          "-c",
+          `mcp_servers.${toolGateway.serverName}.url=${JSON.stringify(toolGateway.url)}`,
+          "-c",
+          `mcp_servers.${toolGateway.serverName}.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"`,
+        ]
+      : []),
+  ];
+}
+
 const defaultDependencies: RelayDependencies = {
   now: Date.now,
   selectRuntime: getCodexSubscriptionRuntimeSelection,
   spawnAppServer: ({ codexHome, toolGateway }) =>
-    spawn("codex", [
-      "app-server",
-      "--stdio",
-      ...(toolGateway
-        ? [
-            "-c",
-            `mcp_servers.${toolGateway.serverName}.url=${JSON.stringify(toolGateway.url)}`,
-            "-c",
-            `mcp_servers.${toolGateway.serverName}.bearer_token_env_var=\"USEAGENT_TOOL_GATEWAY_BEARER_TOKEN\"`,
-          ]
-        : []),
-    ], {
+    spawn("codex", codexSubscriptionAppServerArgs(toolGateway), {
       env: {
         ...codexAppServerChildEnvironment(codexHome),
         ...(toolGateway

@@ -481,6 +481,7 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain('providerAfterResources: engine === "claude"');
     expect(source).toContain('resourceUser: engine === "claude"');
     expect(source).toContain("preparation.stableProviderPrepared");
+    expect(source).toContain("stableProviderPendingRevision");
     expect(source).toContain("closeProvider: (state) => state.close()");
     expect(source).toContain("await prepared.close().catch(() => {})");
     expect(source).not.toContain("await providerBridgeLease?.close()");
