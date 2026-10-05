@@ -32,6 +32,7 @@ import {
   setCodexNativeOutputReceiptRecorderForTest,
 } from "./codex-native-output-import";
 import {
+  codexSubscriptionAppServerArgs,
   codexSubscriptionRelayPublicOrigin,
   codexSubscriptionRelayRoutes,
   issueCodexSubscriptionRelayCapability,
@@ -40,6 +41,38 @@ import {
 } from "./codex-subscription-relay";
 
 describe("Codex subscription relay public origin", () => {
+  test("enables the native plan tool only on the per-run model app-server", () => {
+    expect(codexSubscriptionAppServerArgs(null)).toEqual([
+      "app-server",
+      "--stdio",
+      "-c",
+      "tools.update_plan.enabled=true",
+    ]);
+    expect(codexSubscriptionAppServerArgs({
+      serverName: "useagent",
+      url: "https://useagent.example.test/api/internal/tool-gateway",
+      bearerToken: "secret",
+      authorizationHeader: "Bearer secret",
+      expiresAt: 1,
+      binding: {
+        orgId: "org-1",
+        userId: "user-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        scope: "run",
+      },
+    })).toEqual([
+      "app-server",
+      "--stdio",
+      "-c",
+      "tools.update_plan.enabled=true",
+      "-c",
+      'mcp_servers.useagent.url="https://useagent.example.test/api/internal/tool-gateway"',
+      "-c",
+      'mcp_servers.useagent.bearer_token_env_var="USEAGENT_TOOL_GATEWAY_BEARER_TOKEN"',
+    ]);
+  });
+
   test("uses an explicit relay host without changing the Better Auth origin", () => {
     expect(
       codexSubscriptionRelayPublicOrigin({

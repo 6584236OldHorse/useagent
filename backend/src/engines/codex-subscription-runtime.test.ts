@@ -261,6 +261,7 @@ describe("T3 Codex subscription lease", () => {
         'exec "/usr/local/bin/codex" exec-server --listen ws://0.0.0.0:37734 --environment-id skynet-run-1',
       ].join("\n"),
     );
+    expect(buildCodexExecServerCommand("skynet-run-1")).not.toContain("update_plan");
     expect(() => buildCodexExecServerCommand("unsafe; touch /tmp/pwned")).toThrow(
       "environment id is unsafe",
     );

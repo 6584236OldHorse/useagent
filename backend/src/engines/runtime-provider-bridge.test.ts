@@ -5,6 +5,10 @@ import { join } from "node:path";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { buildSandboxBunProbeCommand } from "./sandbox-bun";
 import {
+  buildAcknowledgeCodexProviderConfigurationCommand,
+  codexProviderConfigurationRevision,
+} from "./runtime-codex-plan-config";
+import {
   awaitRuntimeProviderReady,
   buildCodexInstallIdentityProbeCommand,
   buildClaudeInstallIdentityProbeCommand,
@@ -42,6 +46,11 @@ echo "" >&2
 echo "Or reinstall opencode-ai without the --ignore-scripts flag." >&2
 exit 1
 `;
+
+function isCodexConfigProbe(command: string): boolean {
+  return command.includes("useagent-codex-provider-config-pending") &&
+    command.includes("present:");
+}
 
 async function runColdClaudeBootstrap(
   binaryScript: (home: string) => string,
@@ -622,11 +631,12 @@ describe("T3 provider bridge", () => {
           providerInstances: { claudeAgent: { driver: "claudeAgent" } },
         }));
 
-        const command = buildRuntimeProviderBootstrapCommand(engine.id, {}, {
+        const layout = {
           home,
           workdir: join(home, "work"),
           runsAsRoot: false,
-        });
+        } as const;
+        const command = buildRuntimeProviderBootstrapCommand(engine.id, {}, layout);
         const result = Bun.spawnSync(["/bin/sh", "-c", command], {
           env: { ...process.env, HOME: home },
         });
@@ -641,10 +651,37 @@ describe("T3 provider bridge", () => {
           if (otherPackage !== engine.package) expect(command).not.toContain(otherPackage);
         }
         const settings = JSON.parse(await readFile(settingsPath, "utf8")) as {
-          providers: Record<string, { binaryPath: string }>;
+          providers: Record<string, { binaryPath: string; launchArgs?: string }>;
           providerInstances: Record<string, unknown>;
         };
         expect(settings.providers[engine.id]?.binaryPath).toBe(join(bin, engine.binary));
+        if (engine.id === "codex") {
+          const revision = codexProviderConfigurationRevision(layout);
+          const pendingPath = join(
+            home,
+            ".skynet/t3/caches/useagent-codex-provider-config-pending",
+          );
+          expect(settings.providers.codex?.launchArgs).toBe(
+            "-c tools.update_plan.enabled=true",
+          );
+          expect(await readFile(pendingPath, "utf8")).toBe(revision);
+          const repeated = Bun.spawnSync(["/bin/sh", "-c", command], {
+            env: { ...process.env, HOME: home },
+          });
+          expect(repeated.exitCode).toBe(0);
+          expect(await readFile(pendingPath, "utf8")).toBe(revision);
+          const acknowledged = Bun.spawnSync([
+            "/bin/sh",
+            "-c",
+            buildAcknowledgeCodexProviderConfigurationCommand(revision),
+          ], { env: { ...process.env, HOME: home } });
+          expect(acknowledged.exitCode).toBe(0);
+          const settled = Bun.spawnSync(["/bin/sh", "-c", command], {
+            env: { ...process.env, HOME: home },
+          });
+          expect(settled.exitCode).toBe(0);
+          expect(await Bun.file(pendingPath).exists()).toBe(false);
+        }
         expect(settings.providers.claudeAgent).toEqual(untouched);
         expect(settings.providerInstances.claudeAgent).toEqual({ driver: "claudeAgent" });
       } finally {
@@ -929,7 +966,10 @@ exit 17
       process: {
         executeCommand: async (command: string) => {
           commands.push(command);
-          return { exitCode: 0, result: "" };
+          return {
+            exitCode: 0,
+            result: isCodexConfigProbe(command) ? "absent\n" : "",
+          };
         },
       },
     } as unknown as SandboxHandle;
@@ -944,15 +984,25 @@ exit 17
     expect(bootstraps[2]).toContain("opencode-ai@1.18.7");
   });
 
-  test("prepares only the selected stable provider without a run-bound lease", async () => {
+  test("reads the durable pending revision when stable bootstrap stdout is empty", async () => {
     const commands: string[] = [];
+    const expectedRevision = codexProviderConfigurationRevision({
+      home: "/root",
+      workdir: "/root/work",
+      runsAsRoot: true,
+    });
     const sandbox = {
       id: "fresh-selected-provider",
       providerKind: "cube",
       process: {
         executeCommand: async (command: string) => {
           commands.push(command);
-          return { exitCode: 0, result: "" };
+          return {
+            exitCode: 0,
+            result: isCodexConfigProbe(command)
+              ? `present:${expectedRevision}\n`
+              : "",
+          };
         },
       },
     } as unknown as SandboxHandle;
@@ -973,14 +1023,112 @@ exit 17
 
     await expect(
       prepareStableRuntimeProvider(sandbox, context, "codex"),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatch(/^[0-9a-f]{64}$/);
+    await expect(
+      prepareStableRuntimeProvider(sandbox, context, "codex"),
+    ).resolves.toMatch(/^[0-9a-f]{64}$/);
+    resetRuntimeProviderBridgeCacheForTest();
+    await expect(
+      prepareStableRuntimeProvider(sandbox, context, "codex"),
+    ).resolves.toMatch(/^[0-9a-f]{64}$/);
 
     const bootstraps = commands.filter((command) => command.includes("NATIVE_PACKAGE="));
-    expect(bootstraps).toHaveLength(1);
+    expect(bootstraps).toHaveLength(2);
     expect(bootstraps[0]).toContain("@openai/codex@0.153.3");
     expect(bootstraps[0]).not.toContain("providerInstances");
     expect(commands.some((command) => command.includes("exec-server"))).toBe(false);
     expect(commands.some((command) => command.includes("codex-relay"))).toBe(false);
+  });
+
+  test.each(["reject", "null", "nonzero"] as const)(
+    "fails closed when a cached Codex pending-marker probe returns %s",
+    async (failure) => {
+      const expectedRevision = codexProviderConfigurationRevision({
+        home: "/root",
+        workdir: "/root/work",
+        runsAsRoot: true,
+      });
+      let primed = false;
+      const sandbox = {
+        id: `cached-marker-${failure}`,
+        providerKind: "cube",
+        process: {
+          executeCommand: async (command: string) => {
+            if (isCodexConfigProbe(command)) {
+              if (!primed) return { exitCode: 0, result: `present:${expectedRevision}\n` };
+              if (failure === "reject") throw new Error("transport failed");
+              if (failure === "null") return null as never;
+              return { exitCode: 1, result: "" };
+            }
+            return { exitCode: 0, result: "" };
+          },
+        },
+      } as unknown as SandboxHandle;
+      const context = {
+        runId: `run-cached-marker-${failure}`,
+        threadId: `thread-cached-marker-${failure}`,
+        prompt: "work",
+        bootstrapContext: "",
+        turnContext: "",
+        workdir: "/root/work",
+        orgId: "org-a",
+        userId: "user-a",
+        model: "gpt-5.6-luna",
+        signal: new AbortController().signal,
+        emit: async () => undefined,
+        setSummary: () => undefined,
+      } as const;
+
+      await expect(prepareStableRuntimeProvider(sandbox, context, "codex"))
+        .resolves.toBe(expectedRevision);
+      primed = true;
+      await expect(prepareStableRuntimeProvider(sandbox, context, "codex")).rejects.toThrow(
+        failure === "reject" ? "transport failed" : "marker read failed",
+      );
+    },
+  );
+
+  test("keeps an outer pending Codex revision through login-specific preparation", async () => {
+    const revision = "a".repeat(64);
+    const sandbox = {
+      id: "local-login-pending-config",
+      providerKind: "local",
+      process: {
+        executeCommand: async (command: string) => ({
+          exitCode: 0,
+          result: command.includes("USEAGENT_LOGIN_CODEX")
+            ? "/run/useagent/logins/codex/auth.json"
+            : isCodexConfigProbe(command)
+              ? "absent\n"
+              : "",
+        }),
+      },
+    } as unknown as SandboxHandle;
+    const context = {
+      runId: "run-login-pending",
+      threadId: "thread-login-pending",
+      prompt: "work",
+      bootstrapContext: "",
+      turnContext: "",
+      workdir: "/home/user/work",
+      orgId: "org-a",
+      userId: "user-a",
+      model: "gpt-5.6-luna",
+      signal: new AbortController().signal,
+      emit: async () => undefined,
+      setSummary: () => undefined,
+    } as const;
+
+    const lease = await prepareRuntimeProviderBridge(
+      sandbox,
+      context,
+      "codex",
+      "/home/user/work",
+      true,
+      { kind: "local", logins: ["codex"] },
+      revision,
+    );
+    expect(lease.pendingProviderConfigurationRevision).toBe(revision);
   });
 
   test("batches retained Codex Bun and package identity validation and repairs tampering", async () => {
@@ -1009,6 +1157,7 @@ exit 17
             expect(command).toContain(buildSandboxBunProbeCommand(layout));
             return { exitCode: identityValid ? 0 : 1, result: "" };
           }
+          if (isCodexConfigProbe(command)) return { exitCode: 0, result: "absent\n" };
           return { exitCode: 0, result: "" };
         },
       },
@@ -1031,7 +1180,7 @@ exit 17
     await prepareStableRuntimeProvider(sandbox, context, "codex");
     const afterCold = commands.length;
     await prepareStableRuntimeProvider(sandbox, context, "codex");
-    expect(commands.slice(afterCold)).toHaveLength(1);
+    expect(commands.slice(afterCold)).toHaveLength(2);
     expect(bootstraps).toBe(1);
 
     identityValid = false;
@@ -1278,6 +1427,7 @@ exit 17
       process: {
         executeCommand: async (command: string) => {
           if (command.includes("--version)\" = '1.3.14'")) return { exitCode: 0, result: "" };
+          if (isCodexConfigProbe(command)) return { exitCode: 0, result: "absent\n" };
           attempts += 1;
           return { exitCode: attempts === 1 ? 1 : 0, result: "" };
         },

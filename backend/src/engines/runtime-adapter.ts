@@ -76,6 +76,7 @@ import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
 } from "./runtime-startup-recovery.js";
+import { applyPendingCodexProviderConfiguration } from "./runtime-codex-plan-config";
 export {
   reloadRetainedOpenCodeSession,
   type OpenCodeSessionReloadDependencies,
@@ -442,6 +443,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         label: "Preparing runtime and integrations…",
         chip: `runtime:${engine}`,
       });
+      let stableProviderPendingRevision: string | null = null;
       const prepared = await prepareSandboxTurn(ctx, {
         snapshot: runtimeRunSnapshot(),
         chip: `runtime:${engine}`,
@@ -456,8 +458,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           : undefined,
         // Frozen timing prefix: hosted cutover canaries read these values.
         timingPrefix: "t3",
-        prepareStableProvider(sandbox) {
-          return prepareStableRuntimeProvider(sandbox, ctx, engine);
+        async prepareStableProvider(sandbox) {
+          stableProviderPendingRevision = await prepareStableRuntimeProvider(sandbox, ctx, engine);
         },
         async prepareProvider(sandbox, workdir, binding, preparation) {
           return await prepareRuntimeProviderBridge(
@@ -467,6 +469,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             workdir,
             preparation.stableProviderPrepared,
             binding,
+            stableProviderPendingRevision,
           );
         },
         closeProvider: (state) => state.close(),
@@ -478,6 +481,28 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         : undefined;
 
       try {
+        // A warm T3 process may still own a Codex app-server launched from the
+        // previous stable settings. When the host changes those settings,
+        // restart once before session lookup so T3 boots the new argv and then
+        // resumes the retained native thread from its persisted cursor.
+        if (
+          engine === "codex" &&
+          providerBridgeLease.authPath !== "subscription" &&
+          providerBridgeLease.pendingProviderConfigurationRevision
+        ) {
+          const endBarrier = ctx.timing?.begin("t3.prepare.runtime_barrier");
+          try {
+            await applyPendingCodexProviderConfiguration({
+              sandbox,
+              signal: ctx.signal,
+              revision: providerBridgeLease.pendingProviderConfigurationRevision,
+              timing: ctx.timing,
+            });
+          } finally {
+            endBarrier?.();
+          }
+        }
+
         // Claude also patches T3 settings.json above. The explicit provider
         // instance carries a unique display marker, so the cache probe proves
         // T3 applied the gateway-backed wrapper rather than merely observing
