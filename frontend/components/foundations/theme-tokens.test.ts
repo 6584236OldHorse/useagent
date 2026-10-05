@@ -296,6 +296,9 @@ describe("shared theme tokens", () => {
     expect(lightSemantic["--color-text-secondary"]).toBe("var(--color-neutral-600)");
     expect(contrast("#525252", "#f5f5f5")).toBeGreaterThanOrEqual(3);
     expect(contrast("#a1a1a1", "#f5f5f5")).toBeLessThan(3);
+    // Sakura and Phosphor light re-point text-secondary to their own neutral-500.
+    expect(contrast("#8a6675", "#fbf3f5")).toBeGreaterThanOrEqual(3);
+    expect(contrast("#4e7358", "#f2f8f3")).toBeGreaterThanOrEqual(3);
     expect(contrast("#d4d4d4", "#262626")).toBeGreaterThanOrEqual(3);
   });
 
