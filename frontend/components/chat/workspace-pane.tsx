@@ -22,12 +22,12 @@ import {
   inferWorkpieceKind,
 } from "@useagent/artifact-workspace";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useWorkpieceEditor } from "@/app/agent/artifacts/[id]/artifact-editor-state";
+import { useWorkpieceEditor } from "@/app/(library)/agent/artifacts/[id]/artifact-editor-state";
 import {
   ArtifactFidelityNote,
   PdfEmbedSurface,
   WorkpieceSurfaces,
-} from "@/app/agent/artifacts/[id]/artifact-editor-surfaces";
+} from "@/app/(library)/agent/artifacts/[id]/artifact-editor-surfaces";
 import { EDIT_ACTIVITY_WINDOW_MS } from "@/components/artifacts/requested-edit-auto-accept";
 import { workpieceFollowUpMessage } from "@/components/artifacts/workpiece-follow-up";
 import { WorkpieceProposalReview } from "@/components/artifacts/workpiece-proposal-review";

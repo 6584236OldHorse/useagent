@@ -3,7 +3,7 @@
 import { RiLoader4Line } from "@remixicon/react";
 import type { RunStatus } from "@useagent/agent-client/wire";
 import { useEffect, useState } from "react";
-import { type Run, statusTone } from "@/app/agent/runs/runs-data";
+import { type Run, statusTone } from "@/app/(workspace)/agent/runs/runs-data";
 import { cn } from "@/utils/cn";
 import { formatDuration } from "@/utils/format";
 
