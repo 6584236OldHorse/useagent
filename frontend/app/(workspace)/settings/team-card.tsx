@@ -291,6 +291,12 @@ function InvitationRow({
   );
 }
 
+/** The address Allow will use: Slack's word when it has one (it may arrive while
+ *  the row is on screen), else what the admin typed. */
+export function decisionEmail(request: Pick<AccessRequest, "email">, typed: string): string | null {
+  return request.email ?? (typed.trim() || null);
+}
+
 /** A Slack sender nobody has let in yet. Allow needs the email they will sign in
  *  with; Slack hands it over when the app may read emails, else the admin types it. */
 function AccessRequestRow({
@@ -306,6 +312,7 @@ function AccessRequestRow({
 }) {
   const [email, setEmail] = useState(request.email ?? "");
   const known = request.email !== null;
+  const decision = decisionEmail(request, email);
   return (
     <div
       data-testid="team-access-request"
@@ -337,8 +344,8 @@ function AccessRequestRow({
       <Button
         variant="primary"
         size="xs"
-        disabled={busy || !email.trim()}
-        onClick={() => onAllow(email.trim() || null)}
+        disabled={busy || !decision}
+        onClick={() => onAllow(decision)}
       >
         Allow
       </Button>

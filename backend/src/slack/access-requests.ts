@@ -76,8 +76,11 @@ export async function requestSlackAccess(input: {
       : [];
     if (locked?.status === "denied") return "denied";
     if (locked?.status === "pending") {
-      if (email) {
-        await tx.update(slackAccessRequests).set({ name, email, image: profile?.image ?? null }).where(and(eq(slackAccessRequests.id, existing!.id), isNull(slackAccessRequests.email)));
+      // Whatever the lookup recovered this time is kept: a name and avatar
+      // without an address still help the admins, and a null address stays
+      // open for the next look.
+      if (profile) {
+        await tx.update(slackAccessRequests).set({ name, email, image: profile.image }).where(and(eq(slackAccessRequests.id, existing!.id), isNull(slackAccessRequests.email)));
       }
       return "waiting";
     }

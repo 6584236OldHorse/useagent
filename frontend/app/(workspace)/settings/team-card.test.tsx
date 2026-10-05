@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { canManageTeam, invitationHref, memberRole, type TeamMember } from "./team-api";
-import { assignableRoles, canEditMember, deliveryCopy, TeamCard } from "./team-card";
+import { assignableRoles, canEditMember, decisionEmail, TeamCard } from "./team-card";
 
 const member = (over: Partial<TeamMember>): TeamMember => ({
   id: "m1",
@@ -42,12 +42,11 @@ describe("team roles", () => {
     expect(canEditMember("member", "u9", member({}))).toBe(false);
   });
 
-  test("the link copy claims nothing about mail until the server has said", () => {
-    expect(deliveryCopy("a@example.test", true)).toContain("goes out by email");
-    expect(deliveryCopy("a@example.test", false)).toContain("does not send email");
-    expect(deliveryCopy("a@example.test", null)).toBe(
-      "Invitation ready for a@example.test. Share this link with them.",
-    );
+  test("Allow uses Slack's address once it arrives, else what the admin typed", () => {
+    expect(decisionEmail({ email: null }, "")).toBeNull();
+    expect(decisionEmail({ email: null }, "  typed@example.test ")).toBe("typed@example.test");
+    // The row stays mounted with an empty input while Slack's word arrives.
+    expect(decisionEmail({ email: "slack@example.test" }, "")).toBe("slack@example.test");
   });
 
   test("the invitation link points at the accept page on this origin", () => {

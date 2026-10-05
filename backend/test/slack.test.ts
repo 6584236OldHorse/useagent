@@ -2757,6 +2757,12 @@ describe("slack workspace identity (fail closed)", () => {
     let request = (await listed()).body.requests.find((r) => r.name === slackUserId)!;
     expect(request.email).toBeNull();
     await waitFor(async () => rec.messages.find((m) => m.channel === "U-HUMAN" && m.text.includes(slackUserId)) ?? null);
+    // A lookup that brings a name but no address still improves the row.
+    profile = { name: "Named Later", email: null, image: null };
+    expect(await ask()).toBe("waiting");
+    request = (await listed()).body.requests.find((r) => r.id === request.id)!;
+    expect(request.name).toBe("Named Later");
+    expect(request.email).toBeNull();
     profile = { name: "Refreshed Name", email, image: null };
     const before = rec.messages.length;
     expect(await ask()).toBe("waiting");
