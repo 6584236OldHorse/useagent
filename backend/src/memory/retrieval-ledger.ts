@@ -52,6 +52,8 @@ export interface RetrievalLedgerPayload {
   readonly renderedChars: number;
   readonly truncated: boolean;
   readonly latencyMs: number;
+  /** True when the memory service was unreachable for every pool searched. */
+  readonly degraded: boolean;
 }
 
 /** Shape the durable ledger payload from a scope plan + its recall (pure). */
@@ -80,13 +82,14 @@ export function buildRetrievalPayload(
     renderedChars: recall.rendered.length,
     truncated: recall.truncated,
     latencyMs: recall.latencyMs,
+    degraded: recall.degraded,
   };
 }
 
 /**
  * Record a run's recall as a `context.retrieved` native frame (persist + stream).
- * One frame per run (id keyed by runId). No-op when nothing was recalled — a
- * ledger of non-retrievals is noise. Fire-and-forget via recordProviderEvent, so
+ * One frame per run (id keyed by runId). No-op when nothing was recalled and
+ * the provider answered (a ledger of non-retrievals is noise). Fire-and-forget via recordProviderEvent, so
  * it NEVER fails the run. The caller should `void` this on the hot path.
  */
 export async function recordContextRetrieval(
@@ -96,7 +99,8 @@ export async function recordContextRetrieval(
   query: string,
   recall: ScopedRecall,
 ): Promise<void> {
-  if (recall.items.length === 0) return;
+  // An unreachable provider leaves a frame too: an outage must not read as "nothing remembered".
+  if (recall.items.length === 0 && !recall.degraded) return;
   // Retrieval happens at run START, before any provider part, so the shared
   // per-run sequencer (provider-events.ts) mints this frame seq 0 and every
   // opencode capture a strictly higher one — no two emitters collide on a seq.

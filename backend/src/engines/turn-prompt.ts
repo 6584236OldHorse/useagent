@@ -1,10 +1,12 @@
 import { productChildThreadsEnabled } from "../runs/thread-relationship-switch";
+import { MEMORY_TURN_GUIDANCE, MEMORY_TURN_GUIDANCE_NO_TOOLS } from "../memory/memory-skill-text";
 
 /** The provider-neutral context needed to compose one agent turn. */
 export interface TurnPromptContext {
   readonly prompt: string;
   readonly bootstrapContext: string;
   readonly turnContext: string;
+  readonly memoryEnabled?: boolean;
   readonly resourceContext?: string;
   readonly skillContext?: string;
   readonly skillCatalogContext?: string;
@@ -123,7 +125,11 @@ export function composeTurnPrompt(
   // Bots are reachable only through the gateway tools; a turn that cannot reach them
   // (no gateway, or an internal origin such as Slack) must not be told to use them.
   const tools = executionCapabilities.facilities.tools;
-  const botsReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
+  const gatewayReachable = tools.availability === "ready" && tools.access.kind === "useagent_gateway" && ctx.origin === null;
+  const botsReachable = gatewayReachable;
+  // Memory works through the same gateway tools; a turn without them is told so
+  // rather than left to invent a memory file in the sandbox.
+  const memoryRules = ctx.memoryEnabled ? (gatewayReachable ? MEMORY_TURN_GUIDANCE : MEMORY_TURN_GUIDANCE_NO_TOOLS) : "";
   const perTurn =
     executionCapabilityPrompt(executionCapabilities) +
     AGENT_WORKFLOW_ROUTING_RULES +
@@ -133,7 +139,8 @@ export function composeTurnPrompt(
     skillReference +
     (ctx.resourceContext ?? "") +
     (ctx.inputContext ?? "") +
-    ctx.turnContext;
+    ctx.turnContext +
+    memoryRules;
   const prefix = resumed ? perTurn : AGENT_OPERATING_RULES + ctx.bootstrapContext + perTurn;
   return `${prefix}<current_user_request>\n${ctx.prompt}\n</current_user_request>`;
 }

@@ -15,6 +15,7 @@ import {
 import { executionCapabilityPrompt } from "./execution-capabilities";
 import { botContextForTurn } from "../bots/prompt-context";
 import { frameTurnContexts } from "./turn-contexts";
+import { MEMORY_TURN_GUIDANCE, MEMORY_TURN_GUIDANCE_NO_TOOLS, MEMORY_UNAVAILABLE_NOTE } from "../memory/memory-skill-text";
 
 const ctx = (
   over: Partial<{
@@ -28,6 +29,7 @@ const ctx = (
     commandName: string | null;
     orgId: string | null;
     origin: string | null;
+    memoryEnabled: boolean;
   }> = {},
 ) => ({
   prompt: "USER",
@@ -306,5 +308,31 @@ describe("served ports", () => {
       { ...EXECUTION, runtime: "managed" },
       env,
     )).not.toContain("<served_ports>");
+  });
+});
+
+describe("memory guidance", () => {
+  test("a run with memory and gateway tools is told to use the memory tools, after the recalled block", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true }), true, EXECUTION);
+    expect(prompt).toContain(MEMORY_TURN_GUIDANCE);
+    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeGreaterThan(prompt.indexOf("TURN"));
+    expect(prompt.indexOf(MEMORY_TURN_GUIDANCE)).toBeLessThan(prompt.indexOf("<current_user_request>"));
+  });
+
+  test("a turn that cannot reach the gateway gets the honest no-tools text", () => {
+    const prompt = composeTurnPrompt(ctx({ memoryEnabled: true, origin: "slack" }), true, EXECUTION);
+    expect(prompt).toContain(MEMORY_TURN_GUIDANCE_NO_TOOLS);
+    expect(prompt).not.toContain("memory_remember");
+  });
+
+  test("a deployment without memory says nothing about it", () => {
+    const prompt = composeTurnPrompt(ctx(), true, EXECUTION);
+    expect(prompt).not.toContain("<memory_rules>");
+  });
+
+  test("an unreachable memory service is named in the turn context instead of reading as empty", () => {
+    const { turnContext } = frameTurnContexts({ recall: { rendered: "", degraded: true }, skillCatalogPage: null, resourceSnapshot: null });
+    expect(turnContext).toBe(MEMORY_UNAVAILABLE_NOTE);
+    expect(frameTurnContexts({ recall: { rendered: "MEMORY", degraded: false }, skillCatalogPage: null, resourceSnapshot: null }).turnContext).toBe("MEMORY");
   });
 });

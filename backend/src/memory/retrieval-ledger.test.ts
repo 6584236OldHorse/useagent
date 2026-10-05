@@ -69,6 +69,7 @@ describe("buildRetrievalPayload", () => {
     expect(p.renderedChars).toBe(recall.rendered.length);
     expect(p.truncated).toBe(false);
     expect(p.latencyMs).toBe(42);
+    expect(p.degraded).toBe(false);
   });
 
   test("scope carries only tenant ids — never transport credentials", () => {
