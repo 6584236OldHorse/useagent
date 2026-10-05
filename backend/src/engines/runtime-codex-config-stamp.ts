@@ -11,12 +11,8 @@ const STAMP_DIR = `${RUNTIME_ENVIRONMENT_HOME}/caches/codex-config-sessions`;
 
 const stampPath = (threadId: string) => `${STAMP_DIR}/${createHash("sha256").update(threadId).digest("hex")}`;
 
-/**
- * Prints `same` when the thread's stamp matches the config now, else
- * `changed:<revision>`. A fresh thread's first session reads the config now,
- * so it is stamped at once. `stamp` writes the given revision.
- */
-export function buildCodexConfigStampCommand(threadId: string, mode: "check" | "fresh" | { readonly stamp: string }): string {
+/** Prints `same` when the thread's stamp matches the config now, else `changed:<revision>`; `stamp` writes one. */
+export function buildCodexConfigStampCommand(threadId: string, mode: "check" | { readonly stamp: string }): string {
   const script = [
     'const fs=require("node:fs")',
     'const crypto=require("node:crypto")',
@@ -28,22 +24,15 @@ export function buildCodexConfigStampCommand(threadId: string, mode: "check" | "
     "let stamped=null",
     'try{stamped=fs.readFileSync(stamp,"utf8").trim()}catch(error){if(error?.code!=="ENOENT")throw error}',
     'if(stamped===revision){console.log("same");process.exit(0)}',
-    'if(mode==="fresh"){write(revision);console.log("same");process.exit(0)}',
     'console.log("changed:"+revision)',
   ].join(";");
   const argument = typeof mode === "string" ? mode : `stamp:${mode.stamp}`;
   return `node -e ${JSON.stringify(script)} ${JSON.stringify(CODEX_CONFIG_PATH)} ${JSON.stringify(stampPath(threadId))} ${JSON.stringify(argument)}`;
 }
 
-/** The config revision a thread's retained session has not started with, or null when it has. */
-export async function readCodexConfigChange(
-  sandbox: Pick<SandboxHandle, "process">,
-  threadId: string,
-  threadExists: boolean,
-): Promise<string | null> {
-  const result = await sandbox.process.executeCommand(
-    buildCodexConfigStampCommand(threadId, threadExists ? "check" : "fresh"), undefined, undefined, 10,
-  );
+/** The config revision the thread is not stamped with, or null when it is. A thread never stamped may hold a session of any config. */
+export async function readCodexConfigChange(sandbox: Pick<SandboxHandle, "process">, threadId: string): Promise<string | null> {
+  const result = await sandbox.process.executeCommand(buildCodexConfigStampCommand(threadId, "check"), undefined, undefined, 10);
   const response = result?.result?.trim();
   if ((result?.exitCode ?? 1) !== 0 || !response) throw new Error("Codex config stamp read failed");
   if (response === "same") return null;
@@ -52,7 +41,7 @@ export async function readCodexConfigChange(
   return revision;
 }
 
-/** Stamps the thread once its retained session left, so its next session runs on `revision`. */
+/** Stamps the thread once it holds no older session (it left, or there was none), so its next session runs on `revision`. */
 export async function stampCodexConfig(sandbox: Pick<SandboxHandle, "process">, threadId: string, revision: string): Promise<void> {
   const result = await sandbox.process.executeCommand(
     buildCodexConfigStampCommand(threadId, { stamp: revision }), undefined, undefined, 10,

@@ -32,19 +32,22 @@ describe("Codex config stamp", () => {
   test("a thread's session counts as stale only once the config changed after it started", async () => {
     const { sandbox, writeConfig } = scratchSandbox();
     writeConfig("one");
-    // A fresh thread's first session reads the config as it is now.
-    expect(await readCodexConfigChange(sandbox, "skynet-thread-1", false)).toBeNull();
-    expect(await readCodexConfigChange(sandbox, "skynet-thread-1", true)).toBeNull();
+    // A thread never stamped may hold a session of any config.
+    const first = await readCodexConfigChange(sandbox, "skynet-thread-1");
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    await stampCodexConfig(sandbox, "skynet-thread-1", first!);
+    expect(await readCodexConfigChange(sandbox, "skynet-thread-1")).toBeNull();
 
     // A rotated bearer is a change until the thread's session restarted on it.
     writeConfig("two");
-    const revision = await readCodexConfigChange(sandbox, "skynet-thread-1", true);
+    const revision = await readCodexConfigChange(sandbox, "skynet-thread-1");
     expect(revision).toMatch(/^[0-9a-f]{64}$/);
-    expect(await readCodexConfigChange(sandbox, "skynet-thread-1", true)).toBe(revision);
+    expect(revision).not.toBe(first);
+    expect(await readCodexConfigChange(sandbox, "skynet-thread-1")).toBe(revision);
     await stampCodexConfig(sandbox, "skynet-thread-1", revision!);
-    expect(await readCodexConfigChange(sandbox, "skynet-thread-1", true)).toBeNull();
+    expect(await readCodexConfigChange(sandbox, "skynet-thread-1")).toBeNull();
 
-    // Every thread has its own stamp: one never stamped has a session of unknown config.
-    expect(await readCodexConfigChange(sandbox, "skynet-thread-2", true)).toBe(revision);
+    // Every thread has its own stamp.
+    expect(await readCodexConfigChange(sandbox, "skynet-thread-2")).toBe(revision);
   });
 });

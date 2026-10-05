@@ -156,6 +156,7 @@ describe("T3 run adapter gate", () => {
     const codexStampIdx = source.indexOf("await stampCodexConfig(sandbox, threadId, configRevision);");
     expect(codexStampIdx).toBeGreaterThan(ackIdx);
     expect(establishIdx).toBeGreaterThan(codexStampIdx);
+    expect(source.indexOf("readCodexConfigChange(sandbox, runtimeThreadId(ctx))")).toBeLessThan(source.indexOf("const shell = "));
     expect(steerIdx).toBeGreaterThan(establishIdx);
     const reloadModuleSource = readFileSync(
       new URL("./runtime-session-stop.ts", import.meta.url),

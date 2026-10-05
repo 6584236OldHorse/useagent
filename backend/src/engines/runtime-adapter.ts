@@ -225,6 +225,14 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
       });
       const { sandbox, workdir, redact } = prepared;
       const providerBridgeLease: RuntimeProviderBridgeLease = prepared.providerState;
+      // This sandbox's Codex reads config.toml (the tool gateway's bearer) only
+      // when its session starts. Whether the thread's session predates the file
+      // the bridge just wrote is read alongside the barriers and the shell read.
+      // Hosted Codex reconnects its tools on the relay's kept session instead.
+      const codexConfigChange = engine === "codex" && providerBridgeLease.authPath !== "subscription"
+        ? readCodexConfigChange(sandbox, runtimeThreadId(ctx))
+        : null;
+      codexConfigChange?.catch(() => {});
       const controlMetadata = ctx.expectedSandbox
         ? { expectedSandbox: ctx.expectedSandbox, threadId: ctx.threadId ?? ctx.runId }
         : undefined;
@@ -337,10 +345,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           });
           // A declined stop leaves the refresh owed, so the next turn tries again.
           if (limitsApplied) await providerBridgeLease.ackModelLimitsReload();
-        } else if (engine === "codex" && providerBridgeLease.authPath !== "subscription") {
-          // Hosted Codex reconnects its tools on the relay's kept session; this
-          // sandbox's Codex reads config.toml (the tool gateway's bearer) only at start.
-          const configRevision = await readCodexConfigChange(sandbox, threadId, threadExists);
+        } else if (codexConfigChange) {
+          const configRevision = await codexConfigChange;
           if (configRevision && await reloadRetainedSession({
             sandbox, signal: ctx.signal, threadId, threadExists,
             change: "Codex configuration", changed: true, revision: configRevision,
