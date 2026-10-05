@@ -6,6 +6,6 @@ A 20-point subtitle therefore became 53 reference pixels instead of 40 on the 10
 
 The screenshot uses the same downloaded QA slide and production DeckSlideCanvas component before/after import. The old input clips text; the corrected input displays the complete subtitle and all three card lines.
 
-![Same canvas with old and corrected import scale](comparison.png)
+The before and after screenshot is attached to pro PR #333.
 
 The original downloaded bytes remain unchanged. This validates this unit-conversion defect, not complete fidelity for unsupported PowerPoint features such as per-run fonts or native auto-fit.
