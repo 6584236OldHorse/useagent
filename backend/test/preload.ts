@@ -75,6 +75,14 @@ process.env.FLEET_ORG_MAX_ACTIVE_SANDBOXES =
   process.env.FLEET_ORG_MAX_ACTIVE_SANDBOXES ?? "100000";
 process.env.FLEET_ORG_MAX_QUEUE_DEPTH =
   process.env.FLEET_ORG_MAX_QUEUE_DEPTH ?? "1000000";
+// The host budget defaults to the single prod host (12 000 millicores, 62 GiB).
+// Suites that simulate crashed workers leave sandbox leases in 'active' at
+// 2 000 millicores each, and nothing collects them here (the reconciler is off),
+// so six of them fill that budget and every later run queues on capacity until
+// a fleet suite truncates the leases. Open it like the limits above; the fleet
+// suites narrow it per test.
+process.env.FLEET_HOST_CPU_MILLICORES = process.env.FLEET_HOST_CPU_MILLICORES ?? "100000000";
+process.env.FLEET_HOST_MEMORY_MIB = process.env.FLEET_HOST_MEMORY_MIB ?? "100000000";
 // Fast reconciler tick when a test starts the loop explicitly.
 process.env.FLEET_TICK_MS = process.env.FLEET_TICK_MS ?? "200";
 // The general suite drives admission explicitly (no background loop pumping
