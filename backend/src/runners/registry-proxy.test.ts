@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Hono } from "hono";
 import { createRegistryProxyRoutes } from "./registry-proxy";
 import type { PullCredentialSource } from "./registry-pull";
 import type { RunnerRow } from "./store";
@@ -20,7 +21,8 @@ function harness(upstream: (url: string, init: RequestInit) => Response | Promis
     },
     forget(ref) { forgotten.push(ref); },
   };
-  const app = createRegistryProxyRoutes({
+  // Mounted into a strict router the way the backend mounts it.
+  const app = new Hono().route("/", createRegistryProxyRoutes({
     runnerForToken: async (token) => (token === "good-token" ? RUNNER : null),
     image: () => IMAGE,
     credentials,
@@ -31,8 +33,8 @@ function harness(upstream: (url: string, init: RequestInit) => Response | Promis
       return upstream(String(input), init ?? {});
     }) as unknown as typeof fetch,
     log: () => undefined,
-  });
-  const request = (path: string, init: RequestInit = {}) => app.request(`http://plane${path}`, init);
+  }));
+  const request = (path: string, init: RequestInit = {}) => app.request(`http://plane/v2${path}`, init);
   return { request, calls, forgotten };
 }
 

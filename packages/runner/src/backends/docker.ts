@@ -3,8 +3,8 @@
 // the conformance suite exercises in CI.
 
 import type { LocalSandboxState } from "@useagent/runner-protocol";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliFlags, cliDial, cliExec, cliSpawn, cliSpawnTerminal, firstJsonObject, runCli } from "./cli-backend";
 import {BackendError,
@@ -44,6 +44,24 @@ function infoFromInspect(object: Record<string, unknown>): ContainerInfo {
   };
 }
 
+/**
+ * A config directory holding one registry login and nothing else of the machine's
+ * login state. It still selects the machine's daemon: the current context is copied
+ * and the context store (endpoints, TLS material) is linked in, read-only in practice.
+ */
+export async function privateDockerConfig(login: RegistryLogin, machine = process.env.DOCKER_CONFIG?.trim() || join(homedir(), ".docker")): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "useagent-pull-"));
+  const current = await readFile(join(machine, "config.json"), "utf8")
+    .then((text) => (JSON.parse(text) as { currentContext?: string }).currentContext, () => undefined);
+  // A junction on Windows, a symlink elsewhere; removing the directory later unlinks it, never the store.
+  const linked = await symlink(join(machine, "contexts"), join(dir, "contexts"), "junction").then(() => true, () => false);
+  await writeFile(join(dir, "config.json"), JSON.stringify({
+    ...(current && linked ? { currentContext: current } : {}),
+    auths: { [login.registry]: { auth: btoa(`${login.username}:${login.password}`) } },
+  }));
+  return dir;
+}
+
 export class DockerBackend implements LocalBackend {
   readonly kind = "docker" as const;
   readonly pinsByDigest = true;
@@ -57,15 +75,8 @@ export class DockerBackend implements LocalBackend {
   async pullImage(ref: string, onProgress?: (line: string) => void, login?: RegistryLogin, signal?: AbortSignal): Promise<void> {
     // A login lives in a private config directory for this one pull, so nothing
     // touches the machine's own docker login state.
-    const config = login ? await mkdtemp(join(tmpdir(), "useagent-pull-")) : null;
-    let env: NodeJS.ProcessEnv = process.env;
-    if (config && login) {
-      await writeFile(join(config, "config.json"), JSON.stringify({ auths: { [login.registry]: { auth: btoa(`${login.username}:${login.password}`) } } }));
-      // The machine's own config also selects the daemon (its current context);
-      // the private one must keep talking to that same daemon.
-      const host = process.env.DOCKER_HOST?.trim() || (await runCli(["docker", "context", "inspect", "--format", "{{(index .Endpoints \"docker\").Host}}"], { timeoutMs: 10_000 })).stdout.trim();
-      env = { ...process.env, DOCKER_CONFIG: config, ...(host ? { DOCKER_HOST: host } : {}) };
-    }
+    const config = login ? await privateDockerConfig(login) : null;
+    const env = config ? { ...process.env, DOCKER_CONFIG: config } : process.env;
     try {
       if (signal?.aborted) throw new BackendError("internal", `docker pull ${ref} stopped`);
       const proc = Bun.spawn(["docker", "pull", ref], { stdout: "pipe", stderr: "pipe", env });

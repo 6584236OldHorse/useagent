@@ -328,7 +328,7 @@ app.route("/api/internal/runners", runnerLinkRoutes);
 app.route("/api/internal/runners", runnerBridgeRoutes);
 app.route("/api/runners", runnerRoutes);
 // The sandbox image, served to runners under the standard registry API.
-app.route("/v2", runnerRegistryProxyRoutes);
+app.route("/", runnerRegistryProxyRoutes);
 app.route("/api/threads", threadRelationshipRoutes);
 // Loopback-only operator dispatch bridge (see runs/operator-routes.ts): lets
 // the release-lane parity canary run turns IN THIS PROCESS so the codex relay

@@ -53,8 +53,9 @@ function registryError(status: number, code: string, message: string, headers: R
 export function createRegistryProxyRoutes(deps: RegistryProxyDeps): Hono {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const log = deps.log ?? ((message: string) => console.warn(message));
-  // Engines probe "/v2/" with the slash; Hono would otherwise route only "/v2".
-  const app = new Hono({ strict: false });
+  // The routes carry their /v2 prefix: the backend router is strict, engines
+  // probe "/v2/" with the slash, and a rewrite hands us "/v2" without it.
+  const app = new Hono();
 
   const challenge = () => {
     const origin = deps.publicOrigin().replace(/\/+$/, "");
@@ -76,7 +77,7 @@ export function createRegistryProxyRoutes(deps: RegistryProxyDeps): Hono {
   };
 
   // The engine exchanges its login for a bearer token; the runner token is the login and the bearer.
-  app.get("/token", async (c) => {
+  app.get("/v2/token", async (c) => {
     const basic = basicCredentials(c.req.header("authorization"));
     const runner = basic ? await deps.runnerForToken(basic.password).catch(() => null) : null;
     if (!basic || !runner) return registryError(401, "UNAUTHORIZED", "a runner token is required");
@@ -86,12 +87,12 @@ export function createRegistryProxyRoutes(deps: RegistryProxyDeps): Hono {
     );
   });
 
-  app.on(["GET", "HEAD"], "/", async (c) => {
+  app.on(["GET", "HEAD"], ["/v2", "/v2/"], async (c) => {
     if (!(await runnerFromBearer(c.req.header("authorization")))) return challenge();
     return Response.json({}, { headers: { [API_VERSION[0]]: API_VERSION[1] } });
   });
 
-  app.on(["GET", "HEAD"], "/:org/:repo/:kind{manifests|blobs}/:reference", async (c) => {
+  app.on(["GET", "HEAD"], "/v2/:org/:repo/:kind{manifests|blobs}/:reference", async (c) => {
     if (!(await runnerFromBearer(c.req.header("authorization")))) return challenge();
     const image = deps.image();
     const upstream = image ? imageRepository(image.ref) : null;

@@ -132,6 +132,26 @@ describe("link client", () => {
     expect(cleanedUp).toBe(true);
   });
 
+  test("a stop waits for a dropped link's pull as well as the current one", async () => {
+    const sockets: Array<{ close(code?: number, reason?: string): void }> = [];
+    const plane = fakePlane({ onMux: (_mux, ws) => { sockets.push(ws); } });
+    const releases: Array<() => void> = [];
+    const { link } = client(plane.url, {
+      onWelcome: () => new Promise<void>((resolve) => { releases.push(resolve); }),
+    });
+    const run = link.run();
+    await until(() => releases.length === 1);
+    // The plane drops the first link while its pull is still running; the reconnect is welcomed again.
+    sockets[0]!.close(1012, "restart");
+    await until(() => releases.length === 2);
+    link.stop("signal");
+    releases[1]!();
+    const early = await Promise.race([run.then(() => "returned"), new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 150))]);
+    expect(early).toBe("pending");
+    releases[0]!();
+    expect((await run).reason).toBe("stopped");
+  });
+
   test("says hello, takes the welcome, heartbeats and answers rpc", async () => {
     let planeMux: Mux | null = null;
     const plane = fakePlane({ onMux: (mux) => { planeMux = mux; } });

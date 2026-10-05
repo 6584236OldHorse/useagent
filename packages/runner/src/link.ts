@@ -67,8 +67,8 @@ export class LinkClient {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private wake: (() => void) | null = null;
   image: ImageRef | null = null;
-  /** The welcome currently making the image ready, so a stop can wait for its cleanup. */
-  private settling: Promise<unknown> | null = null;
+  /** Every welcome still making its image ready, so a stop can wait for their cleanup. */
+  private readonly settling = new Set<Promise<void>>();
   private readonly stopping = new AbortController();
 
   constructor(private readonly options: LinkOptions) {}
@@ -78,9 +78,10 @@ export class LinkClient {
     try {
       return await this.loop();
     } finally {
-      // A welcome still making the image ready finishes its cleanup (logins, temp
-      // config) before the process is allowed to go; stop() has already aborted the pull.
-      await this.settling?.catch(() => undefined);
+      // Welcomes still making the image ready (a dropped link's pull can outlive its
+      // successor's) finish their cleanup (logins, temp config) before the process is
+      // allowed to go; stop() has already aborted their pulls.
+      while (this.settling.size) await Promise.all(this.settling);
     }
   }
 
@@ -149,13 +150,10 @@ export class LinkClient {
           return this.options.stream(target, stream);
         },
         onWelcome: (frame) => {
-          const settling = this.welcomed(frame, mux).then((stop) => {
-            if (stop) finish(stop);
-          });
-          this.settling = settling.finally(() => {
-            if (this.settling === tracked) this.settling = null;
-          });
-          const tracked = this.settling;
+          const settling = this.welcomed(frame, mux)
+            .then((stop) => { if (stop) finish(stop); }, () => undefined)
+            .finally(() => this.settling.delete(settling));
+          this.settling.add(settling);
         },
       },
     );

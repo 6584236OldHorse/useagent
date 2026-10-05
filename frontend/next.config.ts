@@ -78,10 +78,6 @@ export default function nextConfig(phase: string): NextConfig {
           source: "/v2/:path*",
           destination: `${origin}/v2/:path*`,
         },
-        {
-          source: "/v2",
-          destination: `${origin}/v2/`,
-        },
       ];
     },
   };
