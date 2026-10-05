@@ -30,12 +30,13 @@ export const chatRoutes = new Hono<AppEnv>();
 chatRoutes.use("*", orgScope);
 
 const MESSAGE_ROLES = new Set(["user", "assistant"]);
+type RouteChatMessage = { readonly role: "user" | "assistant"; readonly content: string };
 
 /** Validate the request's `messages` into a typed list, or null on any malformed
  *  entry / a history with no user turn. */
-function parseMessages(raw: unknown): ChatMessage[] | null {
+function parseMessages(raw: unknown): RouteChatMessage[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
-  const out: ChatMessage[] = [];
+  const out: RouteChatMessage[] = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") return null;
     const rec = entry as Record<string, unknown>;
@@ -44,7 +45,7 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
     if (typeof role !== "string" || !MESSAGE_ROLES.has(role) || typeof content !== "string") {
       return null;
     }
-    out.push({ role: role as ChatMessage["role"], content });
+    out.push({ role: role as RouteChatMessage["role"], content });
   }
   return out.some((m) => m.role === "user") ? out : null;
 }
