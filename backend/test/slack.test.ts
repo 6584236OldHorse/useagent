@@ -2977,6 +2977,29 @@ describe("slack workspace identity (fail closed)", () => {
     expect((membership as { role: string }).role).toBe("admin");
   });
 
+  test("a stale link from a workspace that moved on does not block another sender sharing the invitation", async () => {
+    const email = `${uid("shared")}@example.test`;
+    const shared = crypto.randomUUID();
+    await db.execute(sql`insert into invitation (id, organization_id, email, role, status, expires_at, inviter_id) values (${shared}, ${DEV_ORG_ID}, ${email}, 'member', 'pending', now() + interval '1 day', ${DEV_USER_ID})`);
+    const movedTeam = `T-${uid("moved")}`;
+    await upsertSlackWorkspace({ teamId: movedTeam, orgId: DEV_ORG_ID, userId: DEV_USER_ID });
+    const staleId = crypto.randomUUID();
+    await db.execute(sql`insert into slack_access_requests (id, team_id, slack_user_id, org_id, name, status, invitation_id) values (${staleId}, ${movedTeam}, 'U-STALE', ${DEV_ORG_ID}, 'Stale', 'invited', ${shared})`);
+    const validSender = `U-${uid("valid")}`;
+    const validId = crypto.randomUUID();
+    await db.execute(sql`insert into slack_access_requests (id, team_id, slack_user_id, org_id, name, status, invitation_id) values (${validId}, ${TEAM}, ${validSender}, ${DEV_ORG_ID}, 'Valid', 'invited', ${shared})`);
+    await upsertSlackWorkspace({ teamId: movedTeam, orgId: `org-${uid("elsewhere")}`, userId: DEV_USER_ID });
+    // The address's owner is a member here (the library's acceptance would have made them one).
+    const [account] = await db.execute(sql`insert into "user" (id, name, email, email_verified) values (${crypto.randomUUID()}, 'Shared Owner', ${email}, true) returning id`);
+    await db.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: DEV_ORG_ID, userId: (account as { id: string }).id, role: "member", createdAt: new Date() });
+    expect(await bindInvitedSlackSender(shared, (account as { id: string }).id)).toBe("bound");
+    const [valid] = await db.execute(sql`select user_id from slack_users where team_id = ${TEAM} and slack_user_id = ${validSender}`);
+    expect((valid as { user_id: string }).user_id).toBe((account as { id: string }).id);
+    const [stale] = await db.execute(sql`select status from slack_access_requests where id = ${staleId}`);
+    expect((stale as { status: string }).status).toBe("invited"); // untouched: its workspace moved on
+    expect(await db.execute(sql`select 1 from slack_users where team_id = ${movedTeam} and slack_user_id = 'U-STALE'`)).toHaveLength(0);
+  });
+
   test("removing the member closes the Slack door, and asking again reopens the request", async () => {
     const slackUserId = `U-${uid("leaver")}`;
     const channel = `D${uid("dm")}`;

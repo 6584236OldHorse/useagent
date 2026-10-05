@@ -367,36 +367,44 @@ export type InvitedBinding = "bound" | "no_membership" | "none";
 
 export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<InvitedBinding> {
   const bound = await db.transaction(async (tx): Promise<InvitedBinding> => {
-    const [linked] = await tx
-      .select({ teamId: slackAccessRequests.teamId, orgId: slackAccessRequests.orgId })
+    // Several senders may share one invitation (one address, several workspaces);
+    // each linked request is judged on its own, by its exact id.
+    const linked = await tx
+      .select({ id: slackAccessRequests.id, teamId: slackAccessRequests.teamId, orgId: slackAccessRequests.orgId })
       .from(slackAccessRequests)
-      .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
-      .limit(1);
-    if (!linked) return "none";
-    // Workspace first, then the request, as in decideAccessRequest: an old
-    // invitation must not overwrite the binding a rebound workspace made.
-    const [workspace] = await tx
-      .select({ orgId: slackWorkspaces.orgId })
-      .from(slackWorkspaces)
-      .where(eq(slackWorkspaces.teamId, linked.teamId))
-      .for("update");
-    if (workspace?.orgId !== linked.orgId) return "none";
-    const [row] = await tx
-      .select()
-      .from(slackAccessRequests)
-      .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
-      .for("update");
-    if (!row) return "none";
-    // Acceptance binds a membership that exists; it never creates one.
-    const [membership] = await tx
-      .select({ id: member.id })
-      .from(member)
-      .where(and(eq(member.organizationId, row.orgId), eq(member.userId, userId)))
-      .limit(1);
-    if (!membership) return "no_membership";
-    await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${invitationId}`);
-    await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
-    return "bound";
+      .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")));
+    if (!linked.length) return "none";
+    let result: InvitedBinding = "none";
+    for (const candidate of linked) {
+      // Workspace first, then the request, as in decideAccessRequest: an old
+      // invitation must not overwrite the binding a rebound workspace made.
+      const [workspace] = await tx
+        .select({ orgId: slackWorkspaces.orgId })
+        .from(slackWorkspaces)
+        .where(eq(slackWorkspaces.teamId, candidate.teamId))
+        .for("update");
+      if (workspace?.orgId !== candidate.orgId) continue; // this workspace moved on
+      const [row] = await tx
+        .select()
+        .from(slackAccessRequests)
+        .where(and(eq(slackAccessRequests.id, candidate.id), eq(slackAccessRequests.status, "invited")))
+        .for("update");
+      if (!row) continue;
+      // Acceptance binds a membership that exists; it never creates one.
+      const [membership] = await tx
+        .select({ id: member.id })
+        .from(member)
+        .where(and(eq(member.organizationId, row.orgId), eq(member.userId, userId)))
+        .limit(1);
+      if (!membership) {
+        result = "no_membership";
+        continue;
+      }
+      await bind(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId }, `${row.id}:${invitationId}`);
+      await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
+      result = "bound";
+    }
+    return result;
   });
   if (bound === "bound") kickSlackOutbox();
   return bound;
