@@ -73,10 +73,13 @@ const DEFAULT_RETAINED_SANDBOX_TTL_MIN = 4_320;
 export function retainedSandboxReservationTtlMs(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
-  const minutes = Number(env.FLEET_RETAINED_RESERVATION_MIN ?? env.SANDBOX_AUTO_DELETE_MIN ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN);
-  return Number.isFinite(minutes) && minutes > 0
-    ? minutes * 60_000
-    : DEFAULT_RETAINED_SANDBOX_TTL_MIN * 60_000;
+  const minutes = (value: string | undefined): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+  const reuse = minutes(env.SANDBOX_AUTO_DELETE_MIN) ?? DEFAULT_RETAINED_SANDBOX_TTL_MIN;
+  const reservation = minutes(env.FLEET_RETAINED_RESERVATION_MIN) ?? reuse;
+  return Math.min(reservation, reuse) * 60_000;
 }
 
 export interface RetainedSandboxMapping {
