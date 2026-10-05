@@ -612,7 +612,8 @@ export function Composer({
               "flex items-start gap-1.5 px-1",
               // A narrow composer (the split pane) stacks: the input takes the whole first row, the controls the second.
               // Compact: the field takes the whole first row; the controls are the footer row.
-              !hero && "col-span-3 col-start-1 row-start-1 min-w-0 items-center",
+              // The agent chip and the text share the field's top edge.
+              !hero && "col-span-3 col-start-1 row-start-1 min-w-0",
             )}
           >
             {command && (
@@ -652,12 +653,11 @@ export function Composer({
               }}
               className={cn(
                 "flex-1",
-                // Compact: the box height must equal the line-height so the single
-                // line of placeholder/text sits vertically CENTERED against the
-                // +/send buttons - a taller min-height top-aligns the text (textarea
-                // text can't vertical-center), which read as "input slightly up". It
-                // still auto-grows with content up to maxHeight.
-                hero ? "pt-1 text-headline-regular" : "min-h-6 text-body-2-regular leading-6",
+                // Compact: the field rests two lines tall (twice the line-height) so
+                // the reply box reads as a place to write, not a search field; the
+                // controls sit in their own footer row, so nothing needs centering
+                // against the text. It still auto-grows with content up to maxHeight.
+                hero ? "pt-1 text-headline-regular" : "min-h-12 text-body-2-regular leading-6",
               )}
             />
           </div>
