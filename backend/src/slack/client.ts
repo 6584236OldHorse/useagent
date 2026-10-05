@@ -17,6 +17,12 @@ export interface SlackClientConfig {
  *  A successful post/update carries the message `ts` (Slack's `message.ts`) so a
  *  card post can persist it for later `chat.update`s; undefined for calls with no
  *  message identity (reactions) or a client that does not surface it. */
+export interface SlackUserProfile {
+  readonly name: string;
+  readonly email: string | null;
+  readonly image: string | null;
+}
+
 export type DeliveryResult =
   | { ok: true; ts?: string }
   | { ok: false; class: "rate_limited"; retryAfterMs: number; message: string }
@@ -43,6 +49,10 @@ export interface SlackClient {
   }): Promise<DeliveryResult>;
   /** Add a reaction emoji (name without colons) to a specific message. */
   addReaction(args: { channel: string; timestamp: string; name: string }): Promise<DeliveryResult>;
+  /** A workspace member's profile (users.info): name, avatar, and the email when
+   *  the users:read.email scope was granted. Optional so recording stubs need not
+   *  provide it; a missing method means the profile is unknown. */
+  userInfo?(args: { user: string }): Promise<SlackUserProfile | null>;
   /**
    * Upload a file into a thread. Ported from the QM bot (files.uploadV2,
    * a reference implementation src/slack/attachments.ts:189) and a reference bot (files_upload_v2,
@@ -195,6 +205,26 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
       }),
     addReaction: ({ channel, timestamp, name }) =>
       call("reactions.add", { channel, timestamp, name }),
+    userInfo: async ({ user }) => {
+      try {
+        const res = await fetch(`${config.apiUrl}users.info?user=${encodeURIComponent(user)}`, {
+          headers: { authorization: `Bearer ${config.botToken}` },
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          user?: { real_name?: string; name?: string; profile?: { email?: string; image_192?: string; image_72?: string } };
+        };
+        if (!data.ok || !data.user) return null;
+        const profile = data.user.profile ?? {};
+        return {
+          name: data.user.real_name?.trim() || data.user.name?.trim() || user,
+          email: profile.email?.trim().toLowerCase() || null,
+          image: profile.image_192 ?? profile.image_72 ?? null,
+        };
+      } catch {
+        return null;
+      }
+    },
     setSessionStatus: ({ channel, threadTs, status }) =>
       call("agents.sessions.setStatus", {
         channel_id: channel,

@@ -28,10 +28,23 @@ export interface PendingInvitation {
   readonly expiresAt: string;
 }
 
+/** Someone who wrote to the bot from Slack before anyone let them in. */
+export interface AccessRequest {
+  readonly id: string;
+  readonly name: string;
+  readonly email: string | null;
+  readonly image: string | null;
+  /** The account this sender already owns here; Allow restores it and needs no address. */
+  readonly account: string | null;
+  readonly createdAt: string;
+}
+
 export interface Team {
   readonly organizationId: string;
   readonly members: readonly TeamMember[];
   readonly invitations: readonly PendingInvitation[];
+  /** Only managers see these; everyone else gets an empty list. */
+  readonly requests: readonly AccessRequest[];
   /** The signed-in person's role in this organisation; null when not a member. */
   readonly myRole: MemberRole | null;
 }
@@ -50,15 +63,28 @@ export function memberRole(value: unknown): MemberRole {
 async function readError(res: Response, fallback: string): Promise<string> {
   try {
     const body = (await res.json()) as { message?: unknown; error?: unknown };
-    const text = typeof body.message === "string" ? body.message : typeof body.error === "string" ? body.error : "";
+    const text =
+      typeof body.message === "string"
+        ? body.message
+        : typeof body.error === "string"
+          ? body.error
+          : "";
     return text || fallback;
   } catch {
     return fallback;
   }
 }
 
-async function post(path: string, body: Record<string, unknown>, fallback: string): Promise<Response> {
-  const res = await backendFetch(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) });
+async function post(
+  path: string,
+  body: Record<string, unknown>,
+  fallback: string,
+): Promise<Response> {
+  const res = await backendFetch(path, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(await readError(res, fallback));
   return res;
 }
@@ -103,7 +129,48 @@ export async function fetchTeam(input: { readonly userId: string | null }): Prom
     expiresAt: i.expiresAt,
   }));
   const mine = input.userId ? members.find((m) => m.userId === input.userId) : undefined;
-  return { organizationId, members, invitations, myRole: mine?.role ?? null };
+  return {
+    organizationId,
+    members,
+    invitations,
+    requests: await fetchAccessRequests(organizationId),
+    myRole: mine?.role ?? null,
+  };
+}
+
+/** Pinned to the same organisation as the members, whatever another tab switched to meanwhile. */
+async function fetchAccessRequests(organizationId: string): Promise<AccessRequest[]> {
+  const res = await backendFetch(
+    `/api/team/access-requests?organizationId=${encodeURIComponent(organizationId)}`,
+    {
+      cache: "no-store",
+    },
+  );
+  if (res.status === 403) return []; // not a manager
+  if (!res.ok) throw new Error(`access-requests ${res.status}`);
+  const body = (await res.json()) as { requests?: AccessRequest[] };
+  return body.requests ?? [];
+}
+
+/** Let a Slack sender in as a member; the email is where they sign in on the web. */
+export async function allowAccessRequest(
+  organizationId: string,
+  id: string,
+  email: string | null,
+): Promise<void> {
+  await post(
+    `/api/team/access-requests/${encodeURIComponent(id)}/allow`,
+    email ? { organizationId, email } : { organizationId },
+    "Could not let them in.",
+  );
+}
+
+export async function denyAccessRequest(organizationId: string, id: string): Promise<void> {
+  await post(
+    `/api/team/access-requests/${encodeURIComponent(id)}/deny`,
+    { organizationId },
+    "Could not record the answer.",
+  );
 }
 
 /** Owners and admins manage people; the check mirrors the server's default access control. */
@@ -113,18 +180,30 @@ export function canManageTeam(role: MemberRole | null): boolean {
 
 /** A fresh invitation. When one is already pending for that email the server
  * says so, and the pending row offers resend or cancel. */
-export async function inviteMember(organizationId: string, email: string, role: MemberRole): Promise<PendingInvitation> {
+export async function inviteMember(
+  organizationId: string,
+  email: string,
+  role: MemberRole,
+): Promise<PendingInvitation> {
   const res = await post(
     "/api/auth/organization/invite-member",
     { organizationId, email, role, resend: false },
     "Could not send the invitation.",
   );
-  const body = (await res.json()) as { id: string; email: string; role: string | null; expiresAt: string };
+  const body = (await res.json()) as {
+    id: string;
+    email: string;
+    role: string | null;
+    expiresAt: string;
+  };
   return { id: body.id, email: body.email, role: memberRole(body.role), expiresAt: body.expiresAt };
 }
 
 /** Extends the pending invitation and sends the mail again; the role stays as invited. */
-export async function resendInvitation(organizationId: string, invitation: PendingInvitation): Promise<void> {
+export async function resendInvitation(
+  organizationId: string,
+  invitation: PendingInvitation,
+): Promise<void> {
   await post(
     "/api/auth/organization/invite-member",
     { organizationId, email: invitation.email, role: invitation.role, resend: true },
@@ -132,16 +211,35 @@ export async function resendInvitation(organizationId: string, invitation: Pendi
   );
 }
 
-export async function cancelInvitation(organizationId: string, invitationId: string): Promise<void> {
-  await post("/api/auth/organization/cancel-invitation", { organizationId, invitationId }, "Could not cancel the invitation.");
+export async function cancelInvitation(
+  organizationId: string,
+  invitationId: string,
+): Promise<void> {
+  await post(
+    "/api/auth/organization/cancel-invitation",
+    { organizationId, invitationId },
+    "Could not cancel the invitation.",
+  );
 }
 
-export async function updateMemberRole(organizationId: string, memberId: string, role: MemberRole): Promise<void> {
-  await post("/api/auth/organization/update-member-role", { organizationId, memberId, role }, "Could not change the role.");
+export async function updateMemberRole(
+  organizationId: string,
+  memberId: string,
+  role: MemberRole,
+): Promise<void> {
+  await post(
+    "/api/auth/organization/update-member-role",
+    { organizationId, memberId, role },
+    "Could not change the role.",
+  );
 }
 
 export async function removeMember(organizationId: string, memberId: string): Promise<void> {
-  await post("/api/auth/organization/remove-member", { organizationId, memberIdOrEmail: memberId }, "Could not remove the member.");
+  await post(
+    "/api/auth/organization/remove-member",
+    { organizationId, memberIdOrEmail: memberId },
+    "Could not remove the member.",
+  );
 }
 
 /** The link an inviter can hand over when the deployment sends no mail. */

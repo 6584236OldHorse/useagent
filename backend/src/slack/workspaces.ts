@@ -12,7 +12,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { slackUsers, slackWorkspaces } from "../db/schema";
+import { member, slackUsers, slackWorkspaces } from "../db/schema";
 
 export interface SlackWorkspaceIdentity {
   orgId: string;
@@ -52,7 +52,7 @@ export async function upsertSlackWorkspace(input: {
     });
 }
 
-/** The product identity explicitly bound to one Slack sender, if any. */
+/** The product identity explicitly bound to one Slack sender, if any (the row as stored). */
 export async function findSlackUser(
   teamId: string,
   slackUserId: string,
@@ -65,14 +65,34 @@ export async function findSlackUser(
   return row ?? null;
 }
 
+/** The binding that may attribute a run: it counts only while that user is
+ *  still a member of the org, so removing a member closes their Slack door at
+ *  the same moment. Every ingress path resolves senders through this. */
+export async function findActiveSlackUser(
+  teamId: string,
+  slackUserId: string,
+  exec: Executor = db,
+): Promise<SlackSenderIdentity | null> {
+  const [row] = await exec
+    .select({ orgId: slackUsers.orgId, userId: slackUsers.userId })
+    .from(slackUsers)
+    .innerJoin(member, and(eq(member.userId, slackUsers.userId), eq(member.organizationId, slackUsers.orgId)))
+    .where(and(eq(slackUsers.teamId, teamId), eq(slackUsers.slackUserId, slackUserId)))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Bind one Slack sender to one product user inside the workspace tenant. */
-export async function upsertSlackUser(input: {
-  teamId: string;
-  slackUserId: string;
-  orgId: string;
-  userId: string;
-}): Promise<void> {
-  await db
+export async function upsertSlackUser(
+  input: {
+    teamId: string;
+    slackUserId: string;
+    orgId: string;
+    userId: string;
+  },
+  exec: Executor = db,
+): Promise<void> {
+  await exec
     .insert(slackUsers)
     .values(input)
     .onConflictDoUpdate({
@@ -93,7 +113,7 @@ export async function resolveSlackSender(
   const team = teamId?.trim();
   const sender = slackUserId?.trim();
   if (!team || !sender) return null;
-  const identity = await findSlackUser(team, sender);
+  const identity = await findActiveSlackUser(team, sender);
   return identity?.orgId === workspace.orgId ? identity : null;
 }
 

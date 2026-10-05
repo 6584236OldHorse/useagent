@@ -185,3 +185,33 @@ export const slackOutbox = pgTable(
       .where(sql`${t.receiptEmittedAt} is null and (${t.state} = 'dead' or (${t.state} = 'delivered' and ${t.kind} = 'upload_file'))`),
   ],
 );
+
+// A Slack sender the bot does not know yet, waiting for an admin's word. One row
+// per (team, Slack user, org): a workspace rebound to another org starts afresh.
+// Allow creates the member and the slack_users binding; Deny is remembered so
+// the person is not asked about again.
+export const slackAccessRequests = pgTable(
+  "slack_access_requests",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => slackWorkspaces.teamId, { onDelete: "cascade" }),
+    slackUserId: text("slack_user_id").notNull(),
+    orgId: text("org_id").notNull(),
+    name: text("name").notNull(),
+    email: text("email"),
+    image: text("image"),
+    status: text("status").notNull().default("pending"), // pending | invited | allowed | denied
+    invitationId: text("invitation_id"), // the invitation an admin sent for a typed address
+    decidedBy: text("decided_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_slack_access_requests_sender").on(t.teamId, t.slackUserId, t.orgId),
+    index("idx_slack_access_requests_org_status").on(t.orgId, t.status),
+  ],
+);

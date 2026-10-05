@@ -13,8 +13,11 @@ import { useAuthConfig, useSession } from "@/lib/auth";
 import { AVATAR_GRADIENT } from "./general-card";
 import { relTime } from "./relative-time";
 import {
+  type AccessRequest,
+  allowAccessRequest,
   cancelInvitation,
   canManageTeam,
+  denyAccessRequest,
   fetchTeam,
   invitationHref,
   inviteMember,
@@ -196,6 +199,25 @@ export function TeamCard() {
         })}
       </div>
 
+      {team.requests.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-caption-1-regular text-text-tertiary">Asking to join from Slack</p>
+          <div className="flex flex-col">
+            {team.requests.map((row) => (
+              <AccessRequestRow
+                key={row.id}
+                request={row}
+                busy={busy === row.id}
+                onAllow={(email) =>
+                  act(row.id, () => allowAccessRequest(team.organizationId, row.id, email))
+                }
+                onDeny={() => act(row.id, () => denyAccessRequest(team.organizationId, row.id))}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {team.invitations.length > 0 && (
         <div className="flex flex-col gap-2">
           <p className="text-caption-1-regular text-text-tertiary">Invited</p>
@@ -271,6 +293,80 @@ function InvitationRow({
           Cancel
         </Button>
       )}
+    </div>
+  );
+}
+
+/** The address Allow will use: Slack's word when it has one (it may arrive while
+ *  the row is on screen), else what the admin typed. */
+export function decisionEmail(
+  request: Pick<AccessRequest, "email" | "account">,
+  typed: string,
+): string | null {
+  // An account the sender already owns here wins: Allow restores it whatever
+  // Slack says now or an admin types.
+  return request.account ?? request.email ?? (typed.trim() || null);
+}
+
+/** A Slack sender nobody has let in yet. When Slack shared their address, Allow
+ *  lets them in at once. When it did not, the admin types an address and that
+ *  person is invited; they are let in when they accept on the web. */
+function AccessRequestRow({
+  request,
+  busy,
+  onAllow,
+  onDeny,
+}: {
+  request: AccessRequest;
+  busy: boolean;
+  onAllow: (email: string | null) => void;
+  onDeny: () => void;
+}) {
+  const [email, setEmail] = useState(request.email ?? "");
+  const known = request.email !== null || request.account !== null;
+  const decision = decisionEmail(request, email);
+  return (
+    <div
+      data-testid="team-access-request"
+      className="flex flex-wrap items-center gap-3 border-b border-separator-border py-2.5 last:border-b-0"
+    >
+      <Avatar
+        size="md"
+        color="blue"
+        src={request.image ?? undefined}
+        alt={request.name}
+        initials={(request.name.charAt(0) || "?").toUpperCase()}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-body-2-medium text-text-primary">{request.name}</p>
+        <p className="truncate text-caption-1-regular text-text-secondary">
+          {request.account
+            ? `previously let in as ${request.account}`
+            : (request.email ?? "Email unknown")}{" "}
+          · asked {relTime(request.createdAt)}
+        </p>
+      </div>
+      {!known && (
+        <Input
+          aria-label={`Email for ${request.name}`}
+          type="email"
+          placeholder="name@company.com"
+          value={email}
+          onChange={setEmail}
+          className="w-56"
+        />
+      )}
+      <Button
+        variant="primary"
+        size="xs"
+        disabled={busy || !decision}
+        onClick={() => onAllow(decision)}
+      >
+        {known ? "Allow" : "Invite"}
+      </Button>
+      <Button variant="ghost" size="xs" disabled={busy} onClick={onDeny}>
+        Deny
+      </Button>
     </div>
   );
 }

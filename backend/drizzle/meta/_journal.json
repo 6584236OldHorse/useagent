@@ -631,6 +631,13 @@
       "when": 1792800000001,
       "tag": "0091_slack_card_revisions",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1792800000002,
+      "tag": "0092_slack_access_requests",
+      "breakpoints": true
     }
   ]
 }

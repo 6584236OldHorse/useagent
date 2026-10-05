@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { canManageTeam, invitationHref, memberRole, type TeamMember } from "./team-api";
-import { assignableRoles, canEditMember, deliveryCopy, TeamCard } from "./team-card";
+import { assignableRoles, canEditMember, decisionEmail, deliveryCopy, TeamCard } from "./team-card";
 
 const member = (over: Partial<TeamMember>): TeamMember => ({
   id: "m1",
@@ -40,6 +40,27 @@ describe("team roles", () => {
     expect(canEditMember("admin", "u9", member({ role: "owner" }))).toBe(false);
     expect(canEditMember("owner", "u9", member({ role: "owner" }))).toBe(true);
     expect(canEditMember("member", "u9", member({}))).toBe(false);
+  });
+
+  test("Allow uses Slack's address once it arrives, else what the admin typed", () => {
+    expect(decisionEmail({ email: null, account: null }, "")).toBeNull();
+    expect(decisionEmail({ email: null, account: null }, "  typed@example.test ")).toBe(
+      "typed@example.test",
+    );
+    // The row stays mounted with an empty input while Slack's word arrives.
+    expect(decisionEmail({ email: "slack@example.test", account: null }, "")).toBe(
+      "slack@example.test",
+    );
+    // A sender let in before needs no address: Allow restores their account.
+    expect(decisionEmail({ email: null, account: "old@example.test" }, "")).toBe(
+      "old@example.test",
+    );
+  });
+
+  test("the owned account wins over whatever address Slack reports now", () => {
+    expect(decisionEmail({ email: "new@example.test", account: "old@example.test" }, "")).toBe(
+      "old@example.test",
+    );
   });
 
   test("the link copy claims nothing about mail until the server has said", () => {
