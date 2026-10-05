@@ -13,7 +13,8 @@ const ADMIN_URL = process.env.TEST_ADMIN_URL ?? "postgres://postgres@localhost:5
 // database that already ran everything main has (its journal ends at main's
 // tail) picks the spend ledger up only if the ledger's entry sorts strictly
 // above that tail. A clean-database run proves nothing about this path: here
-// main's journal is applied first, as merged, and the ledger's entry after it.
+// the journal before the ledger is applied first, as merged, and the ledger's
+// entry (with every migration stamped after it) on the next boot.
 test("a database at main's journal tail upgrades into the spend ledger on the next boot", async () => {
   const migrationsFolder = `${import.meta.dir}/../drizzle`;
   const mainFolder = await mkdtemp(join(tmpdir(), "useagent-main-tail-"));
@@ -27,13 +28,14 @@ test("a database at main's journal tail upgrades into the spend ledger on the ne
       entries: Array<{ idx: number; when: number; tag: string }>;
       [key: string]: unknown;
     };
-    const ledger = journal.entries.at(-1)!;
-    expect(ledger.tag).toBe("0104_spend_ledger");
+    const ledgerIndex = journal.entries.findIndex((entry) => entry.tag === "0104_spend_ledger");
+    expect(ledgerIndex).toBeGreaterThan(0);
+    const ledger = journal.entries[ledgerIndex]!;
     for (let i = 1; i < journal.entries.length; i += 1) {
       expect(journal.entries[i]!.when).toBeGreaterThan(journal.entries[i - 1]!.when);
     }
-    // Main's journal as merged: every entry but the ledger's.
-    const mainEntries = journal.entries.slice(0, -1);
+    // Main's journal as merged: every entry before the ledger's.
+    const mainEntries = journal.entries.slice(0, ledgerIndex);
     await mkdir(join(mainFolder, "meta"), { recursive: true });
     await Bun.write(join(mainFolder, "meta/_journal.json"), JSON.stringify({ ...journal, entries: mainEntries }, null, 2));
     for (const entry of mainEntries) {
@@ -57,11 +59,13 @@ test("a database at main's journal tail upgrades into the spend ledger on the ne
     const atMain = await applied();
     expect(atMain.at(-1)).toBe(mainEntries.at(-1)!.when);
 
-    // Its next boot with the branch: exactly the ledger is applied, above the tail.
+    // Its next boot with the branch: the ledger is applied above the tail, and
+    // every migration stamped after it follows in order.
     await migrate(upgradeDb, { migrationsFolder });
     expect(await ledgerTables()).toEqual(["spend_accounts", "spend_entries"]);
     const upgraded = await applied();
-    expect(upgraded).toEqual([...atMain, ledger.when]);
+    expect(upgraded).toEqual([...atMain, ...journal.entries.slice(ledgerIndex).map((entry) => entry.when)]);
+    expect(upgraded).toContain(ledger.when);
     for (let i = 1; i < upgraded.length; i += 1) expect(upgraded[i]!).toBeGreaterThan(upgraded[i - 1]!);
   } finally {
     await client?.end();

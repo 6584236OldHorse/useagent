@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  RiArrowDownSLine,
   RiArrowUpLine,
   RiCornerDownLeftLine,
   RiMicLine,
@@ -14,11 +13,12 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Agent, AgentChip, ChooseAgentPopover } from "@/components/chat/agent-command";
 import type { CommandCatalogState } from "@/components/chat/canonical-timeline";
 import { ChatModelMenu, type ChatModelOption } from "@/components/chat/chat-model-menu";
+import { ChatModelTrigger } from "@/components/chat/chat-model-trigger";
 import { AddContextMenu } from "@/components/chat/composer-add-menu";
 import { ComposerAlert } from "@/components/chat/composer-alert";
 import { mentionedBotIds, unlinkedBotTokens } from "@/components/chat/composer-mentions";
 import { mentionsToRunResources, useComposerMentions } from "@/components/chat/composer-mentions-ui";
-import { ModelPicker } from "@/components/chat/engine-picker";
+import { CatalogModelPicker } from "@/components/chat/catalog-model-picker";
 import { attachmentIntake, useRunUploads } from "@/components/chat/run-uploads";
 import {
   type CommandPickerStatus,
@@ -65,6 +65,8 @@ export type ComposerSubmit = (
   /** Bot ids behind @bot chips; each opens a delegated handoff thread on that bot's preset. */
   botMentions?: readonly string[],
   permissionMode?: PermissionMode, // the run's permission policy, chosen in the status row chip
+  /** The reasoning effort chosen in the picker; null keeps the runtime's default. */
+  reasoningEffort?: string | null,
 ) => void | Promise<void>;
 
 export type ComposerProps = {
@@ -103,6 +105,8 @@ export type ComposerProps = {
   };
   /** Starting model for the picker (thread's current model on replies). */
   defaultModel?: string;
+  /** Starting reasoning effort (the thread's current value on replies). */
+  defaultReasoningEffort?: string | null;
   /** Starting memory scope (a reply inherits the thread's current scope). */
   defaultMemoryScope?: MemoryScope;
   /** Engine slash commands for "/" autocomplete (reply composer, live thread). */
@@ -188,6 +192,7 @@ export function Composer({
   enableModelPicker = true,
   modelMenu,
   defaultModel = "claude-opus-5",
+  defaultReasoningEffort = null,
   defaultMemoryScope = "org",
   commands,
   commandState,
@@ -244,6 +249,7 @@ export function Composer({
   // can still override it without changing the call sites.
   const [engineState] = useState<EngineId>(defaultEngine);
   const [model, setModel] = useState(defaultModel);
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(defaultReasoningEffort);
   const [modelAvailable, setModelAvailable] = useState(true);
   const [command, setCommand] = useState<Agent | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -418,6 +424,8 @@ export function Composer({
         sent,
         mentionsToRunResources(mentions.mentions),
         mentionedBotIds(mentions.mentions),
+        undefined, // the permission mode is the status row's; the reply wrapper fills it in
+        reasoningEffort,
       );
       retry.current = null; // accepted — drop the retry key
       runUploads.clearAccepted(sent);
@@ -687,34 +695,15 @@ export function Composer({
               </button>
             )}
 
-            {/* Real chat MODEL picker trigger (honest replacement for the
-                placeholder agent picker). Opens the "Choose model" card above. */}
+            {/* Real chat MODEL picker trigger (the Chat surface): opens the
+                "Choose model" card above. */}
             {modelMenu && (
-              <button
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={modelMenuOpen}
-                aria-label={`Model: ${activeModelOption?.label ?? modelMenu.value}`}
-                onClick={() => setModelMenuOpen((o) => !o)}
-                className={cn(
-                  "flex h-9 items-center gap-1.5 rounded-xl border px-2.5 text-body-2-medium transition-colors",
-                  modelMenuOpen
-                    ? "border-border-button-default bg-background-secondary-default text-text-primary"
-                    : "border-border-button-default text-text-secondary hover:bg-background-primary-hover",
-                )}
-              >
-                {activeModelOption && (
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: activeModelOption.color }}
-                    aria-hidden
-                  />
-                )}
-                <span className="max-w-[10rem] truncate">
-                  {activeModelOption?.label ?? "Model"}
-                </span>
-                <RiArrowDownSLine className="size-4 shrink-0" aria-hidden />
-              </button>
+              <ChatModelTrigger
+                open={modelMenuOpen}
+                option={activeModelOption}
+                fallback={modelMenu.value}
+                onToggle={() => setModelMenuOpen((o) => !o)}
+              />
             )}
 
             {/* Right cluster */}
@@ -726,11 +715,13 @@ export function Composer({
             >
               {/* One engine now — the meaningful per-message choice is the MODEL. */}
               {enableModelPicker && (
-                <ModelPicker
+                <CatalogModelPicker
                   engine={engine}
                   model={model}
                   onChange={setModel}
                   onAvailabilityChange={setModelAvailable}
+                  reasoningEffort={reasoningEffort}
+                  onReasoningEffortChange={(next) => setReasoningEffort(next || null)}
                 />
               )}
               {hero && (

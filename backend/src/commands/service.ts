@@ -57,6 +57,7 @@ function serializeRunCommandPayload(
     botHandoff: input.botHandoff ?? null,
     prompt: input.run.prompt,
     model: input.run.model,
+    reasoningEffort: input.run.reasoningEffort ?? null,
     engine: input.run.engine,
     parentRunId: input.run.parentRunId,
     threadId: input.run.threadId,

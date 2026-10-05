@@ -1,16 +1,12 @@
 "use client";
 
-import { RiArrowDownSLine, RiCheckLine, RiRefreshLine } from "@remixicon/react";
-import { vendorMarkForModel } from "@/components/foundations/icons/vendor-marks";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ENGINES,
   type EngineId,
   isFreeModel,
   modelLabel,
-  modelOptionsForEngine,
   normalizeEngine,
-  partitionModelOptions,
   selectableModelsForEngine,
 } from "@/components/chat/types";
 import { invalidateCapabilityCatalog, useCapabilityCatalog } from "@/hooks/use-capability-catalog";
@@ -22,7 +18,6 @@ import {
   parseCapabilityCatalog,
 } from "@/lib/capability-catalog";
 import { useLocalLoginOffers } from "@/components/runners/local-login-availability";
-import { cx as cn } from "@/utils/cx";
 
 export type EngineModelCatalog = Partial<Record<EngineId, readonly string[]>>;
 export type EngineModelDetails = Partial<Record<EngineId, readonly CapabilityCatalogModel[]>>;
@@ -338,174 +333,3 @@ export function useEnabledEngines(): EngineId[] {
   return useEnabledEngineConfig().engines;
 }
 
-function RowMark({ option }: { option: string }) {
-  const Mark = vendorMarkForModel(option);
-  return <Mark className="text-foreground-icon-secondary size-4 shrink-0" aria-hidden />;
-}
-
-/**
- * The `<mark> <model> ⌄` model picker: the selected model's vendor mark, its
- * label, and a dropdown of the models this engine accepts, each row led by
- * its own vendor mark.
- */
-export function ModelPicker({
-  engine,
-  model,
-  onChange,
-  onAvailabilityChange,
-  className,
-}: {
-  engine: EngineId;
-  model: string;
-  onChange: (model: string) => void;
-  onAvailabilityChange?: (available: boolean) => void;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const {
-    models: modelCatalog,
-    modelDetails,
-    modelCatalogStatuses,
-    refreshModels,
-    loaded,
-  } = useEnabledEngineConfig();
-  const models = modelOptionsForEngine(
-    engine,
-    modelCatalog[engine] ?? [],
-    modelDetails[engine] ?? [],
-  );
-  const unavailable = unavailableModelOptions(engine, modelDetails[engine] ?? []);
-  const reconciliation = reconcileSelectedModel(model, models, loaded);
-  const replacementModel = reconciliation.replacement;
-  const modelBlocked = reconciliation.blocked;
-  useLayoutEffect(() => {
-    if (replacementModel && replacementModel !== model) {
-      onChange(replacementModel);
-    }
-    onAvailabilityChange?.(!modelBlocked);
-  }, [model, modelBlocked, onAvailabilityChange, onChange, replacementModel]);
-  // The zero-cost OpenRouter ":free" variants render under their own section;
-  // membership is manifest-driven (":free" id suffix), never a hardcoded list.
-  const { paid, free } = partitionModelOptions(models);
-  const sections = [
-    { label: "Model", options: paid },
-    { label: "Free", options: free },
-    { label: "Discovered", options: unavailable },
-  ].filter((section) => section.options.length > 0);
-  const selectedLabel = [...models, ...unavailable].find((entry) => entry.value === model)?.label ??
-    modelLabel(model, engine);
-  const catalogNotice = engine === "codex"
-    ? modelCatalogNotice(modelCatalogStatuses.codex)
-    : null;
-
-  const handleRefresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      await refreshModels(model, engine);
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  const SelectedMark = vendorMarkForModel(model);
-  return (
-    <div className={cn("relative", className)}>
-      <button
-        type="button"
-        data-testid="model-picker"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`Model: ${selectedLabel}`}
-        className="text-text-primary hover:bg-background-primary-hover flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-body-2-medium transition-colors"
-      >
-        {/* The selected model's vendor mark. Below sm the label folds into the
-            accessible name so the reply placeholder keeps one line at phone width. */}
-        <SelectedMark className="text-text-secondary size-4" aria-hidden />
-        <span className="max-w-[11rem] truncate whitespace-nowrap max-sm:sr-only">{selectedLabel}</span>
-        <RiArrowDownSLine className="text-text-tertiary size-4 max-sm:hidden" aria-hidden />
-      </button>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" aria-hidden onClick={() => setOpen(false)} />
-          <div className="border-border-button-default bg-background-primary-default shadow-dropdown absolute bottom-11 right-0 z-20 w-56 rounded-2xl border p-1.5">
-            {catalogNotice ? (
-              <p className="text-caption-1-regular text-text-tertiary px-2 py-1.5">
-                {catalogNotice}
-              </p>
-            ) : null}
-            {sections.map((section) => (
-              <div key={section.label}>
-                <div className="flex items-center justify-between">
-                  <p className="text-mono-label text-text-tertiary px-2 pb-1 pt-1.5">
-                    {section.label}
-                  </p>
-                  {/* Refresh either the shared Free lane or this actor's native
-                      Codex catalog. RiRefreshLine spins while the request runs. */}
-                  {section.label === "Free" ||
-                  (engine === "codex" &&
-                    (section.label === "Model" || section.label === "Discovered")) ? (
-                    <button
-                      type="button"
-                      aria-label={engine === "codex" ? "Refresh Codex models" : "Refresh free models"}
-                      title="Refresh"
-                      disabled={refreshing}
-                      onClick={() => void handleRefresh()}
-                      className="text-text-tertiary hover:text-text-primary mr-1 rounded-md p-1 transition-colors disabled:opacity-50"
-                    >
-                      <RiRefreshLine
-                        className={cn("size-3.5", refreshing && "animate-spin")}
-                        aria-hidden
-                      />
-                    </button>
-                  ) : null}
-                </div>
-                {section.options.map((e) => {
-                  const selected = e.value === model;
-                  return (
-                    <button
-                      key={e.value}
-                      type="button"
-                      disabled={e.disabled}
-                      title={e.description ? `${e.label}: ${e.description}` : e.label}
-                      onClick={() => {
-                        if (e.disabled) return;
-                        onChange(e.value);
-                        setOpen(false);
-                      }}
-                      className="hover:bg-background-primary-hover flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent"
-                    >
-                      <span
-                        className={cn(
-                          "flex size-4 shrink-0 items-center justify-center",
-                          selected ? "text-orange-500" : "text-transparent",
-                        )}
-                      >
-                        <RiCheckLine className="size-4" aria-hidden />
-                      </span>
-                      <RowMark option={e.value} />
-                      <span className="min-w-0 flex-1">
-                        <span className="text-body-2-regular text-text-primary block truncate">
-                          {e.label}
-                        </span>
-                        {e.description ? (
-                          // One line, like every other row; the full reason is the row's title.
-                          <span className="text-caption-1-regular text-text-tertiary block truncate">
-                            {e.description}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}

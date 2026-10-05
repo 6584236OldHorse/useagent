@@ -8,6 +8,7 @@ export function runIntentFromAcceptedRun(
   return {
     prompt: run.prompt,
     model: run.model,
+    reasoningEffort: run.reasoningEffort ?? null,
     engine: run.engine,
     parentRunId: run.parentRunId,
     requestedRepos: run.repos,
@@ -70,6 +71,9 @@ export function runIntentFingerprint(intent: RunCommandIntent): string {
   // the same turn as a full-access one). It joins the hash only when the caller
   // chose one, so the fingerprints of every earlier submission stay unchanged.
   if (intent.permissionMode) fields.push(intent.permissionMode);
+  // The reasoning effort joins the intent only when one was requested, for the
+  // same reason.
+  if (intent.reasoningEffort) fields.push(["reasoning_effort", intent.reasoningEffort]);
   if (intent.expectedSandbox) {
     fields.push([
       intent.expectedSandbox.version,

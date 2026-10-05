@@ -6,8 +6,10 @@ import {
   RUN_PROMPT_MAX_CHARS,
   RunPromptTooLargeError,
 } from "../commands/prompt-policy";
+import { ENGINE_IDS, type EngineId } from "../db/schema";
 import { isPermissionMode } from "../engines/permission-mode";
 import { isMemoryScope } from "../memory/scope";
+import { USER_FACING_ENGINES } from "./engine-readiness";
 
 export const RUN_CREATE_MAX_BODY_BYTES = 256 * 1024;
 export { RUN_PROMPT_MAX_BYTES, RUN_PROMPT_MAX_CHARS };
@@ -15,6 +17,8 @@ export { RUN_PROMPT_MAX_BYTES, RUN_PROMPT_MAX_CHARS };
 export interface RunCreateBody {
   prompt?: unknown;
   model?: unknown;
+  /** A reasoning level the engine offers (see reasoning-effort.ts); absent inherits. */
+  reasoning_effort?: unknown;
   engine?: unknown;
   parent_run_id?: unknown;
   repo?: unknown;
@@ -93,6 +97,22 @@ export function runMemoryScope(value: unknown, inherited: MemoryScope | null):
  *  unset here on purpose, so the insert resolves it under the thread lock (a
  *  reply keeps the thread's mode as it stands at acceptance, a root run takes
  *  the operator's configured posture) instead of a value read before it. */
+/** `model` (trimmed, or null when absent) and `engine` (one of the engine ids,
+ *  or null when absent); an unknown engine is a client error naming the
+ *  user-facing ones. */
+export function runModelAndEngine(body: Pick<RunCreateBody, "model" | "engine">):
+  | { readonly ok: true; readonly model: string | null; readonly engine: EngineId | null }
+  | { readonly ok: false; readonly error: string } {
+  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+  if (body.engine === undefined || body.engine === null || body.engine === "") {
+    return { ok: true, model, engine: null };
+  }
+  if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) {
+    return { ok: false, error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` };
+  }
+  return { ok: true, model, engine: body.engine as EngineId };
+}
+
 export function runPermissionMode(value: unknown):
   | { readonly ok: true; readonly permissionMode: PermissionMode | undefined }
   | { readonly ok: false; readonly error: string } {

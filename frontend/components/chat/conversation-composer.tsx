@@ -45,6 +45,7 @@ export function ConversationComposer({
   turns,
   defaultEngine,
   defaultModel,
+  defaultReasoningEffort,
   defaultMemoryScope,
   pendingReply,
   commands,
@@ -80,6 +81,8 @@ export function ConversationComposer({
   turns: readonly Turn[];
   defaultEngine: EngineId;
   defaultModel: string;
+  /** The thread's current reasoning effort (its newest run); null is the runtime's default. */
+  defaultReasoningEffort?: string | null;
   defaultMemoryScope: MemoryScope;
   pendingReply: string | null;
   commands?: SlashCommand[];
@@ -125,8 +128,8 @@ export function ConversationComposer({
     defaultEngine,
     chosenMode ?? turns.at(-1)?.run.permission_mode ?? "full-access",
   );
-  const reply: ComposerSubmit = (text, engine, model, key, scope, command, attachments, resources, bots) =>
-    onReply(text, engine, model, key, scope, command, attachments, resources, bots, permissionMode);
+  const reply: ComposerSubmit = (text, engine, model, key, scope, command, attachments, resources, bots, _mode, reasoningEffort) =>
+    onReply(text, engine, model, key, scope, command, attachments, resources, bots, permissionMode, reasoningEffort);
   const [compactFailure, setCompactFailure] = useState<string | null>(null);
   // Turns the agent has not started: rows above the input, never transcript
   // bubbles. Positions count the WHOLE serial queue (a queued gateway child
@@ -202,6 +205,7 @@ export function ConversationComposer({
     <ReplyComposer
       engine={defaultEngine}
       model={defaultModel}
+      reasoningEffort={defaultReasoningEffort}
       memoryScope={defaultMemoryScope}
       pending={pendingReply !== null}
       commands={commands}

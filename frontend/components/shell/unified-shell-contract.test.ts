@@ -232,8 +232,9 @@ describe("unified shell contract", () => {
     expect(composer).toContain("Start thread");
     expect(composer).toContain("flex-nowrap");
     expect(composer).toContain("overflow-hidden");
-    // Model rides the compact engine + model chip.
-    expect(composer).toContain('ariaLabel="Select model"');
+    // Engine and model ride one chip: the picker's rail chooses the engine.
+    expect(composer).toContain("<ModelPicker");
+    expect(composer).toContain("providerId={engine}");
     expect(newThreadPage).toContain("max-w-3xl");
     // Chat is a first-class engine choice (no computer); the picker reads the
     // manifest-driven option list instead of filtering it out.

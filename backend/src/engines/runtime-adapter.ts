@@ -622,7 +622,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
           source: engine,
           resumed: established.resumed,
         });
-        let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model };
+        let turnInput = { kind: "prompt" as const, text: prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
         let turnBase = priorSnapshot;
         let projector = createTurnProjector({ ctx, redact, engine, seen: activityRevisions(priorSnapshot) });
         let attempt = 1;
@@ -717,7 +717,7 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
               turnBase = settledSnapshot;
               turnRequestedAt = new Date().toISOString();
               projector = createTurnProjector({ ctx, redact, engine, seen: projector.seen(), steps: projector.steps() });
-              turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model };
+              turnInput = { kind: "prompt" as const, text: recovery.prompt, model: ctx.model, reasoningEffort: ctx.reasoningEffort };
             }
           }
         } finally {

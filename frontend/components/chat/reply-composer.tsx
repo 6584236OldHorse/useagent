@@ -12,6 +12,7 @@ import type { SlashCommand } from "@/components/chat/slash-command";
 export function ReplyComposer({
   engine,
   model,
+  reasoningEffort,
   memoryScope,
   pending,
   commands,
@@ -42,6 +43,8 @@ export function ReplyComposer({
 }: {
   engine: EngineId;
   model: string;
+  /** The thread's current reasoning effort; null runs on the runtime's default. */
+  reasoningEffort?: string | null;
   memoryScope: MemoryScope;
   pending: boolean;
   commands?: SlashCommand[];
@@ -91,6 +94,7 @@ export function ReplyComposer({
           placeholderLead="Reply to Agent"
           defaultEngine={engine}
           defaultModel={model}
+          defaultReasoningEffort={reasoningEffort}
           defaultMemoryScope={memoryScope}
           pending={pending}
           locked={locked}

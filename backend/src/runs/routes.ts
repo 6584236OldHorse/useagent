@@ -1,7 +1,6 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../http";
 import {
-  ENGINE_IDS,
   type EngineId,
   type MemoryScope,
   type RunStatus,
@@ -70,7 +69,6 @@ import {
   engineResolutionErrorBody,
   modelProviderReadinessErrorBody,
   modelProviderReadyForEngine,
-  USER_FACING_ENGINES,
 } from "./engine-readiness";
 import { resolveEngineForUser, sandboxLoginOffered } from "../engines/sandbox-login";
 import { registerRunCancelRoute } from "./cancel-route";
@@ -82,7 +80,8 @@ import { registerExecutionGraphRoutes } from "./execution-graph-routes.js";
 import { registerProviderSessionRoutes } from "./provider-session-routes.js";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 import { kickSlackOutbox } from "../slack/outbox";
-import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runPermissionMode, type RunCreateBody } from "./run-create-policy";
+import { boundedRunPrompt, runAttachmentIds, runCreateBodyLimit, runMemoryScope, runModelAndEngine, runPermissionMode, type RunCreateBody } from "./run-create-policy";
+import { reasoningEffortSupportForRun, resolveReasoningEffort } from "./reasoning-effort";
 import { acceptExistingThreadFollowup, ThreadFollowupTargetError } from "./thread-followups";
 import { SpendAllowanceExceededError } from "./spend";
 export type { RunCreateBody } from "./run-create-policy";
@@ -128,17 +127,9 @@ export async function handleRunCreate(
     return c.json({ error: "resources must be an array of valid resource selections" }, 400);
   }
 
-  const requestedModel =
-    typeof body.model === "string" && body.model.trim()
-      ? body.model.trim()
-      : null;
-  let requestedEngine: EngineId | null = null;
-  if (body.engine !== undefined && body.engine !== null && body.engine !== "") {
-    if (typeof body.engine !== "string" || !(ENGINE_IDS as readonly string[]).includes(body.engine)) {
-      return c.json({ error: `engine must be one of: ${USER_FACING_ENGINES.join(", ")}` }, 400);
-    }
-    requestedEngine = body.engine as EngineId;
-  }
+  const selection = runModelAndEngine(body);
+  if (!selection.ok) return c.json({ error: selection.error }, 400);
+  const { model: requestedModel, engine: requestedEngine } = selection;
 
   const id = crypto.randomUUID();
 
@@ -152,6 +143,7 @@ export async function handleRunCreate(
   let inheritedResources: readonly RunResource[] = [];
   let parentScope: MemoryScope | null = null;
   let parentModel: string | null = null;
+  let parentReasoningEffort: string | null = null;
   let parentEngine: EngineId | null = null;
   let parentOrigin: string | null = null;
   // The ACTIVE native session this turn resumes, derived SERVER-SIDE from the parent run (a
@@ -175,6 +167,7 @@ export async function handleRunCreate(
         : legacyParentResources(parent.repos, "web");
     parentScope = parent.memoryScope;
     parentModel = parent.model;
+    parentReasoningEffort = parent.reasoningEffort;
     parentEngine = parent.engine;
     parentOrigin = parent.origin;
     activeSessionId = parseProviderSessionBinding(parent.providerSession)?.nativeSessionId ??
@@ -293,6 +286,7 @@ export async function handleRunCreate(
   const intent: RunCommandIntent = {
     prompt: finalPrompt,
     model: requestedModel,
+    reasoningEffort: body.reasoning_effort == null ? null : String(body.reasoning_effort),
     engine: requestedEngine,
     parentRunId,
     requestedRepos,
@@ -358,6 +352,9 @@ export async function handleRunCreate(
   if (!isReplyModelAllowedForEngine(engine, model, parentModel)) {
     return c.json({ error: "model_not_allowed", engine, model }, 400);
   }
+  const actor = c.get("userId") ? { orgId: c.get("orgId"), userId: c.get("userId") as string } : null;
+  const effort = resolveReasoningEffort(body.reasoning_effort, await reasoningEffortSupportForRun(engine, model, actor), parentReasoningEffort);
+  if (!effort.ok) return c.json({ error: effort.error, engine, efforts: effort.efforts }, 400);
   if (!modelProviderReadyForEngine(engine, model) && !(await sandboxLoginOffered({ orgId: c.get("orgId"), userId: c.get("userId") }, engine))) {
     return c.json(modelProviderReadinessErrorBody(engine, model), 403);
   }
@@ -435,7 +432,7 @@ export async function handleRunCreate(
       actorId: c.get("userId"),
       intent,
       expectedSandbox: options.expectedSandbox ?? null,
-      run: { id, prompt: finalPrompt, model, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
+      run: { id, prompt: finalPrompt, model, reasoningEffort: effort.value, engine, parentRunId, threadId, repos, resolvedResources, attachmentIds, memoryScope, permissionMode, skillId, skillVersion, skillContentHash, commandName, commandProvider, commandSessionId, commandCatalogRevision },
       ...(options.botHome && !parentRunId ? { botHome: options.botHome } : {}),
     };
     accepted = parentRunId

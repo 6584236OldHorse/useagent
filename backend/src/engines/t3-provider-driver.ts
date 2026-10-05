@@ -300,7 +300,12 @@ export function makeT3ProviderDriver(
         );
       }
       const signal = request.signal ?? AbortSignal.timeout(30_000);
-      const ctx = { runId: request.runId, threadId: request.threadId, model: request.model };
+      const ctx = {
+        runId: request.runId,
+        threadId: request.threadId,
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
+      };
       try {
         const sandbox = await resolveDriverRuntime(
           dependencies,
@@ -479,6 +484,7 @@ export function makeT3ProviderDriver(
                 runId: request.runId,
                 threadId: request.threadId,
                 model: request.input.model,
+                reasoningEffort: request.input.reasoningEffort,
               },
               engine,
               request.input.text,

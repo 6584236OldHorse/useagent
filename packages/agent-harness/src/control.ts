@@ -280,6 +280,8 @@ export interface ProviderStartRequest {
    *  Product/runtime provisioning stays outside the pure driver contract. */
   runtime: HarnessRuntime;
   model?: string;
+  /** The run's reasoning effort where the provider has the seam. */
+  reasoningEffort?: string;
   metadata?: Record<string, unknown>;
   signal?: AbortSignal;
 }
@@ -302,7 +304,7 @@ export interface ProviderReconcileRequest {
 }
 
 export type ProviderSteerInput =
-  | { kind: "prompt"; text: string; model?: string }
+  | { kind: "prompt"; text: string; model?: string; reasoningEffort?: string }
   | { kind: "command"; name: string; arguments?: string }
   | { kind: "approval"; approvalId: string; decision: string }
   | { kind: "question"; questionId: string; answers: readonly (readonly string[])[] };

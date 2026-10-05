@@ -327,6 +327,14 @@ export function runtimeModelId(engine: RuntimeEngineId, requested?: string): str
   return engine === "opencode" ? openCodeRuntimeModelId(selected) : selected;
 }
 
+/** Reasoning effort rides the model selection options: Codex reads `reasoningEffort`
+ *  (its app-server turn's effort), Claude Code reads `effort`; OpenCode has none. */
+function runtimeModelSelection(engine: RuntimeEngineId, ctx: Pick<EngineRunContext, "model" | "reasoningEffort">) {
+  const optionId = engine === "codex" ? "reasoningEffort" : engine === "claude" ? "effort" : null;
+  const options = optionId && ctx.reasoningEffort ? [{ id: optionId, value: ctx.reasoningEffort }] : [];
+  return { instanceId: PROVIDER_INSTANCE[engine], model: runtimeModelId(engine, ctx.model), options };
+}
+
 function stableId(prefix: string, value: string): string {
   return `${prefix}-${value}`.replace(/[^a-zA-Z0-9._~-]/g, "-");
 }
@@ -367,16 +375,12 @@ export function buildRuntimeProjectCreateCommand(
 }
 
 export function buildRuntimeThreadCreateCommand(
-  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model">,
+  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model" | "reasoningEffort">,
   engine: RuntimeEngineId,
   createdAt: string,
   runtimeMode: RuntimeMode = "full-access",
 ): Readonly<Record<string, unknown>> {
-  const modelSelection = {
-    instanceId: PROVIDER_INSTANCE[engine],
-    model: runtimeModelId(engine, ctx.model),
-    options: [],
-  };
+  const modelSelection = runtimeModelSelection(engine, ctx);
   return {
     type: "thread.create",
     commandId: stableId("skynet-thread-create", ctx.runId),
@@ -393,7 +397,7 @@ export function buildRuntimeThreadCreateCommand(
 }
 
 export function buildRuntimeTurnStartCommand(
-  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model">,
+  ctx: Pick<EngineRunContext, "threadId" | "runId" | "model" | "reasoningEffort">,
   engine: RuntimeEngineId,
   prompt: string,
   createdAt: string,
@@ -402,11 +406,7 @@ export function buildRuntimeTurnStartCommand(
 ): Readonly<Record<string, unknown>> {
   const projectId = runtimeProjectId(ctx);
   const threadId = runtimeThreadId(ctx);
-  const modelSelection = {
-    instanceId: PROVIDER_INSTANCE[engine],
-    model: runtimeModelId(engine, ctx.model),
-    options: [],
-  };
+  const modelSelection = runtimeModelSelection(engine, ctx);
   return {
     type: "thread.turn.start",
     commandId: stableId("skynet-turn", ctx.runId),

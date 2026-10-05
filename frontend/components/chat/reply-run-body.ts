@@ -25,11 +25,14 @@ export function replyRunBody(input: {
   readonly commandCatalogRevision: number | null | undefined;
   /** The chip's choice; absent lets the backend keep the thread's current mode. */
   readonly permissionMode?: PermissionMode;
+  /** The picker's reasoning effort; null or absent inherits the thread's. */
+  readonly reasoningEffort?: string | null;
 }): Record<string, unknown> {
   return {
     prompt: input.text,
     engine: input.engine,
     ...(input.model !== null ? { model: input.model } : {}),
+    ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
     parent_run_id: input.parentRunId,
     memory_scope: input.memoryScope,
     ...(input.permissionMode ? { permission_mode: input.permissionMode } : {}),

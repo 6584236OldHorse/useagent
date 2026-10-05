@@ -133,6 +133,7 @@ export async function acceptThreadFollowup(input: {
     const replayIntent: RunCommandIntent = {
       prompt: text,
       model: existingRun.model,
+      reasoningEffort: existingRun.reasoningEffort,
       engine: existingRun.engine,
       parentRunId: existingRun.parentRunId,
       requestedRepos: [],
@@ -189,6 +190,8 @@ export async function acceptThreadFollowup(input: {
   const intent: RunCommandIntent = {
     prompt: text,
     model: latest.model,
+    // The thread's level rides along the way its model does (see runs/reasoning-effort.ts).
+    reasoningEffort: latest.reasoningEffort,
     engine: latest.engine,
     parentRunId: latest.id,
     requestedRepos: [],
@@ -213,6 +216,7 @@ export async function acceptThreadFollowup(input: {
       id: crypto.randomUUID(),
       prompt: text,
       model: latest.model,
+      reasoningEffort: latest.reasoningEffort,
       engine: latest.engine,
       parentRunId: latest.id,
       threadId: input.threadId,

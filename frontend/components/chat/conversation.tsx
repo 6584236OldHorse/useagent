@@ -424,6 +424,7 @@ export const Conversation = memo(function Conversation({
   turns,
   defaultEngine,
   defaultModel,
+  defaultReasoningEffort,
   defaultMemoryScope,
   pendingReply,
   commands,
@@ -469,6 +470,8 @@ export const Conversation = memo(function Conversation({
   canonicalTimeline?: boolean;
   defaultEngine: EngineId;
   defaultModel: string;
+  /** The thread's current reasoning effort; the reply composer starts here. */
+  defaultReasoningEffort?: string | null;
   /** The thread's current memory scope — the reply composer starts here. */
   defaultMemoryScope: MemoryScope;
   pendingReply: string | null;
@@ -730,6 +733,7 @@ export const Conversation = memo(function Conversation({
         turns={turns}
         defaultEngine={defaultEngine}
         defaultModel={defaultModel}
+        defaultReasoningEffort={defaultReasoningEffort}
         defaultMemoryScope={defaultMemoryScope}
         pendingReply={pendingReply}
         commands={commands}
