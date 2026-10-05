@@ -40,32 +40,60 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
     wake?.();
   };
 
-  const socket = await Bun.connect({
-    hostname: cfg.host,
-    port: cfg.port,
-    tls: cfg.secure,
-    socket: {
-      data(_s, data) {
-        buffer += data.toString();
-        const wake = onData;
-        onData = null;
-        wake?.();
-      },
-      error(_s, error) {
-        fail(error instanceof Error ? error : new Error("SMTP socket error"));
-      },
-      close() {
-        fail(new Error("SMTP connection closed"));
-      },
-    },
+  // One deadline covers connecting and the whole dialog. The connect attempt
+  // itself cannot be aborted, so it is raced against the deadline and a socket
+  // that arrives after it has fired is dropped on the spot.
+  let rejectConnect: ((error: Error) => void) | null = null;
+  const expired = new Promise<never>((_, reject) => {
+    rejectConnect = reject;
   });
-
+  expired.catch(() => {}); // observed through the race below, or not at all
+  let socket: Awaited<ReturnType<typeof Bun.connect>> | null = null;
   const deadline = cfg.timeoutMs
     ? setTimeout(() => {
-        fail(new Error("SMTP timeout"));
-        socket.terminate();
+        const error = new Error("SMTP timeout");
+        fail(error);
+        rejectConnect?.(error);
+        socket?.terminate();
       }, cfg.timeoutMs)
     : undefined;
+  try {
+    const connecting = Bun.connect({
+      hostname: cfg.host,
+      port: cfg.port,
+      tls: cfg.secure,
+      socket: {
+        data(_s, data) {
+          buffer += data.toString();
+          const wake = onData;
+          onData = null;
+          wake?.();
+        },
+        error(_s, error) {
+          fail(error instanceof Error ? error : new Error("SMTP socket error"));
+        },
+        close() {
+          fail(new Error("SMTP connection closed"));
+        },
+      },
+    });
+    connecting.then(
+      (late) => {
+        if (failure) late.terminate();
+      },
+      () => {},
+    );
+    socket = await (deadline ? Promise.race([connecting, expired]) : connecting);
+  } catch (error) {
+    clearTimeout(deadline);
+    throw failure ?? error;
+  }
+  if (failure) {
+    clearTimeout(deadline);
+    socket.terminate();
+    throw failure;
+  }
+  const live = socket;
 
   // Read one complete SMTP reply (handles multiline "250-foo\r\n250 bar").
   const readReply = async (): Promise<{ code: number; text: string }> => {
@@ -89,7 +117,7 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
   };
 
   const write = (line: string): void => {
-    socket.write(`${line}\r\n`);
+    live.write(`${line}\r\n`);
   };
   const expect = async (family: number): Promise<void> => {
     const reply = await readReply();
@@ -138,6 +166,7 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
     write("QUIT");
     await readReply().catch(() => {}); // some servers close before the 221
   } finally {
-    socket.end();
+    clearTimeout(deadline);
+    live.end();
   }
 }

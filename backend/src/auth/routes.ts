@@ -1,6 +1,9 @@
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { invitationMailEnabled } from "../auth-invitations";
+import { db } from "../db/client";
+import { invitation, member } from "../db/auth-schema";
 import { allowDevOrg, googleAuthEnabled } from "../env";
 import type { AppEnv } from "../http";
 
@@ -42,6 +45,49 @@ routes.post("/api/auth/electron/token", (c) => {
   const origin = c.req.header("origin") ?? c.req.header("electron-origin");
   if (origin !== "useagent:/") return c.json({ message: "Desktop token exchange requires the native app." }, 403);
   return auth.handler(c.req.raw);
+});
+/** A resend repeats the invitation as stored, whatever role the request names,
+ *  so an admin could extend an owner invitation by asking for "member". Only an
+ *  owner may resend an owner invitation. */
+routes.post("/api/auth/organization/invite-member", async (c) => {
+  const request = c.req.raw;
+  const text = await request.clone().text();
+  let body: { email?: unknown; resend?: unknown; organizationId?: unknown } = {};
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    // better-auth answers malformed bodies itself
+  }
+  if (body.resend === true && typeof body.email === "string") {
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (!session) return c.json({ message: "Not authenticated" }, 401);
+    const organizationId =
+      typeof body.organizationId === "string" ? body.organizationId : session.session.activeOrganizationId ?? null;
+    if (organizationId) {
+      const [pending] = await db
+        .select({ role: invitation.role })
+        .from(invitation)
+        .where(
+          and(
+            eq(invitation.organizationId, organizationId),
+            eq(invitation.email, body.email.toLowerCase()),
+            eq(invitation.status, "pending"),
+          ),
+        )
+        .limit(1);
+      if (pending?.role?.split(",").map((role) => role.trim()).includes("owner")) {
+        const [membership] = await db
+          .select({ role: member.role })
+          .from(member)
+          .where(and(eq(member.organizationId, organizationId), eq(member.userId, session.user.id)))
+          .limit(1);
+        if (!membership?.role.split(",").map((role) => role.trim()).includes("owner")) {
+          return c.json({ message: "Only an owner can resend an owner invitation" }, 403);
+        }
+      }
+    }
+  }
+  return auth.handler(request);
 });
 /** An invitation id must come from the invitation itself (the mail or the
  *  inviter), never from a lookup by the session's email claim: a Google account

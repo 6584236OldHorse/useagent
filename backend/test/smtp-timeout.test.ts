@@ -38,6 +38,15 @@ describe("smtp client bounds", () => {
     }
   });
 
+  test("a relay that never accepts the connection times out too", async () => {
+    // A non-routable address: the connect attempt hangs until the deadline.
+    const started = Date.now();
+    await expect(
+      sendSmtp({ host: "10.255.255.1", port: 25, secure: false, timeoutMs: 200 }, message),
+    ).rejects.toThrow("SMTP timeout");
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
   test("a relay that hangs up mid-dialog fails the send instead of parking it", async () => {
     const server = Bun.listen({
       hostname: "127.0.0.1",
