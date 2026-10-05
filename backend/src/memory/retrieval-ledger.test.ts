@@ -1,21 +1,14 @@
 // Unit tests for the retrieval-ledger payload builder (memory Phase 3a, scope-
 // aware). Pure — no DB; the emit path's persistence (recordProviderEvent) is
-// covered by the native-lane tests, so here it is mocked and only the emit
-// DECISION is asserted.
-import { describe, expect, mock, test } from "bun:test";
-
-const recorded: unknown[] = [];
-mock.module("../runs/provider-events", () => ({
-  recordProviderEvent: async (event: unknown) => {
-    recorded.push(event);
-  },
-}));
-
+// covered by the native-lane tests, so here a collector is injected through the
+// `record` seam and only the emit DECISION is asserted.
+import { describe, expect, test } from "bun:test";
 import {
   buildRetrievalPayload,
   CONTEXT_RETRIEVED,
   recordContextRetrieval,
 } from "./retrieval-ledger";
+import type { recordProviderEvent } from "../runs/provider-events";
 import type { ScopedMemoryPlan } from "./scope";
 import type { ScopedRecall } from "./team-memory";
 
@@ -114,11 +107,14 @@ describe("recordContextRetrieval", () => {
   const empty: ScopedRecall = { rendered: "", items: [], truncated: false, latencyMs: 3, degraded: false };
 
   test("a plain empty recall leaves no frame; a degraded one leaves an outage frame", async () => {
-    recorded.length = 0;
-    await recordContextRetrieval("run-1", "thread-9", plan, "q", empty);
+    const recorded: Parameters<typeof recordProviderEvent>[0][] = [];
+    const record: typeof recordProviderEvent = async (event) => {
+      recorded.push(event);
+    };
+    await recordContextRetrieval("run-1", "thread-9", plan, "q", empty, record);
     expect(recorded).toEqual([]);
 
-    await recordContextRetrieval("run-2", "thread-9", plan, "q", { ...empty, degraded: true });
+    await recordContextRetrieval("run-2", "thread-9", plan, "q", { ...empty, degraded: true }, record);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       id: "ctxret_run-2",

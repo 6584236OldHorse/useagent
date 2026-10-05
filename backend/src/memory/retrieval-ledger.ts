@@ -93,6 +93,7 @@ export function buildRetrievalPayload(
  * ledger of non-retrievals is noise — unless the recall was degraded: an outage
  * must leave a frame or it is invisible. Fire-and-forget via recordProviderEvent, so
  * it NEVER fails the run. The caller should `void` this on the hot path.
+ * `record` is the persistence seam (tests pass a collector; never mock the module).
  */
 export async function recordContextRetrieval(
   runId: string,
@@ -100,12 +101,13 @@ export async function recordContextRetrieval(
   plan: ScopedMemoryPlan,
   query: string,
   recall: ScopedRecall,
+  record: typeof recordProviderEvent = recordProviderEvent,
 ): Promise<void> {
   if (recall.items.length === 0 && !recall.degraded) return;
   // Retrieval happens at run START, before any provider part, so the shared
   // per-run sequencer (provider-events.ts) mints this frame seq 0 and every
   // opencode capture a strictly higher one — no two emitters collide on a seq.
-  await recordProviderEvent({
+  await record({
     id: `ctxret_${runId}`,
     runId,
     threadId,
