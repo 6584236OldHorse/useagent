@@ -58,6 +58,8 @@ export function discoverOpenRouterFreeModels(
       supported_parameters?: unknown;
     };
     if (typeof entry.id !== "string" || !entry.id.endsWith(":free")) continue;
+    // "opencode/<id>:free" is the lane id shape of OpenCode Zen's models.
+    if (entry.id.startsWith("opencode/")) continue;
     if (
       typeof entry.context_length !== "number" ||
       entry.context_length < MIN_CONTEXT_LENGTH

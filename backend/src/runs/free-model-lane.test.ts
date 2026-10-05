@@ -28,6 +28,7 @@ describe("discoverOpenRouterFreeModels (catalog filter)", () => {
         entry("vendor/no-tools:free", 200_000, ["temperature"]),
         entry("vendor/paid", 200_000),
         entry("vendor/tiny-context:free", 32_000),
+        entry("opencode/big-pickle:free", 500_000), // a Zen lane id shape, never OpenRouter's
         { id: "vendor/string-context:free", context_length: "big", supported_parameters: ["tools"] },
         { context_length: 100_000, supported_parameters: ["tools"] },
         null,

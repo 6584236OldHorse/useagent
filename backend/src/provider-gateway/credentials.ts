@@ -1,3 +1,4 @@
+import { isAdvertisedFreeModel } from "../runs/free-model-registry-repo";
 import { decryptOrgSecretByName } from "../secrets/store";
 import { runtimeDevModeEnabled } from "../security/runtime-secrets";
 import { resolveGatewayProviderApiKeyCredential } from "./api-key-credentials";
@@ -26,6 +27,7 @@ export interface ProviderCredentialResolvers {
   readonly resolveOrgSecret?: (orgId: string, name: string) => Promise<string | null>;
   readonly env?: Record<string, string | undefined>;
   readonly devModeEnabled?: (env?: Record<string, string | undefined>) => boolean;
+  readonly advertisedFreeModel?: (modelId: string) => Promise<boolean>;
 }
 
 async function defaultOrgSecret(orgId: string, name: string): Promise<string | null> {
@@ -93,13 +95,16 @@ export async function resolveProviderCredentialForRun(
   // under the same marker) cost no shared provider quota, so the hosted key can
   // make the advertised zero-cost lane usable without a per-user connection.
   // Paid models remain tenant/BYOK-only in production.
-  if (
-    (input.provider === "openrouter" || input.provider === "opencode") &&
-    input.model?.includes("/") &&
-    input.model.endsWith(":free")
-  ) {
-    const houseKey = (deps.env ?? process.env)[providerCredentialName(input.provider)]?.trim();
-    if (houseKey) return { value: houseKey, source: "backend_env" };
+  if (!input.model?.includes("/") || !input.model.endsWith(":free")) return null;
+  const houseKey = (deps.env ?? process.env)[providerCredentialName(input.provider)]?.trim();
+  if (!houseKey) return null;
+  if (input.provider === "openrouter") return { value: houseKey, source: "backend_env" };
+  // OpenCode Zen's marker is ours: the house key serves a Zen model only while
+  // the published lane advertises it, so a model repriced upstream stops
+  // billing the house at the tick that notices, replies to old threads included.
+  if (input.provider === "opencode") {
+    const advertised = deps.advertisedFreeModel ?? isAdvertisedFreeModel;
+    if (await advertised(input.model)) return { value: houseKey, source: "backend_env" };
   }
   return null;
 }

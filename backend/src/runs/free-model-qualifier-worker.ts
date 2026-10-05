@@ -26,6 +26,7 @@ import {
   OPENROUTER_CATALOG_URL,
   type CatalogFetcher,
   type FreeModelCandidate,
+  type FreeModelProvider,
 } from "./free-model-lane";
 import { providerProven } from "./engine-readiness";
 import { providerCredentialName } from "../provider-gateway/provider";
@@ -114,6 +115,9 @@ function productionRepository(database: Db = db): FreeModelQualifierRepository {
 export interface CatalogDiscoverySuccess {
   readonly ok: true;
   readonly candidates: readonly FreeModelCandidate[];
+  /** The catalogs this discovery read. A model of a read source that is not
+   * among the candidates is no longer free there (repriced or retired). */
+  readonly sources: readonly FreeModelProvider[];
 }
 
 export interface CatalogDiscoveryFailure {
@@ -127,6 +131,7 @@ export type CatalogDiscoveryResult = CatalogDiscoverySuccess | CatalogDiscoveryF
 async function fetchCatalogCandidates(
   fetcher: CatalogFetcher,
   url: string,
+  source: FreeModelProvider,
   discover: (catalog: unknown) => FreeModelCandidate[],
 ): Promise<CatalogDiscoveryResult> {
   try {
@@ -146,7 +151,7 @@ async function fetchCatalogCandidates(
     }
     const candidates = discover(await response.json());
     return candidates.length > 0
-      ? { ok: true, candidates }
+      ? { ok: true, candidates, sources: [source] }
       : { ok: false, errorCode: "invalid_response", httpStatus: response.status };
   } catch {
     return { ok: false, errorCode: "transport_error", httpStatus: null };
@@ -156,13 +161,13 @@ async function fetchCatalogCandidates(
 export function fetchOpenRouterFreeModelCandidates(
   fetcher: CatalogFetcher = fetch,
 ): Promise<CatalogDiscoveryResult> {
-  return fetchCatalogCandidates(fetcher, OPENROUTER_CATALOG_URL, discoverOpenRouterFreeModels);
+  return fetchCatalogCandidates(fetcher, OPENROUTER_CATALOG_URL, "openrouter", discoverOpenRouterFreeModels);
 }
 
 export function fetchOpenCodeZenFreeModelCandidates(
   fetcher: CatalogFetcher = fetch,
 ): Promise<CatalogDiscoveryResult> {
-  return fetchCatalogCandidates(fetcher, MODELS_DEV_CATALOG_URL, discoverOpenCodeZenFreeModels);
+  return fetchCatalogCandidates(fetcher, MODELS_DEV_CATALOG_URL, "opencode", discoverOpenCodeZenFreeModels);
 }
 
 /** OpenCode Zen is a source only where the deployment can run its models:
@@ -193,7 +198,22 @@ export async function discoverFreeModelCandidates(
     ok: true,
     candidates: [...openrouter.candidates, ...zen.candidates]
       .toSorted((a, b) => b.contextLength - a.contextLength),
+    sources: ["openrouter", "opencode"],
   };
+}
+
+/** OpenRouter's ":free" slugs are free by construction upstream, so a slug
+ * missing from one catalog read is a partial read, not a price change. OpenCode
+ * Zen carries our own marker, so a Zen model absent from a read Zen catalog is
+ * not free any more and must not be probed, published, or served on the house
+ * key. */
+export function stillFreeAtSource(
+  modelId: string,
+  provider: string,
+  discovery: CatalogDiscoverySuccess,
+): boolean {
+  if (provider !== "opencode" || !discovery.sources.includes("opencode")) return true;
+  return discovery.candidates.some((candidate) => candidate.id === modelId);
 }
 
 export function nextProbeAtForResult(
@@ -227,11 +247,15 @@ function sameLane(left: readonly string[], right: readonly string[]): boolean {
  * up to the cap for each source. */
 export function desiredPublishedLane(
   registry: FreeModelRegistrySnapshot,
-  catalog: readonly FreeModelCandidate[],
+  discovery: CatalogDiscoverySuccess,
 ): string[] {
+  const catalog = discovery.candidates;
   const qualifiedProvider = new Map(
     registry.candidates
-      .filter((candidate) => candidate.state === "qualified" && candidate.everQualified)
+      .filter((candidate) =>
+        candidate.state === "qualified" &&
+        candidate.everQualified &&
+        stillFreeAtSource(candidate.modelId, candidate.provider, discovery))
       .map((candidate) => [candidate.modelId, candidate.provider]),
   );
   const perProvider = new Map<string, number>();
@@ -343,7 +367,10 @@ export async function runFreeModelQualifierTick(
     if (!claim) break;
     claimed += 1;
     let result: FreeModelQualificationResult;
-    try {
+    if (!stillFreeAtSource(claim.modelId, claim.provider, discovery)) {
+      // No run: a probe would spend the house key on a model that is paid now.
+      result = { classification: "model_failure", latencyMs: 0, httpStatus: null, errorCode: "policy_rejected" };
+    } else try {
       result = await driver.qualify({
         modelId: claim.modelId,
         claimToken: claim.claimToken,
@@ -389,7 +416,7 @@ export async function runFreeModelQualifierTick(
   }
 
   const registry = await repository.loadRegistry();
-  const desired = desiredPublishedLane(registry, discovery.candidates);
+  const desired = desiredPublishedLane(registry, discovery);
   const current = registry.state?.currentModelIds ?? [];
   if (sameLane(current, desired)) {
     return {
