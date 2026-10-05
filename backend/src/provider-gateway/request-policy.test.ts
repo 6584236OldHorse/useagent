@@ -125,6 +125,38 @@ describe("provider request body policy", () => {
     ).ok).toBe(true);
   });
 
+  test("an OpenRouter request carries only the chat-completion fields; paid extras are refused", () => {
+    const freeRun = { ...run, engine: "opencode", model: "vendor/model:free" } satisfies GatewayRun;
+    const plain = {
+      model: "vendor/model:free",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 16,
+      temperature: 0.2,
+      stream: true,
+      stream_options: { include_usage: true },
+      tools: [{ type: "function", function: { name: "shell", parameters: { type: "object" } } }],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      reasoning: { effort: "low" },
+      usage: { include: true },
+      provider: { sort: "throughput" },
+      transforms: ["middle-out"],
+    };
+    expect(applyProviderBodyPolicy(freeRun, JSON.stringify(plain), "max_tokens", 100, "openrouter").ok).toBe(true);
+    for (const extra of [
+      { plugins: [{ id: "web", engine: "exa" }] },
+      { tools: [{ type: "openrouter:advisor", parameters: { model: "openai/gpt-4o" } }], tool_choice: "required" },
+      { web_search_options: { search_context_size: "high" } },
+      { tools: "not-a-list" },
+    ]) {
+      expect(applyProviderBodyPolicy(freeRun, JSON.stringify({ ...plain, ...extra }), "max_tokens", 100, "openrouter"))
+        .toEqual({ ok: false, error: "request_not_allowed" });
+    }
+    // Other providers keep their own request shapes.
+    const openaiRun = { ...run, engine: "opencode", model: "openai/gpt-5.6-luna" } satisfies GatewayRun;
+    expect(applyProviderBodyPolicy(openaiRun, JSON.stringify({ model: "gpt-5.6-luna", input: "hi", store: false }), "max_output_tokens", 100, "openai").ok).toBe(true);
+  });
+
   test("adds a missing output ceiling and preserves a smaller one", () => {
     const added = applyProviderBodyPolicy(run, '{"model":"gpt-5"}', "max_output_tokens", 100);
     expect(added.ok && JSON.parse(added.body).max_output_tokens).toBe(100);
