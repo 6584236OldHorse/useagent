@@ -4026,6 +4026,39 @@ html {
   border-radius: 4px;
   box-shadow: 0 0 0 1.5px var(--neo-ink);
 }
+/* Tables: a lifted white frame, a header row in the poster voice, and a
+ * black grid between rows. */
+.neobrutal section.rounded-2xl.border.border-border-table {
+  border-width: 2px;
+  border-color: var(--neo-ink);
+  background: var(--color-background-primary-default);
+  box-shadow: 5px 5px 0 0 var(--neo-ink);
+  overflow: hidden;
+}
+.neobrutal .bui-table th {
+  color: #000;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 2px solid var(--neo-ink);
+}
+.neobrutal .bui-table tbody tr {
+  background: var(--color-background-primary-default);
+  border-bottom: 2px solid var(--neo-ink);
+}
+.neobrutal .bui-table tbody tr:last-child {
+  border-bottom: 0;
+}
+.neobrutal .bui-table tbody tr:hover {
+  background: var(--color-accent-100);
+}
+/* The round search field (base Input, pill variant): the frame is the element
+ * whose grandchild holds the borderless input. */
+.neobrutal div.rounded-full:has(> div > div > input.bg-transparent.border-0) {
+  border-radius: 5px;
+  box-shadow: var(--neo-lift-2);
+}
 /* Select triggers built on the inset ring. */
 .neobrutal button.rounded-2lg.ring-1.ring-inset {
   border-radius: 5px;
