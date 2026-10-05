@@ -1410,12 +1410,64 @@ describe("slack native stream and Block Kit fallback", () => {
       details: "bun test timeout",
       sources: [{ type: "url", text: "https://bun.sh/docs/cli/test", url: "https://bun.sh/docs/cli/test" }],
     });
-    // The stop carries the answer, closes the call still open, then the root task.
+    // The stop carries the answer, restates the settled card, closes the call
+    // still open, then the root task.
     expect(stopped.chunks).toEqual([
       { type: "markdown_text", text: "Use --timeout." },
+      expect.objectContaining({ id: `step_${first.id}`, status: "complete", sources: [expect.objectContaining({ url: "https://bun.sh/docs/cli/test" })] }),
       expect.objectContaining({ id: `step_${second.id}`, title: "Searched the web", status: "complete", details: "bun bail flag" }),
       expect.objectContaining({ id: "run", status: "complete" }),
     ]);
+  });
+
+  test("finalizing right after a completion revision settles the card from its durable row", async () => {
+    const t = await watchedThread("immediate stop");
+    const call = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: { source: "t3", activityKind: "tool.started", tool: "web_search", input: { query: "bun bail" } } });
+    await t.revise(call, { source: "t3", activityKind: "tool.completed", tool: "web_search", input: { query: "bun bail" }, output: "https://bun.sh/docs/cli/test" });
+    // Ten trailing chatter rows must not hide the call from finalization.
+    for (let i = 0; i < 10; i++) {
+      await t.emit({ kind: "task", label: "Context window updated", chip: "thread.context.updated", code: { source: "t3", activityKind: "thread.context.updated" } });
+    }
+    // No wait for the live append: the stop alone must carry the final card.
+    await finalizeRun(t.runId, "completed", "Use --bail.", 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
+    expect(stopped.chunks).toEqual([
+      { type: "markdown_text", text: "Use --bail." },
+      expect.objectContaining({ id: `step_${call.id}`, title: "Searched the web", status: "complete", details: "bun bail", sources: [expect.objectContaining({ url: "https://bun.sh/docs/cli/test" })] }),
+      expect.objectContaining({ id: "run", status: "complete" }),
+    ]);
+  });
+
+  test("a retried older card batch never overwrites a newer revision", async () => {
+    const t = await rootThread("stale retry");
+    await startNativeStream(t, "stale retry");
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
+    const card = buildRunCard({ title: "stale retry", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
+    const batch = (cardSeq: number, status: "in_progress" | "complete") =>
+      enqueueAppendStream({
+        idempotencyKey: `slack-stream:step:${TEAM}:${t.runId}:${cardSeq}`,
+        orgId: DEV_ORG_ID,
+        teamId: TEAM,
+        channel: t.channel,
+        threadTs: t.ts,
+        runId: t.runId,
+        chunks: [taskUpdateChunk({ id: "step_x", title: "Ran a command", status })],
+        cardSeq,
+        fallbackBlocks: card.blocks,
+        fallbackText: card.text,
+      });
+    const cardsFor = (status: string) =>
+      rec.streams.filter((s) => s.op === "append" && s.channel === t.channel && (s.chunks as any[]).some((c) => c.id === "step_x" && c.status === status));
+    // The newer batch lands first; the older one arrives late (a backed-off retry).
+    await batch(2, "complete");
+    await waitFor(async () => cardsFor("complete")[0] ?? null);
+    await batch(1, "in_progress");
+    await waitFor(async () => {
+      const row = await getSlackOutbox(`slack-stream:step:${TEAM}:${t.runId}:1`);
+      return row?.state === "delivered" ? row : null;
+    });
+    expect(cardsFor("in_progress")).toHaveLength(0);
   });
 
   test("a burst of card revisions coalesces into one append carrying the last revision", async () => {

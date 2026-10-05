@@ -75,6 +75,7 @@ export function watchSlackRun(opts: {
     chunks: readonly SlackStreamChunk[];
     workingStep?: string;
     narrationOffset?: number;
+    cardSeq?: number;
   }): void => {
     void (async () => {
       const base = await loadCardBase();
@@ -89,6 +90,7 @@ export function watchSlackRun(opts: {
         runId,
         chunks: input.chunks,
         narrationOffset: input.narrationOffset,
+        cardSeq: input.cardSeq,
         fallbackBlocks: card.blocks,
         fallbackText: card.text,
       });
@@ -111,6 +113,7 @@ export function watchSlackRun(opts: {
       idempotencyKey: `slack-stream:step:${teamId}:${runId}:${cardSeq}`,
       chunks,
       workingStep: openCard?.title,
+      cardSeq,
     });
     if (dm && openCard) {
       void enqueueThreadStatus({

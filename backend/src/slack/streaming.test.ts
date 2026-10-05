@@ -15,6 +15,7 @@ import {
   planUpdateFromStep,
   statusTextForStep,
   stepProgressChunks,
+  taskSourcesField,
   taskUpdateChunk,
   terminalTaskChunks,
   toolTaskChunk,
@@ -132,6 +133,23 @@ describe("toolTaskChunk (one card per tool call, chatter never)", () => {
     expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" } } }))).toMatchObject({ status: "in_progress" });
     expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: '{"stdout":"ok"}' } }))).toMatchObject({ status: "complete" });
     expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", output: '{"stdout":"ok"}' } }))?.output).toBeUndefined();
+    // The native bridge completes a call by landing its output key, even empty.
+    expect(toolTaskChunk(step({ label: "bash", code: { tool: "bash", input: { command: "make" }, output: "", error: false } }))).toMatchObject({ status: "complete" });
+  });
+
+  test("sources keep bracketed hosts, shed wrapping punctuation, and drop what the URL parser rejects", () => {
+    const output = [
+      "see (https://bun.sh/docs).",
+      "local http://[::1]:3000/health,",
+      "[https://x.dev/a]",
+      "broken https://%zz",
+      "dup https://bun.sh/docs",
+    ].join(" ");
+    const chunk = toolTaskChunk(step({ label: "web_search", code: { tool: "web_search", input: { query: "q" }, output } }));
+    expect(chunk?.sources?.map((s) => s.url)).toEqual(["https://bun.sh/docs", "http://[::1]:3000/health", "https://x.dev/a"]);
+    expect(taskSourcesField([{ type: "url", text: "x", url: "http://[::1" }, { type: "url", text: "ok", url: "https://ok.dev" }])).toEqual({
+      sources: [{ type: "url", text: "ok", url: "https://ok.dev" }],
+    });
   });
 });
 
@@ -197,25 +215,29 @@ describe("planUpdateFromStep", () => {
 });
 
 describe("terminalTaskChunks", () => {
-  test("completes the open tool card and the root task", () => {
+  test("closes an open tool card, restates a settled one as is, then the root task", () => {
+    const settled = taskUpdateChunk({ id: "step_s8", title: "Searched the web", status: "complete", sources: ["https://bun.sh"] });
     const chunks = terminalTaskChunks({
       phase: "completed",
       title: "Build the thing",
-      lastCard: taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" }),
+      cards: [settled, taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" })],
     });
     expect(chunks).toEqual([
+      settled,
       { type: "task_update", id: "step_s9", title: "Ran a command", status: "complete" },
       { type: "task_update", id: "run", title: "Build the thing", status: "complete" },
     ]);
   });
 
-  test("a settled card is left alone; a failed run settles its tasks as error", () => {
-    const settled = taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "complete" });
-    expect(terminalTaskChunks({ phase: "completed", title: "Build", lastCard: settled })).toEqual([
-      { type: "task_update", id: "run", title: "Build", status: "complete" },
+  test("a failed run settles open cards and the root task as error", () => {
+    const open = taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" });
+    expect(terminalTaskChunks({ phase: "failed", title: "Build", cards: [open] })).toEqual([
+      { ...open, status: "error" },
+      { type: "task_update", id: "run", title: "Run failed", status: "error" },
     ]);
-    const chunks = terminalTaskChunks({ phase: "failed", title: "Build", lastCard: null });
-    expect(chunks).toEqual([{ type: "task_update", id: "run", title: "Run failed", status: "error" }]);
+    expect(terminalTaskChunks({ phase: "failed", title: "Build" })).toEqual([
+      { type: "task_update", id: "run", title: "Run failed", status: "error" },
+    ]);
   });
 });
 

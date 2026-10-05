@@ -88,16 +88,70 @@ export function taskUpdateChunk(input: {
   };
 }
 
+/** An absolute http(s) URL Slack will accept as a source link. */
+function httpUrl(value: string): boolean {
+  try {
+    return /^https?:$/.test(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** The url sources of a stored task card, re-validated to the documented
  *  shape on the way out of the outbox (a spread: empty when none survive). */
 export function taskSourcesField(value: unknown): Pick<SlackTaskUpdateStreamChunk, "sources"> {
   const sources = (Array.isArray(value) ? value : []).flatMap((raw) => {
     const source = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-    return source?.type === "url" && typeof source.url === "string" && source.url && typeof source.text === "string" && source.text
+    return source?.type === "url" && typeof source.url === "string" && httpUrl(source.url) && typeof source.text === "string" && source.text
       ? [{ type: "url" as const, text: source.text, url: source.url }]
       : [];
   });
   return sources.length > 0 ? { sources } : {};
+}
+
+/** Normalize stored chunks to the DOCUMENTED wire shape on the way out of the
+ *  outbox. Pre-migration rows carried a `markdown_text` text field,
+ *  `task_update` fields nested under `task` (with `task_id`), and plan items
+ *  typed `task` - Slack rejected all of them, so legacy plan items are dropped
+ *  and the rest are converted. */
+export function streamChunksFrom(value: unknown): readonly SlackStreamChunk[] {
+  return Array.isArray(value)
+    ? value.map(normalizeStreamChunk).filter((chunk): chunk is SlackStreamChunk => chunk !== null)
+    : [];
+}
+
+function normalizeStreamChunk(raw: unknown): SlackStreamChunk | null {
+  const chunk = rec(raw);
+  if (!chunk) return null;
+  if (chunk.type === "markdown_text") {
+    // Never trimmed: narration offsets count these chars exactly.
+    const text = [chunk.text, chunk.markdown_text].find((t) => typeof t === "string" && t) as string | undefined;
+    return text ? { type: "markdown_text", text } : null;
+  }
+  if (chunk.type === "plan_update") {
+    const title = str(chunk.title);
+    return title ? { type: "plan_update", title } : null;
+  }
+  if (chunk.type !== "task_update") return null;
+  const source = rec(chunk.task) ?? chunk;
+  const id = str(source.id) ?? str(source.task_id);
+  const title = str(source.title);
+  const status =
+    source.status === "in_progress" || source.status === "complete" || source.status === "error"
+      ? source.status
+      : null;
+  if (!id || !title || !status) return null;
+  const details = str(source.details);
+  const output = str(source.output);
+  return {
+    type: "task_update",
+    id,
+    title,
+    status,
+    ...(details ? { details } : {}),
+    ...(output ? { output } : {}),
+    ...taskSourcesField(source.sources),
+  };
 }
 
 export function planUpdateChunk(title: string): SlackPlanUpdateStreamChunk {
@@ -223,11 +277,13 @@ export function toolTaskChunk(step: StepLike): SlackTaskUpdateStreamChunk | null
         : { title: step.label, details: pathOf(args) ?? str(args?.query) ?? str(args?.url) });
   const activityKind = str(code?.activityKind);
   const output = str(code?.output);
+  // A T3 revision names its lifecycle; a native bridge row completes when its
+  // output key lands (possibly empty), and the error flag wins either way.
   const status: SlackTaskUpdateStatus = code?.error
     ? "error"
     : activityKind
       ? /\.(started|updated|progress)$/.test(activityKind) ? "in_progress" : "complete"
-      : output
+      : typeof code?.output === "string"
         ? "complete"
         : "in_progress";
   return taskUpdateChunk({
@@ -237,8 +293,19 @@ export function toolTaskChunk(step: StepLike): SlackTaskUpdateStreamChunk | null
     details: card.details ? firstLine(card.details) : null,
     // A JSON payload is never a line a person reads; the first prose line is.
     output: output && !/^[[{]/.test(output) ? firstLine(output) : null,
-    sources: [...new Set(output?.match(/https?:\/\/[^\s)\]}"'<>]+/g) ?? [])].slice(0, 5),
+    sources: sourceUrls(output ?? ""),
   });
+}
+
+/** Distinct http(s) URLs a tool's output mentions, capped at five: trailing
+ *  punctuation and a closing paren or bracket that wrapped the link are shed,
+ *  bracketed IPv6 hosts survive, and anything the URL parser rejects is out. */
+function sourceUrls(text: string): string[] {
+  const candidates = (text.match(/https?:\/\/[^\s<>"']+/g) ?? []).map((raw) => {
+    const url = raw.replace(/[.,;:!?)]+$/, "");
+    return url.includes("[") ? url : url.replace(/\]+$/, "");
+  });
+  return [...new Set(candidates.filter(httpUrl))].slice(0, 5);
 }
 
 /** Progress chunks for a card revision: a card still open under another id
@@ -288,17 +355,19 @@ export function planUpdateFromStep(step: {
   return planUpdateChunk(currentText ? `${head}: ${currentText}` : head);
 }
 
-/** Terminal task closures for stopStream: a tool card still open and the root
- *  run task settle to complete/error. The reply text itself travels separately
+/** Terminal task closures for stopStream: the recent tool cards restated from
+ *  their durable rows (a card still open settles to complete/error, a settled
+ *  one is repeated as is, since a live append pending at finalization is
+ *  dropped) and the root run task. The reply text itself travels separately
  *  (narration tail + closing markdown, sliced at delivery). */
 export function terminalTaskChunks(input: {
   readonly phase: CardPhase;
   readonly title: string;
-  readonly lastCard?: SlackTaskUpdateStreamChunk | null;
+  readonly cards?: readonly SlackTaskUpdateStreamChunk[];
 }): readonly SlackStreamChunk[] {
   const status: SlackTaskUpdateStatus = input.phase === "failed" ? "error" : "complete";
   return [
-    ...(input.lastCard?.status === "in_progress" ? [{ ...input.lastCard, status }] : []),
+    ...(input.cards ?? []).map((card) => (card.status === "in_progress" ? { ...card, status } : card)),
     taskUpdateChunk({
       id: "run",
       title: input.phase === "failed" ? "Run failed" : input.title,
