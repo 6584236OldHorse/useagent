@@ -5,7 +5,7 @@
  * stored prompt. Delivery evidence (which prompts an engine accepted) lives here
  * too, because it decides which turns still have to be carried as history.
  */
-import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { runs } from "../db/schema";
 
@@ -87,17 +87,16 @@ export async function buildThreadPreamble(
   );
 }
 
-/** Delivery evidence: the engine runtime accepted the run's prompt, or the run
- * completed (rows from before the stamp existed). A bound session is not evidence. */
-const delivered = or(isNotNull(runs.promptDeliveredAt), eq(runs.status, "completed"));
-
 /** The prior turns a RESUMED native session never saw: the thread's runs that
  * failed without their prompt ever being accepted by an engine runtime, created
  * no earlier than the cutoff, the latest same-engine turn whose prompt WAS
- * accepted. That prompt carried every unseen turn before it, so each one is
- * replayed once. A validated native command goes byte-verbatim and carries no
- * history, so it is neither a cutoff nor history itself. Newest UNSEEN_MAX_TURNS
- * only, prompts clipped; "" when there are none. */
+ * accepted (stamped). That prompt carried every unseen turn before it, so each
+ * one is replayed once. Only a stamp counts: a turn that merely completed before
+ * stamps existed proves nothing about what it carried, so a thread with no
+ * stamped turn yet offers every failed undelivered turn, and heals itself after
+ * the first accepted steer. A validated native command goes byte-verbatim and
+ * carries no history, so it is neither a cutoff nor history itself. Newest
+ * UNSEEN_MAX_TURNS only, prompts clipped; "" when there are none. */
 export async function buildUnseenTurnsContext(
   threadId: string,
   currentRunId: string,
@@ -111,7 +110,7 @@ export async function buildUnseenTurnsContext(
         eq(runs.threadId, threadId),
         eq(runs.engine, engine),
         isNull(runs.commandName),
-        delivered,
+        isNotNull(runs.promptDeliveredAt),
         createdNoLaterThan(currentRunId),
       ),
     )

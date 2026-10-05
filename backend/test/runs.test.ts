@@ -51,6 +51,12 @@ function failedTurn(
   };
 }
 
+/** The engine runtime accepted this run's prompt: what the adapters stamp after an
+ * ok steer. The mock engine never steers, so tests stamp it where a real engine would. */
+async function stampDelivered(runId: string): Promise<void> {
+  await db.update(runs).set({ promptDeliveredAt: new Date() }).where(eq(runs.id, runId));
+}
+
 describe("runs", () => {
   test("POST /api/runs requires a prompt", async () => {
     const { status, body } = await json("/api/runs", { method: "POST", body: {} });
@@ -1012,8 +1018,9 @@ describe("run threading", () => {
     expect(preamble).toContain("User: \"waht\"\nNo reply, that turn failed: \"error: image");
     expect(preamble).not.toContain("You replied: \"error: image");
 
-    // The third turn completed, so the prompt that carried turns 1-2 was accepted. The
-    // fourth fails before any engine runs; the fifth resumes and replays only it.
+    // Turn three's steer was accepted with turns 1-2 inside (the adapters stamp that).
+    // The fourth fails before any engine runs; the fifth resumes and replays only it.
+    await stampDelivered(third.id);
     const fourthId = crypto.randomUUID();
     await db.insert(runs).values(failedTurn(fourthId, rootId, third.id, "create one for the weekly report"));
     const fifth = await runToCompletion({ prompt: "go ahead", parent_run_id: fourthId });
@@ -1027,7 +1034,8 @@ describe("run threading", () => {
     expect(unseen).not.toContain("\"tell\"");
     expect(unseen).not.toContain("\"go ahead\"");
 
-    // The fifth turn's prompt was accepted too (it completed): the next turn replays nothing.
+    // The fifth turn's steer was accepted too: the next turn replays nothing.
+    await stampDelivered(fifth.id);
     expect(await buildUnseenTurnsContext(rootId, crypto.randomUUID(), "mock")).toBe("");
 
     // Bounded: only the newest five unseen turns, each prompt clipped.
@@ -1050,6 +1058,7 @@ describe("run threading", () => {
 
   test("a bound session is not delivery: a turn that died before its steer keeps history pending", async () => {
     const a = await runToCompletion({ prompt: "A" });
+    await stampDelivered(a.id);
     const b = crypto.randomUUID();
     await db.insert(runs).values(failedTurn(b, a.thread_id, a.id, "B never bound"));
     // C prepared B's replay and bound the session, then died before the steer.
@@ -1063,12 +1072,13 @@ describe("run threading", () => {
     expect(pending).not.toContain("User: \"A\"");
     // Only an accepted steer advances the cutoff: once C's prompt is stamped as
     // delivered, B travelled inside it and neither is replayed again.
-    await db.update(runs).set({ promptDeliveredAt: new Date() }).where(eq(runs.id, c));
+    await stampDelivered(c);
     expect(await buildUnseenTurnsContext(a.thread_id, crypto.randomUUID(), "mock")).toBe("");
   });
 
   test("a validated native command neither carries nor consumes pending history", async () => {
     const a = await runToCompletion({ prompt: "A" });
+    await stampDelivered(a.id);
     const b = crypto.randomUUID();
     await db.insert(runs).values(failedTurn(b, a.thread_id, a.id, "B never bound"));
     // A /compact went byte-verbatim on the session (accepted, no history inside), then
@@ -1099,7 +1109,12 @@ describe("run threading", () => {
     // .123100, in the same millisecond as the resuming turn X at .123456.
     const a = `zz-${crypto.randomUUID()}`;
     await db.insert(runs).values(
-      failedTurn(a, threadId, null, "A", { status: "completed", summary: "done", ...at("100000") }),
+      failedTurn(a, threadId, null, "A", {
+        status: "completed",
+        summary: "done",
+        promptDeliveredAt: new Date(),
+        ...at("100000"),
+      }),
     );
     const z0 = `aa-${crypto.randomUUID()}`;
     await db.insert(runs).values(failedTurn(z0, threadId, a, "Z0 same instant", at("100000")));
@@ -1115,6 +1130,24 @@ describe("run threading", () => {
     expect(pending).not.toContain("User: \"X\"");
     expect(pending).not.toContain("User: \"A\"");
     expect(await buildThreadPreamble(threadId, x)).toContain("User: \"Z1 same millisecond\"");
+  });
+
+  test("rollout: a turn that completed before delivery stamps existed is not a cutoff", async () => {
+    // A held the session; B failed before delivery; C resumed and completed under the
+    // old composer, which carried no history on resume. None of them has a stamp.
+    const a = await runToCompletion({ prompt: "A" });
+    const b = crypto.randomUUID();
+    await db.insert(runs).values(failedTurn(b, a.thread_id, a.id, "B lost under the old composer"));
+    const c = await runToCompletion({ prompt: "C", parent_run_id: b });
+    await db.update(runs).set({ engineSessionId: "ses-a" }).where(eq(runs.id, c.id));
+    // After the deploy D resumes: B is still pending, C's completion proves nothing about it.
+    const d = await runToCompletion({ prompt: "D", parent_run_id: c.id });
+    expect(await buildUnseenTurnsContext(a.thread_id, d.id, "mock")).toContain(
+      "User: \"B lost under the old composer\"",
+    );
+    // D's steer was accepted with B inside, so the thread heals: E replays nothing.
+    await stampDelivered(d.id);
+    expect(await buildUnseenTurnsContext(a.thread_id, crypto.randomUUID(), "mock")).toBe("");
   });
 
   test("stored text cannot forge the history framing", async () => {
