@@ -59,13 +59,13 @@ import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context"
 import type { OpenWorkpieceTab } from "@/components/chat/workspace-pane";
 
 import { EditorPane, TerminalPane, WorkspacePane } from "@/components/chat/workspace-pane-loader";
+import { filesFromSteps } from "@/components/chat/file-entries";
 import {
   type ApiRun,
   type EngineId,
   isLiveStatus,
   type MemoryScope,
   normalizeEngine,
-  parseFileEntries,
   type RunStatus,
   supportsPreSessionModelSelection,
 } from "@/components/chat/types";
@@ -492,7 +492,7 @@ export function SessionView({ initialThread, initialOutline = null, initialRelat
   // Right rail: one tabbed panel, not stacked panes. Desktop and terminal are
   // useful before the first tool call, so the rail starts open on every real
   // session. The user can still collapse/reopen it explicitly.
-  const hasFiles = allSteps.some((s) => s.kind === "file" && parseFileEntries(s).length > 0);
+  const hasFiles = filesFromSteps(allSteps).length > 0;
   const hasCommands = allSteps.some((s) => s.kind === "command");
   const hasSubagents =
     productChildren.length > 0 ||

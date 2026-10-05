@@ -461,7 +461,7 @@ describe("T3 run adapter gate", () => {
     expect(reloadSource).not.toContain("/config");
     expect(reloadSource).not.toContain("global/dispose");
     expect(source).toContain("metadata: { runtimeMode, createdAt }");
-    expect(source).toContain("activityStep(activity, runtimeThreadId(ctx))");
+    expect(source).toContain("activityStep(activity, runtimeThreadId(ctx), engine)");
     expect(source).toContain("ctx.publishDelta?.(delta)");
     expect(source).toContain("warmPool: RUNTIME_CUBE_WARM_POOL_NAME");
     expect(source).toContain("requiredLabels:");

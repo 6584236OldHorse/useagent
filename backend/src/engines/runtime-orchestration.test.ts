@@ -1374,3 +1374,142 @@ describe("hasOpenRuntimeToolCall", () => {
     expect(hasOpenRuntimeToolCall([])).toBe(false);
   });
 });
+
+describe("activityStep file and command payloads", () => {
+  const completed = (id: string, summary: string, payload: Record<string, unknown>) => ({
+    id,
+    tone: "tool" as const,
+    kind: "tool.completed",
+    summary,
+    payload,
+    turnId: "turn",
+  });
+  const stepFor = (engine: "codex" | "claude" | "opencode", id: string, payload: Record<string, unknown>) =>
+    activityStep(completed(id, "Command run", { itemType: "command_execution", ...payload }), undefined, engine);
+
+  test("a claude file change recovers its path from the detail string", () => {
+    const step = activityStep(completed("fc-claude", "File change", {
+      itemType: "file_change",
+      toolName: "Write",
+      detail: 'Write: {"file_path":"/w/src/app.ts","content":"export const a = 1;\\n"}',
+      data: { toolCallId: "call-1", toolName: "Write" },
+    }));
+    expect(step.kind).toBe("file");
+    expect(step.code_json).toMatchObject({
+      input: { toolCallId: "call-1", file_path: "/w/src/app.ts", files: [{ path: "/w/src/app.ts" }] },
+    });
+  });
+
+  test("a projected files list is kept whole and names its first path", () => {
+    const step = activityStep(completed("fc-codex", "File change", {
+      itemType: "file_change",
+      detail: "apply_patch",
+      data: { toolCallId: "call-2", files: [{ path: "a.ts" }, { path: "b.ts" }] },
+    }));
+    expect(step.code_json).toMatchObject({
+      input: { file_path: "a.ts", files: [{ path: "a.ts" }, { path: "b.ts" }] },
+    });
+  });
+
+  test("a path-less file change is passed through untouched", () => {
+    const step = activityStep(completed("fc-none", "File change", {
+      itemType: "file_change",
+      detail: "Edit: [unserializable input]",
+      data: { toolCallId: "call-3" },
+    }));
+    expect(step.code_json).toMatchObject({ input: { toolCallId: "call-3" } });
+    expect((step.code_json as { input: Record<string, unknown> }).input.files).toBeUndefined();
+  });
+
+  test("a codex command reports its captured output and keeps the command line visible", () => {
+    // The runtime keeps the command only under data.item; the UI reads input.command.
+    const step = stepFor("codex", "cmd-codex", {
+      detail: "printf hello",
+      data: { toolCallId: "call-4", item: { command: "printf hello", aggregatedOutput: "hello" } },
+    });
+    expect(step.code_json).toMatchObject({
+      input: { toolCallId: "call-4", command: "printf hello" },
+      output: "hello",
+    });
+  });
+
+  test("a command input that names its command is left alone", () => {
+    const step = stepFor("codex", "cmd-named", {
+      detail: "bun test",
+      data: {
+        toolCallId: "call-6",
+        command: "bun test --filter x",
+        item: { command: "bun test", result: { content: "1 pass" } },
+      },
+    });
+    expect(step.code_json).toMatchObject({ input: { command: "bun test --filter x" }, output: "1 pass" });
+  });
+
+  test("a silent codex command never echoes its command line, however long", () => {
+    const long = `cd /workspace/app && bun install --silent && bun run build && git add -A && git commit -q -m ${"x".repeat(160)} && git push -q origin HEAD`;
+    for (const detail of ["true", `${long.slice(0, 177)}...`]) {
+      const step = stepFor("codex", `cmd-silent-${detail.length}`, {
+        detail,
+        data: { toolCallId: "call-5", item: { command: detail === "true" ? "true" : long } },
+      });
+      expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+    }
+  });
+
+  test("a claude bash command reports the runtime's captured output", () => {
+    const step = stepFor("claude", "cmd-claude", {
+      toolName: "Bash",
+      detail: "Bash: printf hello",
+      data: { toolName: "Bash", command: "printf hello", rawOutput: { content: "hello" } },
+    });
+    expect(step.code_json).toMatchObject({ input: { command: "printf hello" }, output: "hello" });
+  });
+
+  test("a silent claude bash command never echoes its command line", () => {
+    const step = stepFor("claude", "cmd-claude-silent", {
+      toolName: "Bash",
+      detail: `Bash: ${"y".repeat(200)}`,
+      data: { toolName: "Bash", command: "y".repeat(400) },
+    });
+    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  });
+
+  test("an opencode command keeps its detail, the real output, over the one-line summary", () => {
+    const step = stepFor("opencode", "cmd-opencode", {
+      detail: "line one\nline two\nline three",
+      data: { command: "printf x", rawOutput: { content: "line one" } },
+    });
+    expect(step.code_json).toMatchObject({ output: "line one\nline two\nline three" });
+  });
+
+  test("an opencode command still running shows no output, its detail being the tool title", () => {
+    const step = activityStep({
+      id: "cmd-opencode-running",
+      tone: "tool",
+      kind: "tool.updated",
+      summary: "Command run",
+      payload: { itemType: "command_execution", detail: "Running bun test", data: { toolCallId: "call-11", command: "bun test" } },
+      turnId: "turn",
+    }, undefined, "opencode");
+    expect((step.code_json as { output?: unknown }).output).toBeUndefined();
+  });
+
+  test("an unknown engine gets the captured text and nothing else", () => {
+    const step = activityStep(completed("cmd-unknown", "Command run", {
+      itemType: "command_execution",
+      detail: "printf x",
+      data: { command: "printf x", rawOutput: { content: "x" } },
+    }));
+    expect(step.code_json).toMatchObject({ output: "x" });
+  });
+
+  test("a claude notebook edit recovers its notebook path", () => {
+    const step = activityStep(completed("fc-notebook", "File change", {
+      itemType: "file_change",
+      toolName: "NotebookEdit",
+      detail: 'NotebookEdit: {"notebook_path":"/w/a.ipynb","cell_id":"3","new_source":"x"}',
+      data: { toolCallId: "call-10", toolName: "NotebookEdit" },
+    }));
+    expect(step.code_json).toMatchObject({ input: { file_path: "/w/a.ipynb", files: [{ path: "/w/a.ipynb" }] } });
+  });
+});

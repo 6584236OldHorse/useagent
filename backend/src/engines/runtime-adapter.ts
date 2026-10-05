@@ -362,6 +362,7 @@ export async function waitForRuntimeTurn(
   priorSnapshot: RuntimeThreadSnapshot,
   redact: ReturnType<typeof createSecretRedactor>,
   dependencies: RuntimeTurnWaitDependencies = runtimeTurnWaitDependencies,
+  engine: RuntimeEngineId | null = null,
 ): Promise<string> {
   const activityRevisions = new Map(preExistingActivities);
   const activitySteps = new Map<string, string>();
@@ -414,7 +415,7 @@ export async function waitForRuntimeTurn(
       });
       watchdog.observeActivity(activity);
       if (!shouldProjectRuntimeActivity(activity, snapshot.thread.activities)) continue;
-      const step = redact.unknown(activityStep(activity, runtimeThreadId(ctx)));
+      const step = redact.unknown(activityStep(activity, runtimeThreadId(ctx), engine));
       const activityStepKey = runtimeActivityStepKey(activity);
       const priorStepId = activitySteps.get(activityStepKey);
       if (priorStepId && ctx.updateStep) {
@@ -705,6 +706,8 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
             preExistingActivities,
             priorSnapshot,
             redact,
+            runtimeTurnWaitDependencies,
+            engine,
           );
           await ctx.emit({ kind: "done", label: "Done", chip: null });
           ctx.setSummary(summary, Date.now() - startedAt);

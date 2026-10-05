@@ -4,27 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { cx as cn } from "@/utils/cx";
 import { CodeBlock } from "@/components/ai/code-block";
 import { FileKindBadge, fileTypeIcon } from "@/components/chat/tool-step-row";
-import { parseFileEntries, type ApiStep, type FileEntry } from "@/components/chat/types";
-
-/** Collapse every file step into a de-duplicated list of touched files, latest
- * change kind winning, ordered by first appearance. */
-function filesFromSteps(steps: ApiStep[]): FileEntry[] {
-  const byPath = new Map<string, FileEntry>();
-  for (const step of steps) {
-    if (step.kind !== "file") continue;
-    for (const entry of parseFileEntries(step)) {
-      const existing = byPath.get(entry.path);
-      // Keep original insertion order; refresh the change kind + latest content.
-      byPath.set(
-        entry.path,
-        existing
-          ? { ...existing, kind: entry.kind, content: entry.content ?? existing.content }
-          : entry,
-      );
-    }
-  }
-  return [...byPath.values()];
-}
+import { filesFromSteps } from "@/components/chat/file-entries";
+import type { ApiStep, FileEntry } from "@/components/chat/types";
 
 /**
  * The top pane of the editor|terminal split: a tab strip of every file the run

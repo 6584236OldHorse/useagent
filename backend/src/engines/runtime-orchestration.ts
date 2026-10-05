@@ -19,6 +19,7 @@ import {
   t3TaskDisplayTitle,
 } from "@useagent/agent-harness";
 import { toolServerDisplayName } from "@useagent/agent-harness/canonical";
+import { runtimeStepIo } from "./runtime-step-io";
 export { buildRuntimeSessionStopCommand } from "./runtime-session-stop";
 export type RuntimeEngineId = Extract<EngineId, "codex" | "claude" | "opencode">;
 export type RuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";
@@ -531,7 +532,7 @@ function toolActivityName(
 
 // The literal "t3" source tag in step code_json below is a frozen stored VALUE:
 // historical steps carry it and the frontend matches on it.
-export function activityStep(activity: RuntimeActivity, rootSessionId?: string): EmitStep {
+export function activityStep(activity: RuntimeActivity, rootSessionId?: string, engine: RuntimeEngineId | null = null): EmitStep {
   const payload = record(activity.payload);
   const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
   if (activity.kind === "turn.plan.updated") {
@@ -594,6 +595,7 @@ export function activityStep(activity: RuntimeActivity, rootSessionId?: string):
       ? runtimeAttributedChildParentSessionId(activity, payload, rootSessionId)
       : null;
     const tool = toolActivityName(itemType, projection.tool, isSubagent);
+    const { input, output } = runtimeStepIo(engine, activity.kind, itemType, projection, detail);
     return {
       kind: itemType === "file_change" ? "file" : isSubagent ? "task" : "command",
       label: toolActivityLabel(activity, projection, tool),
@@ -603,9 +605,9 @@ export function activityStep(activity: RuntimeActivity, rootSessionId?: string):
         activityId: activity.id,
         activityKind: activity.kind,
         tool,
-        input: projection.input,
+        input,
         ...(projection.server ? { server: projection.server } : {}),
-        ...(detail ? { output: detail } : {}),
+        ...(output ? { output } : {}),
         error: activity.tone === "error" ||
           activity.kind === "tool.denied" ||
           runtimeToolResultFailed(activity),
