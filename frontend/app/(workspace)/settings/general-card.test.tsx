@@ -15,3 +15,11 @@ test("while the workspace list loads the row shows nothing rather than a wrong n
   expect(html).not.toContain("Not set");
   expect(html).not.toContain(">useAgent<");
 });
+
+import { activeWorkspaceName } from "./general-card";
+
+test("a list without the session's workspace is a failed read, not an unset name", () => {
+  expect(activeWorkspaceName([{ active: false, name: "Acme" }])).toBeNull();
+  expect(activeWorkspaceName([])).toBeNull();
+  expect(activeWorkspaceName([{ active: true, name: "Acme" }])).toBe("Acme");
+});

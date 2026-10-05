@@ -91,6 +91,11 @@ test("provider config uses the dedicated route and fails closed", async () => {
   });
 });
 
+test("a workspace row without an id or a name fails validation instead of becoming a blank selected workspace", async () => {
+  const fetcher = (async () => Response.json({ activeOrganizationId: undefined, workspaces: [{}] })) as unknown as Parameters<typeof listWorkspaces>[0];
+  await expect(listWorkspaces(fetcher)).rejects.toThrow("invalid response");
+});
+
 test("the workspace list carries roles and the landing workspace; the switch uses the Better Auth route", async () => {
   const seen: { path: string; init?: RequestInit }[] = [];
   const fetcher = (async (path: string, init?: RequestInit) => {

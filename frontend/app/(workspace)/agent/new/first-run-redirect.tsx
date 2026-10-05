@@ -3,27 +3,27 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { listWorkspaces, useSession } from "@/lib/auth";
-import { firstRunApplies, firstRunSkipped } from "@/lib/first-run";
+import { watchLanding } from "@/lib/first-run";
 
 /** Sends a person who lands in a workspace nobody has set up yet to the
- *  first-run page; once they choose to continue, this browser lets them by. */
+ *  first-run page, unless they have started typing before the check answers
+ *  (a draft is never unmounted from under them; the account menu still offers
+ *  the page) or chose to continue before in this browser. */
 export function FirstRunRedirect() {
   const router = useRouter();
   const { session, loading } = useSession();
 
   useEffect(() => {
-    if (loading || !session || firstRunSkipped(session.user.id)) return;
-    let cancelled = false;
-    listWorkspaces()
-      .then((workspaces) => {
-        if (!cancelled && firstRunApplies(workspaces.find((workspace) => workspace.active))) {
-          router.replace("/welcome");
-        }
-      })
-      .catch(() => undefined); // the landing page stands whatever the answer
-    return () => {
-      cancelled = true;
-    };
+    if (loading || !session) return;
+    return watchLanding({
+      userId: session.user.id,
+      listWorkspaces,
+      onInput: (handler) => {
+        document.addEventListener("input", handler, true);
+        return () => document.removeEventListener("input", handler, true);
+      },
+      open: () => router.replace("/welcome"),
+    });
   }, [loading, router, session]);
 
   return null;

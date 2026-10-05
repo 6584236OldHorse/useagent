@@ -27,6 +27,12 @@ function Value({ value }: { value: string | null }) {
   );
 }
 
+/** The name of the workspace the session is in; null when the list names none,
+ *  which the card reports as a failed read rather than an unset name. */
+export function activeWorkspaceName(workspaces: readonly { active: boolean; name: string }[]): string | null {
+  return workspaces.find((row) => row.active)?.name ?? null;
+}
+
 export function GeneralCard({ initialWorkspaceName }: { initialWorkspaceName?: string } = {}) {
   const { session, loading } = useSession();
   const name = loading ? null : (session?.user.name?.trim() ?? "");
@@ -40,7 +46,10 @@ export function GeneralCard({ initialWorkspaceName }: { initialWorkspaceName?: s
     let cancelled = false;
     listWorkspaces()
       .then((workspaces) => {
-        if (!cancelled) setWorkspaceName(workspaces.find((row) => row.active)?.name ?? "");
+        if (cancelled) return;
+        const active = activeWorkspaceName(workspaces);
+        if (active === null) setWorkspaceFailed(true);
+        else setWorkspaceName(active);
       })
       .catch(() => {
         if (!cancelled) setWorkspaceFailed(true);

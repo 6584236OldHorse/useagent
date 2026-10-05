@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { assignableRoles, InviteDialog } from "@/app/(workspace)/settings/team-card";
 import {
   fetchInvitations,
@@ -22,60 +22,113 @@ import { firstRunApplies, markFirstRunSkipped } from "@/lib/first-run";
  * cover it), and there is no allowance figure until a spend read exists.
  */
 
-export interface FirstRun {
-  readonly workspace: Workspace;
-  readonly invitations: readonly PendingInvitation[];
+export type FirstRunLoad =
+  /** On a first run; invitations are null when their read failed or answered for another workspace. */
+  | { readonly kind: "ready"; readonly workspace: Workspace; readonly invitations: readonly PendingInvitation[] | null }
+  /** The workspace read succeeded and says the landing page is the place for this person. */
+  | { readonly kind: "not-first-run" }
+  /** The workspace read failed; the page stays and offers a retry and a way on. */
+  | { readonly kind: "unavailable" };
+
+type InvitationsRead = () => Promise<{ organizationId: string; invitations: PendingInvitation[] }>;
+
+/** The workspace's pending invitations, or null when the read failed or the
+ *  active workspace changed between the two requests (a mismatched answer is
+ *  dropped rather than shown under the wrong name). */
+async function invitationsFor(workspaceId: string, read: InvitationsRead): Promise<readonly PendingInvitation[] | null> {
+  try {
+    const { organizationId, invitations } = await read();
+    return organizationId === workspaceId ? invitations : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Null when the person is not on a first run: the landing page is the place for them. */
-async function loadFirstRun(): Promise<FirstRun | null> {
-  const [workspaces, { invitations }] = await Promise.all([listWorkspaces(), fetchInvitations()]);
+/** What /welcome shows. Only a workspace read that succeeds and says "not a
+ *  first run" sends the person to the landing page; a failed read of either
+ *  kind renders here, so a failing request can never bounce them between the
+ *  landing page (whose own check succeeds) and this one. */
+export async function resolveFirstRun(
+  deps: { listWorkspaces: () => Promise<Workspace[]>; fetchInvitations: InvitationsRead } = { listWorkspaces, fetchInvitations },
+): Promise<FirstRunLoad> {
+  let workspaces: Workspace[];
+  try {
+    workspaces = await deps.listWorkspaces();
+  } catch {
+    return { kind: "unavailable" };
+  }
   const workspace = workspaces.find((row) => row.active);
-  return firstRunApplies(workspace) ? { workspace, invitations } : null;
+  if (!firstRunApplies(workspace)) return { kind: "not-first-run" };
+  return { kind: "ready", workspace, invitations: await invitationsFor(workspace.id, deps.fetchInvitations) };
 }
 
-export function FirstRunSetup({ initial }: { initial?: FirstRun | null }) {
+export function FirstRunSetup({ initial }: { initial?: FirstRunLoad }) {
   const router = useRouter();
   const { session, loading } = useSession();
   const config = useAuthConfig();
-  const [state, setState] = useState<FirstRun | null | undefined>(initial);
-  const [name, setName] = useState(initial?.workspace.name ?? "");
+  const [state, setState] = useState<FirstRunLoad | undefined>(initial);
+  const [attempt, setAttempt] = useState(0);
+  const [name, setName] = useState(initial?.kind === "ready" ? initial.workspace.name : "");
+  const typed = useRef(name);
+  typed.current = name;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
 
   useEffect(() => {
-    if (initial !== undefined || loading) return;
+    if ((initial !== undefined && attempt === 0) || loading) return;
     if (!session) {
       router.replace("/login?redirect_url=%2Fwelcome");
       return;
     }
     let cancelled = false;
-    loadFirstRun()
-      .then((next) => {
-        if (cancelled) return;
-        setState(next);
-        if (next) setName(next.workspace.name);
-      })
-      .catch(() => {
-        if (!cancelled) setState(null);
-      });
+    setState(undefined);
+    void resolveFirstRun().then((next) => {
+      if (cancelled) return;
+      setState(next);
+      if (next.kind === "ready") setName(next.workspace.name);
+    });
     return () => {
       cancelled = true;
     };
-  }, [initial, loading, router, session]);
+  }, [attempt, initial, loading, router, session]);
 
   useEffect(() => {
-    if (state === null) router.replace("/");
+    if (state?.kind === "not-first-run") router.replace("/");
   }, [router, state]);
 
-  if (!state) {
+  const continueToWorkspace = () => {
+    if (session) markFirstRunSkipped(session.user.id);
+    router.replace("/");
+  };
+
+  if (state === undefined || state.kind === "not-first-run") {
     return (
       <AuthScreen>
         <p role="status" className="text-body-2-regular text-text-secondary">
           Preparing your workspace...
         </p>
+      </AuthScreen>
+    );
+  }
+
+  if (state.kind === "unavailable") {
+    return (
+      <AuthScreen>
+        <div className="flex flex-col gap-4">
+          <p role="alert" className="text-body-2-regular text-text-error-primary">
+            Could not load your workspace. Check your connection and try again.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="small" className="rounded-full" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+            <Button variant="ghost" size="small" className="rounded-full" onClick={continueToWorkspace}>
+              Continue to workspace
+            </Button>
+          </div>
+        </div>
       </AuthScreen>
     );
   }
@@ -91,7 +144,8 @@ export function FirstRunSetup({ initial }: { initial?: FirstRun | null }) {
     try {
       await renameWorkspace(workspace.id, trimmed);
       setState({ ...state, workspace: { ...workspace, name: trimmed, defaultName: false } });
-      setSaved(true);
+      // Typing during the save leaves unsaved text in the field: no "Saved" beside it.
+      if (typed.current.trim() === trimmed) setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not rename the workspace.");
     } finally {
@@ -100,17 +154,8 @@ export function FirstRunSetup({ initial }: { initial?: FirstRun | null }) {
   };
 
   const refreshInvitations = async () => {
-    try {
-      const next = await fetchInvitations();
-      setState((current) => (current ? { ...current, invitations: next.invitations } : current));
-    } catch {
-      // The dialog already showed the invitation; the list catches up on the next load.
-    }
-  };
-
-  const continueToWorkspace = () => {
-    if (session) markFirstRunSkipped(session.user.id);
-    router.replace("/");
+    const next = await invitationsFor(workspace.id, fetchInvitations);
+    setState((current) => (current?.kind === "ready" ? { ...current, invitations: next } : current));
   };
 
   return (
@@ -155,7 +200,16 @@ export function FirstRunSetup({ initial }: { initial?: FirstRun | null }) {
               Admins manage people, secrets and machines. Members run work.
             </p>
           </div>
-          {invitations.length > 0 && (
+          {invitations === null ? (
+            <div className="flex items-center gap-3">
+              <p role="alert" className="text-caption-1-regular text-text-error-primary">
+                Could not load the invitations.
+              </p>
+              <Button variant="ghost" size="xs" onClick={() => void refreshInvitations()}>
+                Try again
+              </Button>
+            </div>
+          ) : invitations.length > 0 ? (
             <ul className="flex flex-col">
               {invitations.map((row) => (
                 <li
@@ -169,7 +223,7 @@ export function FirstRunSetup({ initial }: { initial?: FirstRun | null }) {
                 </li>
               ))}
             </ul>
-          )}
+          ) : null}
           <div>
             <Button variant="secondary" size="small" className="rounded-full" onClick={() => setInviting(true)}>
               Invite a teammate

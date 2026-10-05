@@ -113,10 +113,13 @@ export async function listWorkspaces(
   const res = await fetcher("/api/team/workspaces", { cache: "no-store" });
   if (!res.ok) throw new Error(`Workspace list failed (${res.status})`);
   const data = (await res.json()) as { activeOrganizationId?: unknown; workspaces?: unknown };
-  if (!Array.isArray(data.workspaces)) throw new Error("Workspace list returned an invalid response");
-  return (data.workspaces as Array<Partial<Workspace>>).map((row) => ({
-    id: String(row.id),
-    name: String(row.name ?? ""),
+  const rows = Array.isArray(data.workspaces) ? (data.workspaces as Array<Partial<Workspace>>) : null;
+  if (!rows || rows.some((row) => typeof row?.id !== "string" || typeof row.name !== "string")) {
+    throw new Error("Workspace list returned an invalid response");
+  }
+  return rows.map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
     role: row.role === "owner" || row.role === "admin" ? row.role : "member",
     active: row.id === data.activeOrganizationId,
     members: typeof row.members === "number" ? row.members : 0,

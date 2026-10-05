@@ -4,6 +4,7 @@ import {
   RiApps2Line,
   RiBuilding4Line,
   RiCheckLine,
+  RiFlagLine,
   RiLoginBoxLine,
   RiLogoutBoxRLine,
   RiSettings3Line,
@@ -29,6 +30,7 @@ import {
   switchOrganization,
   useSession,
 } from "@/lib/auth";
+import { firstRunApplies } from "@/lib/first-run";
 
 /**
  * Account affordance in the sidebar clusters: an avatar that opens a BoardUI
@@ -52,6 +54,7 @@ interface UserMenuProps {
 export function UserMenu(props: UserMenuProps = {}) {
   const { loading, session } = useSession();
   const [workspaces, setWorkspaces] = useState<readonly WorkspaceEntry[] | undefined>();
+  const [setupPending, setSetupPending] = useState(false);
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,7 +67,9 @@ export function UserMenu(props: UserMenuProps = {}) {
     setWorkspaceSwitchError(null);
     listWorkspaces()
       .then((next) => {
-        if (!cancelled) setWorkspaces(sortedWorkspaces(next));
+        if (cancelled) return;
+        setWorkspaces(sortedWorkspaces(next));
+        setSetupPending(firstRunApplies(next.find((workspace) => workspace.active)));
       })
       .catch(() => {
         if (!cancelled) setWorkspaceSwitchError("Could not load workspaces");
@@ -81,6 +86,7 @@ export function UserMenu(props: UserMenuProps = {}) {
       profile={profile}
       workspaces={profile.signedIn ? (workspaces ?? []) : undefined}
       workspacesLoaded={workspaces !== undefined}
+      setupPending={setupPending}
       workspaceAccessError={workspaceSwitchError}
       onSelectWorkspace={async (organizationId) => {
         if (workspaces?.some((workspace) => workspace.id === organizationId && workspace.active)) {
@@ -154,6 +160,7 @@ function UserMenuView({
   profile,
   workspaces,
   workspacesLoaded = true,
+  setupPending = false,
   workspaceAccessError,
   onSelectWorkspace,
   onSignOut = signOut,
@@ -161,6 +168,8 @@ function UserMenuView({
   profile: UserMenuProfile;
   workspaces?: readonly WorkspaceEntry[];
   workspacesLoaded?: boolean;
+  /** The active workspace is still on its first run: offer the page the landing redirect may have stood aside from. */
+  setupPending?: boolean;
   workspaceAccessError?: string | null;
   onSelectWorkspace?: (organization: string) => Promise<void>;
   onSignOut?: () => Promise<void>;
@@ -253,6 +262,12 @@ function UserMenuView({
               </span>
             </DropdownMenuItem>
           )
+        ) : null}
+        {setupPending ? (
+          <DropdownMenuItem id="setup" textValue="Set up your workspace" onAction={() => go("/welcome")}>
+            <RiFlagLine className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
+            <span className="text-body-2-medium">Set up your workspace</span>
+          </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem id="settings" textValue="Settings" onAction={() => go("/settings")}>
           <RiSettings3Line className="size-5 shrink-0 text-foreground-icon-secondary" aria-hidden />
