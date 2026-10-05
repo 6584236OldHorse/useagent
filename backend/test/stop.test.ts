@@ -5,6 +5,7 @@ import { CANCEL_SUMMARY } from "../src/commands/cancel";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
 import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
+import { markRunStarted } from "../src/runs/run-state";
 import { stopRun } from "../src/runs/stop";
 import "./helpers"; // side-effect: imports src/index → migrate + seed
 
@@ -105,6 +106,15 @@ describe("stop reaches delegated threads", () => {
     expect((await stopRun({ orgId: ORG, actorId: null, runId: parent })).status).toBe("cancelling");
     await expect(acceptProductChildBatch({ ...batch, idempotencyKey: "after-stop" })).rejects.toThrow("stopped");
     expect((await acceptProductChildBatch({ ...batch, idempotencyKey: "before-stop" })).status).toBe("replayed");
+  });
+
+  test("a run a Stop settled does not start when its worker arrives late", async () => {
+    const parent = await root();
+    await stopRun({ orgId: ORG, actorId: null, runId: parent });
+    expect(await markRunStarted(parent)).toBe(false);
+    expect((await record(parent)).status).toBe("failed");
+    const other = await root();
+    expect(await markRunStarted(other)).toBe(true);
   });
 
   test("a repeated Stop replays without counting children twice", async () => {

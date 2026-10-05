@@ -9,6 +9,16 @@ export async function setRunStatus(id: string, status: RunStatus): Promise<void>
   await db.update(runs).set({ status, updatedAt: new Date() }).where(eq(runs.id, id));
 }
 
+/** Move a run to running for its worker. A run a stop already settled stays settled and must not start. */
+export async function markRunStarted(id: string): Promise<boolean> {
+  const started = await db
+    .update(runs)
+    .set({ status: "running", updatedAt: new Date() })
+    .where(and(eq(runs.id, id), inArray(runs.status, ["queued", "running"])))
+    .returning({ id: runs.id });
+  return started.length > 0;
+}
+
 /** Bind a trusted skill revision to the currently running tenant-scoped turn. */
 export async function pinSkillToActiveRun(input: {
   runId: string;

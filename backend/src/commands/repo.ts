@@ -44,6 +44,8 @@ export interface NewRunCommand {
   readonly priority: number;
   readonly threadRelationship?: RunCommandInput["threadRelationship"];
   readonly botHome?: RunCommandInput["botHome"];
+  /** A turn handed to a bot inside an existing thread; carries the run that delegated it. */
+  readonly botHandoff?: RunCommandInput["botHandoff"];
 }
 
 /** Another first message opened the bot's home thread first; the losing
@@ -116,14 +118,20 @@ export async function insertCommandWithRun(
         .returning({ id: bots.id });
       if (stamped.length === 0) throw new BotHomeThreadTakenError();
     }
+    // Delegation (a delegated thread, or a turn handed to a bot in an existing
+    // thread) is recorded under the delegating thread's lock, the same one a
+    // Stop takes: a turn that was stopped cannot delegate afterwards. Explicit
+    // continuation by a person is not delegation and is not refused.
+    const delegation = cmd.threadRelationship?.kind === "delegated" && cmd.threadRelationship.parentThreadId
+      ? { parentThreadId: cmd.threadRelationship.parentThreadId, sourceRunId: cmd.threadRelationship.sourceRunId }
+      : cmd.botHandoff
+        ? { parentThreadId: cmd.botHandoff.parentThreadId, sourceRunId: cmd.botHandoff.sourceRunId }
+        : null;
+    if (delegation) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${cmd.orgId}), hashtext(${delegation.parentThreadId}))`);
+      if (await hasRunCancelIntent(cmd.orgId, delegation.sourceRunId, tx)) throw new DelegationStoppedError();
+    }
     if (cmd.threadRelationship) {
-      if (cmd.threadRelationship.kind === "delegated" && cmd.threadRelationship.parentThreadId) {
-        // Under the parent thread's lock, the same one a Stop takes: a turn
-        // that was stopped cannot delegate afterwards. Explicit continuation
-        // by a person is not delegation and is not refused.
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${cmd.orgId}), hashtext(${cmd.threadRelationship.parentThreadId}))`);
-        if (await hasRunCancelIntent(cmd.orgId, cmd.threadRelationship.sourceRunId, tx)) throw new DelegationStoppedError();
-      }
       await insertThreadRelationship({
         orgId: cmd.orgId,
         threadId: cmd.run.threadId,

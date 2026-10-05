@@ -1,3 +1,4 @@
+import { isReservedIdempotencyKey } from "../bots/handoff-keys";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/client";
@@ -231,6 +232,9 @@ skillsRoutes.delete("/:id", async (c) => {
 skillsRoutes.post("/:id/run", runCreateBodyLimit, async (c) => {
   const id = c.req.param("id");
   const idempotencyKey = c.req.header("Idempotency-Key")?.trim() || null;
+  if (idempotencyKey && isReservedIdempotencyKey(idempotencyKey)) {
+    return c.json({ error: "reserved_idempotency_key" }, 400);
+  }
   let body: Record<string, unknown> = {};
   try {
     const text = await c.req.text();

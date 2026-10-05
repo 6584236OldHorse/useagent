@@ -147,6 +147,7 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(executionId) ||
     !title || title.length > 160 || !idempotencyKey || idempotencyKey.length > 240
   ) return c.json({ error: "invalid_body" }, 400);
+  if (isReservedIdempotencyKey(idempotencyKey)) return c.json({ error: "reserved_idempotency_key" }, 400);
   const [source] = await db.select({ execution: agentExecutions, run: runs }).from(agentExecutions)
     .innerJoin(runs, eq(runs.id, agentExecutions.runId))
     .where(and(

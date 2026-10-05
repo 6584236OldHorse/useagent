@@ -1,12 +1,6 @@
+import { markRunStarted } from "./runs/run-state";
 import { join } from "node:path";
-import {
-  buildThreadPreamble,
-  getRun,
-  getThreadProviderSessionState,
-  insertStep,
-  setRunStatus,
-  updateStepCode,
-} from "./runs/repo";
+import { buildThreadPreamble, getRun, getThreadProviderSessionState, insertStep, updateStepCode } from "./runs/repo";
 import type { ProviderSessionBinding } from "@useagent/agent-harness/canonical";
 import type { ExpectedSandboxBinding } from "./sandboxes/expected-binding";
 import type { EngineId } from "./db/schema";
@@ -164,7 +158,7 @@ export async function beginEngineRun(
   orgId: string | null,
   origin: string | null = null,
 ): Promise<number> {
-  await setRunStatus(runId, "running");
+  if (!(await markRunStarted(runId))) throw new Error("the run was stopped before it started");
   if (!isInternalRunOrigin(origin)) {
     publishRunLifecycleChange({ orgId, threadId, runId, kind: "running" });
   }
@@ -474,7 +468,7 @@ async function runChat(
     return;
   }
 
-  await setRunStatus(run.id, "running");
+  if (!(await markRunStarted(run.id))) throw new Error("the run was stopped before it started");
   if (!isInternalRunOrigin(run.origin)) {
     publishRunLifecycleChange({
       orgId: run.orgId,
