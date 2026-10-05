@@ -38,8 +38,9 @@ describe("BotsPanel", () => {
   test("stays out of the mobile layout and offers bot creation as a button", () => {
     const html = renderPanel([makeBot({ id: "nova", name: "Nova" })]);
 
-    expect(html).toContain("hidden w-80");
+    expect(html).toContain("hidden w-[var(--roster-w,20rem)]");
     expect(html).toContain("md:flex");
+    expect(html).toContain('aria-label="Resize the bots list; double-click to reset"');
     expect(html).toMatch(/<button [^>]*aria-label="New bot"/);
     expect(html).not.toContain("/bots?new=1");
     expect(html).toContain("Nova");
