@@ -9,17 +9,11 @@ import { describe, expect, test } from "bun:test";
 import {
   composeStreamClosing,
   createNarrationBuffer,
-  directMessageChannel,
   markdownChunksFor,
-  openingStreamChunks,
-  planUpdateFromStep,
-  statusTextForStep,
-  stepProgressChunks,
   taskSourcesField,
   taskUpdateChunk,
-  TERMINAL_CARD_BUDGET,
-  terminalTaskChunks,
   toolTaskChunk,
+  WORKING_PHRASES,
 } from "./streaming";
 
 /** A durable step row as the bus carries it; code_json is the T3 projection. */
@@ -71,15 +65,9 @@ describe("wire chunk shapes (documented contract)", () => {
     expect(chunk.title.endsWith("…")).toBe(true);
   });
 
-  test("the opening is one spinning root task - no throwaway markdown in the body", () => {
-    const chunks = openingStreamChunks("Build the thing");
-    expect(chunks).toEqual([
-      { type: "task_update", id: "run", title: "Build the thing", status: "in_progress" },
-    ]);
-  });
 });
 
-describe("toolTaskChunk (one card per tool call, chatter never)", () => {
+describe("toolTaskChunk (the card's verb per tool call, chatter never)", () => {
   test("runtime chatter and the done marker are not cards", () => {
     expect(toolTaskChunk(step({ kind: "task", label: "Preparing context and runtime…", chip: "boot", code: { phase: "preparing" } }))).toBeNull();
     expect(toolTaskChunk(step({ kind: "task", label: "Waiting for provider activity…", chip: "runtime:claude", code: null }))).toBeNull();
@@ -169,124 +157,6 @@ describe("toolTaskChunk (one card per tool call, chatter never)", () => {
   });
 });
 
-describe("stepProgressChunks (open card pairing)", () => {
-  const running = (id: string): ReturnType<typeof taskUpdateChunk> => taskUpdateChunk({ id, title: "Ran a command", status: "in_progress" });
-
-  test("a new call completes the open card of an engine that never sends completions", () => {
-    const first = stepProgressChunks(null, running("step_a"));
-    expect(first.chunks).toEqual([running("step_a")]);
-    const second = stepProgressChunks(first.open, running("step_b"));
-    expect(second.chunks).toEqual([{ ...running("step_a"), status: "complete" }, running("step_b")]);
-    expect(second.open?.id).toBe("step_b");
-  });
-
-  test("a revision of the open card and a completion of another card leave it open", () => {
-    const open = running("step_b");
-    expect(stepProgressChunks(open, { ...open, output: "line" }).chunks).toEqual([{ ...open, output: "line" }]);
-    const other = { ...running("step_a"), status: "complete" as const };
-    const result = stepProgressChunks(open, other);
-    expect(result.chunks).toEqual([other]);
-    expect(result.open).toBe(open);
-    expect(stepProgressChunks(open, { ...open, status: "complete" }).open).toBeNull();
-  });
-});
-
-describe("planUpdateFromStep", () => {
-  const planStep = (todos: unknown) => ({
-    label: "Update plan",
-    chip: "plan",
-    codeJson: JSON.stringify({ tool: "todowrite", input: { todos } }),
-  });
-
-  test("a todos step becomes ONE plan_update titled with live progress", () => {
-    const chunk = planUpdateFromStep(
-      planStep([
-        { content: "Inspect request", status: "completed" },
-        { content: "Make changes", status: "in_progress" },
-        { content: "Verify", status: "pending" },
-      ]),
-    );
-    expect(chunk).toEqual({ type: "plan_update", title: "Plan 1/3: Make changes" });
-  });
-
-  test("a todowrite step without the plan chip still counts (engine variance)", () => {
-    const chunk = planUpdateFromStep({
-      label: "todos",
-      chip: null,
-      codeJson: JSON.stringify({ tool: "todowrite", input: { todos: [{ content: "A", status: "pending" }] } }),
-    });
-    expect(chunk?.type).toBe("plan_update");
-  });
-
-  test("a plan-chip step with unparseable/missing todos falls back to its label", () => {
-    expect(planUpdateFromStep({ label: "Plan updated", chip: "plan", codeJson: "{not json" })).toEqual({
-      type: "plan_update",
-      title: "Plan updated",
-    });
-  });
-
-  test("a non-plan step yields nothing", () => {
-    expect(planUpdateFromStep({ label: "bash", chip: "tool", codeJson: JSON.stringify({ tool: "bash" }) })).toBeNull();
-  });
-});
-
-describe("terminalTaskChunks", () => {
-  test("closes an open tool card, restates a settled one as is, then the root task", () => {
-    const settled = taskUpdateChunk({ id: "step_s8", title: "Searched the web", status: "complete", sources: ["https://bun.sh"] });
-    const chunks = terminalTaskChunks({
-      phase: "completed",
-      title: "Build the thing",
-      cards: [settled, taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" })],
-    });
-    expect(chunks).toEqual([
-      settled,
-      { type: "task_update", id: "step_s9", title: "Ran a command", status: "complete" },
-      { type: "task_update", id: "run", title: "Build the thing", status: "complete" },
-    ]);
-  });
-
-  test("the restatement stays within its budget: newest cards first, every card past it still closes bare", () => {
-    const big = (id: string, status: "in_progress" | "complete" | "error") =>
-      taskUpdateChunk({ id, title: "Searched the web", status, sources: [`https://x.dev/${"a".repeat(400)}`] });
-    const cards = [big("step_1", "in_progress"), big("step_2", "error"), big("step_3", "complete")];
-    // One card is ~950 chars of JSON: the budget fits exactly the newest one.
-    expect(terminalTaskChunks({ phase: "completed", title: "T", cards, budget: 1_000 })).toEqual([
-      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
-      { type: "task_update", id: "step_2", title: "Searched the web", status: "error" },
-      big("step_3", "complete"),
-      { type: "task_update", id: "run", title: "T", status: "complete" },
-    ]);
-  });
-
-  test("a card streamed in_progress whose oversized completion was fenced still closes at stop", () => {
-    // Slack saw the card spinning live; the completion append (five long
-    // sources) landed right before finalization and was fenced, so the stop
-    // is the only place left for the card to settle - complete, not dropped.
-    const sources = [1, 2, 3, 4, 5].map((k) => `https://x.dev/${k}/${"a".repeat(3_700)}`);
-    const done = taskUpdateChunk({ id: "step_1", title: "Searched the web", status: "complete", sources });
-    expect(JSON.stringify(done).length).toBeGreaterThan(TERMINAL_CARD_BUDGET);
-    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [done] })).toEqual([
-      { type: "task_update", id: "step_1", title: "Searched the web", status: "complete" },
-      { type: "task_update", id: "run", title: "T", status: "complete" },
-    ]);
-    const failed = taskUpdateChunk({ id: "step_2", title: "Ran a command", status: "error", sources });
-    expect(terminalTaskChunks({ phase: "completed", title: "T", cards: [failed] })[0]).toEqual(
-      { type: "task_update", id: "step_2", title: "Ran a command", status: "error" },
-    );
-  });
-
-  test("a failed run settles open cards and the root task as error", () => {
-    const open = taskUpdateChunk({ id: "step_s9", title: "Ran a command", status: "in_progress" });
-    expect(terminalTaskChunks({ phase: "failed", title: "Build", cards: [open] })).toEqual([
-      { ...open, status: "error" },
-      { type: "task_update", id: "run", title: "Run failed", status: "error" },
-    ]);
-    expect(terminalTaskChunks({ phase: "failed", title: "Build" })).toEqual([
-      { type: "task_update", id: "run", title: "Run failed", status: "error" },
-    ]);
-  });
-});
-
 describe("composeStreamClosing (answer never lost, never grossly duplicated)", () => {
   test("no narration: the closing IS the reply", () => {
     expect(composeStreamClosing({ status: "completed", summary: "The answer.", narration: "" })).toBe("The answer.");
@@ -339,13 +209,13 @@ describe("createNarrationBuffer (exact offsets, total cap)", () => {
   });
 });
 
-describe("shimmer + surface helpers", () => {
-  test("the working status derives from the step label", () => {
-    expect(statusTextForStep("useAgent · computer_sequence")).toBe("is working: useAgent · computer_sequence");
-  });
-
-  test("DM channel ids are recognized by their D prefix", () => {
-    expect(directMessageChannel("D0123")).toBe(true);
-    expect(directMessageChannel("C0123")).toBe(false);
+describe("the working shimmer", () => {
+  test("is a small set of calm phrases Slack can rotate, never a tool label", () => {
+    expect(WORKING_PHRASES.length).toBeLessThanOrEqual(10);
+    expect(WORKING_PHRASES[0]).toBe("Working on it");
+    for (const phrase of WORKING_PHRASES) {
+      expect(phrase).toMatch(/^[A-Z][a-z ]+$/);
+      expect(phrase.length).toBeLessThan(40);
+    }
   });
 });

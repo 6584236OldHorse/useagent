@@ -78,12 +78,15 @@ export interface SlackClient {
     status: SlackSessionStatus;
   }): Promise<DeliveryResult>;
   /** Free-text working status on an assistant thread (assistant.threads.setStatus):
-   * renders as "<App> <status>" with the native shimmer. An empty status clears
-   * it. Documented for DM assistant threads only. */
+   * renders as "<App> <status>" with the native shimmer, rotating through
+   * `loadingMessages` when given. An empty status clears it. Slack's
+   * compatibility bridge maps a non-empty status to a processing session and
+   * "" to active, so this is the ONE status family a thread uses. */
   setThreadStatus(args: {
     channel: string;
     threadTs: string;
     status: string;
+    loadingMessages?: readonly string[];
   }): Promise<DeliveryResult>;
   /** Start a Slack-native streaming reply. Blocks are intentionally not
    * accepted here; Slack only allows blocks at stopStream. The recipient ids
@@ -191,7 +194,7 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
       call("chat.postMessage", {
         channel,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
         ...(threadTs ? { thread_ts: threadTs } : {}),
         unfurl_links: false,
         unfurl_media: false,
@@ -201,7 +204,7 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         ts,
         text,
-        ...(blocks ? { blocks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     addReaction: ({ channel, timestamp, name }) =>
       call("reactions.add", { channel, timestamp, name }),
@@ -231,11 +234,12 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         thread_ts: threadTs,
         status,
       }),
-    setThreadStatus: ({ channel, threadTs, status }) =>
+    setThreadStatus: ({ channel, threadTs, status, loadingMessages }) =>
       call("assistant.threads.setStatus", {
         channel_id: channel,
         thread_ts: threadTs,
         status,
+        ...(status && loadingMessages?.length ? { loading_messages: loadingMessages } : {}),
       }),
     startStream: ({ channel, threadTs, taskDisplayMode, chunks, recipientTeamId, recipientUserId }) =>
       call("chat.startStream", {
@@ -258,8 +262,8 @@ export function httpSlackClient(config: SlackClientConfig): SlackClient {
         channel,
         thread_ts: threadTs,
         ts: messageTs,
-        chunks,
-        ...(blocks ? { blocks } : {}),
+        ...(chunks.length ? { chunks } : {}),
+        ...(blocks?.length ? { blocks } : {}),
       }),
     uploadFile: async ({ channel, threadTs, filename, title, initialComment, bytes }) => {
       const auth = `Bearer ${config.botToken}`;

@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { artifacts, providerEvents, runs, steps, type RunStatus } from "../db/schema";
+import { artifacts, providerEvents, runs, type RunStatus } from "../db/schema";
 import { completeRun } from "./repo";
 import { resolveScopedMemory } from "../memory/scope";
 import { enqueueCapture } from "../memory/capture-outbox";
@@ -12,33 +12,25 @@ import {
   createSlackRunResponse,
   findSlackRunResponse,
   findSlackThreadForProductThread,
+  slackThreadCardBase,
 } from "../slack/repo";
 import { composeSlackReplyText } from "../slack/reply";
-import { buildRunCard, deriveTitle, phaseForStatus, sessionUrl } from "../slack/card";
-import { parseRepoRef } from "../github/repo-ref";
+import { buildRunCard, cardStatusFor } from "../slack/card";
 import {
   composeAutomationDeliveryText,
   resolveSlackAutomationTargetForOrg,
 } from "../slack/automation";
 import {
   enqueuePostMessageTx,
-  enqueueSessionStatusTx,
   enqueueStopStreamTx,
   enqueueThreadStatusTx,
+  enqueueUpdateCardTx,
   enqueueUploadFileTx,
   kickSlackOutbox,
   slackArtifactDeliveryIdempotencyKey,
 } from "../slack/outbox";
-import {
-  composeStreamClosing,
-  directMessageChannel,
-  STREAM_NARRATION_CAP,
-  terminalTaskChunks,
-  toolTaskChunk,
-  type SlackTaskUpdateStreamChunk,
-} from "../slack/streaming";
+import { composeStreamClosing, STREAM_NARRATION_CAP } from "../slack/streaming";
 import { turnStream } from "./turn-stream";
-import { env } from "../env";
 import { findScheduleForRun, settleFiring } from "../schedules/repo";
 import { publishRunLifecycleChange } from "./org-signals";
 import { enqueueCanonicalization } from "./canonicalization-outbox";
@@ -54,9 +46,6 @@ import { evaluateFinishedWork, finishedWorkFailureSummary } from "./finished-wor
 import { listFinishedWorkForRun } from "./finished-work-repo";
 import { finishedWorkEnforcementEnabled, finishedWorkRolloutMode } from "./finished-work-rollout";
 import { lockFinishedWorkRun } from "./finished-work-lock";
-import { completeRunOutputs } from "../artifacts/completion";
-import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
-import { getThreadRelationship } from "./thread-relationship-repo";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 
 /** Providers whose runs project native events and/or `steps` into the canonical lane.
@@ -78,7 +67,6 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   run: RunRow,
   status: RunStatus,
   summary: string,
-  deliveryArtifactIds: readonly string[] = [],
 ): Promise<boolean> {
   const userMirror = await enqueueSlackUserMirrorForRun(run.id, tx);
   let kickSlack = userMirror.status === "ready" && userMirror.created;
@@ -105,46 +93,11 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   if (!slack) return false;
   if (!run.orgId) return false;
 
-  const relationship = await getThreadRelationship(run.orgId, run.threadId, tx);
-  const title = relationship?.title ?? deriveTitle(run.prompt);
-  const phase = phaseForStatus(status);
-  const webUrl = sessionUrl(env.FRONTEND_ORIGIN, run.threadId);
-  const repoSpecs = run.repos.map(parseRepoRef);
-  // Two final cards: the FULL card (answer section) advances the Block Kit
-  // fallback message in place; the CHROME card (linked title + context +
-  // button, no answer) closes the native stream, whose body carries the reply.
-  const finalCard = buildRunCard({ title, phase, model: run.model, repoSpecs, webUrl, answer: summary });
-  const chromeCard = buildRunCard({ title, phase, model: run.model, repoSpecs, webUrl, answer: summary, omitAnswer: true });
+  // The thread card settles with this turn's outcome; the answer itself is
+  // the turn's own message (its streamed body, or a plain reply when nothing
+  // streamed) and never repeats inside the card.
+  const card = buildRunCard({ ...(await slackThreadCardBase(run, tx)), status: cardStatusFor(status) });
   const replyText = composeSlackReplyText(status, summary);
-
-  // The recent tool cards settle alongside the root task at stop, from their
-  // durable rows: a live append still pending when the run turns terminal is
-  // dropped, so the stop carries each card's final state itself. Only tool
-  // rows count (runtime chatter and plan rows never become cards). A native
-  // todowrite call is told apart only by its code_json, so the lookback pages
-  // past the rows toolTaskChunk drops until ten cards are in hand.
-  const CARD_LOOKBACK = 10;
-  const cards: SlackTaskUpdateStreamChunk[] = [];
-  let before: number | null = null;
-  for (;;) {
-    const page = await tx
-      .select({ id: steps.id, idx: steps.idx, kind: steps.kind, label: steps.label, chip: steps.chip, code_json: steps.codeJson })
-      .from(steps)
-      .where(and(
-        eq(steps.runId, run.id),
-        before === null ? undefined : lt(steps.idx, before),
-        or(inArray(steps.kind, ["command", "file"]), eq(steps.chip, "subagent")),
-        or(isNull(steps.chip), ne(steps.chip, "plan")),
-      ))
-      .orderBy(desc(steps.idx))
-      .limit(CARD_LOOKBACK);
-    for (const step of page) {
-      const card = toolTaskChunk(step);
-      if (card && cards.length < CARD_LOOKBACK) cards.unshift(card);
-    }
-    if (cards.length >= CARD_LOOKBACK || page.length < CARD_LOOKBACK) break;
-    before = page.at(-1)!.idx;
-  }
 
   // Narration the live watcher streamed into the message body (process-local
   // buffer; empty after a restart). The stop delivery appends exactly the tail
@@ -163,43 +116,43 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     channel: slack.channel,
     threadTs: slack.threadTs,
     runId: run.id,
-    chunks: terminalTaskChunks({ phase, title, cards }),
+    chunks: [],
     narrationText: narration,
     closingMarkdown,
-    blocks: chromeCard.blocks,
-    text: finalCard.text,
-    fallbackBlocks: finalCard.blocks,
+    text: replyText,
     fallbackText: replyText,
     ...(userMirror.status === "ready"
       ? { waitForIdempotencyKey: userMirror.idempotencyKey }
       : {}),
   })) || kickSlack;
-  const statusCreated = await enqueueSessionStatusTx(tx, {
-    idempotencyKey: `slack-status:final:${slack.teamId}:${run.id}`,
+  const cardSettled = await enqueueUpdateCardTx(tx, {
+    idempotencyKey: `slack-card:final:${slack.teamId}:${run.id}`,
+    orgId: run.orgId,
+    teamId: slack.teamId,
+    channel: slack.channel,
+    threadTs: slack.threadTs,
+    rootRunId: thread?.rootRunId ?? run.threadId,
+    runId: run.id,
+    blocks: card.blocks,
+    text: card.text,
+  });
+  kickSlack = kickSlack || cardSettled;
+  // Clear the free-text working shimmer durably (the in-process watcher also
+  // clears it, but only this survives a restart).
+  const shimmerCleared = await enqueueThreadStatusTx(tx, {
+    idempotencyKey: `slack-thread-status:final:${slack.teamId}:${run.id}`,
     orgId: run.orgId,
     teamId: slack.teamId,
     channel: slack.channel,
     threadTs: slack.threadTs,
     runId: run.id,
-    status: "active",
+    status: "",
   });
-  kickSlack = kickSlack || statusCreated;
-  // DM threads: clear the free-text working shimmer durably (the in-process
-  // watcher also clears it, but only this survives a restart).
-  if (directMessageChannel(slack.channel)) {
-    const shimmerCleared = await enqueueThreadStatusTx(tx, {
-      idempotencyKey: `slack-thread-status:final:${slack.teamId}:${run.id}`,
-      orgId: run.orgId,
-      teamId: slack.teamId,
-      channel: slack.channel,
-      threadTs: slack.threadTs,
-      runId: run.id,
-      status: "",
-    });
-    kickSlack = kickSlack || shimmerCleared;
-  }
+  kickSlack = kickSlack || shimmerCleared;
 
-  if (status === "completed" || deliveryArtifactIds.length > 0) {
+  if (status === "completed") {
+    const SHARE_LIMIT = 5;
+    const SHARE_MAX_BYTES = 20 * 1024 * 1024;
     const revisedEvents = await tx
       .select({ payload: providerEvents.payload })
       .from(providerEvents)
@@ -217,10 +170,9 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
           : null;
       return typeof id === "string" ? [id] : [];
     });
-    const selectedIds = [...new Set([...revisedArtifactIds, ...deliveryArtifactIds])];
     const artifactScope =
-      selectedIds.length > 0
-        ? or(eq(artifacts.runId, run.id), inArray(artifacts.id, selectedIds))
+      revisedArtifactIds.length > 0
+        ? or(eq(artifacts.runId, run.id), inArray(artifacts.id, revisedArtifactIds))
         : eq(artifacts.runId, run.id);
     const runArtifacts = await tx
       .select({
@@ -232,18 +184,14 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
         sizeBytes: artifacts.sizeBytes,
         sha256: artifacts.sha256,
         storageKey: artifacts.storageKey,
-        sourcePath: artifacts.sourcePath,
         workpieceRevision: artifacts.workpieceRevision,
       })
       .from(artifacts)
-      .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), artifactScope))
-      .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt));
+      .where(and(eq(artifacts.orgId, run.orgId), artifactScope))
+      .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt))
+      .limit(SHARE_LIMIT);
     for (const artifact of runArtifacts) {
-      // Extracted slide pictures belong to their parent deck, not a separate
-      // unsolicited Slack upload. Explicitly selected pictures still deliver.
-      if (/::media\/[1-9]\d*$/.test(artifact.sourcePath) && !selectedIds.includes(artifact.id)) continue;
-      // Publication already enforces the artifact byte limit. Never silently
-      // drop the sixth file or a valid larger file at the delivery boundary.
+      if (artifact.sizeBytes > SHARE_MAX_BYTES) continue;
       const created = await enqueueUploadFileTx(tx, {
         idempotencyKey: slackArtifactDeliveryIdempotencyKey({
           teamId: slack.teamId,
@@ -327,9 +275,6 @@ export async function resolveDurableFinalizationOutcome(
 }
 
 export interface FinalizeRunOptions {
-  readonly signal?: AbortSignal;
-  /** Non-mutating fence used before reads and inside each artifact commit. */
-  readonly publicationClaim?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<boolean>;
   /** Ownership guard evaluated INSIDE the finalization transaction, after the run row is
    *  read and before anything is written. When it returns false the transaction writes
    *  nothing and the result is `applied: false`. The reconciler passes its fenced
@@ -345,30 +290,6 @@ export async function finalizeRun(
   summary: string,
   durationMs: number,
   options: FinalizeRunOptions = {},
-): Promise<FinalizeRunResult> {
-  if (status !== "completed") return commitRunFinalization(runId, status, summary, durationMs, options);
-  const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
-  if (!run) return { applied: false };
-  if (run.status !== "queued" && run.status !== "running") {
-    // Recovery still has to consume its owned parked row and account for the
-    // durable winner, even though no publication or status write may run again.
-    return commitRunFinalization(runId, status, summary, durationMs, options);
-  }
-  const outputs = await completeRunOutputs(run, summary, {
-    signal: options.signal, requiresClaim: Boolean(options.claim),
-    publicationClaim: options.publicationClaim,
-  });
-  if (outputs.status === "obsolete") return { applied: false };
-  return commitRunFinalization(runId, outputs.status, outputs.summary, durationMs, options, outputs.artifactIds);
-}
-
-async function commitRunFinalization(
-  runId: string,
-  status: RunStatus,
-  summary: string,
-  durationMs: number,
-  options: FinalizeRunOptions,
-  deliveryArtifactIds: readonly string[] = [],
 ): Promise<FinalizeRunResult> {
   const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
@@ -386,42 +307,21 @@ async function commitRunFinalization(
   let settledPrompt: string | null = null;
   let settledInternal = true; // stays true unless a customer run actually finalized
   await db.transaction(async (tx) => {
-    await lockFinishedWorkRun(runId, tx);
-    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).for("update").limit(1);
+    if (finishedWorkMode !== "off") await lockFinishedWorkRun(runId, tx);
+    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1);
     if (!run) return; // deleted mid-flight — nothing to finalize
     if (options.claim && !(await options.claim(tx))) return; // the caller no longer owns this settlement
-    if (run.status !== "queued" && run.status !== "running") return;
     settledThreadId = run.threadId;
     settledOrgId = run.orgId;
     settledUserId = run.userId;
     settledPrompt = run.prompt;
     settledInternal = isInternalRunOrigin(run.origin) || run.engine === "mock";
 
-    // The same row lock used by acceptRunCancel linearizes Stop against this
-    // terminal write. Remote file reads have already finished outside this tx.
-    if (run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
-      effectiveStatus = "failed";
-      effectiveSummary = CANCEL_SUMMARY;
-      deliveryArtifactIds = [];
-    }
-
-    if (effectiveStatus === "completed" && run.orgId) {
-      const state = await listFinishedWorkForRun(run.orgId, runId, tx);
-      const requiredOutputs = evaluateFinishedWork({
-        obligations: state.obligations.filter((row) => row.sourceKind === "sandbox_output"),
-        receipts: state.receipts,
-      });
-      if (requiredOutputs.status === "blocked" || requiredOutputs.status === "failed") {
-        effectiveStatus = "failed";
-        effectiveSummary = finishedWorkFailureSummary(requiredOutputs);
-      }
-    }
-
     // Finished-work enforcement is additive and trusted-boundary-only: Phase A
     // creates no obligations, so legacy runs evaluate `not_required`. Requested
     // failures always remain failures. Only an explicit durable obligation can
     // turn a requested completion into an effective failure.
-    if (effectiveStatus === "completed" && finishedWorkMode !== "off" && run.orgId) {
+    if (status === "completed" && finishedWorkMode !== "off" && run.orgId) {
       const finishedWorkDecision = evaluateFinishedWork(
         await listFinishedWorkForRun(run.orgId, runId, tx),
       );
@@ -498,7 +398,7 @@ async function commitRunFinalization(
     // Slack reply — durable for a Slack-originated run (resolved from the run's
     // thread, so replies + boot-reconciled runs both find it). Non-Slack runs
     // resolve null and enqueue nothing.
-    kickSlack = (await enqueueSlackTerminalDeliveryForRunTx(tx, run, effectiveStatus, effectiveSummary, deliveryArtifactIds)) || kickSlack;
+    kickSlack = (await enqueueSlackTerminalDeliveryForRunTx(tx, run, effectiveStatus, effectiveSummary)) || kickSlack;
 
     // Automation delivery (delivery.slack) — a run fired by an automation whose
     // delivery config targets Slack posts its terminal outcome to that channel,

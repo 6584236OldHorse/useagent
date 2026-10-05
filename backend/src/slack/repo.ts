@@ -7,7 +7,11 @@
  */
 import { and, eq, sql } from "drizzle-orm";
 import { db, type Executor } from "../db/client";
-import { slackRunResponses, slackThreads, threadRelationships } from "../db/schema";
+import { runs, slackRunResponses, slackThreads, threadRelationships } from "../db/schema";
+import { env } from "../env";
+import { parseRepoRef } from "../github/repo-ref";
+import { getThreadRelationship } from "../runs/thread-relationship-repo";
+import { deriveTitle, sessionUrl, type RunCardInput } from "./card";
 import type { SlackStreamTaskDisplayMode } from "./streaming";
 
 export interface SlackThreadLink {
@@ -19,6 +23,11 @@ export interface SlackThreadTarget {
   teamId: string;
   channel: string;
   threadTs: string;
+}
+
+/** A rooted Slack thread: its destination plus the run family that owns its card. */
+export interface SlackThreadRoot extends SlackThreadTarget {
+  rootRunId: string;
 }
 
 export interface SlackRunResponseTarget extends SlackThreadTarget {
@@ -121,12 +130,13 @@ export async function findSlackThreadByRoot(
   rootRunId: string,
   exec: Executor = db,
   orgId?: string,
-): Promise<SlackThreadTarget | null> {
+): Promise<SlackThreadRoot | null> {
   const rows = await exec
     .select({
       teamId: slackThreads.teamId,
       channel: slackThreads.channel,
       threadTs: slackThreads.threadTs,
+      rootRunId: slackThreads.rootRunId,
     })
     .from(slackThreads)
     .where(
@@ -145,7 +155,7 @@ export async function findSlackThreadForProductThread(
   orgId: string,
   threadId: string,
   exec: Executor = db,
-): Promise<SlackThreadTarget | null> {
+): Promise<SlackThreadRoot | null> {
   const [relationship] = await exec
     .select({ familyThreadId: threadRelationships.familyThreadId })
     .from(threadRelationships)
@@ -244,30 +254,53 @@ export async function setSlackFallbackMessageTs(runId: string, fallbackMessageTs
     .where(eq(slackRunResponses.runId, runId));
 }
 
-/** Compatibility wrapper for pre-native-stream card rows. New native delivery
- *  paths store card/fallback timestamps on slack_run_responses instead. */
-export async function setSlackCardTs(
-  rootRunId: string,
-  cardTs: string,
-): Promise<void> {
-  await setSlackFallbackMessageTs(rootRunId, cardTs);
+/** Remember the thread card's message ts (one card per rooted Slack thread). */
+export async function setSlackCardTs(rootRunId: string, cardTs: string): Promise<void> {
+  await db.update(slackThreads).set({ cardTs }).where(eq(slackThreads.rootRunId, rootRunId));
 }
 
-export async function getSlackCardTsByRoot(rootRunId: string): Promise<{
-  teamId: string;
-  channel: string;
-  threadTs: string;
-  cardTs: string | null;
-} | null> {
-  const response = await findSlackRunResponse(rootRunId);
-  if (response) {
-    return {
-      teamId: response.teamId,
-      channel: response.channel,
-      threadTs: response.threadTs,
-      cardTs: response.fallbackMessageTs,
-    };
-  }
-  const thread = await findSlackThreadByRoot(rootRunId);
-  return thread ? { ...thread, cardTs: null } : null;
+/** The Slack thread a run family roots, with its card ts once the card is posted. */
+export async function getSlackCardTsByRoot(rootRunId: string): Promise<(SlackThreadTarget & { cardTs: string | null }) | null> {
+  const rows = await db
+    .select({
+      teamId: slackThreads.teamId,
+      channel: slackThreads.channel,
+      threadTs: slackThreads.threadTs,
+      cardTs: slackThreads.cardTs,
+    })
+    .from(slackThreads)
+    .where(eq(slackThreads.rootRunId, rootRunId))
+    .limit(2);
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+/** The thread card's fixed chrome for ANY run in the family: the ROOT run's
+ *  title (a relationship title wins), model and repos, and the session link.
+ *  Every turn revises the same card, so every turn must render the same chrome. */
+export async function slackThreadCardBase(
+  run: {
+    readonly id: string;
+    readonly threadId: string;
+    readonly orgId: string | null;
+    readonly prompt: string;
+    readonly model: string;
+    readonly repos: readonly string[];
+  },
+  exec: Executor = db,
+): Promise<Omit<RunCardInput, "status" | "output">> {
+  const [root] = run.id === run.threadId
+    ? [run]
+    : await exec
+        .select({ prompt: runs.prompt, model: runs.model, repos: runs.repos })
+        .from(runs)
+        .where(eq(runs.id, run.threadId))
+        .limit(1);
+  const source = root ?? run;
+  const relationship = run.orgId ? await getThreadRelationship(run.orgId, run.threadId, exec) : null;
+  return {
+    title: relationship?.title ?? deriveTitle(source.prompt),
+    model: source.model,
+    repoSpecs: source.repos.map(parseRepoRef),
+    webUrl: sessionUrl(env.FRONTEND_ORIGIN, run.threadId),
+  };
 }

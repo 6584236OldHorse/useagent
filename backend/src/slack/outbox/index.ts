@@ -5,7 +5,7 @@ import { enqueue } from "./repo";
 import { kickSlackOutbox } from "./delivery";
 import { chunkSlackText } from "../chunk";
 import type { Executor } from "../../db/client";
-import type { SlackSessionStatus, SlackStreamChunk, SlackStreamTaskDisplayMode } from "../streaming";
+import type { SlackStreamChunk, SlackStreamTaskDisplayMode } from "../streaming";
 
 export {
   drainSlackDeliveryReceipts,
@@ -79,11 +79,10 @@ export async function enqueuePostMessageTx(
   );
 }
 
-/** Enqueue the FINAL run-card update INSIDE a caller's transaction (run
- *  finalization), so the settled card commits atomically with the run reaching
- *  terminal. At delivery it advances the card in place (chat.update) or, when no
- *  card ts exists, posts the CHUNKED answer as a fresh reply - the answer is never
- *  lost. Returns whether a NEW row was created. */
+/** The thread card's settled revision INSIDE a caller's transaction (run
+ *  finalization), so the card commits atomically with the run reaching
+ *  terminal. At delivery it advances the card in place (chat.update) or, when
+ *  the thread has no card, posts it. Returns whether a NEW row was created. */
 export async function enqueueUpdateCardTx(
   exec: Executor,
   entry: {
@@ -92,11 +91,12 @@ export async function enqueueUpdateCardTx(
     teamId: string;
     channel: string;
     threadTs: string;
+    rootRunId: string;
     runId: string;
     blocks: unknown[];
     text: string;
-    /** The full answer text; chunked here so a long fallback stays postable. */
-    fallbackText: string;
+    /** A live progress revision, dropped once its run is terminal. */
+    live?: boolean;
   },
 ): Promise<boolean> {
   return enqueue(
@@ -108,10 +108,45 @@ export async function enqueueUpdateCardTx(
         channel: entry.channel,
         teamId: entry.teamId,
         threadTs: entry.threadTs,
+        rootRunId: entry.rootRunId,
         runId: entry.runId,
         blocks: entry.blocks,
         text: entry.text,
-        fallbackChunks: chunkSlackText(entry.fallbackText),
+        ...(entry.live ? { live: true } : {}),
+      },
+    },
+    exec,
+  );
+}
+
+/** The thread card's first post INSIDE a caller's transaction. One card per
+ *  Slack thread: the key is the thread root, and delivery skips a thread that
+ *  already has its card. Returns whether a NEW row was created. */
+export async function enqueuePostCardTx(
+  exec: Executor,
+  entry: {
+    idempotencyKey: string;
+    orgId: string;
+    teamId: string;
+    channel: string;
+    threadTs: string;
+    rootRunId: string;
+    blocks: unknown[];
+    text: string;
+  },
+): Promise<boolean> {
+  return enqueue(
+    {
+      kind: "post_card",
+      idempotencyKey: entry.idempotencyKey,
+      payload: {
+        orgId: entry.orgId,
+        channel: entry.channel,
+        teamId: entry.teamId,
+        threadTs: entry.threadTs,
+        rootRunId: entry.rootRunId,
+        blocks: entry.blocks,
+        text: entry.text,
       },
     },
     exec,
@@ -130,7 +165,7 @@ export async function enqueueStopStreamTx(
     chunks: readonly SlackStreamChunk[];
     narrationText?: string;
     closingMarkdown?: string;
-    blocks: readonly unknown[];
+    blocks?: readonly unknown[];
     text: string;
     fallbackBlocks?: readonly unknown[];
     fallbackText: string;
@@ -150,7 +185,7 @@ export async function enqueueStopStreamTx(
         chunks: entry.chunks,
         ...(entry.narrationText ? { narrationText: entry.narrationText } : {}),
         ...(entry.closingMarkdown ? { closingMarkdown: entry.closingMarkdown } : {}),
-        blocks: entry.blocks,
+        ...(entry.blocks ? { blocks: entry.blocks } : {}),
         text: entry.text,
         ...(entry.fallbackBlocks ? { fallbackBlocks: entry.fallbackBlocks } : {}),
         fallbackChunks: chunkSlackText(entry.fallbackText),
@@ -163,69 +198,8 @@ export async function enqueueStopStreamTx(
   );
 }
 
-export async function enqueueSessionStatusTx(
-  exec: Executor,
-  entry: {
-    idempotencyKey: string;
-    orgId: string;
-    teamId: string;
-    channel: string;
-    threadTs: string;
-    runId: string;
-    status: SlackSessionStatus;
-  },
-): Promise<boolean> {
-  return enqueue(
-    {
-      kind: "set_session_status",
-      idempotencyKey: entry.idempotencyKey,
-      payload: { orgId: entry.orgId, teamId: entry.teamId, channel: entry.channel, threadTs: entry.threadTs, runId: entry.runId, status: entry.status },
-    },
-    exec,
-  );
-}
-
-export async function enqueueStartStreamTx(
-  exec: Executor,
-  entry: {
-    idempotencyKey: string;
-    orgId: string;
-    teamId: string;
-    channel: string;
-    threadTs: string;
-    runId: string;
-    taskDisplayMode: SlackStreamTaskDisplayMode;
-    chunks: readonly SlackStreamChunk[];
-    recipientTeamId?: string;
-    recipientUserId?: string;
-    fallbackBlocks: readonly unknown[];
-    fallbackText: string;
-  },
-): Promise<boolean> {
-  return enqueue(
-    {
-      kind: "start_stream",
-      idempotencyKey: entry.idempotencyKey,
-      payload: {
-        orgId: entry.orgId,
-        channel: entry.channel,
-        teamId: entry.teamId,
-        threadTs: entry.threadTs,
-        runId: entry.runId,
-        taskDisplayMode: entry.taskDisplayMode,
-        chunks: entry.chunks,
-        ...(entry.recipientTeamId ? { recipientTeamId: entry.recipientTeamId } : {}),
-        ...(entry.recipientUserId ? { recipientUserId: entry.recipientUserId } : {}),
-        fallbackBlocks: entry.fallbackBlocks,
-        fallbackText: entry.fallbackText,
-      },
-    },
-    exec,
-  );
-}
-
-/** Free-text working status (native shimmer) on a DM assistant thread, INSIDE a
- *  caller's transaction. An empty `status` clears it. */
+/** Free-text working status (native shimmer) on a thread, INSIDE a caller's
+ *  transaction. Slack rotates `loadingMessages`; an empty `status` clears it. */
 export async function enqueueThreadStatusTx(
   exec: Executor,
   entry: {
@@ -236,13 +210,22 @@ export async function enqueueThreadStatusTx(
     threadTs: string;
     runId: string;
     status: string;
+    loadingMessages?: readonly string[];
   },
 ): Promise<boolean> {
   return enqueue(
     {
       kind: "set_thread_status",
       idempotencyKey: entry.idempotencyKey,
-      payload: { orgId: entry.orgId, teamId: entry.teamId, channel: entry.channel, threadTs: entry.threadTs, runId: entry.runId, status: entry.status },
+      payload: {
+        orgId: entry.orgId,
+        teamId: entry.teamId,
+        channel: entry.channel,
+        threadTs: entry.threadTs,
+        runId: entry.runId,
+        status: entry.status,
+        ...(entry.loadingMessages ? { loadingMessages: entry.loadingMessages } : {}),
+      },
     },
     exec,
   );
@@ -350,16 +333,16 @@ export async function enqueuePostMessage(entry: {
   if (created) kickSlackOutbox();
 }
 
-/** Durably enqueue the initial Block Kit RUN CARD post (survives a restart). The
- *  relay posts it and stores the returned message ts on slack_threads. Idempotent
- *  by `idempotencyKey`. */
+/** Durably enqueue the thread card post (survives a restart). The relay posts
+ *  it once per thread and stores the returned message ts on slack_threads.
+ *  Idempotent by `idempotencyKey`. */
 export async function enqueuePostCard(entry: {
   idempotencyKey: string;
   orgId: string;
   teamId: string;
   channel: string;
   threadTs: string;
-  runId: string;
+  rootRunId: string;
   blocks: unknown[];
   text: string;
 }): Promise<void> {
@@ -371,9 +354,40 @@ export async function enqueuePostCard(entry: {
       channel: entry.channel,
       teamId: entry.teamId,
       threadTs: entry.threadTs,
+      rootRunId: entry.rootRunId,
+      blocks: entry.blocks,
+      text: entry.text,
+    },
+  });
+  if (created) kickSlackOutbox();
+}
+
+/** Durably enqueue a live revision of the thread card (the watcher's progress).
+ *  Dropped at delivery once `runId` is terminal. Idempotent by key. */
+export async function enqueueUpdateCard(entry: {
+  idempotencyKey: string;
+  orgId: string;
+  teamId: string;
+  channel: string;
+  threadTs: string;
+  rootRunId: string;
+  runId: string;
+  blocks: unknown[];
+  text: string;
+}): Promise<void> {
+  const created = await enqueue({
+    kind: "update_card",
+    idempotencyKey: entry.idempotencyKey,
+    payload: {
+      orgId: entry.orgId,
+      channel: entry.channel,
+      teamId: entry.teamId,
+      threadTs: entry.threadTs,
+      rootRunId: entry.rootRunId,
       runId: entry.runId,
       blocks: entry.blocks,
       text: entry.text,
+      live: true,
     },
   });
   if (created) kickSlackOutbox();
@@ -390,7 +404,7 @@ export async function enqueueStartStream(entry: {
   chunks: readonly SlackStreamChunk[];
   recipientTeamId?: string;
   recipientUserId?: string;
-  fallbackBlocks: readonly unknown[];
+  fallbackBlocks?: readonly unknown[];
   fallbackText: string;
 }): Promise<void> {
   const created = await enqueue({
@@ -406,7 +420,7 @@ export async function enqueueStartStream(entry: {
       chunks: entry.chunks,
       ...(entry.recipientTeamId ? { recipientTeamId: entry.recipientTeamId } : {}),
       ...(entry.recipientUserId ? { recipientUserId: entry.recipientUserId } : {}),
-      fallbackBlocks: entry.fallbackBlocks,
+      ...(entry.fallbackBlocks ? { fallbackBlocks: entry.fallbackBlocks } : {}),
       fallbackText: entry.fallbackText,
     },
   });
@@ -423,7 +437,7 @@ export async function enqueueAppendStream(entry: {
   chunks: readonly SlackStreamChunk[];
   narrationOffset?: number;
   cardSeq?: number;
-  fallbackBlocks: readonly unknown[];
+  fallbackBlocks?: readonly unknown[];
   fallbackText: string;
 }): Promise<void> {
   const created = await enqueue({
@@ -438,14 +452,14 @@ export async function enqueueAppendStream(entry: {
       chunks: entry.chunks,
       ...(entry.narrationOffset !== undefined ? { narrationOffset: entry.narrationOffset } : {}),
       ...(entry.cardSeq !== undefined ? { cardSeq: entry.cardSeq } : {}),
-      fallbackBlocks: entry.fallbackBlocks,
+      ...(entry.fallbackBlocks ? { fallbackBlocks: entry.fallbackBlocks } : {}),
       fallbackText: entry.fallbackText,
     },
   });
   if (created) kickSlackOutbox();
 }
 
-/** Durable free-text working status update (DM shimmer). Idempotent by key. */
+/** Durable free-text working status update (the shimmer). Idempotent by key. */
 export async function enqueueThreadStatus(entry: {
   idempotencyKey: string;
   orgId: string;
@@ -454,28 +468,20 @@ export async function enqueueThreadStatus(entry: {
   threadTs: string;
   runId: string;
   status: string;
+  loadingMessages?: readonly string[];
 }): Promise<void> {
   const created = await enqueue({
     kind: "set_thread_status",
     idempotencyKey: entry.idempotencyKey,
-    payload: { orgId: entry.orgId, teamId: entry.teamId, channel: entry.channel, threadTs: entry.threadTs, runId: entry.runId, status: entry.status },
-  });
-  if (created) kickSlackOutbox();
-}
-
-export async function enqueueSessionStatus(entry: {
-  idempotencyKey: string;
-  orgId: string;
-  teamId: string;
-  channel: string;
-  threadTs: string;
-  runId: string;
-  status: SlackSessionStatus;
-}): Promise<void> {
-  const created = await enqueue({
-    kind: "set_session_status",
-    idempotencyKey: entry.idempotencyKey,
-    payload: { orgId: entry.orgId, teamId: entry.teamId, channel: entry.channel, threadTs: entry.threadTs, runId: entry.runId, status: entry.status },
+    payload: {
+      orgId: entry.orgId,
+      teamId: entry.teamId,
+      channel: entry.channel,
+      threadTs: entry.threadTs,
+      runId: entry.runId,
+      status: entry.status,
+      ...(entry.loadingMessages ? { loadingMessages: entry.loadingMessages } : {}),
+    },
   });
   if (created) kickSlackOutbox();
 }

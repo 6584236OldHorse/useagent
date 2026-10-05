@@ -92,4 +92,41 @@ describe("Slack streaming wire contract", () => {
       },
     ]);
   });
+
+  test("the thread status carries the calm phrases as loading_messages; a clear sends none", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    await client.setThreadStatus({ channel: "C123", threadTs: "1.1", status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] });
+    await client.setThreadStatus({ channel: "C123", threadTs: "1.1", status: "", loadingMessages: ["Working on it"] });
+    expect(requests.map((r) => r.url)).toEqual([
+      "https://slack.test/api/assistant.threads.setStatus",
+      "https://slack.test/api/assistant.threads.setStatus",
+    ]);
+    expect(requests[0]!.body).toEqual({
+      channel_id: "C123",
+      thread_ts: "1.1",
+      status: "Working on it",
+      loading_messages: ["Working on it", "Nearly there"],
+    });
+    expect(requests[1]!.body).toEqual({ channel_id: "C123", thread_ts: "1.1", status: "" });
+  });
+
+  test("a bare stop and an empty blocks array send neither field", async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (input, init) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const client = httpSlackClient({ botToken: "xoxb-test", apiUrl: "https://slack.test/api/" });
+    await client.stopStream({ channel: "C123", threadTs: "1.1", messageTs: "1.2", chunks: [], blocks: [] });
+    await client.postMessage({ channel: "C123", text: "hi", threadTs: "1.1", blocks: [] });
+    expect(requests[0]!.body).toEqual({ channel: "C123", thread_ts: "1.1", ts: "1.2" });
+    expect("blocks" in requests[1]!.body).toBe(false);
+  });
 });

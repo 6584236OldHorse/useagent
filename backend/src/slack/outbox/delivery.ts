@@ -11,6 +11,8 @@ import {
   createSlackRunResponse,
   disableSlackNativeStream,
   findSlackRunResponse,
+  getSlackCardTsByRoot,
+  setSlackCardTs,
   setSlackFallbackMessageTs,
   setSlackNativeStream,
   noteSlackCardRevisions,
@@ -105,7 +107,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
   // this fence, a backoff or restart can re-open the spinner/stream after the
   // terminal stop row already settled the Slack surface.
   const staleLiveRow =
-    row.kind === "post_card" ||
+    (row.kind === "update_card" && p.live === true) ||
     row.kind === "start_stream" ||
     row.kind === "append_stream" ||
     (row.kind === "set_session_status" && p.status === "processing") ||
@@ -205,51 +207,44 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const teamId = string("teamId");
       const channel = string("channel");
       const threadTs = string("threadTs");
-      const runId = string("runId") ?? string("rootRunId");
+      const rootRunId = string("rootRunId") ?? string("runId");
       const text = string("text");
       const blocks = Array.isArray(p.blocks) ? p.blocks : undefined;
-      if (!teamId || !channel || !threadTs || !runId || !text) {
+      if (!teamId || !channel || !threadTs || !rootRunId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
+      // One card per thread: a heal or a later turn re-enqueues under the same
+      // key, and a thread that already has its card keeps it.
+      if ((await getSlackCardTsByRoot(rootRunId))?.cardTs) return { ok: true };
       const res = await client.postMessage({ channel, text, threadTs, blocks });
-      // Persist the card ts so later updates target the SAME message. A crash
-      // between the post and this write redelivers the row (at-least-once): the
-      // idempotency key already bounds it, and a re-post is a benign duplicate
-      // card - the update path still finds a ts on the healed row next time.
-      if (res.ok && res.ts) {
-        await createSlackRunResponse({ runId, teamId, channel, threadTs });
-        await setSlackFallbackMessageTs(runId, res.ts);
-      }
+      // Persist the card ts so later revisions target the SAME message. A crash
+      // between the post and this write redelivers the row (at-least-once): a
+      // re-post is a benign duplicate card, and the next revision heals the ts.
+      if (res.ok && res.ts) await setSlackCardTs(rootRunId, res.ts);
       return res;
     }
     case "update_card": {
       const teamId = string("teamId");
       const channel = string("channel");
       const threadTs = string("threadTs");
-      const runId = string("runId") ?? string("rootRunId");
+      const rootRunId = string("rootRunId") ?? string("runId");
       const text = string("text");
       const blocks = Array.isArray(p.blocks) ? p.blocks : undefined;
-      // The plain-text fallback (chunked) - posted when there is no card to update.
-      const fallbackChunks = Array.isArray(p.fallbackChunks)
-        ? p.fallbackChunks.filter((c): c is string => typeof c === "string" && c.length > 0)
-        : [];
-      if (!teamId || !channel || !threadTs || !runId || !text) {
+      if (!teamId || !channel || !threadTs || !rootRunId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
-      // Resolve the card ts written by the post_card row. When it exists, advance
-      // the card in place; a transient/rate-limited failure retries the whole row.
-      const response = await findSlackRunResponse(runId);
-      if (response?.fallbackMessageTs) {
-        const res = await client.updateMessage({ channel, ts: response.fallbackMessageTs, text, blocks });
-        // chat.update succeeded, or failed transiently (retry the row) - but a
-        // PERMANENT update failure (card deleted, message not found) must not
-        // strand the answer: fall through to posting it as a fresh reply below.
+      // Advance the thread card in place; a transient/rate-limited failure
+      // retries the whole row.
+      const cardTs = (await getSlackCardTsByRoot(rootRunId))?.cardTs;
+      if (cardTs) {
+        const res = await client.updateMessage({ channel, ts: cardTs, text, blocks });
         if (res.ok || res.class !== "permanent") return res;
       }
-      // No card ts (post never landed) or the card is gone: post the answer as a
-      // fresh CHUNKED reply so the answer is NEVER lost. Cursor-resumes like
-      // post_message so a mid-sequence retry does not re-post delivered chunks.
-      return postFallbackChunks(client, row, p, channel, threadTs, fallbackChunks);
+      // No card yet (the post never landed) or the card is gone: post it fresh
+      // so the thread always has its one card, and remember the new ts.
+      const posted = await client.postMessage({ channel, text, threadTs, blocks });
+      if (posted.ok && posted.ts) await setSlackCardTs(rootRunId, posted.ts);
+      return posted;
     }
     case "set_session_status": {
       const teamId = string("teamId");
@@ -267,10 +262,13 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const threadTs = string("threadTs");
       // The empty string is meaningful: it CLEARS the shimmer.
       const status = typeof p.status === "string" ? p.status : undefined;
+      const loadingMessages = Array.isArray(p.loadingMessages)
+        ? p.loadingMessages.filter((m): m is string => typeof m === "string" && m.length > 0)
+        : undefined;
       if (!teamId || !channel || !threadTs || status === undefined) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
-      return client.setThreadStatus({ channel, threadTs, status });
+      return client.setThreadStatus({ channel, threadTs, status, loadingMessages });
     }
     case "start_stream": {
       const teamId = string("teamId");
@@ -295,12 +293,18 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       });
       if (stream.ok && stream.ts) {
         await setSlackNativeStream(runId, stream.ts, mode);
+        // The opening markdown is narration too: count it so the appends'
+        // offset fence and the stop's tail arithmetic start after it.
+        await addSlackStreamedChars(
+          runId,
+          chunks.reduce((n, c) => (c.type === "markdown_text" ? n + c.text.length : n), 0),
+        );
         return stream;
       }
       if (!stream.ok && stream.class === "rate_limited") return stream;
       // ANY other stream outcome (feature off, restricted workspace, invalid,
-      // missing ts) falls back ONCE to the Block Kit card for this run - the
-      // stream ts stays null so every later row rides the card path too.
+      // missing ts) falls back ONCE to a plain message for this run - the
+      // stream ts stays null so every later row updates that message instead.
       const fallback = await client.postMessage({ channel, threadTs, text: fallbackText, blocks: fallbackBlocks });
       if (fallback.ok && fallback.ts) await setSlackFallbackMessageTs(runId, fallback.ts);
       return fallback;
@@ -391,7 +395,7 @@ async function attempt(client: SlackClient, row: ClaimedRow): Promise<DeliveryRe
       const fallbackChunks = Array.isArray(p.fallbackChunks)
         ? p.fallbackChunks.filter((c): c is string => typeof c === "string" && c.length > 0)
         : [];
-      if (!teamId || !channel || !threadTs || !runId || !text || chunks.length === 0 || !blocks) {
+      if (!teamId || !channel || !threadTs || !runId || !text) {
         return { ok: false, class: "permanent", message: "invalid_payload" };
       }
       const response = await findSlackRunResponse(runId);

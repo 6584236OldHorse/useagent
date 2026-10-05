@@ -8,7 +8,7 @@ import { setSlackClientForTest, type DeliveryResult, type SlackClient } from "..
 import { enqueue } from "../src/slack/outbox/repo";
 import { createRun, setRunStatus } from "../src/runs/repo";
 import { createSlackRunResponse, findSlackRunResponse, linkSlackThread } from "../src/slack/repo";
-import { openingStreamChunks } from "../src/slack/streaming";
+import { markdownChunksFor } from "../src/slack/streaming";
 import {
   enqueuePostMessage,
   backfillSlackOutboxOrgScope,
@@ -43,7 +43,7 @@ interface Recorder {
     chunks?: readonly unknown[];
   }>;
   statuses: Array<{ channel: string; threadTs: string; status: "processing" | "active" }>;
-  threadStatuses: Array<{ channel: string; threadTs: string; status: string }>;
+  threadStatuses: Array<{ channel: string; threadTs: string; status: string; loadingMessages?: readonly string[] }>;
 }
 
 /** A recording client whose delivery result is fixed for this test. */
@@ -221,7 +221,7 @@ describe("durable slack outbox", () => {
           channel,
           threadTs,
           runId,
-          chunks: openingStreamChunks("done"),
+          chunks: markdownChunksFor("done"),
           blocks: [],
           text: "result",
           fallbackChunks: ["result"],
@@ -278,7 +278,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -319,7 +319,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -353,7 +353,7 @@ describe("durable slack outbox", () => {
       idempotencyKey: resultKey,
       payload: {
         orgId: ORG, teamId, channel, threadTs, runId,
-        chunks: openingStreamChunks("done"), blocks: [], text: "result",
+        chunks: markdownChunksFor("done"), blocks: [], text: "result",
         fallbackChunks: ["result"], waitForIdempotencyKey: mirrorKey,
       },
     });
@@ -517,7 +517,7 @@ describe("durable slack outbox", () => {
           channel,
           threadTs,
           runId,
-          chunks: openingStreamChunks("done"),
+          chunks: markdownChunksFor("done"),
           blocks: [],
           text: "final answer",
           fallbackChunks: ["final answer"],
@@ -670,7 +670,7 @@ describe("native slack streaming outbox", () => {
         threadTs,
         runId,
         taskDisplayMode: "timeline",
-        chunks: openingStreamChunks("Queued"),
+        chunks: markdownChunksFor("Queued"),
         recipientTeamId: teamId,
         recipientUserId: "U-ASKER",
         fallbackBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Queued" } }],
@@ -685,8 +685,11 @@ describe("native slack streaming outbox", () => {
     expect(rec.streams[0]?.taskDisplayMode).toBe("timeline");
     expect(rec.streams[0]?.recipientTeamId).toBe(teamId);
     expect(rec.streams[0]?.recipientUserId).toBe("U-ASKER");
-    expect(rec.streams[0]?.chunks).toEqual(openingStreamChunks("Queued"));
-    expect((await findSlackRunResponse(runId))?.nativeStreamTs).toBe("stream.1");
+    expect(rec.streams[0]?.chunks).toEqual(markdownChunksFor("Queued"));
+    const response = await findSlackRunResponse(runId);
+    expect(response?.nativeStreamTs).toBe("stream.1");
+    // The opening markdown is narration: the offset fence starts after it.
+    expect(response?.streamedChars).toBe("Queued".length);
   });
 
   test("append_stream targets the stored ts and NORMALIZES pre-migration chunk shapes", async () => {
@@ -776,7 +779,7 @@ describe("native slack streaming outbox", () => {
     ]);
   });
 
-  test("a transient start_stream API error still falls back ONCE to the card", async () => {
+  test("a transient start_stream API error still falls back ONCE to a plain message", async () => {
     const { runId, teamId, channel, threadTs } = await linkedSlackRun();
     const key = uid("stream-transient-start");
     await enqueue({
@@ -789,8 +792,7 @@ describe("native slack streaming outbox", () => {
         threadTs,
         runId,
         taskDisplayMode: "timeline",
-        chunks: openingStreamChunks("Queued"),
-        fallbackBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Queued" } }],
+        chunks: markdownChunksFor("Queued"),
         fallbackText: "Queued",
       },
     });
@@ -800,20 +802,21 @@ describe("native slack streaming outbox", () => {
     const row = await getSlackOutbox(key);
     expect(row?.state).toBe("delivered"); // one attempt, no retry storm
     expect(row?.attemptCount).toBe(0);
-    expect(rec.posted).toHaveLength(1);
+    // The fallback is the opening text as a plain message: no card chrome.
+    expect(rec.posted).toEqual([{ channel, text: "Queued", threadTs }]);
     const response = await findSlackRunResponse(runId);
     expect(response?.nativeStreamTs).toBeNull();
     expect(response?.fallbackMessageTs).toBe("stream.1");
   });
 
-  test("set_thread_status delivers free text and the empty-string clear", async () => {
+  test("set_thread_status delivers the calm phrases and the empty-string clear", async () => {
     const { runId, teamId, channel, threadTs } = await linkedSlackRun();
     const setKey = uid("thread-status-set");
     const clearKey = uid("thread-status-clear");
     await enqueue({
       kind: "set_thread_status",
       idempotencyKey: setKey,
-      payload: { orgId: ORG, teamId, channel, threadTs, runId, status: "is working: cloning repo" },
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] },
     });
     await enqueue({
       kind: "set_thread_status",
@@ -828,7 +831,7 @@ describe("native slack streaming outbox", () => {
     expect(rec.threadStatuses.filter((entry) => (
       entry.channel === channel && entry.threadTs === threadTs
     ))).toEqual([
-      { channel, threadTs, status: "is working: cloning repo" },
+      { channel, threadTs, status: "Working on it", loadingMessages: ["Working on it", "Nearly there"] },
       { channel, threadTs, status: "" },
     ]);
   });
@@ -968,7 +971,7 @@ describe("native slack streaming outbox", () => {
     await enqueue({
       kind: "append_stream",
       idempotencyKey: uid("late-append"),
-      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: openingStreamChunks("late"), fallbackBlocks: [], fallbackText: "late" },
+      payload: { orgId: ORG, teamId, channel, threadTs, runId, chunks: markdownChunksFor("late"), fallbackBlocks: [], fallbackText: "late" },
     });
     await enqueue({
       kind: "set_thread_status",

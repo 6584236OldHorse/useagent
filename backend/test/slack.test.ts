@@ -29,6 +29,7 @@ import { CARD_FLUSH_MS, watchSlackRun } from "../src/slack/watcher";
 import {
   createSlackRunResponse,
   findSlackRunResponse,
+  getSlackCardTsByRoot,
   linkSlackThread,
 } from "../src/slack/repo";
 import {
@@ -41,7 +42,7 @@ import {
   kickSlackOutbox,
 } from "../src/slack/outbox";
 import { buildRunCard } from "../src/slack/card";
-import { markdownChunksFor, openingStreamChunks, taskUpdateChunk } from "../src/slack/streaming";
+import { markdownChunksFor, taskUpdateChunk, WORKING_PHRASES } from "../src/slack/streaming";
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { setSlackClientForTest, type SlackClient } from "../src/slack";
@@ -116,7 +117,7 @@ interface Recorded {
   messages: Array<{ channel: string; text: string; threadTs?: string; blocks?: unknown[] }>;
   updates: Array<{ channel: string; ts: string; text: string; blocks?: unknown[] }>;
   sessionStatuses: Array<{ channel: string; threadTs: string; status: "processing" | "active" }>;
-  threadStatuses: Array<{ channel: string; threadTs: string; status: string }>;
+  threadStatuses: Array<{ channel: string; threadTs: string; status: string; loadingMessages?: readonly string[] }>;
   streams: Array<{
     op: "start" | "append" | "stop";
     channel: string;
@@ -139,7 +140,11 @@ const rec: Recorded = {
   streams: [],
   uploads: [],
 };
-/** When true the mock rejects agents.sessions.setStatus — the non-assistant fallback case. */
+/** users.info answers for the mention resolver, by Slack user id; an unknown
+ *  id answers null, exactly like a member Slack will not name. */
+const profiles = new Map<string, { name: string; email: string | null; image: string | null }>();
+let userInfoCalls = 0;
+/** When true the mock rejects assistant.threads.setStatus — the non-assistant fallback case. */
 let statusFails = false;
 /** When set, chat.update returns this failure (drives the update-fallback path). */
 let updateResult: import("../src/slack/client").DeliveryResult = { ok: true };
@@ -152,10 +157,10 @@ let stopStreamResult: import("../src/slack/client").DeliveryResult = { ok: true 
 /** Synthetic message ts source — the card post returns one so updates can target it. */
 let tsSeq = 1000;
 
-/** The FINAL answer text delivered to a thread: the last card update (in place)
- *  when the card path drove it, else the last posted message. One helper so an
- *  assertion is agnostic to whether the answer updated the card or fell back to a
- *  fresh post. */
+/** The FINAL answer text delivered to a thread: the closed native stream's
+ *  body, else the plain fallback message updated in place, else the last plain
+ *  message posted. Card revisions (blocks) are never the answer. One helper so
+ *  an assertion is agnostic to which path delivered it. */
 function finalAnswerFor(channel: string, threadTs: string): string | null {
   const stopped = [...rec.streams].reverse().find((s) => s.op === "stop" && s.channel === channel && s.threadTs === threadTs);
   if (stopped?.chunks) {
@@ -168,9 +173,9 @@ function finalAnswerFor(channel: string, threadTs: string): string | null {
       .join("\n");
     if (text) return text;
   }
-  const update = [...rec.updates].reverse().find((u) => u.channel === channel);
+  const update = [...rec.updates].reverse().find((u) => u.channel === channel && !u.blocks?.length);
   if (update) return update.text;
-  const msg = [...rec.messages].reverse().find((m) => m.channel === channel && m.threadTs === threadTs);
+  const msg = [...rec.messages].reverse().find((m) => m.channel === channel && m.threadTs === threadTs && !m.blocks?.length);
   return msg?.text ?? null;
 }
 
@@ -196,21 +201,26 @@ beforeAll(async () => {
     },
     postMessage: async (m) => {
       rec.messages.push(m);
-      // A card post (carries blocks) returns a ts so later chat.update targets it.
-      return m.blocks ? { ok: true, ts: `${tsSeq++}.1` } : { ok: true };
+      // Every post returns a ts, as Slack does: the card and the plain
+      // fallback message are both updated in place later.
+      return { ok: true, ts: `${tsSeq++}.1` };
     },
     updateMessage: async (u) => {
       if (updateResult.ok) rec.updates.push(u);
       return updateResult;
     },
     setSessionStatus: async (s) => {
-      if (statusFails) return { ok: false, class: "permanent", message: "invalid_thread" };
       rec.sessionStatuses.push(s);
       return { ok: true };
     },
     setThreadStatus: async (s) => {
+      if (statusFails) return { ok: false, class: "permanent", message: "invalid_thread" };
       rec.threadStatuses.push(s);
       return { ok: true };
+    },
+    userInfo: async ({ user }) => {
+      userInfoCalls += 1;
+      return profiles.get(user) ?? null;
     },
     startStream: async (s) => {
       if (startStreamResult) return startStreamResult;
@@ -297,9 +307,10 @@ async function deleteSlackDeliveryRows(runId: string, teamId = TEAM): Promise<vo
   await db.execute(sql`
     delete from ${slackOutbox}
     where idempotency_key in (
-      ${`slack-status:start:${teamId}:${runId}`},
+      ${`slack-thread-status:start:${teamId}:${runId}`},
       ${`slack-stream:start:${teamId}:${runId}`},
-      ${`slack-status:final:${teamId}:${runId}`},
+      ${`slack-thread-status:final:${teamId}:${runId}`},
+      ${`slack-card:final:${teamId}:${runId}`},
       ${`slack-reply:${teamId}:${runId}`}
     )
   `);
@@ -576,23 +587,31 @@ describe("slack event → run", () => {
       rec.reactions.some((r) => r.channel === channel && r.timestamp === ts && r.name === "eyes") || null,
     );
 
-    // A Slack-native stream opens in the thread; on settle it is stopped with
-    // final chunks and Block Kit blocks.
-    await waitFor(async () =>
-      rec.streams.find((s) => s.op === "start" && s.channel === channel && s.threadTs === ts) ?? null,
+    // The thread's ONE card lands first: a task_card spinning on the short
+    // title, with the session button; no phase label, no Model row, no answer.
+    const card = await waitFor(async () =>
+      rec.messages.find((m) => m.channel === channel && m.threadTs === ts && m.blocks) ?? null,
     );
+    const posted = card.blocks as any[];
+    expect(posted.map((b) => b.type)).toEqual(["task_card", "actions"]);
+    expect(posted[0]).toMatchObject({ task_id: "thread", title: `build ${marker}`, status: "in_progress" });
+    expect(posted[1].elements[0].url).toContain(`/session/${run.thread_id}`);
+    expect(JSON.stringify(posted)).not.toContain("Model:");
+    // The answer is its own message under the card (streamed, or posted whole
+    // when nothing streamed), never repeated inside the card.
     const answer = await waitFor(async () => finalAnswerFor(channel, ts));
     expect(answer!.length).toBeGreaterThan(0);
-    // The native stream body closes with the reply text (the summary for a
-    // completed run, the failure line for a failed one).
     const done = await json<any>(`/api/runs/${run.id}`);
     expect(answer).toContain(done.body.summary);
-    const stopped = rec.streams.find((s) => s.op === "stop" && s.channel === channel && s.threadTs === ts);
-    // The root task card settles alongside (complete or error, never spinning).
-    const runTask = (stopped?.chunks as any[]).find((c) => c.type === "task_update" && c.id === "run");
-    expect(["complete", "error"]).toContain(runTask.status);
-    const actions = (stopped?.blocks as any[]).find((b) => b.type === "actions");
-    expect(actions.elements[0].url).toContain(`/session/${run.thread_id}`);
+    // The card settles in place: a tick or an error glyph, the verb cleared.
+    const settled = await waitFor(async () => {
+      const cardTs = (await getSlackCardTsByRoot(run.id))?.cardTs;
+      return [...rec.updates].reverse().find((u) => u.channel === channel && u.ts === cardTs) ?? null;
+    });
+    const task = (settled.blocks as any[])[0];
+    expect(["complete", "error"]).toContain(task.status);
+    expect(task.output).toBeUndefined();
+    expect(JSON.stringify(settled.blocks)).not.toContain(done.body.summary);
   });
 
   test("a model directive picks the model for a new thread and strips from the prompt", async () => {
@@ -694,10 +713,11 @@ describe("slack event → run", () => {
     const summary = Array.from({ length: 50 }, (_, i) => `finding ${i}: ${"detail ".repeat(30)}`).join("\n\n");
     await finalizeRun(runId, "completed", summary, 1);
 
+    // The thread card is its own message; the chunks are the plain ones.
     await waitFor(async () =>
-      rec.messages.filter((m) => m.channel === channel).length >= 3 ? true : null,
+      rec.messages.filter((m) => m.channel === channel && !m.blocks).length >= 3 ? true : null,
     );
-    const mine = rec.messages.filter((m) => m.channel === channel);
+    const mine = rec.messages.filter((m) => m.channel === channel && !m.blocks);
     expect(mine.length).toBeGreaterThanOrEqual(3);
     for (const m of mine) {
       expect(m.threadTs).toBe(ts); // every chunk stays in the thread
@@ -780,6 +800,17 @@ describe("slack event → run", () => {
     // The whole thread reads back oldest→newest from the run API.
     const thread = await json<{ thread: any[] }>(`/api/runs/${root.id}?thread=1`);
     expect(thread.body.thread.map((r) => r.id)).toEqual([root.id, reply.id]);
+
+    // One card for the whole thread: the reply posts none and its answer is
+    // its own message; the root's card settles again with the reply's outcome.
+    const settled = await waitFor(async () => {
+      const cardTs = (await getSlackCardTsByRoot(root.id))?.cardTs;
+      const revisions = rec.updates.filter((u) => u.channel === channel && u.ts === cardTs);
+      const last = revisions.at(-1);
+      return last && revisions.length >= 2 && (last.blocks as any[])[0].status !== "in_progress" ? revisions : null;
+    }, { timeoutMs: 14_000 });
+    expect(rec.messages.filter((m) => m.channel === channel && m.threadTs === rootTs && m.blocks)).toHaveLength(1);
+    expect(settled.every((u) => (u.blocks as any[])[0].title === `root ${marker}`)).toBe(true);
   });
 
   test("a web reply mirrors its author into the linked Slack thread once without arming mentions", async () => {
@@ -876,10 +907,10 @@ describe("slack event → run", () => {
 
     await finalizeRun(runId, "completed", "healed result", 1);
     await waitFor(async () =>
-      rec.messages.filter((message) => message.channel === channel).length >= 2 ? true : null,
+      rec.messages.filter((message) => message.channel === channel && !message.blocks).length >= 2 ? true : null,
     );
     const delivered = rec.messages
-      .filter((message) => message.channel === channel)
+      .filter((message) => message.channel === channel && !message.blocks)
       .map((message) => message.text);
     expect(delivered[0]).toContain(" in useAgent:");
     expect(delivered[0]).toContain(prompt);
@@ -979,6 +1010,57 @@ describe("slack event → run", () => {
     expect(run.parent_run_id).toBeNull();
   });
 
+  test("people mentioned in a message reach the run by name, never by id", async () => {
+    const marker = uid("mention");
+    const channel = `C${uid("ch")}`;
+    const ts = `${uid("ts")}.1`;
+    profiles.set("U-PRIYA", { name: "Priya Nair", email: null, image: null });
+    await postSlack(
+      eventCallback({
+        type: "app_mention",
+        channel,
+        user: "U-HUMAN",
+        text: `<@${BOT}> ask <@U-PRIYA> <@U-NOBODY> <@U-DANA|dana> <#C0GEN|general> <!here> about ${marker}`,
+        ts,
+      }),
+    );
+    // Named where Slack names them, labelled where the message did, dropped
+    // where neither can: the model and the web bubble never see a raw id.
+    const run = await waitFor(async () => findRunByPrompt(`ask @Priya Nair @dana #general @here about ${marker}`));
+    expect(run.id).toBeTruthy();
+    // The card title is derived from the same clean prompt.
+    const card = await waitFor(async () =>
+      rec.messages.find((m) => m.channel === channel && m.threadTs === ts && m.blocks) ?? null,
+    );
+    const title = (card.blocks as any[])[0].title as string;
+    expect(title.startsWith("ask @Priya Nair @dana #general @here")).toBe(true);
+    expect(title).not.toContain("<@");
+  });
+
+  test("mention lookups are bounded per message and cached across messages", async () => {
+    const marker = uid("mentioncap");
+    const channel = `C${uid("ch")}`;
+    profiles.set("U-CACHED", { name: "Cached Person", email: null, image: null });
+    const crowd = Array.from({ length: 10 }, (_, i) => `<@U-CROWD${i}-${marker}>`).join(" ");
+    const before = userInfoCalls;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> ${crowd} count ${marker}`, ts: `${uid("ts")}.1` }),
+    );
+    await waitFor(async () => findRunByPrompt(`count ${marker}`));
+    expect(userInfoCalls - before).toBe(8); // ten strangers, eight lookups, none named
+
+    const cached = userInfoCalls;
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> <@U-CACHED> again ${marker}`, ts: `${uid("ts")}.1` }),
+    );
+    await waitFor(async () => findRunByPrompt(`@Cached Person again ${marker}`));
+    await postSlack(
+      eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> <@U-CACHED> third ${marker}`, ts: `${uid("ts")}.1` }),
+    );
+    await waitFor(async () => findRunByPrompt(`@Cached Person third ${marker}`));
+    expect(userInfoCalls - cached).toBe(1); // one lookup serves every later mention
+  });
+
   test("duplicate delivery (same channel:ts) creates only one run", async () => {
     const marker = uid("dup");
     const channel = `C${uid("ch")}`;
@@ -1035,7 +1117,7 @@ describe("slack event → run", () => {
     expect(await findRunByPrompt(`echo ${marker}`)).toBeNull();
   });
 
-  test("assistant status: shimmer set on start, cleared before the summary posts", async () => {
+  test("the working shimmer is the one status family: calm phrases at accept, cleared at settle", async () => {
     const marker = uid("status");
     const channel = `D${uid("dm")}`;
     const ts = `${uid("ts")}.1`;
@@ -1043,18 +1125,15 @@ describe("slack event → run", () => {
       eventCallback({ type: "message", channel, channel_type: "im", user: "U-HUMAN", text: `go ${marker}`, ts }),
     );
     const run = await waitFor(async () => findRunByPrompt(`go ${marker}`));
-
-    // The official Agents session status clears back to "active" when the run settles.
     await waitFor(
-      async () =>
-        rec.sessionStatuses.some((s) => s.channel === channel && s.threadTs === ts && s.status === "active") || null,
+      async () => rec.threadStatuses.some((s) => s.channel === channel && s.threadTs === ts && s.status === "") || null,
       { timeoutMs: 14_000 },
     );
-
-    const mine = rec.sessionStatuses.filter((s) => s.channel === channel && s.threadTs === ts);
-    expect(mine.length).toBeGreaterThanOrEqual(2);
-    expect(mine[0]?.status).toBe("processing");
-    expect(mine[mine.length - 1]?.status).toBe("active");
+    const mine = rec.threadStatuses.filter((s) => s.channel === channel && s.threadTs === ts);
+    expect(mine[0]).toEqual({ channel, threadTs: ts, status: "Working on it", loadingMessages: [...WORKING_PHRASES] });
+    expect(mine[mine.length - 1]?.status).toBe("");
+    // Slack maps that status onto the session itself; the enum family is never mixed in.
+    expect(rec.sessionStatuses.some((s) => s.channel === channel)).toBe(false);
     expect(run.id).toBeTruthy();
   });
 
@@ -1072,20 +1151,25 @@ describe("slack event → run", () => {
       { timeoutMs: 14_000 },
     );
     const mine = rec.threadStatuses.filter((s) => s.channel === channel && s.threadTs === ts);
-    expect(mine[0]?.status).toBe("is thinking...");
+    expect(mine[0]?.status).toBe("Working on it");
     expect(mine[mine.length - 1]?.status).toBe("");
   });
 
-  test("a channel thread never gets the DM-only free-text status", async () => {
-    const marker = uid("noshimmer");
+  test("a channel thread gets the free-text shimmer too: set at accept, cleared at settle", async () => {
+    const marker = uid("chshimmer");
     const channel = `C${uid("ch")}`;
     const ts = `${uid("ts")}.1`;
     await postSlack(
       eventCallback({ type: "app_mention", channel, user: "U-HUMAN", text: `<@${BOT}> run ${marker}`, ts }),
     );
     await waitFor(async () => findRunByPrompt(`run ${marker}`));
-    await waitFor(async () => finalAnswerFor(channel, ts), { timeoutMs: 14_000 });
-    expect(rec.threadStatuses.some((s) => s.channel === channel)).toBe(false);
+    await waitFor(
+      async () => rec.threadStatuses.some((s) => s.channel === channel && s.status === "") || null,
+      { timeoutMs: 14_000 },
+    );
+    const mine = rec.threadStatuses.filter((s) => s.channel === channel && s.threadTs === ts);
+    expect(mine[0]?.status).toBe("Working on it");
+    expect(mine[mine.length - 1]?.status).toBe("");
   });
 
   test("assistant status failing (non-assistant context) never blocks the summary post", async () => {
@@ -1121,110 +1205,99 @@ describe("slack native stream and Block Kit fallback", () => {
     return { runId, channel, ts };
   }
 
-  test("post_card posts blocks + a url button and stores the returned message ts", async () => {
-    const { runId, channel, ts } = await rootThread("card post");
-    const card = buildRunCard({
-      title: "card post",
-      phase: "queued",
-      model: "claude-opus-5",
-      repoSpecs: [{ repo: "loop/backend", branch: "main" }],
-      webUrl: `https://app.example.com/session/${runId}`,
-    });
+  /** The thread card posted for a rooted thread, its ts resolved once stored. */
+  async function postThreadCard(t: { runId: string; channel: string; ts: string }, title: string): Promise<string> {
+    const card = buildRunCard({ title, status: "in_progress", model: "claude-opus-5", repoSpecs: [], webUrl: `https://app.example.com/session/${t.runId}` });
     await enqueuePostCard({
-      idempotencyKey: `slack-card:${TEAM}:${runId}`,
+      idempotencyKey: `slack-card:${TEAM}:${t.runId}`,
       orgId: DEV_ORG_ID,
       teamId: TEAM,
-      channel,
-      threadTs: ts,
-      runId,
+      channel: t.channel,
+      threadTs: t.ts,
+      rootRunId: t.runId,
       blocks: card.blocks,
       text: card.text,
     });
+    return (await waitFor(async () => {
+      const thread = await getSlackCardTsByRoot(t.runId);
+      return thread?.cardTs ? thread : null;
+    })).cardTs!;
+  }
+  /** The task_card of every revision of a thread's card, oldest first. */
+  const cardRevisions = (channel: string, cardTs: string) =>
+    rec.updates.filter((u) => u.channel === channel && u.ts === cardTs).map((u) => (u.blocks as any[])[0]);
+  const verbOf = (task: any): string | undefined => task?.output?.elements?.[0]?.elements?.[0]?.text;
 
-    const posted = await waitFor(async () =>
-      rec.messages.find((m) => m.channel === channel && m.blocks) ?? null,
-    );
-    const actions = (posted.blocks as any[]).find((b) => b.type === "actions");
-    expect(actions.elements[0].url).toBe(`https://app.example.com/session/${runId}`);
-    // The returned ts is persisted on the thread for later chat.update.
-    const link = await waitFor(async () => {
-      const l = await findSlackRunResponse(runId);
-      return l?.fallbackMessageTs ? l : null;
-    });
-    expect(link.fallbackMessageTs).toBeTruthy();
+  test("post_card posts the thread card once and stores its ts on the thread", async () => {
+    const t = await rootThread("card post");
+    const cardTs = await postThreadCard(t, "card post");
+    const posted = rec.messages.find((m) => m.channel === t.channel && m.blocks)!;
+    expect((posted.blocks as any[]).map((b) => b.type)).toEqual(["task_card", "actions"]);
+    expect((posted.blocks as any[])[1].elements[0].url).toBe(`https://app.example.com/session/${t.runId}`);
+    expect(cardTs).toBeTruthy();
+    // A later post under another key (a heal, a follow-up turn) finds the card and posts nothing.
+    const card = buildRunCard({ title: "card post", status: "in_progress", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
+    await enqueuePostCard({ idempotencyKey: `slack-card:${TEAM}:${t.runId}:again`, orgId: DEV_ORG_ID, teamId: TEAM, channel: t.channel, threadTs: t.ts, rootRunId: t.runId, blocks: card.blocks, text: card.text });
+    await waitFor(async () => ((await getSlackOutbox(`slack-card:${TEAM}:${t.runId}:again`))?.state === "delivered" ? true : null));
+    expect(rec.messages.filter((m) => m.channel === t.channel && m.blocks)).toHaveLength(1);
+    expect((await getSlackCardTsByRoot(t.runId))?.cardTs).toBe(cardTs);
   });
 
-  test("finalize updates the fallback card when only a fallback message ts exists", async () => {
-    const { runId, channel, ts } = await rootThread("stream stop");
-    const queued = buildRunCard({ title: "stream stop", phase: "queued", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
-    await enqueuePostCard({ idempotencyKey: `slack-card:${TEAM}:${runId}`, orgId: DEV_ORG_ID, teamId: TEAM, channel, threadTs: ts, runId, blocks: queued.blocks, text: queued.text });
-    const cardTs = (await waitFor(async () => {
-      const l = await findSlackRunResponse(runId);
-      return l?.fallbackMessageTs ? l : null;
-    })).fallbackMessageTs!;
-    expect(cardTs).toBeTruthy();
-
-    const beforeMessages = rec.messages.length;
-    await finalizeRun(runId, "completed", "the answer", 1);
-    const update = await waitFor(async () =>
-      rec.updates.find((u) => u.channel === channel && u.ts === cardTs) ?? null,
-    );
-    expect(update.channel).toBe(channel);
-    expect(finalAnswerFor(channel, ts)).toBe(composeSlackReplyText("completed", "the answer"));
+  test("finalize settles the thread card in place and posts the answer as its own message", async () => {
+    const t = await rootThread("stream stop");
+    const cardTs = await postThreadCard(t, "stream stop");
+    await finalizeRun(t.runId, "completed", "the answer", 1);
+    const update = await waitFor(async () => rec.updates.find((u) => u.channel === t.channel && u.ts === cardTs) ?? null);
+    const task = (update.blocks as any[])[0];
+    expect(task).toMatchObject({ type: "task_card", task_id: "thread", title: "stream stop", status: "complete" });
+    expect(task.output).toBeUndefined();
+    expect(update.text).toBe("stream stop");
+    expect(finalAnswerFor(t.channel, t.ts)).toBe(composeSlackReplyText("completed", "the answer"));
     // Re-finalizing never double-posts (idempotent by slack-reply:<runId>).
     const before = rec.streams.length + rec.updates.length + rec.messages.length;
-    await finalizeRun(runId, "completed", "the answer", 1);
+    await finalizeRun(t.runId, "completed", "the answer", 1);
     await new Promise((r) => setTimeout(r, 150));
     expect(rec.streams.length + rec.updates.length + rec.messages.length).toBe(before);
-    expect(rec.messages.length).toBe(beforeMessages);
   });
 
-  test("update_card falls back to a plain post when there is NO card ts (answer never lost)", async () => {
-    const { runId, channel, ts } = await rootThread("no card");
-    // No post_card enqueued → card_ts is null. Finalize must still deliver the
-    // answer as a plain message.
-    await finalizeRun(runId, "completed", "fallback answer", 1);
+  test("a thread without a card gets one from the settling revision, and the answer never waits on it", async () => {
+    const t = await rootThread("no card");
+    await finalizeRun(t.runId, "completed", "fallback answer", 1);
     const msg = await waitFor(async () =>
-      rec.messages.find((m) => m.channel === channel && m.threadTs === ts && !m.blocks && m.text.includes("fallback answer")) ?? null,
+      rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && !m.blocks && m.text.includes("fallback answer")) ?? null,
     );
     expect(msg.text).toContain("fallback answer");
-    // Nothing was updated (no card to update).
-    expect(rec.updates.some((u) => u.channel === channel)).toBe(false);
+    const card = await waitFor(async () => rec.messages.find((m) => m.channel === t.channel && m.threadTs === t.ts && m.blocks) ?? null);
+    expect((card.blocks as any[])[0]).toMatchObject({ type: "task_card", title: "no card", status: "complete" });
+    expect((await getSlackCardTsByRoot(t.runId))?.cardTs).toBeTruthy();
   });
 
-  test("permanent stream and card update failures fall back to a fresh reply", async () => {
-    const { runId, channel, ts } = await rootThread("stream update fails");
-    const queued = buildRunCard({ title: "stream update fails", phase: "queued", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
-    await enqueuePostCard({ idempotencyKey: `slack-card:${TEAM}:${runId}`, orgId: DEV_ORG_ID, teamId: TEAM, channel, threadTs: ts, runId, blocks: queued.blocks, text: queued.text });
-    await waitFor(async () => {
-      const l = await findSlackRunResponse(runId);
-      return l?.fallbackMessageTs ? true : null;
-    });
-
+  test("permanent stream and card update failures fall back to a fresh reply and a fresh card", async () => {
+    const t = await rootThread("stream update fails");
+    const firstTs = await postThreadCard(t, "stream update fails");
     stopStreamResult = { ok: false, class: "permanent", message: "stream_not_found" };
     updateResult = { ok: false, class: "permanent", message: "message_not_found" };
     try {
-      await finalizeRun(runId, "completed", "recovered answer", 1);
-      // The permanent stream/card failures must not strand the answer: it posts fresh.
+      await finalizeRun(t.runId, "completed", "recovered answer", 1);
+      // The permanent failures must not strand the answer: it posts fresh.
       const msg = await waitFor(async () =>
-        rec.messages.find((m) => m.channel === channel && !m.blocks && m.text.includes("recovered answer")) ?? null,
+        rec.messages.find((m) => m.channel === t.channel && !m.blocks && m.text.includes("recovered answer")) ?? null,
       );
-      expect(msg.threadTs).toBe(ts);
+      expect(msg.threadTs).toBe(t.ts);
+      // The card the update could not reach is posted again and re-bound to the thread.
+      const rebound = await waitFor(async () => {
+        const thread = await getSlackCardTsByRoot(t.runId);
+        return thread?.cardTs && thread.cardTs !== firstTs ? thread : null;
+      });
+      expect(rebound.cardTs).toBeTruthy();
     } finally {
       stopStreamResult = { ok: true };
       updateResult = { ok: true };
     }
   });
 
-  test("progress fallback card carries a 'working: <step>' line", () => {
-    const running = buildRunCard({ title: "progress", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1", workingStep: "cloning repo" });
-    const contexts = (running.blocks as any[]).filter((b) => b.type === "context");
-    expect(contexts.some((c) => c.elements[0].text.includes("working: cloning repo"))).toBe(true);
-  });
-
-  /** Enqueue the run's native stream start (timeline mode, wire-shape chunks). */
-  async function startNativeStream(t: { runId: string; channel: string; ts: string }, title: string): Promise<void> {
-    const card = buildRunCard({ title, phase: "queued", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
+  /** Enqueue the run's native stream start on its opening markdown. */
+  async function startNativeStream(t: { runId: string; channel: string; ts: string }, text: string): Promise<void> {
     await enqueueStartStream({
       idempotencyKey: `slack-stream:start:${TEAM}:${t.runId}`,
       orgId: DEV_ORG_ID,
@@ -1233,15 +1306,14 @@ describe("slack native stream and Block Kit fallback", () => {
       threadTs: t.ts,
       runId: t.runId,
       taskDisplayMode: "timeline",
-      chunks: openingStreamChunks(title),
+      chunks: markdownChunksFor(text),
       recipientTeamId: TEAM,
       recipientUserId: "U-HUMAN",
-      fallbackBlocks: card.blocks,
-      fallbackText: card.text,
+      fallbackText: text,
     });
   }
 
-  test("start_stream sends timeline mode, recipient identity, and FLAT task chunks", async () => {
+  test("start_stream sends timeline mode, recipient identity, and the opening markdown", async () => {
     const t = await rootThread("wire shapes");
     await startNativeStream(t, "wire shapes");
     const started = await waitFor(async () =>
@@ -1250,24 +1322,20 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(started.mode).toBe("timeline");
     expect(started.recipientTeamId).toBe(TEAM);
     expect(started.recipientUserId).toBe("U-HUMAN");
-    expect(started.chunks?.[0]).toEqual({
-      type: "task_update",
-      id: "run",
-      title: "wire shapes",
-      status: "in_progress",
-    });
+    expect(started.chunks).toEqual([{ type: "markdown_text", text: "wire shapes" }]);
   });
 
-  test("a start_stream API error falls back ONCE to the Block Kit card (no retry storm)", async () => {
+  test("a start_stream API error falls back ONCE to a plain message (no retry storm)", async () => {
     const t = await rootThread("stream unavailable");
     startStreamResult = { ok: false, class: "transient", message: "feature_not_enabled" };
     try {
       await startNativeStream(t, "stream unavailable");
-      // The SAME delivery attempt posts the card fallback and settles the row.
+      // The SAME delivery attempt posts the plain fallback and settles the row.
       const posted = await waitFor(async () =>
-        rec.messages.find((m) => m.channel === t.channel && m.blocks) ?? null,
+        rec.messages.find((m) => m.channel === t.channel && m.text === "stream unavailable") ?? null,
       );
       expect(posted.threadTs).toBe(t.ts);
+      expect(posted.blocks).toBeUndefined();
       const row = await waitFor(async () => {
         const candidate = await getSlackOutbox(`slack-stream:start:${TEAM}:${t.runId}`);
         return candidate?.state === "delivered" ? candidate : null;
@@ -1282,12 +1350,12 @@ describe("slack native stream and Block Kit fallback", () => {
     }
   });
 
-  test("narration appends fence on their offset and the stop appends ONLY the tail", async () => {
+  test("narration appends fence on their offset and the stop appends ONLY the tail, with nothing under it", async () => {
     const t = await rootThread("narration tail");
-    await startNativeStream(t, "narration tail");
-    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
+    await startNativeStream(t, "Hello ");
+    // The opening markdown counts: the fence starts at its length.
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.streamedChars === 6 ? true : null));
 
-    const card = buildRunCard({ title: "narration tail", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
     const append = (seq: number, text: string, offset: number) =>
       enqueueAppendStream({
         idempotencyKey: `slack-stream:text:${TEAM}:${t.runId}:${seq}`,
@@ -1298,13 +1366,12 @@ describe("slack native stream and Block Kit fallback", () => {
         runId: t.runId,
         chunks: markdownChunksFor(text),
         narrationOffset: offset,
-        fallbackBlocks: card.blocks,
-        fallbackText: card.text,
+        fallbackText: text,
       });
-    // OUT OF ORDER on purpose: the second segment lands first and must wait on
-    // the offset fence until the first is accepted.
-    await append(2, "world", 6);
-    await append(1, "Hello ", 0);
+    // OUT OF ORDER on purpose: the later segment lands first and must wait on
+    // the offset fence until the earlier one is accepted.
+    await append(3, "ld", 9);
+    await append(2, "wor", 6);
     await waitFor(async () => {
       kickSlackOutbox(); // the test relay never ticks; drive retry passes
       const response = await findSlackRunResponse(t.runId);
@@ -1312,18 +1379,16 @@ describe("slack native stream and Block Kit fallback", () => {
     });
 
     // The live narration buffer carries the full reply; the stop appends only
-    // the un-streamed tail ("!") plus no closing (the reply was streamed).
+    // the un-streamed tail ("!"): no closing (the reply was streamed), no task
+    // rows, no blocks - the card carries the state.
     turnStream.publish(t.runId, "Hello world!");
     await finalizeRun(t.runId, "completed", "Hello world!", 1);
     const stopped = await waitFor(async () =>
       rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null,
     );
     expect(finalAnswerFor(t.channel, t.ts)).toBe("!");
-    // The native-stop card stays chrome-only: linked title, no answer section.
-    const sections = (stopped.blocks as any[]).filter((b) => b.type === "section");
-    expect(sections).toHaveLength(1);
-    expect(sections[0].text.text).toContain("narration tail");
-    expect(sections[0].text.text).not.toContain("Hello world!");
+    expect(stopped.chunks).toEqual([{ type: "markdown_text", text: "!" }]);
+    expect(stopped.blocks).toBeUndefined();
   });
 
   test("an append API error disables the native stream without stray posts", async () => {
@@ -1334,23 +1399,22 @@ describe("slack native stream and Block Kit fallback", () => {
     appendStreamResult = { ok: false, class: "permanent", message: "message_not_in_streaming_state" };
     const messagesBefore = rec.messages.length;
     try {
-      const card = buildRunCard({ title: "append dies", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
       await enqueueAppendStream({
-        idempotencyKey: `slack-stream:step:${TEAM}:${t.runId}:s1`,
+        idempotencyKey: `slack-stream:text:${TEAM}:${t.runId}:1`,
         orgId: DEV_ORG_ID,
         teamId: TEAM,
         channel: t.channel,
         threadTs: t.ts,
         runId: t.runId,
-        chunks: [taskUpdateChunk({ id: "step_s1", title: "working", status: "in_progress" })],
-        fallbackBlocks: card.blocks,
-        fallbackText: card.text,
+        chunks: markdownChunksFor(" more"),
+        narrationOffset: "append dies".length,
+        fallbackText: "append dies more",
       });
       await waitFor(async () => {
         const response = await findSlackRunResponse(t.runId);
         return response && response.nativeStreamTs === null ? true : null;
       });
-      const row = await getSlackOutbox(`slack-stream:step:${TEAM}:${t.runId}:s1`);
+      const row = await getSlackOutbox(`slack-stream:text:${TEAM}:${t.runId}:1`);
       expect(row?.state).toBe("delivered"); // dropped progress, not a storm
       expect(rec.messages.length).toBe(messagesBefore); // and no stray surfaces
     } finally {
@@ -1358,14 +1422,13 @@ describe("slack native stream and Block Kit fallback", () => {
     }
   });
 
-  /** Attach the live watcher to a streaming thread and return a step emitter
-   *  that persists each step (finalize reads the durable rows) and publishes it
-   *  on the run bus exactly as the worker does. */
+  /** Attach the live watcher to a carded thread and return a step emitter that
+   *  persists each step (finalize reads the durable rows) and publishes it on
+   *  the run bus exactly as the worker does. */
   async function watchedThread(prompt: string) {
     const t = await rootThread(prompt);
-    await startNativeStream(t, prompt);
-    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
-    watchSlackRun({ runId: t.runId, rootRunId: t.runId, orgId: DEV_ORG_ID, teamId: TEAM, channel: t.channel, threadTs: t.ts });
+    const cardTs = await postThreadCard(t, prompt);
+    watchSlackRun({ runId: t.runId, rootRunId: t.runId, orgId: DEV_ORG_ID, teamId: TEAM, channel: t.channel, threadTs: t.ts, slackUserId: "U-HUMAN" });
     let idx = 0;
     const publish = (step: Awaited<ReturnType<typeof insertStep>>) => {
       bus.emit(runChannel(t.runId), { type: "step", step });
@@ -1375,76 +1438,81 @@ describe("slack native stream and Block Kit fallback", () => {
       publish(await insertStep({ runId: t.runId, idx: idx++, ...input }));
     const revise = async (step: Awaited<ReturnType<typeof insertStep>>, code: unknown) =>
       publish((await updateStepCode(step.id, code))!);
-    const cards = () =>
-      rec.streams
-        .filter((s) => s.op === "append" && s.channel === t.channel)
-        .flatMap((s) => (s.chunks ?? []) as Array<Record<string, unknown>>)
-        .filter((c) => c.type === "task_update");
-    return { ...t, emit, revise, cards };
+    const end = () => bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
+    return { ...t, cardTs, emit, revise, end, cards: () => cardRevisions(t.channel, cardTs) };
   }
 
-  test("several tool calls stream one card each, revised in place, with the chatter absent and the answer last", async () => {
+  test("tool calls set the card's verb in place, chatter and plans never do, and the settled card clears it", async () => {
     const t = await watchedThread("quiet steps");
     const search = (query: string, activityKind: string, output?: string) => ({
       source: "t3", activityKind, tool: "web_search", input: { query }, ...(output ? { output } : {}), error: false,
     });
     await t.emit({ kind: "task", label: "Preparing context and runtime…", chip: "boot", code: { phase: "preparing" } });
     await t.emit({ kind: "task", label: "Waiting for provider activity…", chip: "runtime:claude", code: null });
+    await t.emit({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } });
     const first = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("bun test timeout", "tool.started") });
     await t.revise(first, search("bun test timeout", "tool.completed", "Results:\nhttps://bun.sh/docs/cli/test"));
-    const second = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("bun bail flag", "tool.started") });
     await t.emit({ kind: "task", label: "Context window updated", chip: "thread.context.updated", code: { source: "t3", activityKind: "thread.context.updated" } });
-    await t.emit({ kind: "done", label: "Done", chip: null, code: null }); // flushes the pending cards
-    await waitFor(async () => t.cards().some((c) => c.id === `step_${second.id}`) || null);
+    const live = await waitFor(async () => t.cards().find((c) => verbOf(c)) ?? null);
+    expect(live).toMatchObject({ type: "task_card", task_id: "thread", title: "quiet steps", status: "in_progress" });
+    expect(verbOf(live)).toBe("Searched the web");
+    expect(t.cards().some((c) => /Preparing|Waiting|plan|Context/.test(JSON.stringify(c)))).toBe(false);
 
+    t.end();
     await finalizeRun(t.runId, "completed", "Use --timeout.", 1);
-    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
-    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
-
-    // Chatter never became a card: only the two calls, under their stable ids
-    // and the web UI's verb, the first settled in place with its sources.
-    const cards = t.cards();
-    expect(new Set(cards.map((c) => c.id))).toEqual(new Set([`step_${first.id}`, `step_${second.id}`]));
-    expect(cards.every((c) => c.title === "Searched the web")).toBe(true);
-    expect(cards.filter((c) => c.id === `step_${first.id}`).at(-1)).toMatchObject({
-      status: "complete",
-      details: "bun test timeout",
-      sources: [{ type: "url", text: "https://bun.sh/docs/cli/test", url: "https://bun.sh/docs/cli/test" }],
-    });
-    // The stop carries the answer, restates the settled card, closes the call
-    // still open, then the root task.
-    expect(stopped.chunks).toEqual([
-      { type: "markdown_text", text: "Use --timeout." },
-      expect.objectContaining({ id: `step_${first.id}`, status: "complete", sources: [expect.objectContaining({ url: "https://bun.sh/docs/cli/test" })] }),
-      expect.objectContaining({ id: `step_${second.id}`, title: "Searched the web", status: "complete", details: "bun bail flag" }),
-      expect.objectContaining({ id: "run", status: "complete" }),
-    ]);
+    const settled = await waitFor(async () => t.cards().find((c) => c.status === "complete") ?? null);
+    expect(verbOf(settled)).toBeUndefined();
+    // Nothing streamed, so the answer arrives whole as its own plain message.
+    expect(finalAnswerFor(t.channel, t.ts)).toBe("Use --timeout.");
+    expect(rec.streams.some((s) => s.channel === t.channel)).toBe(false);
   });
 
-  test("finalizing right after a completion revision settles the card from its durable row", async () => {
-    const t = await watchedThread("immediate stop");
-    const call = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: { source: "t3", activityKind: "tool.started", tool: "web_search", input: { query: "bun bail" } } });
-    await t.revise(call, { source: "t3", activityKind: "tool.completed", tool: "web_search", input: { query: "bun bail" }, output: "https://bun.sh/docs/cli/test" });
-    // Ten trailing chatter rows must not hide the call from finalization.
-    for (let i = 0; i < 10; i++) {
-      await t.emit({ kind: "task", label: "Context window updated", chip: "thread.context.updated", code: { source: "t3", activityKind: "thread.context.updated" } });
-    }
-    // No wait for the live append: the stop alone must carry the final card.
-    await finalizeRun(t.runId, "completed", "Use --bail.", 1);
+  test("the answer streams as the turn's own message: opened on the first narration, appended at offsets, closed with the tail", async () => {
+    const t = await watchedThread("narrated");
+    turnStream.publish(t.runId, "Hello ");
+    const started = await waitFor(async () =>
+      rec.streams.find((s) => s.op === "start" && s.channel === t.channel) ?? null,
+      { timeoutMs: 8_000 },
+    );
+    expect(started.chunks).toEqual([{ type: "markdown_text", text: "Hello " }]);
+    expect(started.recipientUserId).toBe("U-HUMAN");
+    turnStream.publish(t.runId, "world");
+    const appended = await waitFor(async () =>
+      rec.streams.find((s) => s.op === "append" && s.channel === t.channel) ?? null,
+      { timeoutMs: 8_000 },
+    );
+    expect(appended.chunks).toEqual([{ type: "markdown_text", text: "world" }]);
+    turnStream.publish(t.runId, "!");
+    t.end(); // the watcher detaches before the stop computes the tail
+    await finalizeRun(t.runId, "completed", "Hello world!", 1);
     const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
-    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
-    expect(stopped.chunks).toEqual([
-      { type: "markdown_text", text: "Use --bail." },
-      expect.objectContaining({ id: `step_${call.id}`, title: "Searched the web", status: "complete", details: "bun bail", sources: [expect.objectContaining({ url: "https://bun.sh/docs/cli/test" })] }),
-      expect.objectContaining({ id: "run", status: "complete" }),
-    ]);
+    expect(stopped.chunks).toEqual([{ type: "markdown_text", text: "!" }]);
+    expect(stopped.blocks).toBeUndefined();
+    // The card never carried a task row: no card revision named the stream.
+    expect(t.cards().every((c) => c.type === "task_card")).toBe(true);
+  });
+
+  test("card revisions land at most every three seconds, the latest verb winning", async () => {
+    const t = await watchedThread("throttle");
+    await t.emit({ kind: "command", label: "Web search started", chip: "search", code: { source: "t3", activityKind: "tool.started", tool: "web_search", input: { query: "q" } } });
+    // The first verb lands at once.
+    await waitFor(async () => t.cards().length > 0 || null);
+    const call = await t.emit({ kind: "command", label: "bash", chip: null, code: { source: "t3", activityKind: "tool.started", tool: "bash", input: { command: "bun test" } } });
+    for (let i = 1; i <= 20; i++) {
+      bus.emit(runChannel(t.runId), { type: "step", step: { ...call, code_json: JSON.stringify({ source: "t3", activityKind: "tool.updated", tool: "bash", input: { command: "bun test" }, output: `line ${i}` }) } });
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    // The next verb and the burst behind it wait for the window, then land once.
+    expect(t.cards().map(verbOf)).toEqual(["Searched the web"]);
+    const later = await waitFor(async () => (t.cards().length >= 2 ? t.cards() : null), { timeoutMs: 8_000 });
+    expect(later.map(verbOf)).toEqual(["Searched the web", "Ran a command"]);
+    t.end();
   });
 
   test("a retried older card batch keeps the cards it alone revised and drops the ones a newer batch already did", async () => {
     const t = await rootThread("stale retry");
     await startNativeStream(t, "stale retry");
     await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
-    const card = buildRunCard({ title: "stale retry", phase: "running", model: "m", repoSpecs: [], webUrl: "https://x/session/1" });
     const chunk = (id: string, status: "in_progress" | "complete") => taskUpdateChunk({ id, title: "Ran a command", status });
     const batch = (cardSeq: number, chunks: ReturnType<typeof chunk>[]) =>
       enqueueAppendStream({
@@ -1456,8 +1524,7 @@ describe("slack native stream and Block Kit fallback", () => {
         runId: t.runId,
         chunks,
         cardSeq,
-        fallbackBlocks: card.blocks,
-        fallbackText: card.text,
+        fallbackText: "stale retry",
       });
     const appendsWith = (id: string) =>
       rec.streams.filter((s) => s.op === "append" && s.channel === t.channel && (s.chunks as any[]).some((c) => c.id === id));
@@ -1475,60 +1542,6 @@ describe("slack native stream and Block Kit fallback", () => {
     expect(appendsWith("step_a")[0]!.chunks).toEqual([chunk("step_a", "complete")]);
     expect(appendsWith("step_b")).toHaveLength(1);
     expect((await findSlackRunResponse(t.runId))?.cardRevisions).toEqual({ step_a: 1, step_b: 2 });
-  });
-
-  test("finalization survives ten cards with long sources and a long answer", async () => {
-    const t = await watchedThread("big stop");
-    const url = (i: number) => `https://example.com/${i}/${"x".repeat(1800)}`;
-    for (let i = 0; i < 10; i++) {
-      const search = (activityKind: string, output?: string) => ({
-        source: "t3", activityKind, tool: "web_search", input: { query: `q${i}` }, ...(output ? { output } : {}),
-      });
-      const call = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("tool.started") });
-      await t.revise(call, search("tool.completed", [1, 2, 3, 4, 5].map((k) => url(i * 10 + k)).join("\n")));
-    }
-    await finalizeRun(t.runId, "completed", "A".repeat(6_000), 1); // must not throw on payload size
-    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
-    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
-    expect(stopped.chunks!.at(-1)).toMatchObject({ id: "run", status: "complete" });
-    expect(JSON.stringify(stopped.chunks).length).toBeLessThan(20_000);
-  });
-
-  test("ten plan rows and ten native todowrite rows after an open call do not hide it from finalization", async () => {
-    const t = await watchedThread("plan crowd");
-    const call = await t.emit({ kind: "command", label: "bash", chip: null, code: { source: "t3", activityKind: "tool.started", tool: "bash", input: { command: "bun test" } } });
-    for (let i = 0; i < 10; i++) {
-      await t.emit({ kind: "command", label: "Update plan", chip: "plan", code: { source: "t3", activityKind: "turn.plan.updated", tool: "todowrite", input: { todos: [] } } });
-      // A native todowrite call projects as a plain tool row (chip = its
-      // activity kind, tool = todowrite), which only toolTaskChunk drops.
-      await t.emit({ kind: "command", label: "todowrite", chip: "tool.completed", code: { source: "t3", activityKind: "tool.completed", tool: "todowrite", input: { todos: [{ content: `step ${i}`, status: "in_progress" }] }, output: "", error: false } });
-    }
-    await finalizeRun(t.runId, "completed", "Done.", 1);
-    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
-    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
-    expect(stopped.chunks).toEqual([
-      { type: "markdown_text", text: "Done." },
-      expect.objectContaining({ id: `step_${call.id}`, title: "Ran a command", status: "complete" }),
-      expect.objectContaining({ id: "run", status: "complete" }),
-    ]);
-  });
-
-  test("a burst of card revisions coalesces into one append carrying the last revision", async () => {
-    const t = await watchedThread("coalesce");
-    const shell = (activityKind: string, output?: string) => ({
-      source: "t3", activityKind, tool: "bash", input: { command: "bun test" }, ...(output ? { output } : {}),
-    });
-    const call = await t.emit({ kind: "command", label: "bash", chip: null, code: shell("tool.started") });
-    for (let i = 1; i <= 20; i++) {
-      bus.emit(runChannel(t.runId), { type: "step", step: { ...call, code_json: JSON.stringify(shell("tool.updated", `line ${i}`)) } });
-    }
-    await waitFor(async () => t.cards().length > 0 || null);
-    await new Promise((r) => setTimeout(r, CARD_FLUSH_MS * 2));
-    expect(rec.streams.filter((s) => s.op === "append" && s.channel === t.channel)).toHaveLength(1);
-    expect(t.cards()).toEqual([
-      { type: "task_update", id: `step_${call.id}`, title: "Ran a command", status: "in_progress", details: "bun test", output: "line 20" },
-    ]);
-    bus.emit(runChannel(t.runId), { type: "end", status: "completed" }); // detach the watcher
   });
 
   test("set_thread_status delivers once per idempotency key (replay-safe)", async () => {
@@ -2227,7 +2240,7 @@ describe("slack durable inbound dedupe (survives a restart)", () => {
     expect(body.runs.filter((r) => r.prompt === `durable ${marker}`).length).toBe(1);
   });
 
-  test("replay heals a missing response row and non-terminal start stream", async () => {
+  test("replay heals a missing response row and re-arms the shimmer without a second card", async () => {
     const marker = uid("healstart");
     const channel = `C${uid("ch")}`;
     const ts = `${uid("ts")}.1`;
@@ -2244,17 +2257,19 @@ describe("slack durable inbound dedupe (survives a restart)", () => {
 
     await db.update(runs).set({ status: "queued", summary: null }).where(eq(runs.id, run.id));
     await deleteSlackDeliveryRows(run.id);
-    const beforeStarts = rec.streams.filter((s) => s.op === "start" && s.channel === channel && s.threadTs === ts).length;
+    const cardsBefore = rec.messages.filter((m) => m.channel === channel && m.threadTs === ts && m.blocks).length;
+    const shimmersBefore = rec.threadStatuses.filter((s) => s.channel === channel && s.threadTs === ts && s.status !== "").length;
     resetSlackDeduperForTest();
 
     expect((await postSlack(envelope)).status).toBe(200);
 
     await waitFor(async () => {
       const response = await findSlackRunResponse(run.id);
-      const starts = rec.streams.filter((s) => s.op === "start" && s.channel === channel && s.threadTs === ts);
-      return response && starts.length > beforeStarts ? { response, starts } : null;
+      const shimmers = rec.threadStatuses.filter((s) => s.channel === channel && s.threadTs === ts && s.status !== "").length;
+      return response && shimmers > shimmersBefore ? response : null;
     });
-    expect(rec.sessionStatuses.some((s) => s.channel === channel && s.threadTs === ts && s.status === "processing")).toBe(true);
+    // The thread keeps its one card; the eyes were already on the message.
+    expect(rec.messages.filter((m) => m.channel === channel && m.threadTs === ts && m.blocks).length).toBe(cardsBefore);
     expect(rec.reactions.some((r) => r.channel === channel && r.timestamp === ts && r.name === "eyes")).toBe(true);
   });
 
@@ -2285,7 +2300,6 @@ describe("slack durable inbound dedupe (survives a restart)", () => {
       return response && replies.length > beforeMessages ? replies.at(-1) : null;
     });
     expect(healed.text.length).toBeGreaterThan(0);
-    expect(rec.sessionStatuses.some((s) => s.channel === channel && s.threadTs === ts && s.status === "active")).toBe(true);
   });
 
   test("an attachment replay returns before restaging provider files", async () => {
@@ -2529,12 +2543,12 @@ describe("slack socket-mode ingest shares the HTTP handler", () => {
     const run = await waitFor(async () => findRunByPrompt(`socket ${marker}`));
     expect(run.org_id).toBe("org-skynet-dev");
 
-    // watchSlackRun attached downstream: the 👀 ack + native stream land, and the
-    // settled answer stops the stream.
+    // Delivery attached downstream: the 👀 ack + the thread card land, and the
+    // settled answer arrives as its own message.
     await waitFor(async () =>
       rec.reactions.some((r) => r.channel === channel && r.timestamp === ts && r.name === "eyes") || null,
     );
-    await waitFor(async () => rec.streams.find((s) => s.op === "start" && s.channel === channel && s.threadTs === ts) ?? null);
+    await waitFor(async () => rec.messages.find((m) => m.channel === channel && m.threadTs === ts && m.blocks) ?? null);
     const answer = await waitFor(async () => finalAnswerFor(channel, ts));
     expect(answer!.length).toBeGreaterThan(0);
   });
@@ -2790,10 +2804,11 @@ describe("slack workspace identity (fail closed)", () => {
     expect(request.name).toBe("Named Later");
     expect(request.email).toBeNull();
     profile = { name: "Refreshed Name", email, image: null };
-    const before = rec.messages.length;
+    const notices = () => rec.messages.filter((m) => m.channel === "U-HUMAN" && m.text.includes(slackUserId)).length;
+    const before = notices();
     expect(await ask()).toBe("waiting");
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(rec.messages.length).toBe(before); // no second notice to the admins
+    expect(notices()).toBe(before); // no second notice to the admins
     request = (await listed()).body.requests.find((r) => r.id === request.id)!;
     expect(request.email).toBe(email);
     expect(request.name).toBe("Refreshed Name");
