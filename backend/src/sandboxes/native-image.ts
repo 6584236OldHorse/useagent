@@ -297,7 +297,10 @@ export function nativeImageSteps(
 ): NativeImageStep[] {
   const home = layout.home;
   const bunStage = `${home}/.local/share/useagent/bun/.stage-image`;
-  const runtimeStage = `${home}/.local/share/useagent/native-runtime/.stage-image`;
+  const runtimeParent = `${home}/.local/share/useagent/native-runtime`;
+  const runtimeStage = `${runtimeParent}/.stage-image`;
+  // Runtimes an older base image carried are dead weight in every sandbox: only the pinned one stays.
+  const pruneOtherRuntimes = `find ${q(runtimeParent)} -mindepth 1 -maxdepth 1 ! -name ${q(NATIVE_RUNTIME_ARTIFACT.sourceCommit)} -exec rm -rf {} +`;
   const runtimeArchive = `${runtimeStage}/runtime.part-0`;
   const piRoot = layout.runsAsRoot ? PI_RUNTIME_ROOT : `${home}/.useagent/pi-runtime`;
   const piManifest = `${piRoot}/manifest`;
@@ -320,9 +323,10 @@ export function nativeImageSteps(
         { path: runtimeArchive, bytes: inputs.runtimeArchive },
       ],
       command: [
-        `if ${oneLine(buildNativeRuntimeArtifactProbe(layout))}; then rm -rf ${q(runtimeStage)}; exit 0; fi`,
+        `if ${oneLine(buildNativeRuntimeArtifactProbe(layout))}; then rm -rf ${q(runtimeStage)}; ${pruneOtherRuntimes}; exit 0; fi`,
         buildNativeRuntimeInstallCommand(layout, runtimeStage, [runtimeArchive]),
         `rm -rf ${q(runtimeStage)}`,
+        pruneOtherRuntimes,
       ].join("\n"),
       timeoutSeconds: 600,
     },

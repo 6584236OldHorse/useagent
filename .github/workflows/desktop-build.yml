@@ -24,8 +24,8 @@ env:
 jobs:
   provenance:
     name: Verify release provenance
-    # Runner prereleases share the release event; they are not desktop products.
-    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'runner-')
+    # Runner prereleases and native runtime releases share the release event; they are not desktop products.
+    if: github.event_name != 'release' || (!startsWith(github.event.release.tag_name, 'runner-') && !startsWith(github.event.release.tag_name, 'native-runtime-'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
