@@ -1,3 +1,4 @@
+import { hasRunCancelIntent } from "../commands/cancel";
 import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
 import { commands, providerEvents, runs, type EngineId, type MemoryScope, type RunStatus } from "../db/schema";
 import { db } from "../db/client";
@@ -171,6 +172,9 @@ export async function createChildSession(input: {
   const parent = await getRunForOrg(input.orgId, input.parentRunId);
   if (!parent || parent.threadId !== input.threadId) {
     throw new Error("child session parent is not available in this thread");
+  }
+  if (await hasRunCancelIntent(input.orgId, input.parentRunId)) {
+    throw new Error("child session parent was stopped");
   }
   const internalOrigin = isInternalRunOrigin(parent.origin) ? parent.origin : null;
   if (productChild) {

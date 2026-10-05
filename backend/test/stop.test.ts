@@ -4,12 +4,13 @@ import { acceptRunCommand } from "../src/commands";
 import { CANCEL_SUMMARY } from "../src/commands/cancel";
 import { db } from "../src/db/client";
 import { runs } from "../src/db/schema";
+import { acceptProductChildBatch } from "../src/runs/child-thread-batch-service";
 import { stopRun } from "../src/runs/stop";
 import "./helpers"; // side-effect: imports src/index → migrate + seed
 
-// Stop reaches the whole delegation tree below a run's thread and nothing
-// else: children and grandchildren still working are cancelled the durable
-// way, siblings and parents are left alone.
+// Stop reaches everything the stopped turn delegated and nothing else:
+// children and grandchildren still working are cancelled the durable way;
+// siblings, parents and threads an earlier turn delegated are left alone.
 
 const ORG = "org-skynet-dev";
 
@@ -30,6 +31,18 @@ async function enqueue(threadRelationship?: { parentThreadId: string; familyThre
 }
 
 const root = () => enqueue();
+/** A queued follow-up turn behind `after` in the same thread. */
+async function followUp(threadId: string, after: string): Promise<string> {
+  const id = crypto.randomUUID();
+  const out = await acceptRunCommand({
+    idempotencyKey: null,
+    orgId: ORG,
+    actorId: null,
+    run: { id, prompt: "y", model: "claude-opus-5", engine: "mock", parentRunId: after, threadId },
+  });
+  expect(out.status).toBe("created");
+  return id;
+}
 /** A queued run in a new thread the parent thread delegated to. */
 const delegate = (parentThreadId: string, familyThreadId: string) => enqueue({ parentThreadId, familyThreadId });
 
@@ -55,6 +68,39 @@ describe("stop reaches delegated threads", () => {
       expect(await record(id)).toEqual({ status: "failed", summary: CANCEL_SUMMARY });
     }
     expect((await record(sibling)).status).toBe("queued");
+  });
+
+  test("a queued follow-up in a delegated thread is cancelled before that thread is pumped", async () => {
+    const parent = await root();
+    const child = await delegate(parent, parent);
+    const next = await followUp(child, child);
+
+    expect(await stopRun({ orgId: ORG, actorId: null, runId: parent })).toEqual({ status: "cancelling", replay: false, children: 2 });
+    expect((await record(child)).status).toBe("failed");
+    expect(await record(next)).toEqual({ status: "failed", summary: CANCEL_SUMMARY });
+  });
+
+  test("stopping a later turn leaves the threads an earlier turn delegated", async () => {
+    const parent = await root();
+    const child = await delegate(parent, parent);
+    const later = await followUp(parent, parent);
+
+    expect(await stopRun({ orgId: ORG, actorId: null, runId: later })).toEqual({ status: "cancelling", replay: false, children: 0 });
+    expect((await record(child)).status).toBe("queued");
+    expect((await record(parent)).status).toBe("queued");
+  });
+
+  test("a stopped turn cannot delegate afterwards", async () => {
+    const parent = await root();
+    await stopRun({ orgId: ORG, actorId: null, runId: parent });
+    await expect(acceptProductChildBatch({
+      orgId: ORG,
+      actorId: null,
+      parentRunId: parent,
+      parentThreadId: parent,
+      idempotencyKey: "after-stop",
+      children: [{ title: "late child", prompt: "p", engine: null, model: null }],
+    })).rejects.toThrow("stopped");
   });
 
   test("a repeated Stop replays without counting children twice", async () => {

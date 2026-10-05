@@ -1,7 +1,8 @@
-// Stop is a thread-wide act. The run the reader stopped is cancelled the
-// durable way, and so is every run still working in a thread this thread
-// delegated to (children, their children, and so on). Stopping a child never
-// reaches its parent.
+// Stop is a turn-wide act: the run the reader stopped, and every run still
+// working in a thread that turn delegated (and those threads' own delegations,
+// all the way down). Each is cancelled the durable way; the reader's run is
+// what the response reports. Stopping a delegated thread never reaches its
+// parent or its siblings.
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { acceptRunCancel, CANCEL_SUMMARY } from "../commands/cancel";
 import { db } from "../db/client";
@@ -22,67 +23,120 @@ interface StopInput {
   readonly runId: string;
 }
 
-/** Record the cancel, signal a live actor or settle a crash zombie, and pump the thread so the next queued turn dispatches. */
-async function cancelOne(input: StopInput): Promise<StopOutcome & { readonly threadId?: string }> {
-  const outcome = await acceptRunCancel(input);
-  switch (outcome.status) {
-    case "not_found":
-      return outcome;
-    case "terminal":
-      return { status: "settled", runStatus: outcome.runStatus };
-    case "already":
-      signalCancel(input.runId, CANCEL_SUMMARY);
-      await pumpThread(outcome.threadId);
-      return { status: "cancelling", replay: true, children: 0, threadId: outcome.threadId };
-    case "accepted":
-      // A queued run was already failed in the cancel transaction. A running
-      // one is aborted in process; with no live actor it is a crash zombie,
-      // settled now rather than left to recovery.
-      if (outcome.runStatusWas === "running" && !signalCancel(input.runId, CANCEL_SUMMARY)) {
-        const durableStatus = await settleZombieCancel(input.runId);
-        if (durableStatus) {
-          await pumpThread(outcome.threadId);
-          return { status: "settled", runStatus: durableStatus };
-        }
-      }
-      await pumpThread(outcome.threadId);
-      return { status: "cancelling", replay: false, children: 0, threadId: outcome.threadId };
-  }
+interface RunRow {
+  readonly id: string;
+  readonly threadId: string;
+  readonly status: string;
 }
 
-/** Every thread below this one in the delegation tree, nearest first. */
-async function delegatedThreads(orgId: string, threadId: string): Promise<string[]> {
-  const found: string[] = [];
-  let frontier = [threadId];
-  while (frontier.length > 0) {
-    const rows = await db
+type CancelResult =
+  | { readonly kind: "cancelled" | "replay" }
+  | { readonly kind: "settled"; readonly runStatus: string };
+
+const LIVE_STATUSES = ["queued", "running"] as const;
+// ponytail: bounded parameter lists per query; a recursive query if delegation trees ever get that wide
+const QUERY_CHUNK = 500;
+/** Passes over the delegation tree: a child created while the first pass ran is caught by the next. */
+const RESCAN_PASSES = 3;
+
+async function runRow(orgId: string, runId: string): Promise<RunRow | null> {
+  const [row] = await db
+    .select({ id: runs.id, threadId: runs.threadId, status: runs.status })
+    .from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Record the cancel, then abort a live actor or settle a crash zombie. The thread is pumped by the caller once every run it holds is cancelled. */
+async function cancelRun(input: StopInput, run: RunRow): Promise<CancelResult> {
+  const outcome = await acceptRunCancel({ ...input, runId: run.id });
+  if (outcome.status === "not_found") return { kind: "settled", runStatus: run.status };
+  if (outcome.status === "terminal") return { kind: "settled", runStatus: outcome.runStatus };
+  // A queued run was failed inside the cancel transaction. A running one is
+  // aborted in process; with no live actor it is a crash zombie, settled now
+  // rather than left to recovery, on a repeated Stop as well.
+  if (run.status === "running" && !signalCancel(run.id, CANCEL_SUMMARY)) {
+    const durableStatus = await settleZombieCancel(run.id);
+    if (durableStatus) return { kind: "settled", runStatus: durableStatus };
+  }
+  return { kind: outcome.status === "already" ? "replay" : "cancelled" };
+}
+
+function chunks<T>(items: readonly T[]): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < items.length; start += QUERY_CHUNK) out.push(items.slice(start, start + QUERY_CHUNK));
+  return out;
+}
+
+/** The threads this run delegated, then everything below them; a thread's index is its depth. */
+async function delegatedThreads(orgId: string, root: RunRow): Promise<string[]> {
+  const found = new Set<string>();
+  let frontier = (
+    await db
       .select({ threadId: threadRelationships.threadId })
       .from(threadRelationships)
-      .where(and(eq(threadRelationships.orgId, orgId), inArray(threadRelationships.parentThreadId, frontier)));
-    frontier = rows.map((row) => row.threadId).filter((id) => !found.includes(id));
-    found.push(...frontier);
+      .where(and(
+        eq(threadRelationships.orgId, orgId),
+        eq(threadRelationships.parentThreadId, root.threadId),
+        eq(threadRelationships.sourceRunId, root.id),
+      ))
+  ).map((row) => row.threadId);
+  while (frontier.length > 0) {
+    for (const id of frontier) found.add(id);
+    const next: string[] = [];
+    for (const part of chunks(frontier)) {
+      const rows = await db
+        .select({ threadId: threadRelationships.threadId })
+        .from(threadRelationships)
+        .where(and(eq(threadRelationships.orgId, orgId), inArray(threadRelationships.parentThreadId, part)));
+      for (const { threadId } of rows) if (!found.has(threadId) && !next.includes(threadId)) next.push(threadId);
+    }
+    frontier = next;
   }
-  return found;
+  return [...found];
 }
 
-async function liveDelegatedRuns(orgId: string, threadId: string): Promise<readonly string[]> {
-  const threads = await delegatedThreads(orgId, threadId);
-  if (threads.length === 0) return [];
-  const rows = await db
-    .select({ id: runs.id })
-    .from(runs)
-    .where(and(eq(runs.orgId, orgId), inArray(runs.threadId, threads), inArray(runs.status, ["queued", "running"])))
-    .orderBy(asc(runs.createdAt), asc(runs.id));
-  return rows.map((row) => row.id);
+/** Live runs in the delegated threads, nearest thread first and oldest run first within a thread. */
+async function liveDelegatedRuns(orgId: string, root: RunRow): Promise<RunRow[]> {
+  const threads = await delegatedThreads(orgId, root);
+  const depth = new Map(threads.map((id, index) => [id, index]));
+  const live: RunRow[] = [];
+  for (const part of chunks(threads)) {
+    live.push(...await db
+      .select({ id: runs.id, threadId: runs.threadId, status: runs.status })
+      .from(runs)
+      .where(and(eq(runs.orgId, orgId), inArray(runs.threadId, part), inArray(runs.status, LIVE_STATUSES)))
+      .orderBy(asc(runs.createdAt), asc(runs.id)));
+  }
+  return live.toSorted((a, b) => depth.get(a.threadId)! - depth.get(b.threadId)!);
 }
 
 export async function stopRun(input: StopInput): Promise<StopOutcome> {
-  const { threadId, ...outcome } = await cancelOne(input);
-  if (outcome.status !== "cancelling" || !threadId) return outcome;
+  const root = await runRow(input.orgId, input.runId);
+  if (!root) return { status: "not_found" };
+  const rootResult = await cancelRun(input, root);
+  if (rootResult.kind === "settled") return { status: "settled", runStatus: rootResult.runStatus };
+
+  // Every delegated run is cancelled before any thread is pumped, so a pump
+  // cannot start a queued follow-up that is about to be cancelled. A child
+  // whose cancel failed is logged and left for the next Stop.
+  const touched = new Set([root.threadId]);
+  const handled = new Set<string>();
   let children = 0;
-  for (const runId of await liveDelegatedRuns(input.orgId, threadId)) {
-    const child = await cancelOne({ ...input, runId });
-    if (child.status === "cancelling" && !child.replay) children += 1;
+  for (let pass = 0; pass < RESCAN_PASSES; pass += 1) {
+    const fresh = (await liveDelegatedRuns(input.orgId, root)).filter((run) => !handled.has(run.id));
+    if (fresh.length === 0) break;
+    for (const run of fresh) {
+      handled.add(run.id);
+      touched.add(run.threadId);
+      try {
+        if ((await cancelRun(input, run)).kind === "cancelled") children += 1;
+      } catch (error) {
+        console.warn(`[stop] delegated run ${run.id} was not cancelled with ${input.runId}:`, error);
+      }
+    }
   }
-  return { ...outcome, children };
+  for (const threadId of touched) await pumpThread(threadId);
+  return { status: "cancelling", replay: rootResult.kind === "replay", children };
 }
