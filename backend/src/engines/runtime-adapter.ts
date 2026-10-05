@@ -50,7 +50,8 @@ import { T3_SESSION_GENERATION, t3ProviderDrivers } from "./t3-provider-driver";
 import { runtimeRunSnapshot } from "./runtime-snapshot";
 import { prepareSandboxTurn } from "./sandbox-turn-preparation";
 import { buildExecutionCapabilitySnapshot } from "./execution-capabilities";
-import { reloadRetainedOpenCodeSession } from "./runtime-session-stop";
+import { reloadRetainedSession } from "./runtime-session-stop";
+import { readCodexConfigChange, stampCodexConfig } from "./runtime-codex-config-stamp";
 import {
   recoverStuckCodexSubscriptionStart,
   RuntimeFirstActivityTimeoutError,
@@ -59,8 +60,8 @@ import { applyPendingCodexProviderConfiguration } from "./runtime-codex-plan-con
 import { waitForRuntimeCompact } from "./runtime-compact-completion";
 import { readThreadSnapshot, runtimeTurnWaitDependencies, waitForRuntimeTurn } from "./runtime-turn-wait";
 export {
-  reloadRetainedOpenCodeSession,
-  type OpenCodeSessionReloadDependencies,
+  reloadRetainedSession,
+  type SessionReloadDependencies,
 } from "./runtime-session-stop";
 export {
   createRuntimeTerminalSessionCleanup,
@@ -313,16 +314,27 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // A read-only turn never resumes a thread that may hold a session grant.
         await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });
         if (engine === "opencode") {
-          const limitsApplied = await reloadRetainedOpenCodeSession({
+          const limitsApplied = await reloadRetainedSession({
             sandbox,
             signal: ctx.signal,
             threadId,
             threadExists,
-            modelLimitsChanged: providerBridgeLease.modelLimitsChanged,
-            modelLimitsRevision: providerBridgeLease.modelLimitsRevision,
+            change: "OpenCode model limits",
+            changed: providerBridgeLease.modelLimitsChanged,
+            revision: providerBridgeLease.modelLimitsRevision,
           });
           // A declined stop leaves the refresh owed, so the next turn tries again.
           if (limitsApplied) await providerBridgeLease.ackModelLimitsReload();
+        } else if (engine === "codex" && providerBridgeLease.authPath !== "subscription") {
+          // Hosted Codex reconnects its tools on the relay's kept session; this
+          // sandbox's Codex reads config.toml (the tool gateway's bearer) only at start.
+          const configRevision = await readCodexConfigChange(sandbox, threadId, threadExists);
+          if (configRevision && await reloadRetainedSession({
+            sandbox, signal: ctx.signal, threadId, threadExists,
+            change: "Codex configuration", changed: true, revision: configRevision,
+          })) {
+            await stampCodexConfig(sandbox, threadId, configRevision);
+          }
         }
         const createdAt = new Date().toISOString();
         // The run's own policy; the operator posture only covers runs created without one.

@@ -5,12 +5,12 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxHandle } from "../sandboxes/provider";
 import type { RuntimeEnvironmentRequest } from "./runtime-environment-client";
-import { reloadRetainedOpenCodeSession, type OpenCodeSessionReloadDependencies } from "./runtime-session-stop";
+import { reloadRetainedSession, type SessionReloadDependencies } from "./runtime-session-stop";
 import { RuntimeRpcError, type RuntimeCommand, type V2RunStatus } from "./runtime-v2-wire";
 import { v2Projection, v2ProviderThread, v2Run, v2Session, v2Snapshot } from "./runtime-v2.test-support";
 
 const THREAD = "skynet-thread-thread-1";
-const reloadCommandState = { modelLimitsChanged: true, modelLimitsRevision: "revision-1" } as const;
+const reloadCommandState = { change: "OpenCode model limits", changed: true, revision: "revision-1" } as const;
 
 /** A thread whose OpenCode session is `status` (none when null) after a run in `runStatus`. */
 function thread(status: string | null, runStatus: V2RunStatus = "completed") {
@@ -31,7 +31,7 @@ function harness(states: ReturnType<typeof thread>[], onDetach: (command: Runtim
   const calls: string[] = [];
   const commands: RuntimeCommand[] = [];
   let reads = 0;
-  const dependencies: OpenCodeSessionReloadDependencies = {
+  const dependencies: SessionReloadDependencies = {
     requestEnvironment: async <T>(_sandbox: SandboxHandle, request: RuntimeEnvironmentRequest) => {
       calls.push(`${request.method} ${request.path}`);
       const state = states[Math.min(reads, states.length - 1)];
@@ -49,8 +49,8 @@ function harness(states: ReturnType<typeof thread>[], onDetach: (command: Runtim
   return { calls, commands, dependencies, reads: () => reads };
 }
 
-const reload = (dependencies: OpenCodeSessionReloadDependencies, overrides: Partial<Parameters<typeof reloadRetainedOpenCodeSession>[0]> = {}) =>
-  reloadRetainedOpenCodeSession({
+const reload = (dependencies: SessionReloadDependencies, overrides: Partial<Parameters<typeof reloadRetainedSession>[0]> = {}) =>
+  reloadRetainedSession({
     sandbox: {} as never,
     signal: new AbortController().signal,
     threadId: THREAD,
@@ -62,18 +62,24 @@ const reload = (dependencies: OpenCodeSessionReloadDependencies, overrides: Part
 
 const READ = `GET /api/orchestration/threads/${THREAD}/bounded`;
 
-describe("retained OpenCode session reload", () => {
+describe("retained session reload", () => {
+  test("names what changed in the detach, for Codex as for OpenCode", async () => {
+    const { commands, dependencies } = harness([thread("ready"), thread(null)]);
+    await expect(reload(dependencies, { change: "Codex configuration", revision: "a".repeat(64) })).resolves.toBe(true);
+    expect(commands[0]).toMatchObject({ type: "provider-session.detach", reason: "Codex configuration changed." });
+  });
+
   test("detaches the idle session and waits until it has left the thread", async () => {
     const { calls, commands, dependencies } = harness([thread("ready"), thread(null)]);
     await expect(reload(dependencies)).resolves.toBe(true);
     expect(calls).toEqual([READ, "dispatch provider-session.detach", READ]);
-    expect(commands[0]).toMatchObject({ type: "provider-session.detach", threadId: THREAD, providerSessionId: "ps-1", reason: "Model limits changed." });
+    expect(commands[0]).toMatchObject({ type: "provider-session.detach", threadId: THREAD, providerSessionId: "ps-1", reason: "OpenCode model limits changed." });
   });
 
   test("skips cold and unchanged OpenCode sessions", async () => {
     const { calls, dependencies } = harness([thread("ready")]);
     await reload(dependencies, { threadExists: false });
-    await reload(dependencies, { modelLimitsChanged: false });
+    await reload(dependencies, { changed: false });
     expect(calls).toEqual([]);
   });
 
@@ -142,7 +148,7 @@ describe("retained OpenCode session reload", () => {
       wait: async (signal) => {
         await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
       },
-    }, { deadlineMs: 10 })).rejects.toThrow("Timed out waiting for the retained OpenCode session to stop");
+    }, { deadlineMs: 10 })).rejects.toThrow("Timed out waiting for the retained session to stop after the OpenCode model limits changed");
     expect(stuck.commands).toHaveLength(1);
   });
 });

@@ -145,20 +145,24 @@ describe("T3 run adapter gate", () => {
     expect(source).toContain("snapshot: await readThreadSnapshot(ctx, sandbox),");
     expect(source).not.toContain("established.resumed\n          ? await readThreadSnapshot");
     expect(source).toContain("const steerResult = await driver.steer({");
-    const reloadIdx = source.indexOf("await reloadRetainedOpenCodeSession({");
+    const reloadIdx = source.indexOf("const limitsApplied = await reloadRetainedSession({");
     const ackIdx = source.indexOf("await providerBridgeLease.ackModelLimitsReload();");
     const establishIdx = source.indexOf("await establishProviderSession({");
     const steerIdx = source.indexOf("const steerResult = await driver.steer({");
     expect(reloadIdx).toBeGreaterThan(-1);
     expect(ackIdx).toBeGreaterThan(reloadIdx);
     expect(establishIdx).toBeGreaterThan(ackIdx);
+    // Local Codex detaches a session started on an older config.toml before the turn, like OpenCode.
+    const codexStampIdx = source.indexOf("await stampCodexConfig(sandbox, threadId, configRevision);");
+    expect(codexStampIdx).toBeGreaterThan(ackIdx);
+    expect(establishIdx).toBeGreaterThan(codexStampIdx);
     expect(steerIdx).toBeGreaterThan(establishIdx);
     const reloadModuleSource = readFileSync(
       new URL("./runtime-session-stop.ts", import.meta.url),
       "utf8",
     );
     const reloadFunctionIdx = reloadModuleSource.indexOf(
-      "export async function reloadRetainedOpenCodeSession",
+      "export async function reloadRetainedSession",
     );
     expect(reloadFunctionIdx).toBeGreaterThan(-1);
     const reloadSource = reloadModuleSource.slice(reloadFunctionIdx);
