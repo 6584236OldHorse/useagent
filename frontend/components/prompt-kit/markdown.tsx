@@ -165,6 +165,17 @@ function ArtifactMarkdownChip({
   );
 }
 
+/** Absolute roots a sandbox workspace or its home can live under. */
+const SANDBOX_ROOTS = /^\/(?:root|home|tmp|workspace|mnt|opt|srv|app|var|work)(?:\/|$)/;
+
+export function isSandboxPath(url: string): boolean {
+  if (/^file:/i.test(url)) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false; // any other scheme
+  if (url.startsWith("//") || url.startsWith("#") || url.startsWith("?")) return false;
+  if (url.startsWith("/")) return SANDBOX_ROOTS.test(url);
+  return true; // a bare relative path such as output/report.pdf
+}
+
 const INITIAL_COMPONENTS: Partial<Components> = {
   code: function CodeComponent({ className, children, ...props }) {
     const isInline =
@@ -245,10 +256,13 @@ const INITIAL_COMPONENTS: Partial<Components> = {
           : Array.isArray(children)
             ? children.join("")
             : "Open";
-      // A sandbox path (no scheme, not one of our routes) cannot be opened from
-      // the browser; the file itself is published under Session files, so the
-      // chip names it without pretending to be a link.
-      if (!isArtifact && !/^(?:https?:\/\/|mailto:|blob:|data:)/i.test(url)) {
+      // A sandbox path cannot be opened from the browser; the file itself is
+      // published under Session files, so the chip names it without pretending
+      // to be a link. Only recognised sandbox forms are treated this way: a
+      // file: URL, an absolute POSIX path under a sandbox root, or a bare
+      // relative path. Web URLs, protocol-relative links, our own routes and
+      // anchors stay links.
+      if (!isArtifact && isSandboxPath(url)) {
         return (
           <span
             data-chip

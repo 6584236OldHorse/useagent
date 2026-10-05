@@ -764,7 +764,7 @@ async function runEngine(
     if (!dispatched) throw new Error(`provider registration disappeared: ${engineId}`);
     // Deliverables the agent left in the workspace become artifacts whether or
     // not it called the publish tool: the plane looks at the workspace itself.
-    await harvestTurnOutputs(runId);
+    await harvestTurnOutputs(runId, { signal });
     // Durable cancellation DOMINATES a coincident provider completion (Blocker 2): a
     // user cancel aborts ctx.signal, but some ACP agents (codex) finish the turn and
     // return NORMALLY instead of erroring. `terminalOnReturn` (pure, tested) resolves

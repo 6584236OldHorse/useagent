@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorkspaceOpenProvider } from "@/components/chat/workspace-open-context";
-import { artifactPayloadSupportsWorkspace, artifactWorkspaceTarget, Markdown } from "./markdown";
+import {
+  artifactPayloadSupportsWorkspace,
+  artifactWorkspaceTarget,
+  isSandboxPath,
+  Markdown,
+} from "./markdown";
 
 describe("Markdown links", () => {
   test("renders downloadable artifacts as compact typed chips", () => {
@@ -13,6 +18,18 @@ describe("Markdown links", () => {
     expect(html).toContain("Download report");
     expect(html).toContain(">D<"); // round badge shows the label initial
     expect(html).toContain("rounded-full");
+  });
+
+  test("keeps web, protocol-relative, route and anchor links as links", () => {
+    for (const href of ["//example.com/report.pdf", "/api/reports/report.pdf", "#report.pdf"]) {
+      const html = renderToStaticMarkup(<Markdown>{`[Report](${href})`}</Markdown>);
+      expect(html).toContain(`href="${href}"`);
+    }
+    expect(isSandboxPath("file:///root/work/a.pdf")).toBe(true);
+    expect(isSandboxPath("/home/user/work/a.pdf")).toBe(true);
+    expect(isSandboxPath("output/report.pdf")).toBe(true);
+    expect(isSandboxPath("https://x.test/a.pdf")).toBe(false);
+    expect(isSandboxPath("/api/artifacts/a.pdf")).toBe(false);
   });
 
   test("renders a sandbox path as a named chip, never as a dead link", () => {
