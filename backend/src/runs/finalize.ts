@@ -34,6 +34,7 @@ import {
   directMessageChannel,
   STREAM_NARRATION_CAP,
   terminalTaskChunks,
+  toolTaskChunk,
 } from "../slack/streaming";
 import { turnStream } from "./turn-stream";
 import { env } from "../env";
@@ -112,13 +113,15 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   const chromeCard = buildRunCard({ title, phase, model: run.model, repoSpecs, webUrl, answer: summary, omitAnswer: true });
   const replyText = composeSlackReplyText(status, summary);
 
-  // The last started tool task settles alongside the root task at stop.
-  const [lastStep] = await tx
-    .select({ id: steps.id, label: steps.label })
+  // The last tool card settles alongside the root task at stop. Trailing
+  // runtime chatter is not a card, so look back a few steps for the last call.
+  const recentSteps = await tx
+    .select({ id: steps.id, kind: steps.kind, label: steps.label, chip: steps.chip, code_json: steps.codeJson })
     .from(steps)
     .where(and(eq(steps.runId, run.id), ne(steps.kind, "done")))
     .orderBy(desc(steps.idx))
-    .limit(1);
+    .limit(10);
+  const lastCard = recentSteps.map(toolTaskChunk).find((card) => card !== null) ?? null;
 
   // Narration the live watcher streamed into the message body (process-local
   // buffer; empty after a restart). The stop delivery appends exactly the tail
@@ -137,7 +140,7 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
     channel: slack.channel,
     threadTs: slack.threadTs,
     runId: run.id,
-    chunks: terminalTaskChunks({ phase, title, lastStep: lastStep ?? null }),
+    chunks: terminalTaskChunks({ phase, title, lastCard }),
     narrationText: narration,
     closingMarkdown,
     blocks: chromeCard.blocks,

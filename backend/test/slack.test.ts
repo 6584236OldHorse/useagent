@@ -23,7 +23,9 @@ import { db } from "../src/db/client";
 import { artifacts, commands, runs, slackOutbox, slackRunResponses, slackThreads, userUploads } from "../src/db/schema";
 import { artifactStorage } from "../src/artifacts/storage";
 import { finalizeRun } from "../src/runs/finalize";
-import { createRun } from "../src/runs/repo";
+import { createRun, insertStep, updateStepCode } from "../src/runs/repo";
+import { bus, channel as runChannel } from "../src/worker";
+import { CARD_FLUSH_MS, watchSlackRun } from "../src/slack/watcher";
 import {
   createSlackRunResponse,
   findSlackRunResponse,
@@ -39,7 +41,7 @@ import {
   kickSlackOutbox,
 } from "../src/slack/outbox";
 import { buildRunCard } from "../src/slack/card";
-import { markdownChunksFor, openingStreamChunks, runningTaskChunk } from "../src/slack/streaming";
+import { markdownChunksFor, openingStreamChunks, taskUpdateChunk } from "../src/slack/streaming";
 import { turnStream } from "../src/runs/turn-stream";
 import { DEV_ORG_ID, DEV_USER_ID } from "../src/seed";
 import { setSlackClientForTest } from "../src/slack";
@@ -1339,7 +1341,7 @@ describe("slack native stream and Block Kit fallback", () => {
         channel: t.channel,
         threadTs: t.ts,
         runId: t.runId,
-        chunks: [runningTaskChunk({ id: "s1", label: "working" })],
+        chunks: [taskUpdateChunk({ id: "step_s1", title: "working", status: "in_progress" })],
         fallbackBlocks: card.blocks,
         fallbackText: card.text,
       });
@@ -1353,6 +1355,85 @@ describe("slack native stream and Block Kit fallback", () => {
     } finally {
       appendStreamResult = null;
     }
+  });
+
+  /** Attach the live watcher to a streaming thread and return a step emitter
+   *  that persists each step (finalize reads the durable rows) and publishes it
+   *  on the run bus exactly as the worker does. */
+  async function watchedThread(prompt: string) {
+    const t = await rootThread(prompt);
+    await startNativeStream(t, prompt);
+    await waitFor(async () => ((await findSlackRunResponse(t.runId))?.nativeStreamTs ? true : null));
+    watchSlackRun({ runId: t.runId, rootRunId: t.runId, orgId: DEV_ORG_ID, teamId: TEAM, channel: t.channel, threadTs: t.ts });
+    let idx = 0;
+    const publish = (step: Awaited<ReturnType<typeof insertStep>>) => {
+      bus.emit(runChannel(t.runId), { type: "step", step });
+      return step;
+    };
+    const emit = async (input: { kind: "command" | "file" | "task" | "done"; label: string; chip: string | null; code: unknown }) =>
+      publish(await insertStep({ runId: t.runId, idx: idx++, ...input }));
+    const revise = async (step: Awaited<ReturnType<typeof insertStep>>, code: unknown) =>
+      publish((await updateStepCode(step.id, code))!);
+    const cards = () =>
+      rec.streams
+        .filter((s) => s.op === "append" && s.channel === t.channel)
+        .flatMap((s) => (s.chunks ?? []) as Array<Record<string, unknown>>)
+        .filter((c) => c.type === "task_update");
+    return { ...t, emit, revise, cards };
+  }
+
+  test("several tool calls stream one card each, revised in place, with the chatter absent and the answer last", async () => {
+    const t = await watchedThread("quiet steps");
+    const search = (query: string, activityKind: string, output?: string) => ({
+      source: "t3", activityKind, tool: "web_search", input: { query }, ...(output ? { output } : {}), error: false,
+    });
+    await t.emit({ kind: "task", label: "Preparing context and runtime…", chip: "boot", code: { phase: "preparing" } });
+    await t.emit({ kind: "task", label: "Waiting for provider activity…", chip: "runtime:claude", code: null });
+    const first = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("bun test timeout", "tool.started") });
+    await t.revise(first, search("bun test timeout", "tool.completed", "Results:\nhttps://bun.sh/docs/cli/test"));
+    const second = await t.emit({ kind: "command", label: "Web search started", chip: "search", code: search("bun bail flag", "tool.started") });
+    await t.emit({ kind: "task", label: "Context window updated", chip: "thread.context.updated", code: { source: "t3", activityKind: "thread.context.updated" } });
+    await t.emit({ kind: "done", label: "Done", chip: null, code: null }); // flushes the pending cards
+    await waitFor(async () => t.cards().some((c) => c.id === `step_${second.id}`) || null);
+
+    await finalizeRun(t.runId, "completed", "Use --timeout.", 1);
+    const stopped = await waitFor(async () => rec.streams.find((s) => s.op === "stop" && s.channel === t.channel) ?? null);
+    bus.emit(runChannel(t.runId), { type: "end", status: "completed" });
+
+    // Chatter never became a card: only the two calls, under their stable ids
+    // and the web UI's verb, the first settled in place with its sources.
+    const cards = t.cards();
+    expect(new Set(cards.map((c) => c.id))).toEqual(new Set([`step_${first.id}`, `step_${second.id}`]));
+    expect(cards.every((c) => c.title === "Searched the web")).toBe(true);
+    expect(cards.filter((c) => c.id === `step_${first.id}`).at(-1)).toMatchObject({
+      status: "complete",
+      details: "bun test timeout",
+      sources: [{ type: "url", text: "https://bun.sh/docs/cli/test", url: "https://bun.sh/docs/cli/test" }],
+    });
+    // The stop carries the answer, closes the call still open, then the root task.
+    expect(stopped.chunks).toEqual([
+      { type: "markdown_text", text: "Use --timeout." },
+      expect.objectContaining({ id: `step_${second.id}`, title: "Searched the web", status: "complete", details: "bun bail flag" }),
+      expect.objectContaining({ id: "run", status: "complete" }),
+    ]);
+  });
+
+  test("a burst of card revisions coalesces into one append carrying the last revision", async () => {
+    const t = await watchedThread("coalesce");
+    const shell = (activityKind: string, output?: string) => ({
+      source: "t3", activityKind, tool: "bash", input: { command: "bun test" }, ...(output ? { output } : {}),
+    });
+    const call = await t.emit({ kind: "command", label: "bash", chip: null, code: shell("tool.started") });
+    for (let i = 1; i <= 20; i++) {
+      bus.emit(runChannel(t.runId), { type: "step", step: { ...call, code_json: JSON.stringify(shell("tool.updated", `line ${i}`)) } });
+    }
+    await waitFor(async () => t.cards().length > 0 || null);
+    await new Promise((r) => setTimeout(r, CARD_FLUSH_MS * 2));
+    expect(rec.streams.filter((s) => s.op === "append" && s.channel === t.channel)).toHaveLength(1);
+    expect(t.cards()).toEqual([
+      { type: "task_update", id: `step_${call.id}`, title: "Ran a command", status: "in_progress", details: "bun test", output: "line 20" },
+    ]);
+    bus.emit(runChannel(t.runId), { type: "end", status: "completed" }); // detach the watcher
   });
 
   test("set_thread_status delivers once per idempotency key (replay-safe)", async () => {

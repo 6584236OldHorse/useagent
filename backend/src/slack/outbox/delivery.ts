@@ -20,6 +20,7 @@ import {
   type SlackSessionStatus,
   type SlackStreamChunk,
   type SlackStreamTaskDisplayMode,
+  taskSourcesField,
 } from "../streaming";
 import { findSlackWorkspace } from "../workspaces";
 import { resolveSlackBotTokenForWorkspace } from "../../integrations/slack-token-resolver";
@@ -92,6 +93,7 @@ function normalizeStreamChunk(raw: unknown): SlackStreamChunk | null {
       status,
       ...(typeof source.details === "string" && source.details ? { details: source.details } : {}),
       ...(typeof source.output === "string" && source.output ? { output: source.output } : {}),
+      ...taskSourcesField(source.sources),
     };
   }
   return null;
