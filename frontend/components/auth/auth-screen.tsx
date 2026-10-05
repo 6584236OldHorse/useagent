@@ -9,7 +9,7 @@ export function AuthScreen({ children }: { children: ReactNode }) {
         <div className="animate-ai-fade-up mx-auto w-full max-w-[400px]">{children}</div>
         <div className="absolute bottom-8 left-6 flex items-center gap-2 sm:left-12 lg:left-16">
           <OrbitKnotMark className="size-5" />
-          <span className="text-body-2-medium tracking-wide text-text-secondary">UseAgent</span>
+          <span className="text-body-2-medium tracking-wide text-text-secondary">useAgent</span>
         </div>
       </section>
 

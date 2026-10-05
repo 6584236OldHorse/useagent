@@ -95,7 +95,7 @@ export function NewSkillModal({
               New skill
             </Modal.Title>
             <Modal.Description className="text-body-2-regular text-text-secondary">
-              Capture a reusable skill UseAgent can follow for repeatable work.
+              Capture a reusable skill useAgent can follow for repeatable work.
             </Modal.Description>
           </div>
 
@@ -154,7 +154,7 @@ export function NewSkillModal({
 
           {status === "error" && (
             <p className="rounded-xl bg-background-tertiary-error px-3 py-2 text-caption-1-regular text-text-error-primary">
-              Couldn&rsquo;t reach UseAgent. Check the backend and try again.
+              Couldn&rsquo;t reach useAgent. Check the backend and try again.
             </p>
           )}
 

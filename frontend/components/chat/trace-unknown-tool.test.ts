@@ -47,7 +47,7 @@ describe("deriveTrace — uncatalogued tool", () => {
     });
     expect(deriveTrace(step)).toMatchObject({
       verb: "Computer screenshot",
-      target: "UseAgent",
+      target: "useAgent",
       glyph: "task",
     });
   });
@@ -63,7 +63,7 @@ describe("deriveTrace — uncatalogued tool", () => {
       commandStep("mcp__useagent__skill_activate", { name: "fast-installs" }, "useagent"),
     );
     expect(trace.verb).toBe("Skill activate");
-    expect(trace.target).toBe("UseAgent");
+    expect(trace.target).toBe("useAgent");
   });
 
   test("a flattened gateway tool id drops the internal server prefix and credits the product", () => {
@@ -71,7 +71,7 @@ describe("deriveTrace — uncatalogued tool", () => {
     // never part of the verb.
     const trace = deriveTrace(commandStep("useagent_child_session_create_many", { tasks: [] }));
     expect(trace.verb).toBe("Child session create many");
-    expect(trace.target).toBe("UseAgent");
+    expect(trace.target).toBe("useAgent");
     expect(deriveTrace(commandStep("useagent_child_session_gather", {})).verb).toBe(
       "Child session gather",
     );

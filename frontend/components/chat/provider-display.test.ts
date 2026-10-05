@@ -3,10 +3,10 @@ import { providerDisplayName } from "./provider-display";
 
 describe("providerDisplayName", () => {
   test("maps the gateway wire id to the product name", () => {
-    expect(providerDisplayName("useagent")).toBe("UseAgent");
-    expect(providerDisplayName("useagent-browser")).toBe("UseAgent Browser");
-    expect(providerDisplayName("skynet-knowledge")).toBe("UseAgent");
-    expect(providerDisplayName("skynet-browser")).toBe("UseAgent Browser");
+    expect(providerDisplayName("useagent")).toBe("useAgent");
+    expect(providerDisplayName("useagent-browser")).toBe("useAgent Browser");
+    expect(providerDisplayName("skynet-knowledge")).toBe("useAgent");
+    expect(providerDisplayName("skynet-browser")).toBe("useAgent Browser");
   });
 
   test("passes genuine providers and other ids through unchanged", () => {

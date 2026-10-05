@@ -3,8 +3,8 @@ import { safeAuthRedirect } from "@/components/auth/safe-redirect";
 import { AuthForm } from "../auth-form";
 
 export const metadata: Metadata = {
-  title: "Sign in - UseAgent",
-  description: "Sign in to your UseAgent workspace.",
+  title: "Sign in - useAgent",
+  description: "Sign in to your useAgent workspace.",
 };
 
 export default async function LoginPage({

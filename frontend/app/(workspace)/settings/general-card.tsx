@@ -38,7 +38,7 @@ export function GeneralCard() {
         <Value value={email} />
       </SettingsRow>
       <SettingsRow label="Workspace name">
-        <Value value="UseAgent" />
+        <Value value="useAgent" />
       </SettingsRow>
       <SettingsRow label="Theme" description="Choose your interface theme.">
         <ThemeToggle />

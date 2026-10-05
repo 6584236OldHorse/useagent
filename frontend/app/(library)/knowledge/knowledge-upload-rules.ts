@@ -42,7 +42,7 @@ export function uploadOutcomeCopy(name: string, outcome: UploadOutcome): string 
       case "skipped":
         return `${name}: already in Knowledge`;
       case "dropped":
-        return `${name}: UseAgent judged this not worth saving`;
+        return `${name}: useAgent judged this not worth saving`;
       case "deferred":
         return `${name}: distillation is unavailable right now, nothing was saved. Try again later.`;
     }
@@ -57,6 +57,6 @@ export function uploadOutcomeCopy(name: string, outcome: UploadOutcome): string 
     case "unreadable_document":
       return `${name}: could not read this file`;
     default:
-      return `${name}: could not reach UseAgent, try again`;
+      return `${name}: could not reach useAgent, try again`;
   }
 }

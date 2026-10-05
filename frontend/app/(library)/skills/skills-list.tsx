@@ -59,7 +59,7 @@ const SkillRow = memo(function SkillRow({
       ? description
         ? `${primary.sourceRepo} · ${description}`
         : primary.sourceRepo
-      : description || "Created in UseAgent";
+      : description || "Created in useAgent";
 
   return (
     <li className="group relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-background-primary-hover">

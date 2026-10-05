@@ -5,7 +5,7 @@ import { KnowledgeGallery } from "./knowledge-gallery";
 
 export const metadata: Metadata = {
   title: "Knowledge",
-  description: "Facts and conventions UseAgent remembers across runs.",
+  description: "Facts and conventions useAgent remembers across runs.",
 };
 
 export default async function KnowledgePage() {

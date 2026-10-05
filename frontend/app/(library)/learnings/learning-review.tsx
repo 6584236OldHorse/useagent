@@ -61,7 +61,7 @@ export function LearningReview({
         <div className="flex flex-col gap-0.5">
           <h1 className="text-display-sm text-text-primary">Learnings</h1>
           <p className="text-body-2-regular text-text-secondary">
-            Review what UseAgent proposes to learn. Nothing goes live without an accept.
+            Review what useAgent proposes to learn. Nothing goes live without an accept.
           </p>
         </div>
       </div>

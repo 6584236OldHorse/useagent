@@ -94,7 +94,7 @@ export function ComponentLab() {
           <AsteriskMark className="size-8 text-text-primary" />
           <div className="flex flex-col">
             <span className="text-headline-medium text-text-primary">Component lab</span>
-            <span className="text-mono-label text-text-tertiary">UseAgent · Base kit parts bin</span>
+            <span className="text-mono-label text-text-tertiary">useAgent · Base kit parts bin</span>
           </div>
         </div>
       </header>
@@ -103,7 +103,7 @@ export function ComponentLab() {
         <div className="animate-ai-fade-up flex flex-col gap-3 py-10">
           <h1 className="text-title-1-semibold text-text-primary">Base kit parts bin</h1>
           <p className="text-body-regular text-text-secondary">
-            Every native base-kit primitive this app composes, wired to the UseAgent brand layer.
+            Every native base-kit primitive this app composes, wired to the useAgent brand layer.
             Toggle the theme from any page to confirm both render.
           </p>
           <Link
@@ -350,7 +350,7 @@ export function ComponentLab() {
         <Section label="Thinking orb - engine-driven agent loader">
           <p className="text-body-2-regular text-text-secondary">
             A canvas-rendered dotted thought-orb (vendored from chartden). Six states drive the
-            “agent is thinking” moment; UseAgent uses the <code>searching</code> preset for the
+            “agent is thinking” moment; useAgent uses the <code>searching</code> preset for the
             session boot phase. Grayscale- by-depth, so it tracks the theme with no token mapping.
           </p>
           <div className="flex flex-wrap items-end gap-8">

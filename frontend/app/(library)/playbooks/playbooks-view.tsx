@@ -199,7 +199,7 @@ export function PlaybooksView({
             <h1 className="text-title-2-medium text-text-primary">Playbooks</h1>
           </div>
           <p className="mt-1.5 text-body-2-regular text-text-secondary">
-            Structured procedures UseAgent follows as guidance - Overview,
+            Structured procedures useAgent follows as guidance - Overview,
             Procedure, Verify
           </p>
         </div>

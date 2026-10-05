@@ -96,7 +96,7 @@ export function AddKnowledgeModal({
               Add knowledge
             </Modal.Title>
             <Modal.Description className="text-body-2-regular text-text-secondary">
-              Teach UseAgent a fact or convention it should remember across every
+              Teach useAgent a fact or convention it should remember across every
               run.
             </Modal.Description>
           </div>
@@ -113,7 +113,7 @@ export function AddKnowledgeModal({
             <Input
               label="Trigger"
               placeholder="When working with the design system…"
-              hint="A phrase that tells UseAgent when to recall this."
+              hint="A phrase that tells useAgent when to recall this."
               value={trigger}
               isDisabled={busy}
               onChange={setTrigger}
@@ -124,7 +124,7 @@ export function AddKnowledgeModal({
               <textarea
                 id="knowledge-content"
                 rows={4}
-                placeholder="What should UseAgent know?"
+                placeholder="What should useAgent know?"
                 value={body}
                 disabled={busy}
                 onChange={(event) => setBody(event.target.value)}
@@ -154,7 +154,7 @@ export function AddKnowledgeModal({
           {/* Worth-saving gate + error surfacing */}
           {status === "dropped" && (
             <p className="rounded-xl bg-background-secondary-default px-3 py-2 text-caption-1-regular text-text-secondary">
-              UseAgent judged this not worth saving. Try adding more specific
+              useAgent judged this not worth saving. Try adding more specific
               detail, or close to discard.
             </p>
           )}
@@ -167,7 +167,7 @@ export function AddKnowledgeModal({
           )}
           {status === "error" && (
             <p className="rounded-xl bg-background-tertiary-error px-3 py-2 text-caption-1-regular text-text-error-primary">
-              Couldn&rsquo;t reach UseAgent. Check the backend and try again.
+              Couldn&rsquo;t reach useAgent. Check the backend and try again.
             </p>
           )}
 

@@ -111,7 +111,7 @@ export function PlaybookEditor({
             <Modal.Description className="text-body-2-regular text-text-secondary">
               {isEdit
                 ? "Saving a content change mints a new version. Past runs stay pinned to the version they used."
-                : "A structured procedure UseAgent follows as guidance - an Overview, numbered Procedure steps, and a Verify checklist."}
+                : "A structured procedure useAgent follows as guidance - an Overview, numbered Procedure steps, and a Verify checklist."}
             </Modal.Description>
           </div>
 

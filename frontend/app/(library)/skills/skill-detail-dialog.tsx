@@ -151,7 +151,7 @@ function VariantBlock({
             ) : null}
           </>
         ) : (
-          "Created in UseAgent"
+          "Created in useAgent"
         )}
       </p>
 

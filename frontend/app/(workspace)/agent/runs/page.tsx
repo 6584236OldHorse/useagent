@@ -4,7 +4,7 @@ import { RunsList } from "./runs-list";
 
 export const metadata: Metadata = {
   title: "All threads",
-  description: "Live agent runs from the UseAgent orchestrator.",
+  description: "Live agent runs from the useAgent orchestrator.",
 };
 
 // Always render fresh — the runs list is live data.

@@ -157,7 +157,7 @@ export function SkillsView({
             <h1 className="text-title-2-medium text-text-primary">Skills</h1>
           </div>
           <p className="mt-1.5 text-body-2-regular text-text-secondary">
-            Reusable skills UseAgent follows for repeatable work
+            Reusable skills useAgent follows for repeatable work
           </p>
         </div>
         <NewSkillModal onCreated={refetch} />

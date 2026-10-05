@@ -19,7 +19,7 @@ export function gatewayServerFromCapabilityCatalog(
   const configuredTools = catalog?.tools.declared.filter((tool) => tool.configured) ?? [];
   return {
     id: "useagent-gateway",
-    name: "UseAgent Gateway",
+    name: "useAgent Gateway",
     initial: "U",
     tileClass: "bg-blue-200 text-blue-700",
     status: catalog?.tools.gatewayConfigured ? "connected" : "error",
