@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSessionRequest, getAuthConfig, listOrganizations, switchOrganization } from "./auth";
+import { createSessionRequest, getAuthConfig, listWorkspaces, switchOrganization } from "./auth";
 
 function countingFetcher(responses: (() => Response)[] = []) {
   const seen: string[] = [];
@@ -91,17 +91,31 @@ test("provider config uses the dedicated route and fails closed", async () => {
   });
 });
 
-test("organization list and switch use the authenticated Better Auth routes", async () => {
+test("a workspace row without an id or a name fails validation instead of becoming a blank selected workspace", async () => {
+  const fetcher = (async () => Response.json({ activeOrganizationId: undefined, workspaces: [{}] })) as unknown as Parameters<typeof listWorkspaces>[0];
+  await expect(listWorkspaces(fetcher)).rejects.toThrow("invalid response");
+});
+
+test("the workspace list carries roles and the landing workspace; the switch uses the Better Auth route", async () => {
   const seen: { path: string; init?: RequestInit }[] = [];
   const fetcher = (async (path: string, init?: RequestInit) => {
     seen.push({ path, init });
-    return path.endsWith("/list")
-      ? Response.json([{ id: "org-1", name: "Acme" }])
+    return path.endsWith("/workspaces")
+      ? Response.json({
+          activeOrganizationId: "org-1",
+          workspaces: [
+            { id: "org-1", name: "Acme", role: "admin", members: 3, defaultName: false },
+            { id: "org-2", name: "Ada's workspace", role: "owner", members: 1, defaultName: true },
+          ],
+        })
       : Response.json({ session: { activeOrganizationId: "org-1" } });
-  }) as unknown as Parameters<typeof listOrganizations>[0];
+  }) as unknown as Parameters<typeof listWorkspaces>[0];
   const effects: string[] = [];
 
-  expect(await listOrganizations(fetcher)).toEqual([{ id: "org-1", name: "Acme" }]);
+  expect(await listWorkspaces(fetcher)).toEqual([
+    { id: "org-1", name: "Acme", role: "admin", active: true, members: 3, defaultName: false },
+    { id: "org-2", name: "Ada's workspace", role: "owner", active: false, members: 1, defaultName: true },
+  ]);
   await switchOrganization(
     "org-1",
     fetcher,
@@ -110,7 +124,7 @@ test("organization list and switch use the authenticated Better Auth routes", as
   );
 
   expect(seen[0]).toEqual({
-    path: "/api/auth/organization/list",
+    path: "/api/team/workspaces",
     init: { cache: "no-store" },
   });
   expect(seen[1]?.path).toBe("/api/auth/organization/set-active");

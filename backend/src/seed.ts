@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { db } from "./db/client";
 import { member, organization, user } from "./db/schema";
 
@@ -61,12 +61,14 @@ export async function seedDev(): Promise<void> {
     .onConflictDoNothing();
 }
 
-/** The org id of the first membership for a user, or null if they have none. */
+/** The organisation a session without an active one lands in: the person's
+ *  earliest membership, which is the workspace created with their account. */
 export async function firstOrgForUser(userId: string): Promise<string | null> {
   const [row] = await db
     .select({ organizationId: member.organizationId })
     .from(member)
     .where(eq(member.userId, userId))
+    .orderBy(asc(member.createdAt), asc(member.id))
     .limit(1);
   return row?.organizationId ?? null;
 }

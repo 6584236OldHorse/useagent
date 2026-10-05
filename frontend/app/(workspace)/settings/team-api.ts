@@ -89,16 +89,32 @@ async function post(
   return res;
 }
 
-export async function fetchTeam(input: { readonly userId: string | null }): Promise<Team> {
-  // The server resolves the organisation once (the request's org scope) and
-  // names it, so members, invitations and every later write agree on one org.
-  const invitationsRes = await backendFetch("/api/team/invitations", { cache: "no-store" });
-  if (!invitationsRes.ok) throw new Error(`invitations ${invitationsRes.status}`);
-  const invitationsBody = (await invitationsRes.json()) as {
+/** The organisation the server scoped the request to, and its pending invitations. */
+export async function fetchInvitations(): Promise<{
+  organizationId: string;
+  invitations: PendingInvitation[];
+}> {
+  const res = await backendFetch("/api/team/invitations", { cache: "no-store" });
+  if (!res.ok) throw new Error(`invitations ${res.status}`);
+  const body = (await res.json()) as {
     organizationId: string;
     invitations?: Array<{ id: string; email: string; role: string | null; expiresAt: string }>;
   };
-  const organizationId = invitationsBody.organizationId;
+  return {
+    organizationId: body.organizationId,
+    invitations: (body.invitations ?? []).map((i) => ({
+      id: i.id,
+      email: i.email,
+      role: memberRole(i.role),
+      expiresAt: i.expiresAt,
+    })),
+  };
+}
+
+export async function fetchTeam(input: { readonly userId: string | null }): Promise<Team> {
+  // The server resolves the organisation once (the request's org scope) and
+  // names it, so members, invitations and every later write agree on one org.
+  const { organizationId, invitations } = await fetchInvitations();
   const membersRes = await backendFetch(
     `/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`,
     { cache: "no-store" },
@@ -121,12 +137,6 @@ export async function fetchTeam(input: { readonly userId: string | null }): Prom
     image: m.user?.image ?? null,
     role: memberRole(m.role),
     joinedAt: m.createdAt,
-  }));
-  const invitations = (invitationsBody.invitations ?? []).map((i) => ({
-    id: i.id,
-    email: i.email,
-    role: memberRole(i.role),
-    expiresAt: i.expiresAt,
   }));
   const mine = input.userId ? members.find((m) => m.userId === input.userId) : undefined;
   return {
@@ -239,6 +249,15 @@ export async function removeMember(organizationId: string, memberId: string): Pr
     "/api/auth/organization/remove-member",
     { organizationId, memberIdOrEmail: memberId },
     "Could not remove the member.",
+  );
+}
+
+/** Owners and admins rename the workspace; the library checks the permission. */
+export async function renameWorkspace(organizationId: string, name: string): Promise<void> {
+  await post(
+    "/api/auth/organization/update",
+    { organizationId, data: { name } },
+    "Could not rename the workspace.",
   );
 }
 
