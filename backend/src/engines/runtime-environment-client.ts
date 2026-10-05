@@ -343,7 +343,7 @@ async function executeRuntimeEnvironmentFirstAccess(
         buildRuntimeEnvironmentFirstAccessCommand(request, layout),
         undefined,
         undefined,
-        RUNTIME_REQUEST_TIMEOUT_SECONDS + 2,
+        (request.timeoutSeconds ?? RUNTIME_REQUEST_TIMEOUT_SECONDS) + 2,
       );
       const response = parseRuntimeEnvironmentResponse(result);
       if (!runtimeEnvironmentRequestFailed(result, response)) {

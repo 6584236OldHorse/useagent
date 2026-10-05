@@ -310,6 +310,52 @@ describe("T3 Cube environment", () => {
     expect(created).toEqual([]);
   });
 
+  test("restarts when the boot marker disappears and the runtime is still down", async () => {
+    const launched: string[] = [];
+    let readiness = 0;
+    let markerChecks = 0;
+    const sandbox = runtimeSandbox("cube-t3-booting-gave-up", {
+      executeCommand: async (command: string) => {
+        // The boot script gives up after its wait and removes the marker on the second look.
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: markerChecks++ === 0 ? 0 : 1, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) return { exitCode: readiness++ < 3 ? 1 : 0, result: "" };
+        return { exitCode: 0, result: "" };
+      },
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(
+      ensureRuntimeEnvironment(sandbox, new AbortController().signal),
+    ).resolves.toMatchObject({ sandboxId: "cube-t3-booting-gave-up" });
+    expect(launched).toHaveLength(1);
+    expect(markerChecks).toBe(2);
+  });
+
+  test("a boot wait that is aborted fails closed before any restart", async () => {
+    const launched: string[] = [];
+    const controller = new AbortController();
+    const sandbox = runtimeSandbox("cube-t3-booting-aborted", {
+      executeCommand: async (command: string) => {
+        if (command === buildRuntimeEnvironmentBootingProbe()) return { exitCode: 0, result: "" };
+        if (command === buildRuntimeEnvironmentReadinessCommand()) {
+          controller.abort();
+          return { exitCode: 1, result: "" };
+        }
+        return { exitCode: 0, result: "" };
+      },
+      executeSessionCommand: async (name: string, request: { command: string }) => {
+        launched.push(`${name}:${request.command}`);
+        return { cmdId: "t3-command", exitCode: 0 };
+      },
+    });
+
+    await expect(ensureRuntimeEnvironment(sandbox, controller.signal)).rejects.toThrow("Provider runtime start aborted");
+    expect(launched).toEqual([]);
+  });
+
   test("derives a non-root launch layout from the sandbox provider handle", async () => {
     const launched: string[] = [];
     let probes = 0;

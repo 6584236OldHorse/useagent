@@ -10,9 +10,8 @@
 // Runs with the backend's env (DAYTONA_API_KEY, DAYTONA_API_URL).
 import { importDaytonaSnapshot } from "@useagent/sandbox-daytona";
 import { runtimeEnvironmentBootPath } from "../src/engines/runtime-environment-boot";
-import { sandboxRuntimeLayout } from "../src/sandboxes/provider";
+import { daytonaApiConfig, sandboxRuntimeLayout } from "../src/sandboxes/provider";
 import { deploymentNativeImageName } from "../src/sandboxes/native-image";
-import { daytonaApiConfig } from "../src/sandboxes/provider";
 import { resolveSandboxResourceTarget } from "../src/engines/daytona-resources";
 
 function argument(name: string): string | undefined {
