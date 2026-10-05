@@ -202,7 +202,8 @@ export const slackAccessRequests = pgTable(
     name: text("name").notNull(),
     email: text("email"),
     image: text("image"),
-    status: text("status").notNull().default("pending"), // pending | allowed | denied
+    status: text("status").notNull().default("pending"), // pending | invited | allowed | denied
+    invitationId: text("invitation_id"), // the invitation an admin sent for a typed address
     decidedBy: text("decided_by"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

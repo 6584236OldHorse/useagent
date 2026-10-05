@@ -2,6 +2,7 @@ import { and, eq, gt, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { auth } from "../auth";
 import { INVITATION_EXPIRES_IN_SECONDS, NO_WAY_IN, canSignIn, deliverInvitation, invitationMailEnabled } from "../auth-invitations";
+import { bindInvitedSlackSender } from "../slack/access-requests";
 import { db } from "../db/client";
 import { invitation, member, organization, user } from "../db/auth-schema";
 import { allowDevOrg, betterAuthTrustedOrigins, googleAuthEnabled, selfSignupEnabled } from "../env";
@@ -390,6 +391,18 @@ routes.get("/api/auth/invitation-preview", async (c) => {
     inviterEmail: row.inviterEmail,
     expiresAt: row.expiresAt.toISOString(),
   });
+});
+/** Accepting an invitation an admin sent on a Slack sender's behalf binds that
+ *  sender to the account that accepted: the address's owner has proven it. */
+routes.post("/api/auth/organization/accept-invitation", async (c) => {
+  const request = c.req.raw;
+  const body = await jsonBody(request);
+  const session = await auth.api.getSession({ headers: request.headers });
+  const response = await auth.handler(request);
+  if (response.ok && session && body && typeof body.invitationId === "string") {
+    await bindInvitedSlackSender(body.invitationId, session.user.id);
+  }
+  return response;
 });
 /** An invitation id must come from the invitation itself (the mail or the
  *  inviter), never from a lookup by the session's email claim: a Google account

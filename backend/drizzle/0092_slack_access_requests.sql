@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS "slack_access_requests" (
 	"email" text,
 	"image" text,
 	"status" text DEFAULT 'pending' NOT NULL,
+	"invitation_id" text,
 	"decided_by" text,
 	"decided_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL

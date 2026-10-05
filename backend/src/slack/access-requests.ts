@@ -4,16 +4,18 @@
  * Allow creates the member (a new account when the address is new) and binds the
  * Slack sender to it, so their next message runs as themselves. Deny is remembered.
  *
- * Who an address belongs to is decided by evidence, not by typing: a sender who
- * already owns a binding here is that account; an address Slack itself reported
- * for the sender may match an existing account; an address an admin typed may
- * only create a new one, never attach a stranger to somebody's account.
+ * Who an address belongs to is decided by evidence, not by typing. A sender who
+ * already owns a binding here is that account. An address Slack itself reported
+ * for the sender may match an existing account or create one, and the sender is
+ * bound at once. An address an admin typed is only an invitation: the binding is
+ * made when the person who owns that address accepts it on the web, so a typed
+ * address can never claim somebody else's identity. Deny is remembered.
  */
-import { and, eq, isNull } from "drizzle-orm";
-import { INVITATION_MAIL_TIMEOUT_MS, headerSafe, invitationMailConfig } from "../auth-invitations";
+import { and, eq, gt, isNull } from "drizzle-orm";
+import { INVITATION_EXPIRES_IN_SECONDS, INVITATION_MAIL_TIMEOUT_MS, canSignIn, deliverInvitation, headerSafe, invitationMailConfig } from "../auth-invitations";
 import { sendSmtp } from "../connectors/email/smtp";
 import { db, type Executor } from "../db/client";
-import { member, organization, user } from "../db/auth-schema";
+import { invitation, member, organization, user } from "../db/auth-schema";
 import { slackAccessRequests, slackUsers, slackWorkspaces } from "../db/schema";
 import { env, googleAuthEnabled } from "../env";
 import type { SlackClient } from "./client";
@@ -21,7 +23,7 @@ import { kickSlackOutbox } from "./outbox/delivery";
 import { enqueuePostMessageTx } from "./outbox";
 import { findActiveSlackUser, upsertSlackUser } from "./workspaces";
 
-export type AccessRequestVerdict = "asked" | "waiting" | "denied" | "already_in";
+export type AccessRequestVerdict = "asked" | "waiting" | "invited" | "denied" | "already_in";
 
 const roles = (value: string | null | undefined) => (value ?? "").split(",").map((role) => role.trim());
 const manages = (role: string | null | undefined) => roles(role).some((r) => r === "owner" || r === "admin");
@@ -32,6 +34,16 @@ export function validEmail(value: string | null | undefined): value is string {
     value.length <= 254 &&
     /^[^\s@\u0000-\u001f\u007f]+@[^\s@\u0000-\u001f\u007f]+\.[^\s@\u0000-\u001f\u007f]+$/.test(value)
   );
+}
+
+async function invitationOpen(id: string | null, exec: Executor): Promise<boolean> {
+  if (!id) return false;
+  const [row] = await exec
+    .select({ id: invitation.id })
+    .from(invitation)
+    .where(and(eq(invitation.id, id), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date())))
+    .limit(1);
+  return row !== undefined;
 }
 
 /** Record the request once and tell the admins who are reachable on Slack. The
@@ -51,7 +63,7 @@ export async function requestSlackAccess(input: {
     eq(slackAccessRequests.orgId, input.orgId),
   );
   const [existing] = await db
-    .select({ id: slackAccessRequests.id, status: slackAccessRequests.status, email: slackAccessRequests.email })
+    .select({ id: slackAccessRequests.id, status: slackAccessRequests.status, email: slackAccessRequests.email, invitationId: slackAccessRequests.invitationId })
     .from(slackAccessRequests)
     .where(sender)
     .limit(1);
@@ -59,6 +71,7 @@ export async function requestSlackAccess(input: {
   // A pending request that already carries Slack's word about the address needs
   // nothing more; one without it gets another look, in case the lookup failed.
   if (existing?.status === "pending" && existing.email) return "waiting";
+  if (existing?.status === "invited" && (await invitationOpen(existing.invitationId, db))) return "invited";
 
   const profile = (await input.client.userInfo?.({ user: input.slackUserId })) ?? null;
   const name = profile?.name ?? input.slackUserId;
@@ -72,7 +85,7 @@ export async function requestSlackAccess(input: {
   const id = existing?.id ?? crypto.randomUUID();
   const verdict = await db.transaction(async (tx): Promise<AccessRequestVerdict> => {
     const [locked] = existing
-      ? await tx.select({ status: slackAccessRequests.status }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
+      ? await tx.select({ status: slackAccessRequests.status, invitationId: slackAccessRequests.invitationId }).from(slackAccessRequests).where(eq(slackAccessRequests.id, existing.id)).for("update")
       : [];
     if (locked?.status === "denied") return "denied";
     if (locked?.status === "pending") {
@@ -84,12 +97,20 @@ export async function requestSlackAccess(input: {
       }
       return "waiting";
     }
-    if (locked) {
-      // Allowed once. A stale event from before the decision must not reopen a
-      // live membership; only a membership that is gone asks again.
+    if (locked?.status === "invited" && (await invitationOpen(locked.invitationId, tx))) return "invited";
+    if (locked?.status === "allowed") {
+      // A stale event from before the decision must not reopen a live
+      // membership; only a membership that is gone asks again.
       const active = await findActiveSlackUser(input.teamId, input.slackUserId, tx);
       if (active?.orgId === input.orgId) return "already_in";
-      await tx.update(slackAccessRequests).set({ status: "pending", name, email, image: profile?.image ?? null, decidedBy: null, decidedAt: null }).where(eq(slackAccessRequests.id, existing!.id));
+    }
+    if (locked) {
+      // Allowed once and gone, or invited and the invitation lapsed: ask again,
+      // keeping what was known about them unless the lookup brought more.
+      await tx
+        .update(slackAccessRequests)
+        .set({ status: "pending", ...(profile ? { name, email, image: profile.image } : {}), invitationId: null, decidedBy: null, decidedAt: null })
+        .where(eq(slackAccessRequests.id, existing!.id));
     } else {
       await tx.insert(slackAccessRequests).values({ id, teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, name, email, image: profile?.image ?? null });
     }
@@ -137,19 +158,20 @@ export async function listAccessRequests(orgId: string): Promise<AccessRequestRo
   return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
 }
 
-export type AccessDecision = "allowed" | "denied" | "not_found" | "email_required" | "email_invalid" | "account_exists";
+export type AccessDecision = "allowed" | "invited" | "denied" | "not_found" | "email_required" | "email_invalid" | "no_way_in";
 
 /** Allow or deny a pending request, in one transaction on a locked row, so two
  *  admins answering at once cannot leave a denied sender bound. */
 export async function decideAccessRequest(input: {
   id: string;
   orgId: string;
-  decidedBy: string;
+  decidedBy: { id: string; name: string; email: string };
   allow: boolean;
   email?: string | null;
 }): Promise<AccessDecision> {
   const typed = (input.email ?? "").trim().toLowerCase();
   if (typed && !validEmail(typed)) return "email_invalid";
+  let invited: { id: string; email: string; expiresAt: Date } | null = null;
   const outcome = await db.transaction(async (tx): Promise<AccessDecision> => {
     const [pending] = await tx
       .select({ teamId: slackAccessRequests.teamId })
@@ -171,59 +193,103 @@ export async function decideAccessRequest(input: {
       .where(and(eq(slackAccessRequests.id, input.id), eq(slackAccessRequests.orgId, input.orgId), eq(slackAccessRequests.status, "pending")))
       .for("update");
     if (!row) return "not_found";
-    const decided = { decidedBy: input.decidedBy, decidedAt: new Date() };
+    const decided = { decidedBy: input.decidedBy.id, decidedAt: new Date() };
     if (!input.allow) {
       await tx.update(slackAccessRequests).set({ status: "denied", ...decided }).where(eq(slackAccessRequests.id, row.id));
       return "denied";
     }
-    const userId = await identityFor(tx, row, typed);
-    if (userId === "email_required" || userId === "email_invalid" || userId === "account_exists") return userId;
-    const [membership] = await tx
-      .select({ id: member.id })
-      .from(member)
-      .where(and(eq(member.organizationId, input.orgId), eq(member.userId, userId)))
-      .limit(1);
-    if (!membership) {
-      await tx.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: input.orgId, userId, role: "member", createdAt: new Date() });
+
+    const userId = await provenIdentity(tx, row);
+    if (!userId) {
+      // Only the admin's word about the address: an invitation, which binds the
+      // sender when the address's owner accepts it on the web.
+      if (!typed) return "email_required";
+      if (!(await canSignIn(typed))) return "no_way_in";
+      invited = { id: crypto.randomUUID(), email: typed, expiresAt: new Date(Date.now() + INVITATION_EXPIRES_IN_SECONDS * 1000) };
+      await tx.insert(invitation).values({ ...invited, organizationId: input.orgId, role: "member", status: "pending", inviterId: input.decidedBy.id });
+      await tx.update(slackAccessRequests).set({ status: "invited", email: typed, invitationId: invited.id, ...decided }).where(eq(slackAccessRequests.id, row.id));
+      return "invited";
     }
-    await upsertSlackUser({ teamId: row.teamId, slackUserId: row.slackUserId, orgId: input.orgId, userId }, tx);
+    await admit(tx, { orgId: input.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
     await tx.update(slackAccessRequests).set({ status: "allowed", ...decided }).where(eq(slackAccessRequests.id, row.id));
-    await enqueuePostMessageTx(tx, {
-      idempotencyKey: `slack-access-allowed:${row.id}:${decided.decidedAt.getTime()}`,
-      orgId: input.orgId,
-      teamId: row.teamId,
-      channel: row.slackUserId,
-      text: "You are in. Mention me again and I will get to work.",
-    });
     return "allowed";
   });
   if (outcome === "allowed") {
     kickSlackOutbox();
     await welcome(input.orgId, input.id);
   }
+  if (outcome === "invited" && invited) {
+    const sent: { id: string; email: string; expiresAt: Date } = invited;
+    const [org] = await db.select({ name: organization.name }).from(organization).where(eq(organization.id, input.orgId)).limit(1);
+    try {
+      await deliverInvitation({
+        id: sent.id,
+        email: sent.email,
+        role: "member",
+        organization: { name: org?.name ?? "" },
+        invitation: { expiresAt: sent.expiresAt },
+        inviter: { user: { name: input.decidedBy.name, email: input.decidedBy.email } },
+      });
+    } catch (error) {
+      console.error(`[slack] invitation ${sent.id} could not be sent:`, (error as Error).message);
+    }
+  }
   return outcome;
+}
+
+/** The person who accepted an invitation an admin sent on a Slack sender's
+ *  behalf now owns that sender: bind them and tell them on Slack. */
+export async function bindInvitedSlackSender(invitationId: string, userId: string): Promise<boolean> {
+  const bound = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(slackAccessRequests)
+      .where(and(eq(slackAccessRequests.invitationId, invitationId), eq(slackAccessRequests.status, "invited")))
+      .for("update");
+    if (!row) return false;
+    await admit(tx, { orgId: row.orgId, teamId: row.teamId, slackUserId: row.slackUserId, userId });
+    await tx.update(slackAccessRequests).set({ status: "allowed" }).where(eq(slackAccessRequests.id, row.id));
+    return true;
+  });
+  if (bound) kickSlackOutbox();
+  return bound;
+}
+
+/** Member row if missing, the binding, and the Slack reply, in the caller's transaction. */
+async function admit(tx: Executor, input: { orgId: string; teamId: string; slackUserId: string; userId: string }): Promise<void> {
+  const [membership] = await tx
+    .select({ id: member.id })
+    .from(member)
+    .where(and(eq(member.organizationId, input.orgId), eq(member.userId, input.userId)))
+    .limit(1);
+  if (!membership) {
+    await tx.insert(member).values({ id: `member_${crypto.randomUUID()}`, organizationId: input.orgId, userId: input.userId, role: "member", createdAt: new Date() });
+  }
+  await upsertSlackUser({ teamId: input.teamId, slackUserId: input.slackUserId, orgId: input.orgId, userId: input.userId }, tx);
+  await enqueuePostMessageTx(tx, {
+    idempotencyKey: `slack-access-allowed:${input.teamId}:${input.slackUserId}:${input.userId}`,
+    orgId: input.orgId,
+    teamId: input.teamId,
+    channel: input.slackUserId,
+    text: "You are in. Mention me again and I will get to work.",
+  });
 }
 
 type Request = typeof slackAccessRequests.$inferSelect;
 
-/** Which account the sender is. Returns the user id, or why none can be chosen. */
-async function identityFor(tx: Executor, row: Request, typed: string): Promise<string | "email_required" | "email_invalid" | "account_exists"> {
+/** The account this sender provably is, or null when only an admin's typing says who they are. */
+async function provenIdentity(tx: Executor, row: Request): Promise<string | null> {
   const [bound] = await tx
     .select({ userId: slackUsers.userId })
     .from(slackUsers)
     .where(and(eq(slackUsers.teamId, row.teamId), eq(slackUsers.slackUserId, row.slackUserId), eq(slackUsers.orgId, row.orgId)))
     .limit(1);
   if (bound) return bound.userId; // the account this sender already owns here
-  const email = row.email ?? typed; // Slack's word about the sender beats the admin's typing
-  if (!email) return "email_required";
-  if (!validEmail(email)) return "email_invalid";
-  const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, email)).limit(1);
-  if (known) {
-    if (!row.email) return "account_exists"; // typed by an admin: no proof this sender is that person
-    return known.id;
-  }
+  if (!validEmail(row.email)) return null; // nothing from Slack about the address
+  const [known] = await tx.select({ id: user.id }).from(user).where(eq(user.email, row.email)).limit(1);
+  if (known) return known.id;
   const id = crypto.randomUUID();
-  await tx.insert(user).values({ id, name: row.name, email, emailVerified: false, image: row.image });
+  await tx.insert(user).values({ id, name: row.name, email: row.email, emailVerified: false, image: row.image });
   return id;
 }
 

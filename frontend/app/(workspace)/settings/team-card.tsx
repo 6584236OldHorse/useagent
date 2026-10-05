@@ -297,8 +297,9 @@ export function decisionEmail(request: Pick<AccessRequest, "email">, typed: stri
   return request.email ?? (typed.trim() || null);
 }
 
-/** A Slack sender nobody has let in yet. Allow needs the email they will sign in
- *  with; Slack hands it over when the app may read emails, else the admin types it. */
+/** A Slack sender nobody has let in yet. When Slack shared their address, Allow
+ *  lets them in at once. When it did not, the admin types an address and that
+ *  person is invited; they are let in when they accept on the web. */
 function AccessRequestRow({
   request,
   busy,
@@ -347,7 +348,7 @@ function AccessRequestRow({
         disabled={busy || !decision}
         onClick={() => onAllow(decision)}
       >
-        Allow
+        {known ? "Allow" : "Invite"}
       </Button>
       <Button variant="ghost" size="xs" disabled={busy} onClick={onDeny}>
         Deny

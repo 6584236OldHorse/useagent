@@ -1,7 +1,8 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/client";
-import { invitation, member } from "../db/auth-schema";
+import { invitation, member, user } from "../db/auth-schema";
+import { NO_WAY_IN } from "../auth-invitations";
 import { decideAccessRequest, listAccessRequests } from "../slack/access-requests";
 import type { AppEnv } from "../http";
 
@@ -70,18 +71,17 @@ teamRoutes.post("/access-requests/:id/:answer{allow|deny}", async (c) => {
   const manager = await managerId(c);
   if (!manager) return c.json({ error: "forbidden" }, 403);
   const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
+  const [who] = await db.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, manager.userId)).limit(1);
   const outcome = await decideAccessRequest({
     id: c.req.param("id"),
     orgId: manager.orgId,
-    decidedBy: manager.userId,
+    decidedBy: { id: manager.userId, name: who?.name ?? "", email: who?.email ?? "" },
     allow: c.req.param("answer") === "allow",
     email: typeof body.email === "string" ? body.email : null,
   });
   if (outcome === "not_found") return c.json({ message: "That request is no longer open" }, 404);
   if (outcome === "email_required") return c.json({ message: "Enter the email address they will sign in with" }, 400);
   if (outcome === "email_invalid") return c.json({ message: "That does not look like an email address" }, 400);
-  if (outcome === "account_exists") {
-    return c.json({ message: "That address already has an account here. Only Slack can vouch that this person owns it, and it did not share their email." }, 409);
-  }
+  if (outcome === "no_way_in") return c.json({ message: NO_WAY_IN }, 400);
   return c.json({ status: outcome });
 });

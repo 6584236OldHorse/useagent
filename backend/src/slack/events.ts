@@ -357,7 +357,9 @@ export async function handleSlackEvent(
             ? "I do not know you yet, so I have asked this workspace's admins to let you in. Once they do, mention me again and I will get to work."
             : verdict === "already_in"
               ? "You are in now. Send that again and I will get to work."
-              : "Still waiting for an admin to let you in. Mention me again once they have.",
+              : verdict === "invited"
+                ? "An admin has sent you an invitation by email. Accept it on the web, then mention me again."
+                : "Still waiting for an admin to let you in. Mention me again once they have.",
       });
     }
     return { status: "permanent_noop", reason: "sender_not_linked" };
