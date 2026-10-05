@@ -320,6 +320,9 @@ export function turnTraceContext(
 interface TimelineProps {
   nodes: TimelineNode[];
   live: boolean;
+  /** Finalized server reply. Settled native timelines keep their work and tail,
+   *  but this replaces the provider's pre-final text burst. */
+  settledReply?: string | null;
   workingSince?: string;
   /** Render this turn's follow-up suggestions (the LATEST turn only - stale
    *  suggestions under scrolled-back history are noise). */
@@ -336,11 +339,13 @@ interface TimelineProps {
 export function Timeline({
   nodes,
   live,
+  settledReply,
   workingSince,
   showFollowups = false,
   trace = DEFAULT_TRACE,
 }: TimelineProps) {
   const { work, reply, tail } = useMemo(() => splitTurn(nodes, live), [nodes, live]);
+  const visibleReply = live ? reply : (settledReply ?? reply);
   const failure = trace.failure ?? null;
   // A failed run closes its rows with the terminal failure, so even a run that
   // failed before any work still traces why.
@@ -386,9 +391,11 @@ export function Timeline({
           className="animate-ai-fade-up"
         />
       )}
-      {reply && <TextBurst text={reply} />}
+      {visibleReply && <TextBurst text={visibleReply} />}
       {/* Nothing to trace yet and nothing said: the boot gap keeps a live signal. */}
-      {live && rows.length === 0 && !reply && <WorkingIndicator createdAt={workingSince ?? null} />}
+      {live && rows.length === 0 && !visibleReply && (
+        <WorkingIndicator createdAt={workingSince ?? null} />
+      )}
       {tail.map((node) =>
         node.kind === "file" ? (
           <FileChangeRow key={node.key} node={node} />

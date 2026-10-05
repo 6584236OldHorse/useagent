@@ -331,14 +331,13 @@ const TurnBlock = memo(function TurnBlock({
         {turn.canonicalDegraded && <CaptureDegradedNote />}
 
         {timeline ? (
-          /* Native turn: the interleaved timeline IS the turn — narration bursts
-             and their tool rows in true order (live and settled alike). Its final
-             burst is the answer, so the durable summary is re-rendered only when
-             the timeline carried no narration (a tool-only turn). */
+          /* Keep native work in order, then prefer the finalized reply. A
+             tool-only timeline still uses AgentAnswer for its citations. */
           <div data-timeline-source={timelineSource} className="space-y-3">
             <Timeline
               nodes={timeline}
               live={live}
+              settledReply={timelineReply ? summary : null}
               workingSince={run.created_at}
               showFollowups={isLatestTurn}
               trace={trace}

@@ -84,3 +84,40 @@ describe("timeline artifact rendering", () => {
     expect(html).toContain('aria-label="Download legacy.png"');
   });
 });
+
+describe("timeline finalized reply", () => {
+  const nodes: TimelineNode[] = [
+    { kind: "text", key: "provider-reply", text: "Old sandbox link: /workspace/report.pdf" },
+    {
+      kind: "artifact",
+      key: "artifact:pdf-1",
+      artifact: {
+        id: "pdf-1",
+        name: "report.pdf",
+        bytes: 4096,
+        sha256: "b".repeat(64),
+        contentType: "application/pdf",
+      },
+    },
+  ];
+
+  test("settled render replaces provider text with the finalized reply and keeps the tail", () => {
+    const html = renderToStaticMarkup(
+      <Timeline nodes={nodes} live={false} settledReply="Download: /api/artifacts/pdf-1/content" />,
+    );
+
+    expect(html).toContain("Download: /api/artifacts/pdf-1/content");
+    expect(html).not.toContain("Old sandbox link");
+    expect(html).toContain("report.pdf");
+  });
+
+  test("live render keeps provider text unchanged", () => {
+    const html = renderToStaticMarkup(
+      <Timeline nodes={nodes} live settledReply="Download: /api/artifacts/pdf-1/content" />,
+    );
+
+    expect(html).toContain("Old sandbox link: /workspace/report.pdf");
+    expect(html).not.toContain("Download: /api/artifacts/pdf-1/content");
+    expect(html).toContain("report.pdf");
+  });
+});

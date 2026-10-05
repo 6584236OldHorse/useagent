@@ -15,6 +15,7 @@ function finishedWorkSessionLockClient(): ReturnType<typeof postgres> {
 }
 
 export async function lockFinishedWorkRun(runId: string, exec: Executor): Promise<void> {
+  if (heldRunLocks.getStore()?.has(runId)) return;
   await exec.execute(
     sql`select pg_advisory_xact_lock(hashtext('finished-work'), hashtext(${runId}))`,
   );

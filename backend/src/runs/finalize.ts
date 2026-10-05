@@ -53,7 +53,10 @@ import {
 import { evaluateFinishedWork, finishedWorkFailureSummary } from "./finished-work";
 import { listFinishedWorkForRun } from "./finished-work-repo";
 import { finishedWorkEnforcementEnabled, finishedWorkRolloutMode } from "./finished-work-rollout";
-import { lockFinishedWorkRun } from "./finished-work-lock";
+import { lockFinishedWorkRun, withFinishedWorkSessionLocks } from "./finished-work-lock";
+import { ARTIFACT_COMPLETION_FAILURE, completeLinkedArtifacts, runOutputLinks } from "../artifacts/completion";
+import type { OutputLink } from "../artifacts/output-links";
+import { CANCEL_SUMMARY, hasRunCancelIntent } from "../commands/cancel";
 import { getThreadRelationship } from "./thread-relationship-repo";
 import { enqueueSlackUserMirrorForRun } from "../slack/user-mirror";
 
@@ -197,8 +200,6 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
   }
 
   if (status === "completed") {
-    const SHARE_LIMIT = 5;
-    const SHARE_MAX_BYTES = 20 * 1024 * 1024;
     const revisedEvents = await tx
       .select({ payload: providerEvents.payload })
       .from(providerEvents)
@@ -234,10 +235,10 @@ export async function enqueueSlackTerminalDeliveryForRunTx(
       })
       .from(artifacts)
       .where(and(eq(artifacts.orgId, run.orgId), artifactScope))
-      .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt))
-      .limit(SHARE_LIMIT);
+      .orderBy(desc(artifacts.workpieceRevision), desc(artifacts.createdAt));
     for (const artifact of runArtifacts) {
-      if (artifact.sizeBytes > SHARE_MAX_BYTES) continue;
+      // Publication already enforces the artifact byte limit. Never silently
+      // drop the sixth file or a valid larger file at the delivery boundary.
       const created = await enqueueUploadFileTx(tx, {
         idempotencyKey: slackArtifactDeliveryIdempotencyKey({
           teamId: slack.teamId,
@@ -337,6 +338,32 @@ export async function finalizeRun(
   durationMs: number,
   options: FinalizeRunOptions = {},
 ): Promise<FinalizeRunResult> {
+  if (status !== "completed") return commitRunFinalization(runId, status, summary, durationMs, options);
+  const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
+  if (!run || (run.status !== "queued" && run.status !== "running")) return { applied: false };
+  let links: OutputLink[];
+  try {
+    links = await runOutputLinks(run, summary);
+  } catch {
+    return commitRunFinalization(runId, "failed", ARTIFACT_COMPLETION_FAILURE, durationMs, options);
+  }
+  if (links.length === 0) return commitRunFinalization(runId, status, summary, durationMs, options);
+  // The existing two-connection publication pool bounds simultaneous file
+  // finalizations. A recovery claim must remain locked until publication and
+  // settlement finish, so this path deliberately holds its transaction during
+  // bounded file I/O; a false claim performs no publication at all.
+  return withFinishedWorkSessionLocks(runId, null, () =>
+    commitRunFinalization(runId, status, summary, durationMs, options, links));
+}
+
+async function commitRunFinalization(
+  runId: string,
+  status: RunStatus,
+  summary: string,
+  durationMs: number,
+  options: FinalizeRunOptions,
+  links: readonly OutputLink[] = [],
+): Promise<FinalizeRunResult> {
   const executionGraph = executionGraphEnabled();
   const finishedWorkMode = finishedWorkRolloutMode();
   if (executionGraph) await prepareExecutionGraphSeal(runId);
@@ -353,21 +380,37 @@ export async function finalizeRun(
   let settledPrompt: string | null = null;
   let settledInternal = true; // stays true unless a customer run actually finalized
   await db.transaction(async (tx) => {
-    if (finishedWorkMode !== "off") await lockFinishedWorkRun(runId, tx);
+    await lockFinishedWorkRun(runId, tx);
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1);
     if (!run) return; // deleted mid-flight — nothing to finalize
     if (options.claim && !(await options.claim(tx))) return; // the caller no longer owns this settlement
+    if (run.status !== "queued" && run.status !== "running") return;
     settledThreadId = run.threadId;
     settledOrgId = run.orgId;
     settledUserId = run.userId;
     settledPrompt = run.prompt;
     settledInternal = isInternalRunOrigin(run.origin) || run.engine === "mock";
 
+    if (effectiveStatus === "completed" && run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
+      effectiveStatus = "failed";
+      effectiveSummary = CANCEL_SUMMARY;
+    } else if (effectiveStatus === "completed" && links.length > 0) {
+      const delivered = await completeLinkedArtifacts(run, effectiveSummary, links, tx);
+      effectiveStatus = delivered.status;
+      effectiveSummary = delivered.summary;
+    }
+    // Stop can arrive while the publisher reads from a runner. Recheck its
+    // durable command before recording success, not only before engine return.
+    if (effectiveStatus === "completed" && run.orgId && await hasRunCancelIntent(run.orgId, run.id, tx)) {
+      effectiveStatus = "failed";
+      effectiveSummary = CANCEL_SUMMARY;
+    }
+
     // Finished-work enforcement is additive and trusted-boundary-only: Phase A
     // creates no obligations, so legacy runs evaluate `not_required`. Requested
     // failures always remain failures. Only an explicit durable obligation can
     // turn a requested completion into an effective failure.
-    if (status === "completed" && finishedWorkMode !== "off" && run.orgId) {
+    if (effectiveStatus === "completed" && finishedWorkMode !== "off" && run.orgId) {
       const finishedWorkDecision = evaluateFinishedWork(
         await listFinishedWorkForRun(run.orgId, runId, tx),
       );
