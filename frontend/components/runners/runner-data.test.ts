@@ -55,6 +55,9 @@ describe("runner location", () => {
     expect(runOnMachine(null, "local")).toBe(true);
     expect(runOnMachine(null, undefined, "local")).toBe(true);
     expect(runOnMachine("sandbox_1", "daytona", "local")).toBe(false);
+    // A recorded hosted provider outranks the ask: the run was placed in the cloud.
+    expect(runOnMachine(null, "daytona", "local")).toBe(false);
+    expect(runnerLocationLabel(null, "daytona", [], "local")).toBe("Cloud");
     expect(runOnMachine(null, undefined, "cloud")).toBe(false);
     expect(runOnMachine(null, undefined)).toBe(false);
     expect(runnerLocationLabel("local:rn_a:container_1", undefined, [{ ...runner, name: "Cloud" }])).toBe("Cloud");

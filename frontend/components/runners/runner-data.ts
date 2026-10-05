@@ -128,8 +128,9 @@ export const PROVIDER_NAMES: Readonly<Record<string, string>> = {
 
 /** Whether a run executes on the person's own machine: a local sandbox id,
  *  the local provider (a released sandbox keeps its provider after its id is
- *  cleared), or Local asked for before any sandbox exists. Everything else is
- *  hosted; a thread that asked for nothing runs in the cloud. */
+ *  cleared), or Local asked for before any sandbox or provider is recorded.
+ *  Everything else is hosted: a recorded hosted provider outranks the ask, and
+ *  a thread that asked for nothing runs in the cloud. */
 export function runOnMachine(
   sandboxId: string | null,
   sandboxProvider: unknown,
@@ -138,7 +139,7 @@ export function runOnMachine(
   return (
     localRunnerId(sandboxId) !== null ||
     sandboxProvider === "local" ||
-    (!sandboxId && runLocation === "local")
+    (!sandboxId && !sandboxProvider && runLocation === "local")
   );
 }
 
