@@ -579,16 +579,16 @@ export function makeRuntimeAdapter(engine: RuntimeEngineId, driver: ProviderDriv
         // A read-only turn never resumes a thread that may hold a session grant.
         await assertReadOnlyTurnAllowed({ threadId: ctx.threadId ?? ctx.runId, permissionMode: ctx.permissionMode, threadExists });
         if (engine === "opencode") {
-          await reloadRetainedOpenCodeSession({
+          const limitsApplied = await reloadRetainedOpenCodeSession({
             sandbox,
             signal: ctx.signal,
             threadId,
             threadExists,
             modelLimitsChanged: providerBridgeLease.modelLimitsChanged,
             modelLimitsRevision: providerBridgeLease.modelLimitsRevision,
-            modelLimitsChangedAt: providerBridgeLease.modelLimitsChangedAt,
           });
-          await providerBridgeLease.ackModelLimitsReload();
+          // A declined stop leaves the refresh owed, so the next turn tries again.
+          if (limitsApplied) await providerBridgeLease.ackModelLimitsReload();
         }
         const createdAt = new Date().toISOString();
         // The run's own policy; the operator posture only covers runs created without one.

@@ -1,5 +1,5 @@
 import { awaitRuntimeOperation } from "./runtime-operation";
-import { requestRuntimeEnvironment } from "./runtime-environment-client";
+import { RuntimeEnvironmentRequestError, requestRuntimeEnvironment } from "./runtime-environment-client";
 import type { SandboxHandle } from "../sandboxes/provider";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -22,6 +22,23 @@ export function buildRuntimeSessionStopCommand(
     onlyIfSettled: true,
     createdAt,
   };
+}
+
+/** The runtime declined a conditional stop: the thread was not settled when the
+ *  command arrived (a turn queued since the command's time, a session coming
+ *  alive, an earlier turn that never settled), or that command id was declined
+ *  before. Either way no stop happened, and neither is the current turn's
+ *  failure. Body shape: `{reason, cause: {_tag, commandType, commandId, detail}}`. */
+export function runtimeDeclinedSessionStop(error: unknown): boolean {
+  if (!(error instanceof RuntimeEnvironmentRequestError)) return false;
+  const cause = error.response?.cause;
+  if (!cause || typeof cause !== "object") return false;
+  const { _tag, commandType, commandId } = cause as Record<string, unknown>;
+  if (_tag === "OrchestrationCommandInvariantError") return commandType === "thread.session.stop";
+  if (_tag === "OrchestrationCommandPreviouslyRejectedError") {
+    return typeof commandId === "string" && commandId.startsWith("skynet-session-stop-");
+  }
+  return false;
 }
 
 export interface OpenCodeSessionReloadDependencies {
@@ -121,6 +138,13 @@ function reloadThreadState(
   };
 }
 
+/** Stops an idle retained OpenCode session so it restarts with the changed model
+ *  limits. Resolves true when the limits are applied (the session is stopped or
+ *  there was none), false when the runtime declined the conditional stop: the
+ *  turn then runs on the retained session as it is, the refresh stays
+ *  unacknowledged, and a later turn tries again. Every attempt is its own
+ *  command, stamped with its own time: the runtime refuses a stop older than a
+ *  turn it has queued since, and remembers a declined command id for good. */
 export async function reloadRetainedOpenCodeSession(input: {
   readonly sandbox: SandboxHandle;
   readonly signal: AbortSignal;
@@ -128,12 +152,11 @@ export async function reloadRetainedOpenCodeSession(input: {
   readonly threadExists: boolean;
   readonly modelLimitsChanged: boolean;
   readonly modelLimitsRevision?: string | null;
-  readonly modelLimitsChangedAt?: string | null;
   readonly deadlineMs?: number;
   readonly dependencies?: OpenCodeSessionReloadDependencies;
-}): Promise<void> {
-  if (!input.threadExists || !input.modelLimitsChanged) return;
-  if (!input.modelLimitsRevision || !input.modelLimitsChangedAt) {
+}): Promise<boolean> {
+  if (!input.threadExists || !input.modelLimitsChanged) return true;
+  if (!input.modelLimitsRevision) {
     throw new Error("OpenCode model-limit refresh command state is missing");
   }
 
@@ -160,7 +183,7 @@ export async function reloadRetainedOpenCodeSession(input: {
     if (state.sessionStatus === "running" || state.sessionStatus === "starting") {
       throw new Error(`OpenCode model limits changed while the retained session is ${state.sessionStatus}`);
     }
-    if (state.sessionStatus === null || state.sessionStatus === "stopped") return;
+    if (state.sessionStatus === null || state.sessionStatus === "stopped") return true;
 
     try {
       await awaitReloadOperation(
@@ -171,8 +194,8 @@ export async function reloadRetainedOpenCodeSession(input: {
             path: "/api/orchestration/dispatch",
             payload: buildRuntimeSessionStopCommand(
               input.threadId,
-              input.modelLimitsChangedAt,
-              input.modelLimitsRevision,
+              undefined,
+              `${input.modelLimitsRevision}-${crypto.randomUUID()}`,
             ),
           },
           signal,
@@ -182,6 +205,13 @@ export async function reloadRetainedOpenCodeSession(input: {
     } catch (error) {
       input.signal.throwIfAborted();
       deadline.throwIfAborted();
+      if (runtimeDeclinedSessionStop(error)) {
+        console.warn(
+          `[opencode] the runtime declined the conditional session stop for ${input.threadId}; ` +
+            `the retained session keeps its model limits until a later turn: ${(error as Error).message}`,
+        );
+        return false;
+      }
       state = await readThread();
       if (state.latestTurnRunning || state.sessionStatus === "running" || state.sessionStatus === "starting") {
         throw new Error("OpenCode retained session reactivated before the conditional stop");
@@ -198,6 +228,7 @@ export async function reloadRetainedOpenCodeSession(input: {
         throw new Error("OpenCode retained session disappeared before stop was confirmed");
       }
     }
+    return true;
   } catch (error) {
     if (input.signal.aborted) throw input.signal.reason;
     if (deadline.aborted) {
