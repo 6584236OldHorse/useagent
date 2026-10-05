@@ -20,7 +20,7 @@ import {
 import { createHash, createHmac } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../src/db/client";
-import { artifacts, commands, member, runs, slackOutbox, slackRunResponses, slackThreads, user, userUploads } from "../src/db/schema";
+import { artifacts, commands, member, runs, sandboxMinutesEntries, slackOutbox, slackRunResponses, slackThreads, user, userUploads } from "../src/db/schema";
 import { artifactStorage } from "../src/artifacts/storage";
 import { finalizeRun } from "../src/runs/finalize";
 import { createRun, insertStep, updateStepCode } from "../src/runs/repo";
@@ -1910,6 +1910,43 @@ describe("slack native stream and Block Kit fallback", () => {
 });
 
 describe("slack durable inbox", () => {
+  test("a member past the sandbox minutes cap is answered with the refusal once and the message settles", async () => {
+    const marker = uid("capped-minutes");
+    const channel = `C${uid("ch")}`;
+    const ts = `${uid("ts")}.1`;
+    const envelope = eventCallback({
+      type: "app_mention",
+      channel,
+      user: "U-HUMAN",
+      text: `<@${BOT}> capped ${marker}`,
+      ts,
+    }) as SlackEnvelope;
+    const inboxKey = slackInboxKey(envelope);
+    const seed = `seed_${uid()}`;
+    await db.insert(sandboxMinutesEntries).values({
+      chargeKey: seed, orgId: DEV_ORG_ID, userId: DEV_USER_ID, seconds: 600 * 60, sandboxes: 1,
+    });
+    try {
+      expect((await postSlack(envelope)).status).toBe(200);
+      const refusal = await waitFor(async () => {
+        const rows = await db
+          .select({ payload: slackOutbox.payload })
+          .from(slackOutbox)
+          .where(eq(slackOutbox.idempotencyKey, `slack-sandbox-minutes-refused:${TEAM}:${channel}:${ts}`));
+        return rows[0] ?? null;
+      });
+      expect(refusal.payload).toContain("You have used 600 of your 600 sandbox minutes");
+      const settled = await waitFor(async () => {
+        const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+        return row?.state === "completed" ? row : null;
+      });
+      expect(settled.state).toBe("completed");
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+    } finally {
+      await db.delete(sandboxMinutesEntries).where(eq(sandboxMinutesEntries.chargeKey, seed));
+    }
+  });
+
   test("persists one duplicate event while closed and drains it once after restart/open", async () => {
     await stopSlackInboxPumpForTest();
     const operationId = `slack-deferred-test:${crypto.randomUUID()}`;

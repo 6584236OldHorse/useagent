@@ -245,7 +245,13 @@ async function runAutomationNow(
   // command worker and authentication root. The execution graph is needed only
   // for this explicit mutating call.
   const { fireScheduleForOrg } = await import("../../schedules/service");
-  const runId = await fireScheduleForOrg(schedule, "manual");
+  let runId: string;
+  try {
+    runId = await fireScheduleForOrg(schedule, "manual");
+  } catch (error) {
+    if (error instanceof ScheduleServiceError) return serviceError(error);
+    throw error;
+  }
   return textResult(`Started automation ${schedule.name} now as run ${runId}.`, {
     run_id: runId,
     automation_id: schedule.id,

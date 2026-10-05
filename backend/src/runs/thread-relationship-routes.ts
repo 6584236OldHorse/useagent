@@ -13,6 +13,7 @@ import { pumpThread } from "../worker";
 import { runQueueView } from "../fleet/view";
 import { RunPromptTooLargeError } from "../commands/prompt-policy";
 import { RunAdmissionClosedError } from "../commands/admission";
+import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { FleetQueueLimitError } from "../fleet/intake";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/client";
@@ -222,21 +223,27 @@ routes.post("/:parentThreadId/continue-native-child", async (c) => {
   let bounded = context.slice(0, CHILD_CONTEXT_MAX_CHARS - prefix.length);
   while (Buffer.byteLength(prefix + bounded, "utf8") > CHILD_CONTEXT_MAX_BYTES) bounded = bounded.slice(0, -1);
   const prompt = prefix + (bounded || emptyContext);
-  const outcome = await createChildSession({
-    orgId: c.get("orgId"),
-    actorId: c.get("userId"),
-    parentRunId: source.run.id,
-    threadId: source.run.threadId,
-    title,
-    prompt,
-    engine: source.run.engine,
-    model: source.run.model,
-    repos: source.run.repos,
-    memoryScope: source.run.memoryScope,
-    idempotencyKey,
-    relationshipKind: "continued_from_native",
-    sourceExecutionId: source.execution.id,
-  });
+  let outcome: Awaited<ReturnType<typeof createChildSession>>;
+  try {
+    outcome = await createChildSession({
+      orgId: c.get("orgId"),
+      actorId: c.get("userId"),
+      parentRunId: source.run.id,
+      threadId: source.run.threadId,
+      title,
+      prompt,
+      engine: source.run.engine,
+      model: source.run.model,
+      repos: source.run.repos,
+      memoryScope: source.run.memoryScope,
+      idempotencyKey,
+      relationshipKind: "continued_from_native",
+      sourceExecutionId: source.execution.id,
+    });
+  } catch (error) {
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
+    throw error;
+  }
   if (outcome.status === "conflict") return c.json({ error: "idempotency_key_reused" }, 409);
   return c.json({
     id: outcome.child.id,
@@ -291,6 +298,7 @@ routes.post("/:threadId/messages", async (c) => {
     if (error instanceof RunPromptTooLargeError) return c.json({ error: error.code }, 413);
     if (error instanceof UploadClaimError) return c.json({ error: "upload_unavailable" }, 409);
     if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     if (error instanceof FleetQueueLimitError) return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
     throw error;
   }

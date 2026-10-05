@@ -28,6 +28,7 @@ import {
   type RunCommandIntent,
 } from "../commands";
 import { FleetQueueLimitError } from "../fleet/intake";
+import { SandboxMinutesExceededError } from "./sandbox-minutes";
 import { runQueueView } from "../fleet/view";
 import {
   acceptInternalRunCommand,
@@ -463,9 +464,8 @@ export async function handleRunCreate(
         409,
       );
     }
-    if (error instanceof RunAdmissionClosedError) {
-      return c.json({ error: error.code, retryable: true }, 503);
-    }
+    if (error instanceof RunAdmissionClosedError) return c.json({ error: error.code, retryable: true }, 503);
+    if (error instanceof SandboxMinutesExceededError) return c.json(error.body, 402);
     // Durable per-org queue ceiling exceeded — the server-side fan-out authority.
     if (error instanceof FleetQueueLimitError)
       return c.json({ error: error.code, retryable: true, limit: error.limit }, 429);
