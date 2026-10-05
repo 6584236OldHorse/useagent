@@ -87,7 +87,8 @@ describe("invitation mail configuration", () => {
     expect(await deliverInvitation(data, null)).toBe("link_only");
     expect(sent).toEqual([]);
     const config = { host: "smtp.example.test", port: 465, secure: true, from: "hello@example.test" };
-    const send = async (_cfg: unknown, msg: { to: string[]; subject: string; from: string }) => {
+    const send = async (cfg: { timeoutMs?: number }, msg: { to: string[]; subject: string; from: string }) => {
+      expect(cfg.timeoutMs).toBe(20_000);
       sent.push({ to: msg.to, subject: msg.subject, from: msg.from });
     };
     expect(await deliverInvitation(data, config, send as never)).toBe("sent");

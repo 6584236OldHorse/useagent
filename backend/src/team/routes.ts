@@ -34,6 +34,7 @@ teamRoutes.get("/invitations", async (c) => {
     .orderBy(desc(invitation.createdAt))
     .limit(200);
   return c.json({
+    organizationId: orgId,
     invitations: rows.map((row) => ({
       id: row.id,
       email: row.email,

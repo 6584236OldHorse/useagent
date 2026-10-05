@@ -16,9 +16,11 @@ const member = (over: Partial<TeamMember>): TeamMember => ({
 });
 
 describe("team roles", () => {
-  test("the first stored role is the rank, and anything unknown is a member", () => {
+  test("the strongest stored role is the rank, and anything unknown is a member", () => {
     expect(memberRole("owner")).toBe("owner");
     expect(memberRole("admin,member")).toBe("admin");
+    expect(memberRole("member,admin")).toBe("admin");
+    expect(memberRole("admin,owner")).toBe("owner");
     expect(memberRole("editor")).toBe("member");
     expect(memberRole(undefined)).toBe("member");
   });

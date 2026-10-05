@@ -14,6 +14,8 @@
 export interface SmtpConfig {
   host: string;
   port: number;
+  /** Longest the whole dialog may take; on expiry the socket is closed and the send rejects. */
+  timeoutMs?: number;
   secure: boolean;
   user?: string;
   pass?: string;
@@ -29,6 +31,14 @@ export interface SmtpMessage {
 export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void> {
   let buffer = "";
   let onData: (() => void) | null = null;
+  // A closed or timed-out socket ends every pending read instead of parking it.
+  let failure: Error | null = null;
+  const fail = (error: Error) => {
+    failure ??= error;
+    const wake = onData;
+    onData = null;
+    wake?.();
+  };
 
   const socket = await Bun.connect({
     hostname: cfg.host,
@@ -41,16 +51,21 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
         onData = null;
         wake?.();
       },
-      error() {
-        /* surfaced by a stalled readReply / the deliver() timeout */
+      error(_s, error) {
+        fail(error instanceof Error ? error : new Error("SMTP socket error"));
       },
       close() {
-        const wake = onData;
-        onData = null;
-        wake?.();
+        fail(new Error("SMTP connection closed"));
       },
     },
   });
+
+  const deadline = cfg.timeoutMs
+    ? setTimeout(() => {
+        fail(new Error("SMTP timeout"));
+        socket.terminate();
+      }, cfg.timeoutMs)
+    : undefined;
 
   // Read one complete SMTP reply (handles multiline "250-foo\r\n250 bar").
   const readReply = async (): Promise<{ code: number; text: string }> => {
@@ -65,9 +80,11 @@ export async function sendSmtp(cfg: SmtpConfig, msg: SmtpMessage): Promise<void>
           return { code, text: line.slice(4) };
         }
       }
+      if (failure) throw failure;
       await new Promise<void>((resolve) => {
         onData = resolve;
       });
+      if (failure) throw failure;
     }
   };
 

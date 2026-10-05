@@ -2,10 +2,9 @@ import { backendFetch } from "@/lib/backend-fetch";
 
 /**
  * The organisation membership endpoints better-auth serves under /api/auth,
- * plus our own pending-invitations read. Every call names the organisation
- * explicitly: a fresh session has no active organisation until something sets
- * one, and the rest of the app falls back to the person's first membership, so
- * this does the same. Reads throw on a non-2xx so the card can say "could not
+ * plus our own pending-invitations read, which also names the organisation the
+ * server scoped the request to; every other call carries that id explicitly,
+ * since a fresh session has no active organisation of its own. Reads throw on a non-2xx so the card can say "could not
  * load"; writes throw with the server's message so the dialog can show why.
  */
 
@@ -40,9 +39,12 @@ export interface Team {
 const jsonHeaders = { "content-type": "application/json" } as const;
 
 export function memberRole(value: unknown): MemberRole {
-  // better-auth stores comma-separated roles; the first one is the person's rank here.
-  const first = typeof value === "string" ? value.split(",")[0]?.trim() : "";
-  return first === "owner" || first === "admin" ? first : "member";
+  // better-auth stores comma-separated roles and grants the union of them, so the
+  // person's rank is the strongest role present.
+  const roles = typeof value === "string" ? value.split(",").map((r) => r.trim()) : [];
+  if (roles.includes("owner")) return "owner";
+  if (roles.includes("admin")) return "admin";
+  return "member";
 }
 
 async function readError(res: Response, fallback: string): Promise<string> {
@@ -61,26 +63,20 @@ async function post(path: string, body: Record<string, unknown>, fallback: strin
   return res;
 }
 
-/** The session's active organisation, else the first one the person belongs to. */
-export async function resolveOrganizationId(activeOrganizationId: string | null | undefined): Promise<string> {
-  if (activeOrganizationId) return activeOrganizationId;
-  const res = await backendFetch("/api/auth/organization/list", { cache: "no-store" });
-  if (!res.ok) throw new Error(`organization list ${res.status}`);
-  const orgs = (await res.json()) as Array<{ id: string }> | null;
-  const first = orgs?.[0]?.id;
-  if (!first) throw new Error("no organisation");
-  return first;
-}
-
-export async function fetchTeam(input: {
-  readonly userId: string | null;
-  readonly activeOrganizationId: string | null | undefined;
-}): Promise<Team> {
-  const organizationId = await resolveOrganizationId(input.activeOrganizationId);
-  const [membersRes, invitationsRes] = await Promise.all([
-    backendFetch(`/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`, { cache: "no-store" }),
-    backendFetch("/api/team/invitations", { cache: "no-store" }),
-  ]);
+export async function fetchTeam(input: { readonly userId: string | null }): Promise<Team> {
+  // The server resolves the organisation once (the request's org scope) and
+  // names it, so members, invitations and every later write agree on one org.
+  const invitationsRes = await backendFetch("/api/team/invitations", { cache: "no-store" });
+  if (!invitationsRes.ok) throw new Error(`invitations ${invitationsRes.status}`);
+  const invitationsBody = (await invitationsRes.json()) as {
+    organizationId: string;
+    invitations?: Array<{ id: string; email: string; role: string | null; expiresAt: string }>;
+  };
+  const organizationId = invitationsBody.organizationId;
+  const membersRes = await backendFetch(
+    `/api/auth/organization/list-members?organizationId=${encodeURIComponent(organizationId)}`,
+    { cache: "no-store" },
+  );
   if (!membersRes.ok) throw new Error(`list-members ${membersRes.status}`);
   const membersBody = (await membersRes.json()) as {
     members?: Array<{
@@ -100,10 +96,6 @@ export async function fetchTeam(input: {
     role: memberRole(m.role),
     joinedAt: m.createdAt,
   }));
-  if (!invitationsRes.ok) throw new Error(`invitations ${invitationsRes.status}`);
-  const invitationsBody = (await invitationsRes.json()) as {
-    invitations?: Array<{ id: string; email: string; role: string | null; expiresAt: string }>;
-  };
   const invitations = (invitationsBody.invitations ?? []).map((i) => ({
     id: i.id,
     email: i.email,

@@ -137,22 +137,19 @@ export async function deliverInvitation(
     link,
     expiresAt: data.invitation.expiresAt,
   });
-  // A stalled SMTP dialog must not hold the invite request; the invitation row
-  // already exists and the link is shown regardless of what the mail did.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      send(
-        { host: config.host, port: config.port, secure: config.secure, user: config.user, pass: config.pass },
-        { from: config.from, to: [data.email], subject: message.subject, text: message.text },
-      ),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("invitation mail timed out")), INVITATION_MAIL_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  // A stalled SMTP dialog must not hold the invite request or its socket; the
+  // invitation row already exists and the link is shown whatever the mail did.
+  await send(
+    {
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      user: config.user,
+      pass: config.pass,
+      timeoutMs: INVITATION_MAIL_TIMEOUT_MS,
+    },
+    { from: config.from, to: [data.email], subject: message.subject, text: message.text },
+  );
   console.log(`[auth] invitation ${data.id} emailed to ${data.email}`);
   return "sent";
 }

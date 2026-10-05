@@ -43,6 +43,12 @@ routes.post("/api/auth/electron/token", (c) => {
   if (origin !== "useagent:/") return c.json({ message: "Desktop token exchange requires the native app." }, 403);
   return auth.handler(c.req.raw);
 });
+/** An invitation id must come from the invitation itself (the mail or the
+ *  inviter), never from a lookup by the session's email claim: a Google account
+ *  can keep a verified claim on an address after the mailbox changed hands. */
+routes.on(["GET", "POST"], "/api/auth/organization/list-user-invitations", (c) =>
+  c.json({ message: "Not available" }, 404),
+);
 routes.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
 export function handleAuthRequest(request: Request): Response | Promise<Response> {

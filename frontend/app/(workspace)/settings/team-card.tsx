@@ -63,17 +63,16 @@ export function TeamCard() {
   const [inviting, setInviting] = useState(false);
 
   const me = session?.user.id ?? null;
-  const activeOrganizationId = session?.session.activeOrganizationId ?? null;
 
   const load = useCallback(async () => {
     // Without a session (the open dev org) the list still loads, read-only.
     try {
-      setTeam(await fetchTeam({ userId: me, activeOrganizationId }));
+      setTeam(await fetchTeam({ userId: me }));
       setFailed(false);
     } catch {
       setFailed(true);
     }
-  }, [activeOrganizationId, me]);
+  }, [me]);
 
   useEffect(() => {
     if (!sessionLoading) void load();
@@ -194,6 +193,7 @@ export function TeamCard() {
                 key={row.id}
                 invitation={row}
                 manage={manage}
+                canResend={assignableRoles(myRole).includes(row.role)}
                 busy={busy === row.id}
                 onResend={() => act(row.id, () => resendInvitation(team.organizationId, row))}
                 onCancel={() => act(row.id, () => cancelInvitation(team.organizationId, row.id))}
@@ -220,12 +220,15 @@ export function TeamCard() {
 function InvitationRow({
   invitation,
   manage,
+  canResend,
   busy,
   onResend,
   onCancel,
 }: {
   invitation: PendingInvitation;
   manage: boolean;
+  /** Resending repeats the invited role, which only an owner may do for an owner invitation. */
+  canResend: boolean;
   busy: boolean;
   onResend: () => void;
   onCancel: () => void;
@@ -242,15 +245,15 @@ function InvitationRow({
         </p>
       </div>
       <CopyLinkButton href={invitationHref(invitation.id, window.location.origin)} />
+      {manage && canResend && (
+        <Button variant="ghost" size="xs" disabled={busy} onClick={onResend}>
+          Resend
+        </Button>
+      )}
       {manage && (
-        <>
-          <Button variant="ghost" size="xs" disabled={busy} onClick={onResend}>
-            Resend
-          </Button>
-          <Button variant="ghost" size="xs" disabled={busy} onClick={onCancel}>
-            Cancel
-          </Button>
-        </>
+        <Button variant="ghost" size="xs" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
       )}
     </div>
   );

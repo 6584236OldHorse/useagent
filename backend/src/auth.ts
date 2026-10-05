@@ -56,7 +56,10 @@ export function createAuthServer() {
         create: {
           before: async (user) => {
             // An invitation opens the door only to a verified identity: an unverified
-            // email claim could be anyone naming the invited address.
+            // email claim could be anyone naming the invited address. A stale verified
+            // claim (a mailbox that changed hands) can still create an account, but
+            // never joins the organisation: the invitation id travels only in the mail
+            // and the by-email listing is closed in auth/routes.ts.
             const invited = user.emailVerified === true && (await invitedSignupAllowed(user.email));
             if (!selfSignupEnabled() && !invited) {
               throw APIError.from("FORBIDDEN", {

@@ -22,34 +22,32 @@ export interface InvitationView {
 }
 
 async function fetchInvitation(id: string): Promise<{ view: InvitationView } | { problem: string }> {
-  let res: Response;
   try {
-    res = await backendFetch(`/api/auth/organization/get-invitation?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const res = await backendFetch(`/api/auth/organization/get-invitation?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      return { problem: invitationProblem(res.status, body?.message ?? null) };
+    }
+    return { view: (await res.json()) as InvitationView };
   } catch {
+    // Transport failures and a body that never arrives look the same to the person.
     return { problem: invitationProblem(0, null) };
   }
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { message?: string } | null;
-    return { problem: invitationProblem(res.status, body?.message ?? null) };
-  }
-  const body = (await res.json()) as InvitationView;
-  return { view: body };
 }
 
 async function accept(id: string): Promise<string | null> {
-  let res: Response;
   try {
-    res = await backendFetch("/api/auth/organization/accept-invitation", {
+    const res = await backendFetch("/api/auth/organization/accept-invitation", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ invitationId: id }),
     });
+    if (res.ok) return null;
+    const body = (await res.json().catch(() => null)) as { message?: string } | null;
+    return invitationProblem(res.status, body?.message ?? null);
   } catch {
     return invitationProblem(0, null);
   }
-  if (res.ok) return null;
-  const body = (await res.json().catch(() => null)) as { message?: string } | null;
-  return invitationProblem(res.status, body?.message ?? null);
 }
 
 export function AcceptInvitation({ id }: { id: string }) {

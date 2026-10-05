@@ -43,6 +43,7 @@ test("lists only the org's pending, unexpired invitations", async () => {
     { cookies: org.cookies },
   );
   expect(listed.status).toBe(200);
+  expect((listed.body as { organizationId?: string }).organizationId).toBe(org.orgId);
   expect(listed.body.invitations.map((i) => i.email)).toEqual(["two@example.test", "one@example.test"]);
   expect(listed.body.invitations[0]?.role).toBe("admin");
   expect(Date.parse(listed.body.invitations[0]?.expiresAt ?? "")).toBeGreaterThan(Date.now());
