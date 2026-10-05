@@ -37,3 +37,25 @@ export function spendLabel(spend: SpendSnapshot): string {
 export function spendCapped(spend: SpendSnapshot): boolean {
   return spend.allowance !== null && spend.spent >= spend.allowance;
 }
+
+/**
+ * A loader under which only the NEWEST request may report: mount, reconnect
+ * and settlement refreshes overlap, and an older, slower response must never
+ * undo a newer figure (a member would read "under the cap" while every
+ * submission is refused). A failed request keeps the last good figure.
+ */
+export function spendLoader(
+  fetchSpend: (signal?: AbortSignal) => Promise<SpendSnapshot | null>,
+  report: (spend: SpendSnapshot) => void,
+): (signal?: AbortSignal) => Promise<void> {
+  let generation = 0;
+  return async (signal) => {
+    const mine = ++generation;
+    try {
+      const spend = await fetchSpend(signal);
+      if (spend && mine === generation) report(spend);
+    } catch {
+      // Keep the last good figure.
+    }
+  };
+}

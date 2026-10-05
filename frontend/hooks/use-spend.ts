@@ -1,28 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { backendFetch } from "@/lib/backend-fetch";
-import { parseSpend, type SpendSnapshot } from "@/lib/spend";
+import { parseSpend, spendLoader, type SpendSnapshot } from "@/lib/spend";
 import { useOrgChanges } from "./use-org-changes";
+
+async function fetchSpend(signal?: AbortSignal): Promise<SpendSnapshot | null> {
+  const res = await backendFetch("/api/spend", { signal, cache: "no-store" });
+  return res.ok ? parseSpend(await res.json()) : null;
+}
 
 /**
  * The member's settled spend against their allowance, fetched on mount and
  * again whenever a run in the org settles (that is what moves the figure).
- * A transient failure keeps the last good snapshot; null until the first read.
+ * Only the newest request may report, so an older response never undoes a
+ * newer figure; a transient failure keeps the last good snapshot; null until
+ * the first read.
  */
 export function useSpend(): SpendSnapshot | null {
   const [spend, setSpend] = useState<SpendSnapshot | null>(null);
-
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const res = await backendFetch("/api/spend", { signal, cache: "no-store" });
-      if (!res.ok) return;
-      const parsed = parseSpend(await res.json());
-      if (parsed) setSpend(parsed);
-    } catch {
-      // Keep the last good figure.
-    }
-  }, []);
+  const load = useMemo(() => spendLoader(fetchSpend, setSpend), []);
 
   useOrgChanges(
     (change) => {

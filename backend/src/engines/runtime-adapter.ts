@@ -94,6 +94,8 @@ const RUNTIME_POLL_INTERVAL_MS = 125;
 // for two seconds so that ordering gap is tolerated without accepting no output.
 // The final message lands a moment after the runtime signals completion; a loaded sandbox needs more than a couple of seconds.
 const RUNTIME_TERMINAL_OUTPUT_DRAIN_MS = 15_000;
+/** How long a stopped turn may spend landing the usage the runtime billed before it halted. */
+const RUNTIME_STOP_ACCOUNTING_MS = 5_000;
 const RUNTIME_TERMINAL_OUTPUT_DRAIN_SECONDS = 2;
 const RUNTIME_TERMINAL_CLEANUP_MS = 250;
 export { RUNTIME_EMPTY_TERMINAL_OUTPUT_ERROR } from "./turn-recovery";
@@ -225,6 +227,32 @@ export async function drainRuntimeTerminalOutput(input: {
   }
   input.signal.throwIfAborted();
   return text;
+}
+
+/**
+ * After a Stop, the runtime keeps billing until it actually halts, and the
+ * stream that carried its usage was abandoned together with the stop. One
+ * bounded read under an INDEPENDENT signal lands that terminal usage before
+ * the settlement charges the run; it can neither hold the stop past its bound
+ * nor undo it. Best effort: a runtime that cannot answer in time is logged.
+ */
+export async function settleInterruptedRuntimeUsage(input: {
+  readonly read: (signal: AbortSignal) => Promise<RuntimeThreadSnapshot>;
+  readonly apply: (snapshot: RuntimeThreadSnapshot) => Promise<unknown>;
+  readonly deadlineSignal?: AbortSignal;
+}): Promise<boolean> {
+  try {
+    await input.apply(
+      await input.read(input.deadlineSignal ?? AbortSignal.timeout(RUNTIME_STOP_ACCOUNTING_MS)),
+    );
+    return true;
+  } catch (error) {
+    console.warn(
+      "[runtime] usage billed before the stop was not captured:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  }
 }
 
 export function createRuntimeTerminalSessionCleanup(
@@ -409,6 +437,14 @@ export async function waitForRuntimeTurn(
     watchdog.dispose();
   }
   if (watchdog.signal.aborted) throw watchdog.signal.reason;
+  if (ctx.signal.aborted && currentTurnObserved) {
+    // The stop wins below; the usage the runtime billed before it halted lands
+    // first, so the settlement charges what actually ran.
+    await settleInterruptedRuntimeUsage({
+      read: (signal) => dependencies.readThreadSnapshot(ctx, sandbox, signal),
+      apply: (snapshot) => projector.apply(snapshot),
+    });
+  }
   ctx.signal.throwIfAborted();
   if (firstActivityDeadline.signal.aborted && !currentTurnObserved) {
     throw new RuntimeFirstActivityTimeoutError(runtimeFirstActivityTimeoutMs());

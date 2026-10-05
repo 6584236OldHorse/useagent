@@ -1128,6 +1128,78 @@ describe("T3 run adapter gate", () => {
     expect(deltas).toEqual(["hello", " world"]);
   });
 
+  test("a stopped turn still lands the usage the runtime billed before it halted", async () => {
+    const stop = new AbortController();
+    const steps: Array<{ kind: string; code_json?: Record<string, unknown> | null }> = [];
+    const ctx = {
+      runId: "run-stopped-usage",
+      threadId: "thread-1",
+      signal: stop.signal,
+      emit: async (step: { kind: string; code_json?: Record<string, unknown> | null }) => {
+        steps.push(step);
+        return `step-${steps.length}`;
+      },
+      setSummary() {},
+    } as unknown as EngineRunContext;
+    const prior = turnSnapshot({ sequence: 10, turnId: "turn-prior", state: "completed", text: "old" });
+    const running = turnSnapshot({ sequence: 11, turnId: "turn-current", state: "running", text: "working" });
+    const terminal = turnSnapshot({ sequence: 12, turnId: "turn-current", state: "completed", text: "working done" });
+    const billed = {
+      ...terminal,
+      thread: {
+        ...terminal.thread,
+        activities: [{
+          id: "act-usage",
+          tone: "tool" as const,
+          kind: "task.completed",
+          summary: "Research subagent",
+          payload: {
+            taskId: "task-1",
+            agentKind: "agent",
+            status: "completed",
+            typedUsage: { inputTokens: 100, outputTokens: 20, costUsd: 0.25 },
+          },
+          turnId: "turn-current",
+          sequence: 1,
+        }],
+      },
+    };
+    let terminalReads = 0;
+    const subscribe = async (
+      _sandbox: SandboxHandle,
+      _threadId: string,
+      _afterSequence: number | undefined,
+      _signal: AbortSignal,
+      onItem: (item: RuntimeThreadStreamItem) => Promise<boolean>,
+    ) => {
+      expect(await onItem({ kind: "snapshot", snapshot: running })).toBe(true);
+      // Stop lands while the terminal snapshot is still queued: the stream drops it.
+      stop.abort(new Error("Stopped by user"));
+      expect(await onItem({ kind: "snapshot", snapshot: billed })).toBe(false);
+    };
+
+    await expect(waitForRuntimeTurn(
+      ctx,
+      {} as SandboxHandle,
+      new Map(),
+      prior,
+      createSecretRedactor([]),
+      {
+        subscribeRuntimeThread: subscribe,
+        readThreadSnapshot: async (_ctx, _sandbox, signal) => {
+          terminalReads += 1;
+          expect(signal?.aborted).toBe(false); // an independent bound, not the stopped signal
+          return billed;
+        },
+      },
+    )).rejects.toThrow("Stopped by user");
+    expect(terminalReads).toBe(1);
+    const usage = steps.find((step) => step.kind === "task")?.code_json?.usage as
+      | { costUsd?: number }
+      | undefined;
+    expect(usage?.costUsd).toBe(0.25);
+  });
+
   test("coalesces duplicate event bursts behind one authoritative snapshot refresh", async () => {
     let reads = 0;
     const ctx = {

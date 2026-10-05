@@ -183,6 +183,23 @@ describe("spend allowance", () => {
     expect(await entry(run.id)).toMatchObject({ costUsd: 0.3, tokens: 375, source: "usage" });
   });
 
+  test("usage under data.item.state, the deepest nesting the harness reads, is priced", async () => {
+    const run = await runRow(`spend_${uid()}`, "claude");
+    await db.insert(providerEvents).values([
+      activityRow(run.id, 1, { id: "d1", kind: "tool.completed", callId: "call-1", payload: {
+        toolCallId: "call-1",
+        data: { item: { state: { costUsd: 0.25, typedUsage: { inputTokens: 10, outputTokens: 5 } } } },
+      } }),
+    ]);
+    expect(await priceRunUsage(run.id)).toEqual({ cost: 0.25, tokens: 15, source: "usage" });
+  });
+
+  test("a token count past the integer column is clamped, not a failed settlement", async () => {
+    const run = await stepFinishRun(`spend_${uid()}`, [{ cost: 0.01, tokens: { total: 2_147_483_648 } }, { cost: 0.01, tokens: { total: 5 } }]);
+    expect((await finalizeRun(run.id, "completed", "done", 10)).applied).toBe(true);
+    expect(await entry(run.id)).toMatchObject({ costUsd: 0.02, tokens: 2_147_483_647, source: "usage" });
+  });
+
   test("a run whose events carry tokens but no cost is charged as unpriced, never a silent zero", async () => {
     const run = await runRow(`spend_${uid()}`, "claude");
     await db.insert(providerEvents).values([

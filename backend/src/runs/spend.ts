@@ -21,6 +21,8 @@ export function spendAllowanceDefaultUsd(env: Record<string, string | undefined>
 /** The most one charge or one account may carry: well inside numeric(14,6), so a
  *  runaway figure is clamped and logged instead of rolling a settlement back. */
 export const SPEND_CHARGE_MAX_USD = 1_000_000;
+/** The token column is a Postgres integer; a count past it is clamped, never a failed settlement. */
+export const SPEND_TOKENS_MAX = 2_147_483_647;
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
@@ -96,27 +98,24 @@ export function boundedCost(value: number | null, context: string): number | nul
 /** Tokens from a usage record in either grammar: the `part.step-finish` shape
  *  (`tokens.total`, or input + output + cache) or the typed usage the runtime
  *  reports on task and tool activities (`totalTokens`, or the summed parts). */
+const boundedTokens = (value: number): number =>
+  Math.min(SPEND_TOKENS_MAX, Math.max(0, Math.round(value)));
+
 function usageTokens(usage: Record<string, unknown> | null): number {
   if (!usage) return 0;
   const tokens = record(usage.tokens);
   if (tokens) {
     const cache = record(tokens.cache);
-    return Math.max(
-      0,
-      Math.round(
-        finite(tokens.total) ??
-          (finite(tokens.input) ?? 0) + (finite(tokens.output) ?? 0) +
-            (finite(cache?.read) ?? 0) + (finite(cache?.write) ?? 0),
-      ),
+    return boundedTokens(
+      finite(tokens.total) ??
+        (finite(tokens.input) ?? 0) + (finite(tokens.output) ?? 0) +
+          (finite(cache?.read) ?? 0) + (finite(cache?.write) ?? 0),
     );
   }
-  return Math.max(
-    0,
-    Math.round(
-      finite(usage.totalTokens) ??
-        (finite(usage.inputTokens) ?? 0) + (finite(usage.outputTokens) ?? 0) +
-          (finite(usage.reasoningOutputTokens) ?? 0) + (finite(usage.cachedInputTokens) ?? 0),
-    ),
+  return boundedTokens(
+    finite(usage.totalTokens) ??
+      (finite(usage.inputTokens) ?? 0) + (finite(usage.outputTokens) ?? 0) +
+        (finite(usage.reasoningOutputTokens) ?? 0) + (finite(usage.cachedInputTokens) ?? 0),
   );
 }
 
@@ -132,15 +131,19 @@ function stepFinishFigure(payload: Record<string, unknown>): UsageFigure & { rea
 /**
  * The figure a stored runtime activity (`t3.activity.*`) carries. The runtime
  * reports usage on task and tool activities as `typedUsage` (or `usage`) in
- * the activity payload, under the same nesting the harness reads for child
- * usage (state, then data.item, then data, then the payload itself), with the
- * cost as `costUsd` or `cost` beside it.
+ * the activity payload, under exactly the nesting the harness's canonical
+ * extractor reads for child usage (payload.state, data.state, data.item.state,
+ * data.item, data, then the payload itself), with the cost as `costUsd` or
+ * `cost` beside it.
  */
 function runtimeActivityFigure(stored: Record<string, unknown>): UsageFigure | null {
   const payload = record(stored.payload);
   if (!payload) return null;
   const data = record(payload.data);
-  const containers = [record(payload.state), record(data?.item), data, payload];
+  const item = record(data?.item);
+  const containers = [
+    record(payload.state), record(data?.state), record(item?.state), item, data, payload,
+  ];
   let usage: Record<string, unknown> | null = null;
   for (const container of containers) {
     usage = record(container?.typedUsage) ?? record(container?.usage);
@@ -222,6 +225,7 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
     tokens += figure.tokens;
   }
   cost = Math.min(cost, SPEND_CHARGE_MAX_USD);
+  tokens = boundedTokens(tokens);
   const source: SpendSource = settled ? "provider_generation" : priced ? "usage" : "unpriced";
   if (source === "unpriced" && tokens > 0) {
     console.warn(`[spend] run ${runId} reported ${tokens} tokens but no cost; charged as unpriced`);
@@ -232,12 +236,14 @@ export async function priceRunUsage(runId: string, exec: Executor = db): Promise
 // ── Charging ────────────────────────────────────────────────────────────────
 
 /**
- * Record one charge and add it to the member's account, once. The per-charge
- * entry is the guard: a second settlement, a replayed finalize or a concurrent
- * charge under the same key inserts nothing and charges nothing. The account
- * upsert takes the member's row lock, so a caller inside a larger transaction
- * must make this its LAST statement: a transaction that holds that lock must
- * never go on to wait for anything else.
+ * Record one charge and add it to the member's account, once and together.
+ * The per-charge entry is the guard: a second settlement, a replayed finalize
+ * or a concurrent charge under the same key inserts nothing and charges
+ * nothing. Handed the pool, it runs as one short transaction, so no reader
+ * ever sees the entry without its account movement. The account upsert takes
+ * the member's row lock, so a caller inside a larger transaction must make
+ * this its LAST statement: a transaction that holds that lock must never go
+ * on to wait for anything else.
  */
 export async function chargeSpend(
   input: {
@@ -250,6 +256,7 @@ export async function chargeSpend(
   },
   exec: Executor = db,
 ): Promise<boolean> {
+  if (exec === db) return db.transaction((tx) => chargeSpend(input, tx));
   const cost = boundedCost(input.cost, `charge ${input.key}`) ?? 0;
   const inserted = await exec
     .insert(spendEntries)
@@ -258,7 +265,7 @@ export async function chargeSpend(
       orgId: input.orgId,
       userId: input.userId,
       costUsd: cost,
-      tokens: Math.max(0, Math.round(input.tokens)),
+      tokens: Number.isFinite(input.tokens) ? boundedTokens(input.tokens) : 0,
       source: input.source,
     })
     .onConflictDoNothing()

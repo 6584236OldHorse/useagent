@@ -1581,10 +1581,21 @@ describe("slack durable inbox", () => {
         return rows[0] ?? null;
       });
       expect(refusal.payload).toContain("You have spent $100.00 of your $100.00 allowance");
-      await waitFor(async () => {
+      const settled = await waitFor(async () => {
         const [row] = await db.select().from(commands).where(eq(commands.id, inboxKey));
         return row?.state === "completed" ? row : null;
       });
+      expect(settled.error).toBe("permanent_noop:spend_allowance_exceeded");
+      expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
+
+      // The allowance is lifted and Slack redelivers the same message: the
+      // refusal stands, the row is never reopened and no run is created.
+      await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, DEV_ORG_ID), eq(spendAccounts.userId, DEV_USER_ID)));
+      resetSlackDeduperForTest();
+      expect((await postSlack(envelope)).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const [after] = await db.select().from(commands).where(eq(commands.id, inboxKey));
+      expect(after).toMatchObject({ state: "completed", error: "permanent_noop:spend_allowance_exceeded" });
       expect(await findRunByPrompt(`capped ${marker}`)).toBeNull();
     } finally {
       await db.delete(spendAccounts).where(and(eq(spendAccounts.orgId, DEV_ORG_ID), eq(spendAccounts.userId, DEV_USER_ID)));
