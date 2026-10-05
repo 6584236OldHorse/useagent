@@ -218,6 +218,19 @@ desktopProxyRoutes.get("/:threadId/ready", async (c) => {
 });
 
 // ── HTTP: noVNC static app (vnc.html + js/css/img) ──────────────────────────
+/** The served client page without the floating control bar: the desktop pane is the product's chrome. */
+export function withoutClientControlBar(html: string): string {
+  const style = "<style>#noVNC_control_bar_anchor{display:none!important}</style>";
+  return html.includes("</head>") ? html.replace("</head>", `${style}</head>`) : html;
+}
+
+async function servedClientPage(upstream: Response): Promise<Response> {
+  if (upstream.status !== 200 || !(upstream.headers.get("content-type") ?? "").includes("text/html")) return upstream;
+  const headers = new Headers(upstream.headers);
+  headers.delete("content-length");
+  return new Response(withoutClientControlBar(await upstream.text()), { status: upstream.status, headers });
+}
+
 desktopProxyRoutes.all("/:threadId/*", async (c) => {
   const threadId = c.req.param("threadId") ?? "";
   const orgId = c.get("orgId");
@@ -286,7 +299,7 @@ desktopProxyRoutes.all("/:threadId/*", async (c) => {
       }
       upstream = await forward(ep);
     }
-    return buildProxyResponse(upstream);
+    return buildProxyResponse(subpath === "/vnc.html" ? await servedClientPage(upstream) : upstream);
   } catch (err) {
     invalidateDesktopPreview(threadId);
     invalidatePreviewEndpoint(threadId, DESKTOP_PORT);
