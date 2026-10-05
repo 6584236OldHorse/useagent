@@ -300,13 +300,20 @@ export function engineReadyForDispatch(
   engine: string,
   env: Record<string, string | undefined> = process.env,
 ): boolean {
+  if (!engineEnabledForDispatch(engine, env)) return false;
+  if (!USER_FACING_ENGINE_SET.has(engine)) return true;
+  return engineReadiness(engine as UserFacingEngineId, env).ready;
+}
+
+/** The engine is known and switched on for this deployment; says nothing about its provider's health. */
+export function engineEnabledForDispatch(
+  engine: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
   if (!ENGINE_ID_SET.has(engine)) return false;
   if (engine === "chat") return chatLlmEnabled(env);
   if (engine === "mock") return devModeEnabledForEnv(env);
-  const knownEngine = engine as EngineId;
-  if (!enabledEnginesForEnv(env).has(knownEngine)) return false;
-  if (!USER_FACING_ENGINE_SET.has(engine)) return true;
-  return engineReadiness(engine as UserFacingEngineId, env).ready;
+  return enabledEnginesForEnv(env).has(engine as EngineId);
 }
 
 export function configuredDefaultRunEngine(

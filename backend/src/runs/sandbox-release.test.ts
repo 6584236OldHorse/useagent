@@ -109,6 +109,7 @@ async function addFencedChild(
     credential: "env",
     userId: null,
     snapshot: null,
+    logins: [],
   } satisfies SandboxBinding, fixture.orgId, fixture.sandboxId);
   createdRuns.add(childId);
   await createRun({

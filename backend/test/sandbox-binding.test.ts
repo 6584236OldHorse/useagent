@@ -22,7 +22,7 @@ import { createOrgSession, fetchApi, json } from "./helpers";
 const fakeProvider = (label: string): SandboxProvider =>
   ({ label } as unknown as SandboxProvider);
 
-const envBinding: SandboxBinding = { kind: "daytona", provider: fakeProvider("env"), snapshot: null, credential: "env", userId: null };
+const envBinding: SandboxBinding = { kind: "daytona", provider: fakeProvider("env"), snapshot: null, credential: "env", userId: null, logins: [] };
 
 async function userIdForCookies(cookies: string): Promise<string> {
   const me = await json<{ user?: { id?: string } }>("/api/auth/get-session", { cookies });
@@ -56,8 +56,11 @@ describe("local runner binding", () => {
       runners: seam(true, true),
     };
     const binding = await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, deps);
-    expect(binding).toMatchObject({ kind: "local", credential: "user", userId: "user", snapshot: null, connectionUpdatedAt: "2026-09-08T00:00:00.000Z" });
+    expect(binding).toMatchObject({ kind: "local", credential: "user", userId: "user", snapshot: null, connectionUpdatedAt: "2026-09-08T00:00:00.000Z", logins: ["codex", "claude"] });
     expect(built).toEqual(["local"]);
+    // Logins are lent only with the org's say-so; no hosted binding carries any.
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "user" }, { ...deps, runners: seam(true, false) })).logins).toEqual([]);
+    expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "other" }, deps)).logins).toEqual([]);
     expect(bindingSnapshot(binding, "DAYTONA_SNAPSHOT")).toBe("");
     // Another user, the org switch off, or the deployment kill switch: the server's provider.
     expect((await resolveSandboxBindingForRun({ orgId: "org", userId: "other" }, deps)).credential).toBe("env");
