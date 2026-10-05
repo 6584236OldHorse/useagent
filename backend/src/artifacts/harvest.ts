@@ -34,10 +34,10 @@ const PRUNED_DIRECTORIES = [
 const CLOCK_SLACK_SECONDS = 120;
 /** Publications per turn. */
 export const MAX_HARVESTED_FILES = 20;
-/** Candidates examined per turn (lookups are cheap; unchanged files do not count as publications). */
-export const MAX_EXAMINED_FILES = 200;
 /** Records a listing may carry before the sandbox stops printing. */
 const MAX_LISTING_RECORDS = 3000;
+/** Candidates examined per turn: every listed record, since an unchanged file costs one lookup. */
+export const MAX_EXAMINED_FILES = MAX_LISTING_RECORDS;
 const LISTING_TIMEOUT_SECONDS = 30;
 const STEP_TIMEOUT_MS = 30_000;
 /** A publish downloads the file again inside the trusted path; bound that read. */
@@ -74,7 +74,7 @@ export function fileListCommand(workspaceRoot: string, sinceEpochSeconds: number
 
 /** Candidates from the listing, newest first (then by path, so a rerun is
  *  stable): the files this turn just wrote are examined before older ones
- *  the thread may already hold, and the examination cap cannot hide them. */
+ *  the thread may already hold. */
 export function parseFileListing(output: string, workspaceRoot: string): HarvestCandidate[] {
   const candidates: HarvestCandidate[] = [];
   for (const record of output.split("\0")) {
@@ -100,6 +100,8 @@ export interface KnownArtifact {
   readonly id: string;
   readonly sha256: string;
   readonly sizeBytes: number;
+  /** When the plane stored it; a file not modified since then is unchanged. */
+  readonly createdAt: Date;
 }
 
 export interface HarvestDependencies {
@@ -121,7 +123,7 @@ async function sandboxList(run: RunRow, command: string): Promise<string> {
 async function knownThreadArtifact(run: RunRow, path: string): Promise<KnownArtifact | null> {
   if (!run.orgId) return null;
   const [row] = await db
-    .select({ id: artifacts.id, sha256: artifacts.sha256, sizeBytes: artifacts.sizeBytes })
+    .select({ id: artifacts.id, sha256: artifacts.sha256, sizeBytes: artifacts.sizeBytes, createdAt: artifacts.createdAt })
     .from(artifacts)
     .where(and(eq(artifacts.orgId, run.orgId), eq(artifacts.threadId, run.threadId), eq(artifacts.sourcePath, path)))
     .orderBy(desc(artifacts.createdAt), desc(artifacts.workpieceRevision))
@@ -215,6 +217,8 @@ export async function harvestTurnOutputs(
       try {
         const known = await bounded(() => dependencies.known(run, candidate.path), left(), signal, "artifact lookup");
         if (known && known.sizeBytes === candidate.size) {
+          // Not modified since the plane stored it (with clock allowance): unchanged, no read needed.
+          if (known.createdAt.getTime() / 1000 - CLOCK_SLACK_SECONDS >= candidate.modifiedAt) continue;
           const digest = await bounded(() => dependencies.digest(run, candidate.path), left(), signal, "digest");
           if (digest === known.sha256) continue; // unchanged since the thread last published it
         }
@@ -240,6 +244,7 @@ export async function harvestTurnOutputs(
           // A changed file whose kind cannot revise the existing artifact (an
           // image, an archive, a large office file) is published on its own.
           if (!known || !kindMismatch(error)) throw error;
+          if (signal?.aborted) break;
           result = await dependencies.publish(base);
         }
         published.push(result.artifact.id);

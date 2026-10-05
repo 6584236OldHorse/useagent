@@ -27,9 +27,9 @@ describe("harvestTurnOutputs", () => {
         "40\t5\t/root/work/same.md", "60\t5\t/root/work/diagram.png", "",
       ].join("\0")),
       known: async (_run, path) =>
-        path.endsWith("notes.md") ? { id: "art-notes", sha256: "old", sizeBytes: 30 }
-        : path.endsWith("same.md") ? { id: "art-same", sha256: "same", sizeBytes: 40 }
-        : path.endsWith("diagram.png") ? { id: "art-png", sha256: "old", sizeBytes: 60 }
+        path.endsWith("notes.md") ? { id: "art-notes", sha256: "old", sizeBytes: 30, createdAt: new Date(0) }
+        : path.endsWith("same.md") ? { id: "art-same", sha256: "same", sizeBytes: 40, createdAt: new Date(0) }
+        : path.endsWith("diagram.png") ? { id: "art-png", sha256: "old", sizeBytes: 60, createdAt: new Date(0) }
         : null,
       digest: async (_run, path) => (path.endsWith("same.md") ? "same" : "new"),
       publish: async (input) => {
@@ -119,11 +119,11 @@ describe("harvestTurnOutputs", () => {
 
   test("unchanged files never use up the publication cap, and the newest file is examined first", async () => {
     const runId = await sandboxRun("many unchanged");
-    const unchanged = Array.from({ length: 25 }, (_, i) => `10\t${100 + i}\t/root/work/a${String(i).padStart(2, "0")}.pdf`);
+    const unchanged = Array.from({ length: 250 }, (_, i) => `10\t${100 + i}\t/root/work/a${String(i).padStart(3, "0")}.pdf`);
     const published: string[] = [];
     const deps: HarvestDependencies = {
       list: async () => [...unchanged, "10\t50\t/root/work/z-report.pdf", ""].join("\0"),
-      known: async (_run, path) => (path.includes("/a") ? { id: `art-${path}`, sha256: "same", sizeBytes: 10 } : null),
+      known: async (_run, path) => (path.includes("/a") ? { id: `art-${path}`, sha256: "same", sizeBytes: 10, createdAt: new Date(0) } : null),
       digest: async () => "same",
       publish: async (input) => {
         published.push(input.path);
@@ -132,6 +132,37 @@ describe("harvestTurnOutputs", () => {
     };
     expect(await harvestTurnOutputs(runId, {}, deps)).toEqual(["/root/work/z-report.pdf"]);
     expect(published).toEqual(["/root/work/z-report.pdf"]);
+  });
+
+  test("a file not modified since the thread stored it is skipped without reading it", async () => {
+    const runId = await sandboxRun("mtime skip");
+    let digests = 0;
+    const deps: HarvestDependencies = {
+      list: async () => "10\t1000\t/root/work/old.pdf\0",
+      known: async () => ({ id: "art-old", sha256: "x", sizeBytes: 10, createdAt: new Date((1000 + 200) * 1000) }),
+      digest: async () => { digests += 1; return "x"; },
+      publish: async () => { throw new Error("unreachable"); },
+    };
+    expect(await harvestTurnOutputs(runId, {}, deps)).toEqual([]);
+    expect(digests).toBe(0);
+  });
+
+  test("a cancellation during a revision attempt never starts the standalone fallback", async () => {
+    const runId = await sandboxRun("cancelled in revision");
+    const controller = new AbortController();
+    const attempts: string[] = [];
+    const deps: HarvestDependencies = {
+      list: async () => "10\t1\t/root/work/diagram.png\0",
+      known: async () => ({ id: "art-png", sha256: "old", sizeBytes: 99, createdAt: new Date(0) }),
+      digest: async () => "x",
+      publish: async (input) => {
+        attempts.push(input.updatesArtifactId ? "revision" : "fresh");
+        controller.abort();
+        throw new Error("republished file kind does not match the artifact being updated (expected document)");
+      },
+    };
+    expect(await harvestTurnOutputs(runId, { signal: controller.signal }, deps)).toEqual([]);
+    expect(attempts).toEqual(["revision"]);
   });
 
   test("a cancellation that lands during the lookups stops before any publication starts", async () => {

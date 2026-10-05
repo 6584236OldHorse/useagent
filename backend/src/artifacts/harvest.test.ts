@@ -50,9 +50,9 @@ describe("parseFileListing", () => {
 
   test("tolerates an empty listing and caps what is examined", () => {
     expect(parseFileListing("", root)).toEqual([]);
-    const many = Array.from({ length: 260 }, (_, i) => `10\t${i}\t/root/work/file-${String(i).padStart(3, "0")}.pdf`).join("\0");
+    const many = Array.from({ length: 3200 }, (_, i) => `10\t${i}\t/root/work/file-${String(i).padStart(4, "0")}.pdf`).join("\0");
     const parsed = parseFileListing(many, root);
     expect(parsed).toHaveLength(MAX_EXAMINED_FILES);
-    expect(parsed[0]?.path).toBe("/root/work/file-259.pdf");
+    expect(parsed[0]?.path).toBe("/root/work/file-3199.pdf");
   });
 });

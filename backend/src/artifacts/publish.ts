@@ -168,21 +168,36 @@ async function attachOfficePreview(
     readonly run: NonNullable<Awaited<ReturnType<typeof getRunForOrg>>>;
     readonly sourceBytes: Uint8Array;
   },
-  opts: { readonly regenerate: boolean },
+  opts: {
+    readonly regenerate: boolean;
+    /** Bound on the sandbox conversion (conversion, metadata read, download,
+     *  cleanup are read-only and may be abandoned); persistence that started
+     *  is awaited, and persistence never starts once the bound has passed. */
+    readonly boundMs?: number;
+  },
 ): Promise<ArtifactRecord> {
+  const startedAt = Date.now();
   const currentRecord = async (): Promise<ArtifactRecord> =>
     (await getArtifactForOrg(input.orgId, input.record.id)) ?? input.record;
   if (!isOfficePreviewContentType(input.record.contentType)) return input.record;
   if (!opts.regenerate && input.record.previewStorageKey) return input.record;
 
-  const pdf = await convertOfficeToPdf({
-    sandboxId: input.sandboxId,
-    run: input.run,
-    sourceName: input.record.name,
-    sourceBytes: input.sourceBytes,
-    timeoutSeconds: OFFICE_PREVIEW_TIMEOUT_SECONDS,
-    maxBytes: OFFICE_PREVIEW_MAX_BYTES,
-  });
+  const pdf = await settledWithin(
+    convertOfficeToPdf({
+      sandboxId: input.sandboxId,
+      run: input.run,
+      sourceName: input.record.name,
+      sourceBytes: input.sourceBytes,
+      timeoutSeconds: OFFICE_PREVIEW_TIMEOUT_SECONDS,
+      maxBytes: OFFICE_PREVIEW_MAX_BYTES,
+    }),
+    opts.boundMs,
+    "office preview conversion",
+  );
+  if (pdf && opts.boundMs !== undefined && Date.now() - startedAt > opts.boundMs) {
+    console.log(`[office-preview] preview for artifact ${input.record.id} arrived past its bound; skipped`);
+    return currentRecord();
+  }
   if (!pdf) {
     console.log(
       `[office-preview] no PDF preview for artifact ${input.record.id} (${input.record.name})`,
@@ -332,13 +347,12 @@ function settledWithin<T>(work: Promise<T>, ms: number | undefined, what: string
 }
 
 /** The office preview is best effort on top of an artifact that already
- *  exists. When the caller gave a bound, the whole attempt (conversion, the
- *  metadata read, the download, cleanup) must finish within it, and a
- *  timeout or failure leaves the artifact without a preview rather than
- *  holding the publication and its lifecycle events. */
-async function previewWithin<T>(ms: number | undefined, fallback: T, work: () => Promise<T>): Promise<T> {
+ *  exists: a failure leaves the artifact without a preview rather than
+ *  taking the publication and its lifecycle events with it. The attempt
+ *  itself bounds its sandbox work and never persists past its bound. */
+async function previewWithin<T>(fallback: T, work: () => Promise<T>): Promise<T> {
   try {
-    return await settledWithin(work(), ms, "office preview");
+    return await work();
   } catch (error) {
     console.warn("[office-preview] preview skipped:", error instanceof Error ? error.message : error);
     return fallback;
@@ -366,6 +380,7 @@ export async function publishSandboxArtifact(input: {
     throw new Error("run not found in this thread");
   }
   if (!run.sandboxId) throw new Error("no sandbox is attached to this run");
+  const sandboxId = run.sandboxId;
   const workspaceRoot = await resolveAttachedSandboxWorkspaceRoot({
     sandboxId: run.sandboxId,
     sandboxProvider: run.sandboxProvider,
@@ -499,10 +514,10 @@ export async function publishSandboxArtifact(input: {
     if (!revised) throw new Error("artifact revision could not be applied");
     // The new bytes invalidate any prior preview: regenerate (or clear) it so the
     // embedded PDF preview reflects the revised content, never the old version.
-    const revisedWithPreview = await previewWithin(input.downloadTimeoutMs, revised, () =>
+    const revisedWithPreview = await previewWithin(revised, () =>
       attachOfficePreview(
-        { orgId: input.orgId, record: revised, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
-        { regenerate: true },
+        { orgId: input.orgId, record: revised, sandboxId, run, sourceBytes: file.bytes },
+        { regenerate: true, boundMs: input.downloadTimeoutMs },
       ),
     );
     const descriptor = toArtifactDescriptor(revisedWithPreview);
@@ -570,10 +585,10 @@ export async function publishSandboxArtifact(input: {
 
   // Best-effort Office->PDF preview for a fresh Office binary (skips a re-publish
   // that already carries one). Non-fatal: a missing preview stays download-only.
-  const record = await previewWithin(input.downloadTimeoutMs, stored.row, () =>
+  const record = await previewWithin(stored.row, () =>
     attachOfficePreview(
-      { orgId: input.orgId, record: stored.row, sandboxId: run.sandboxId, run, sourceBytes: file.bytes },
-      { regenerate: false },
+      { orgId: input.orgId, record: stored.row, sandboxId, run, sourceBytes: file.bytes },
+      { regenerate: false, boundMs: input.downloadTimeoutMs },
     ),
   );
   const descriptor = toArtifactDescriptor(record);
