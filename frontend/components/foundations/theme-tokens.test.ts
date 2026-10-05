@@ -272,15 +272,15 @@ describe("shared theme tokens", () => {
     expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
   });
 
-  test("selected navigation rows keep a white label readable at BOTH gradient stops", () => {
-    // accent-500 (#2b7fff) at the top stop only reached 3.76:1, so the
-    // selected sidebar and settings-rail rows use accent-600 to accent-700.
-    expect(contrast("#ffffff", "#155dfc")).toBeGreaterThanOrEqual(4.5);
-    expect(contrast("#ffffff", "#1447e6")).toBeGreaterThanOrEqual(4.5);
+  test("selected navigation rows are a quiet neutral pill, never an accent fill", () => {
+    // The selected sidebar and settings-rail rows used an accent gradient with
+    // a white label; since 2026-09-11 they share the hover surface with primary
+    // text so the rail carries no saturated block.
     for (const rel of ["components/shell/sidebar-nav.tsx", "app/(workspace)/settings/settings-rail.tsx"]) {
       const source = readSource(rel);
-      expect(source).toContain("from-accent-600 to-accent-700 text-white");
-      expect(source).not.toContain("from-accent-500 to-accent-600");
+      expect(source).toContain("bg-background-secondary-hover text-text-primary");
+      expect(source).not.toContain("from-accent-");
+      expect(source).not.toContain("shadow-nav-selected");
     }
   });
 

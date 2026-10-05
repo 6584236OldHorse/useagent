@@ -85,13 +85,14 @@ export function SidebarSectionToggle({
 
 export type NavIconTone = "blue" | "purple" | "green" | "orange" | "primary";
 
-/** A brand tint for a nav icon - a touch of color in an otherwise mono rail. */
+/** Nav icons are one quiet grey: the tones stay as routing metadata only, so a
+ *  future accent can return without touching every route definition. */
 export const NAV_ICON_TONE: Record<NavIconTone, string> = {
-  blue: "text-blue-500",
-  purple: "text-purple-500",
-  green: "text-green-600",
-  orange: "text-orange-500",
-  primary: "text-accent-500",
+  blue: "text-foreground-icon-tertiary",
+  purple: "text-foreground-icon-tertiary",
+  green: "text-foreground-icon-tertiary",
+  orange: "text-foreground-icon-tertiary",
+  primary: "text-foreground-icon-tertiary",
 };
 
 export interface SidebarNavItemProps {
@@ -128,7 +129,7 @@ export function SidebarNavItem({
       className={cx(
         "flex items-center gap-2 rounded-2lg px-2.5 py-1.5 text-body-2-medium transition-colors",
         active
-          ? "bg-linear-to-b from-accent-600 to-accent-700 text-white shadow-nav-selected"
+          ? "bg-background-secondary-hover text-text-primary"
           : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
       )}
     >
@@ -139,7 +140,7 @@ export function SidebarNavItem({
               className={cx(
                 "size-3.5 shrink-0",
                 active
-                  ? "text-white"
+                  ? "text-text-primary"
                   : tone
                     ? NAV_ICON_TONE[tone]
                     : "text-foreground-icon-tertiary",

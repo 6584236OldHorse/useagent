@@ -127,7 +127,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                 className={cn(
                   "justify-center rounded-2lg",
                   route.active
-                    ? "bg-linear-to-b from-accent-500 to-accent-600 text-white shadow-nav-selected hover:text-white"
+                    ? "bg-background-secondary-hover text-text-primary"
                     : "text-text-secondary hover:bg-background-secondary-hover hover:text-text-primary",
                 )}
                 isActive={route.active}
@@ -145,7 +145,7 @@ export function NavRoutes({ routes }: { routes: Route[] }) {
                   className={cn(
                     "size-4",
                     route.active
-                      ? "text-white"
+                      ? "text-text-primary"
                       : route.tone
                         ? NAV_ICON_TONE[route.tone]
                         : "text-foreground-icon-tertiary",
