@@ -25,6 +25,8 @@ function resolveDistDir(phase: string): string {
 export default function nextConfig(phase: string): NextConfig {
   return {
     output: "standalone",
+    // Source maps only for a bundle audit (USEAGENT_BUILD_SOURCEMAPS=1); never in a release image.
+    productionBrowserSourceMaps: process.env.USEAGENT_BUILD_SOURCEMAPS === "1",
     turbopack: {
       root: repositoryRoot,
       // root fixes symlink-following into ../packages, but shifts the node_modules base

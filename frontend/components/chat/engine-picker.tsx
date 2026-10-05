@@ -417,7 +417,7 @@ export function ModelPicker({
             label folds into the accessible name so the reply placeholder keeps
             one line at phone width. */}
         <RiCpuLine className="text-text-secondary size-4" aria-hidden />
-        <span className="max-sm:sr-only">{selectedLabel}</span>
+        <span className="max-w-[11rem] truncate whitespace-nowrap max-sm:sr-only">{selectedLabel}</span>
         <RiArrowDownSLine className="text-text-tertiary size-4 max-sm:hidden" aria-hidden />
       </button>
 
