@@ -37,6 +37,7 @@ import {
   type PresentationDeck,
 } from "@useagent/artifact-workspace";
 import { type CSSProperties, type RefObject, useId, useState } from "react";
+import { Select, SelectItem } from "@/components/base/select/select";
 import type { WorkpieceEditorController } from "./artifact-editor-state";
 import { sanitizeRichHtml } from "./artifact-editor-model";
 import { DeckSlideCanvas } from "./deck-canvas";
@@ -470,18 +471,19 @@ function BlockInspector({
               onChange={(fontSize) => setStyle({ fontSize })}
               min={4}
             />
-            <label className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
+            <div className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
               Align
-              <select
-                value={block.style?.align ?? "left"}
-                onChange={(event) => setStyle({ align: event.currentTarget.value as DeckBlockStyle["align"] })}
-                className="h-8 w-full rounded-lg border border-border-button-default bg-background-primary-default px-2 text-body-2-medium text-text-primary outline-none focus:border-foreground-icon-primary"
+              <Select
+                aria-label="Align"
+                size="sm"
+                selectedKey={block.style?.align ?? "left"}
+                onSelectionChange={(key) => setStyle({ align: key as DeckBlockStyle["align"] })}
               >
-                <option value="left">Left</option>
-                <option value="center">Center</option>
-                <option value="right">Right</option>
-              </select>
-            </label>
+                <SelectItem id="left">Left</SelectItem>
+                <SelectItem id="center">Center</SelectItem>
+                <SelectItem id="right">Right</SelectItem>
+              </Select>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
