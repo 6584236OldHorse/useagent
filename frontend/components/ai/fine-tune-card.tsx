@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { Select, SelectItem } from "@/components/base/select/select";
 
 const layouts = ["Row", "Column", "Grid"] as const;
 
@@ -79,15 +80,14 @@ export function FineTuneCard() {
             onChange={setOpacity}
           />
         </div>
-        <label className="flex items-center justify-between text-caption-1-regular text-text-tertiary">
+        <div className="flex items-center justify-between text-caption-1-regular text-text-tertiary">
           Type
-          <select className="rounded-lg bg-background-secondary-default px-2 py-1.5 text-text-secondary outline-none">
-            <option>Select type</option>
-            <option>Card</option>
-            <option>Panel</option>
-            <option>Stack</option>
-          </select>
-        </label>
+          <Select aria-label="Type" size="sm" placeholder="Select type">
+            <SelectItem id="card">Card</SelectItem>
+            <SelectItem id="panel">Panel</SelectItem>
+            <SelectItem id="stack">Stack</SelectItem>
+          </Select>
+        </div>
       </div>
     </div>
   );
