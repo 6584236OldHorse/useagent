@@ -3,8 +3,9 @@
 </h1>
 
 <p align="center">
-  <strong>The open-source AI coworker for your team.</strong><br>
-  Agents with their own computer, on your server, with every run on the record.
+  <strong>The open-source Devin alternative.</strong><br>
+  Run Claude Code, Codex, OpenCode or Pi in isolated cloud workspaces you can self-host.<br>
+  Hand off work from Slack, the web or the API, and get pull requests and files back.
 </p>
 
 <p align="center">
@@ -78,6 +79,18 @@ change engines.
 
 > **Alpha software.** UseAgent runs real daily workloads, but APIs and schemas
 > can change between releases. Pin a tag if you need stability.
+
+## UseAgent and Devin
+
+| | Devin | UseAgent |
+|---|---|---|
+| Source code | Closed | Open source (AGPL) |
+| Where it runs | Cognition's cloud; enterprise plans can put the workspace in your VPC, the agent itself stays in Cognition's cloud | All of it on our cloud, your own servers, or your laptop |
+| Which agent | Devin's own | Claude Code, Codex, OpenCode or Pi, side by side |
+| Model bill | Paid through Devin | Your own keys, your ChatGPT plan for Codex, or free models |
+| Record of the work | In Devin's app | Every step in your own Postgres, replayable |
+
+UseAgent is not a new model, and not a proven replacement for every Devin workflow. It is the workspace around the agents you already use: a computer per task, your team's tools and context, and a full record of what happened.
 
 ## Use the hosted app
 
