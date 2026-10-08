@@ -29,6 +29,7 @@ import {
   SegmentedControl,
   SegmentedControlItem,
 } from "@/components/base/segmented-control/segmented-control";
+import { Select, SelectItem } from "@/components/base/select/select";
 import { useOrgChanges } from "@/hooks/use-org-changes";
 import { backendFetch } from "@/lib/backend-fetch";
 import { ArtifactCard, ArtifactRow } from "./artifact-card";
@@ -123,20 +124,22 @@ function ArtifactCreatePanel({
 
   return (
     <div className="flex w-full flex-col gap-3">
-      <label className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
+      <div className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
         Type
-        <select
-          value={kind}
-          onChange={(event) => chooseKind(event.currentTarget.value as ArtifactWorkpieceKind)}
-          className="h-9 w-full rounded-lg border border-border-button-default bg-background-primary-default px-3 text-body-2-medium text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
+        <Select
+          aria-label="Type"
+          selectedKey={kind}
+          onSelectionChange={(key) => {
+            if (key !== null) chooseKind(key as ArtifactWorkpieceKind);
+          }}
         >
           {ARTIFACT_AUTHORING_PROFILES.map((profile) => (
-            <option key={profile.kind} value={profile.kind}>
+            <SelectItem key={profile.kind} id={profile.kind}>
               {profile.label}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-      </label>
+        </Select>
+      </div>
       <label className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
         Name
         <input
@@ -145,21 +148,23 @@ function ArtifactCreatePanel({
           className="h-9 w-full rounded-lg border border-border-button-default bg-background-primary-default px-3 text-body-2-medium text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring"
         />
       </label>
-      <label className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
+      <div className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
         Run
-        <select
-          value={runId}
-          onChange={(event) => setRunId(event.currentTarget.value)}
-          disabled={runs.length === 0}
-          className="h-9 w-full rounded-lg border border-border-button-default bg-background-primary-default px-3 text-body-2-medium text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring disabled:opacity-50"
+        <Select
+          aria-label="Run"
+          selectedKey={runId || null}
+          isDisabled={runs.length === 0}
+          onSelectionChange={(key) => {
+            if (key !== null) setRunId(String(key));
+          }}
         >
           {runs.map((artifact) => (
-            <option key={artifact.runId} value={artifact.runId}>
+            <SelectItem key={artifact.runId} id={artifact.runId}>
               {artifact.label}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-      </label>
+        </Select>
+      </div>
       <div className="flex items-center justify-between gap-2">
         <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg border border-border-button-default bg-background-primary-default px-3 text-body-2-medium text-text-secondary outline-none hover:bg-background-secondary-default hover:text-text-primary">
           <RiUpload2Line aria-hidden className="size-4" />
