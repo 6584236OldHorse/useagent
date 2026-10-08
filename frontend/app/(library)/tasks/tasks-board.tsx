@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/base/buttons/button";
 import { Chip } from "@/components/base/badges/chip";
 import { InputBase, TextField } from "@/components/base/input/input";
+import { Select, SelectItem } from "@/components/base/select/select";
 import {
   createTask,
   deleteTask,
@@ -36,9 +37,6 @@ const STATUS_CHIP: Record<TaskStatus, ChipColor> = {
   done: "lime",
   archived: "gray",
 };
-
-const selectClass =
-  "h-8 rounded-lg border border-border-button-default bg-background-primary-default px-2 text-body-medium text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-border-focus-ring";
 
 export function TasksBoard({
   initial = [],
@@ -181,22 +179,25 @@ export function TasksBoard({
     <div className="flex flex-col gap-5">
       {/* Controls: project filter + create affordance. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="flex items-center gap-2 text-body-medium text-text-secondary">
+        <div className="flex items-center gap-2 text-body-medium text-text-secondary">
           Project
-          <select
+          <Select
             aria-label="Filter by project"
-            className={selectClass}
-            value={project}
-            onChange={(e) => selectProject(e.target.value)}
+            size="sm"
+            className="w-56"
+            selectedKey={project}
+            onSelectionChange={(key) => {
+              if (key !== null) selectProject(String(key));
+            }}
           >
-            <option value={ALL_PROJECTS}>All projects</option>
+            <SelectItem id={ALL_PROJECTS}>All projects</SelectItem>
             {options.map((p) => (
-              <option key={p} value={p}>
+              <SelectItem key={p} id={p}>
                 {p}
-              </option>
+              </SelectItem>
             ))}
-          </select>
-        </label>
+          </Select>
+        </div>
 
         <form
           className="flex items-center gap-2"
@@ -308,19 +309,22 @@ function TaskCard({
         ) : (
           <span />
         )}
-        <select
+        <Select
           aria-label="Task status"
-          className={selectClass}
-          value={task.status}
-          disabled={busy}
-          onChange={(e) => onMove(task, e.target.value as TaskStatus)}
+          size="sm"
+          className="w-32 shrink-0"
+          selectedKey={task.status}
+          isDisabled={busy}
+          onSelectionChange={(key) => {
+            if (key !== null && key !== task.status) onMove(task, key as TaskStatus);
+          }}
         >
           {TASK_STATUSES.map((s) => (
-            <option key={s} value={s}>
+            <SelectItem key={s} id={s}>
               {STATUS_LABEL[s]}
-            </option>
+            </SelectItem>
           ))}
-        </select>
+        </Select>
       </div>
     </article>
   );

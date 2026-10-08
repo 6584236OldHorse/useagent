@@ -36,3 +36,22 @@ test("a deep-linked project with no tasks and absent from repos is still selecta
   // The scope is unioned into the options, so the select renders + preselects it.
   expect(html).toContain('value="ghost/repo" selected=""');
 });
+
+test("each card's status control preselects the task's status", () => {
+  const task = {
+    id: "t1",
+    project_key: "acme/api",
+    title: "Ship it",
+    body: null,
+    status: "in_progress" as const,
+    priority: 0,
+    order: 0,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const html = renderToStaticMarkup(
+    <TasksBoard initial={[task]} initialRepos={["acme/api"]} initialProject={undefined} />,
+  );
+  expect(html).toContain('aria-label="Task status"');
+  expect(html).toContain('value="in_progress" selected=""');
+});
