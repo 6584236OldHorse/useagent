@@ -473,10 +473,7 @@ function BlockInspector({
             />
             <div className="flex flex-col gap-1 text-caption-1-medium text-text-secondary">
               Align
-              <Select
-                aria-label="Align"
-                size="sm"
-                selectedKey={block.style?.align ?? "left"}
+              <Select aria-label="Align" size="sm" selectedKey={block.style?.align ?? "left"}
                 onSelectionChange={(key) => setStyle({ align: key as DeckBlockStyle["align"] })}
               >
                 <SelectItem id="left">Left</SelectItem>
