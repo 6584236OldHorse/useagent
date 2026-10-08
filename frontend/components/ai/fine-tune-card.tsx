@@ -82,7 +82,7 @@ export function FineTuneCard() {
         </div>
         <div className="flex items-center justify-between text-caption-1-regular text-text-tertiary">
           Type
-          <Select aria-label="Type" size="sm" placeholder="Select type">
+          <Select aria-label="Type" size="sm" placeholder="Select type" className="w-36">
             <SelectItem id="card">Card</SelectItem>
             <SelectItem id="panel">Panel</SelectItem>
             <SelectItem id="stack">Stack</SelectItem>
