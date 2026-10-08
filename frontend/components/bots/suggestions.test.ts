@@ -15,9 +15,9 @@ describe("bot suggestions", () => {
       "Release notes",
       "Chief of staff",
       "Standup digest",
+      "Onboarding guide",
       "Dependency watcher",
       "Docs checker",
-      "Release notes writer",
     ]);
     const names = BOT_SUGGESTIONS.map((s) => s.name.toLowerCase());
     expect(new Set(names).size).toBe(names.length);
