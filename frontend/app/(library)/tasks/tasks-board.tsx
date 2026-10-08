@@ -184,6 +184,7 @@ export function TasksBoard({
           <Select
             aria-label="Filter by project"
             size="sm"
+            className="w-56"
             selectedKey={project}
             onSelectionChange={(key) => {
               if (key !== null) selectProject(String(key));
@@ -311,10 +312,11 @@ function TaskCard({
         <Select
           aria-label="Task status"
           size="sm"
+          className="w-32 shrink-0"
           selectedKey={task.status}
           isDisabled={busy}
           onSelectionChange={(key) => {
-            if (key !== null) onMove(task, key as TaskStatus);
+            if (key !== null && key !== task.status) onMove(task, key as TaskStatus);
           }}
         >
           {TASK_STATUSES.map((s) => (
