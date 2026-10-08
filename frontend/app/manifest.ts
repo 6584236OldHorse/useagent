@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "useAgent",
-    short_name: "useAgent",
+    name: "UseAgent",
+    short_name: "UseAgent",
     description:
       "Run coding agents in isolated workspaces with durable context, automations, and audit trails.",
     start_url: "/",

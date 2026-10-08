@@ -5,8 +5,8 @@ describe("web app manifest", () => {
   test("includes app metadata and installable icon set", async () => {
     const result = await manifest();
 
-    expect(result.name).toBe("useAgent");
-    expect(result.short_name).toBe("useAgent");
+    expect(result.name).toBe("UseAgent");
+    expect(result.short_name).toBe("UseAgent");
     expect(result.start_url).toBe("/");
     expect(result.display).toBe("standalone");
     expect(result.background_color).toBe("#0d1117");
