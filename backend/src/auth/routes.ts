@@ -49,7 +49,7 @@ routes.on("GET", ["/api/auth/get-session", "/api/auth/list-sessions"], async (c)
 /** Only the native main process may exchange an authorization code for a
  *  session token. Browsers always send their web Origin on a POST and cannot
  *  forge it, so a renderer holding the copied cookie never reaches the exchange. */
-routes.post("/api/auth/electron/token", (c) => {
+routes.post("/api/auth/electron/token", async (c) => {
   const origin = c.req.header("origin") ?? c.req.header("electron-origin");
   if (origin !== "useagent:/") return c.json({ message: "Desktop token exchange requires the native app." }, 403);
   return auth.handler(c.req.raw);
